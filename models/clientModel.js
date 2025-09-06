@@ -8,6 +8,8 @@ const clientSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     companyAddress: { type: String, trim: true },
     companyDetailsComplete: { type: Boolean, default: false },
+    // Zoho Books integration
+    zohoBooksContactId: { type: String, trim: true, index: true },
     kycStatus: {
       type: String,
       enum: ["none", "pending", "verified", "rejected"],

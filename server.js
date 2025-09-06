@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import apiRoutes from "./routes/api.js";
@@ -9,7 +11,10 @@ import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
 
-dotenv.config(); // 🔑 Load env variables
+// Load .env from this directory explicitly to be robust against different CWDs
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, ".env") }); // 🔑 Load env variables
 
 const app = express();
 const httpServer = createServer(app);

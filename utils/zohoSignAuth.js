@@ -6,7 +6,7 @@ let cached = {
 };
 
 function getTokenEndpoint() {
-  const dc = process.env.ZOHO_DC || "accounts.zoho.com"; // e.g., accounts.zoho.in
+  const dc = process.env.ZOHO_DC || "accounts.zoho.in"; // e.g., accounts.zoho.in, accounts.zoho.com, accounts.zoho.eu
   return `https://${dc}/oauth/v2/token`;
 }
 
@@ -16,13 +16,13 @@ export async function getAccessToken() {
     return cached.accessToken;
   }
 
-  const refresh_token = process.env.ZOHO_SIGN_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN;
+  const refresh_token = process.env.ZOHO_SIGN_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN || process.env.ZOHO_BOOKS_REFRESH_TOKEN || "1000.f9e7e976827f25100732384af8b322b1.650da0df5959e56bd59e0375b9081d76";
   const client_id = process.env.ZOHO_CLIENT_ID;
   const client_secret = process.env.ZOHO_CLIENT_SECRET;
 
   if (!refresh_token || !client_id || !client_secret) {
     throw new Error(
-      "Zoho OAuth env vars missing. Ensure ZOHO_REFRESH_TOKEN (or ZOHO_SIGN_REFRESH_TOKEN), ZOHO_CLIENT_ID, and ZOHO_CLIENT_SECRET are set."
+      "Zoho OAuth env vars missing. Ensure ZOHO_BOOKS_REFRESH_TOKEN (or ZOHO_REFRESH_TOKEN), ZOHO_CLIENT_ID, and ZOHO_CLIENT_SECRET are set."
     );
   }
 

@@ -6,7 +6,20 @@ import Contract from "../models/contractModel.js";
 // Create client (standard create using model field names)
 export const createClient = async (req, res) => {
   try {
-    const client = await Client.create(req.body || {});
+    const body = req.body || {};
+    // Map common inputs and enforce admin-driven flow defaults
+    const payload = {
+      companyName: body.companyName ?? body.company_name ?? undefined,
+      contactPerson: body.contactPerson ?? body.contact_person ?? undefined,
+      email: body.email ? String(body.email).toLowerCase().trim() : undefined,
+      phone: body.phone ? String(body.phone).trim() : undefined,
+      companyAddress: body.companyAddress ?? body.company_address ?? undefined,
+      companyDetailsComplete: true,
+      kycStatus: "pending",
+    };
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+    const client = await Client.create(payload);
     return res.status(201).json({ message: "Client created", client });
   } catch (err) {
     console.error("createClient error:", err);
@@ -50,10 +63,10 @@ export const upsertBasicDetails = async (req, res) => {
 export const getClients = async (_req, res) => {
   try {
     const clients = await Client.find().sort({ createdAt: -1 });
-    return res.json(clients);
+    return res.json({ success: true, data: clients });
   } catch (err) {
     console.error("getClients error:", err);
-    return res.status(500).json({ error: "Failed to fetch clients" });
+    return res.status(500).json({ success: false, error: "Failed to fetch clients" });
   }
 };
 
@@ -131,11 +144,11 @@ export const submitKycDocuments = async (req, res) => {
 
     const updated = await Client.findByIdAndUpdate(
       id,
-      { $set: { kycDocuments: mergedKyc, kycStatus: "pending" } },
+      { $set: { kycDocuments: mergedKyc, kycStatus: "verified" } },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: "Client not found" });
-    return res.json({ message: "KYC submitted and set to pending", client: updated });
+    return res.json({ message: "KYC submitted and set to verified", client: updated });
   } catch (err) {
     console.error("submitKycDocuments error:", err);
     return res.status(500).json({ error: "Failed to submit KYC documents" });

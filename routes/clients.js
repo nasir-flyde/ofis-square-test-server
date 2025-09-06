@@ -16,9 +16,7 @@ import authMiddleware from "../middlewares/authVerify.js";
 
 const router = express.Router();
 
-
-
-router.post("/", createClient);
+router.post("/", authMiddleware, createClient);
 // Requires JWT; clientMiddleware extracts clientId for the controller
 router.post("/basic-details", authMiddleware, upsertBasicDetails);
 router.get("/", getClients);

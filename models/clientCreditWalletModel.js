@@ -1,0 +1,51 @@
+import mongoose from "mongoose";
+
+const clientCreditWalletSchema = new mongoose.Schema({
+  client: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Client",
+    required: true,
+    unique: true,
+    index: true
+  },
+  balance: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0,
+    validate: {
+      validator: Number.isInteger,
+      message: "Balance must be an integer"
+    }
+  },
+  creditValue: {
+    type: Number,
+    required: true,
+    default: 200, // INR per credit
+    min: 0
+  },
+  currency: {
+    type: String,
+    default: "INR",
+    enum: ["INR", "USD"]
+  },
+  expiresAt: {
+    type: Date,
+    default: null // null means no expiry
+  },
+  status: {
+    type: String,
+    enum: ["active", "inactive"],
+    default: "active"
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes
+clientCreditWalletSchema.index({ client: 1 }, { unique: true });
+clientCreditWalletSchema.index({ status: 1 });
+
+const ClientCreditWallet = mongoose.model("ClientCreditWallet", clientCreditWalletSchema);
+
+export default ClientCreditWallet;
