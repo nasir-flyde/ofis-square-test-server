@@ -13,7 +13,7 @@ class WalletService {
         wallet = await ClientCreditWallet.create({
           client: clientId,
           balance: 0,
-          creditValue: process.env.DEFAULT_CREDIT_VALUE || 200,
+          creditValue: 500,
           currency: "INR",
           status: "active"
         });
@@ -35,8 +35,8 @@ class WalletService {
         // Get or create wallet
         const wallet = await this.getOrCreateWallet(clientId);
         
-        // Use wallet's creditValue if not provided
-        const finalValuePerCredit = valuePerCredit || wallet.creditValue;
+        // Use fixed credit value of 500 INR per credit
+        const finalValuePerCredit = 500;
         
         // Update wallet balance
         await ClientCreditWallet.findByIdAndUpdate(
@@ -122,7 +122,7 @@ class WalletService {
             member: memberId,
             type: "consume",
             credits: coveredCredits,
-            valuePerCredit: wallet.creditValue,
+            valuePerCredit: 500,
             refType,
             refId,
             idempotencyKey,
@@ -137,7 +137,7 @@ class WalletService {
             member: memberId,
             type: "consume",
             credits: extraCredits,
-            valuePerCredit: wallet.creditValue,
+            valuePerCredit: 500,
             refType,
             refId,
             idempotencyKey: idempotencyKey ? `${idempotencyKey}_overdraft` : null,
@@ -150,7 +150,7 @@ class WalletService {
           coveredCredits,
           extraCredits,
           overageAmount,
-          valuePerCredit: wallet.creditValue
+          valuePerCredit: 500
         };
       });
       
@@ -189,7 +189,7 @@ class WalletService {
           member: null,
           type: "adjust",
           credits: Math.abs(credits),
-          valuePerCredit: wallet.creditValue,
+          valuePerCredit: 500,
           refType: "admin_adjustment",
           refId: new mongoose.Types.ObjectId(), // Generate a ref ID for the adjustment
           meta: { reason, approvedBy, adjustment: credits }

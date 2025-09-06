@@ -28,10 +28,13 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       throw new Error("Contract not found");
     }
 
-    // Check if invoice already exists for this contract
+    // Check if invoice already exists for this contract and period
+    const period = getInvoicePeriod(contract.startDate);
+    const startEnd = getBillingPeriodRange(contract.startDate, contract.endDate);
     const existingInvoice = await Invoice.findOne({ 
-      contractId: contractId,
-      "references.period": getInvoicePeriod(contract.contractStartDate)
+      contract: contractId,
+      "billingPeriod.start": startEnd.start,
+      "billingPeriod.end": startEnd.end
     });
 
     if (existingInvoice) {
@@ -40,8 +43,8 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     }
 
     const issueDate = new Date();
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + dueDays);
+    // Set due date to the last day of the billing month
+    const dueDate = new Date(startEnd.end);
 
     const items = [];
     let subtotal = 0;
@@ -49,59 +52,54 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     // Add prorated monthly rent
     if (contract.monthlyRent > 0) {
       const rentItem = calculateProratedRent(contract, prorate, taxRate);
-      items.push(rentItem);
+      items.push({
+        description: rentItem.description,
+        quantity: 1,
+        unitPrice: contract.monthlyRent,
+        amount: rentItem.total
+      });
       subtotal += rentItem.total;
     }
 
     // Add security deposit
     if (includeDeposit && contract.securityDeposit > 0) {
       const depositItem = {
-        code: "DEPOSIT",
         description: "Security Deposit (refundable)",
         quantity: 1,
         unitPrice: contract.securityDeposit,
-        taxRate: 0, // Usually non-taxable
-        total: contract.securityDeposit
+        amount: contract.securityDeposit
       };
       items.push(depositItem);
-      subtotal += depositItem.total;
+      subtotal += depositItem.amount;
     }
 
-    // Calculate taxes
-    const taxTotal = items.reduce((sum, item) => {
-      return sum + (item.total * (item.taxRate / 100));
+    // Calculate taxes (apply tax only on rent item; deposit non-taxable)
+    const taxableAmount = items.reduce((sum, item) => {
+      if (item.description.toLowerCase().includes("rent")) return sum + item.amount;
+      return sum;
     }, 0);
-
-    const grandTotal = subtotal + taxTotal;
+    const taxes = taxRate > 0 ? [{ name: "GST", rate: taxRate, amount: round2(taxableAmount * (taxRate / 100)) }] : [];
+    const taxTotal = taxes.reduce((s, t) => s + t.amount, 0);
+    const total = round2(subtotal + taxTotal);
 
     // Create invoice payload
+    const invoiceNumber = await generateInvoiceNumber(period);
     const invoiceData = {
-      clientId: contract.client._id,
-      contractId: contractId,
-      currency: "INR",
-      issueDate: issueDate,
-      dueDate: dueDate,
-      status: "pending",
-      references: {
-        period: getInvoicePeriod(contract.contractStartDate),
-        issueOn: issueOn,
-        notes: "Auto-created from contract activation"
-      },
-      items: items,
-      totals: {
-        subtotal: Math.round(subtotal * 100) / 100,
-        taxTotal: Math.round(taxTotal * 100) / 100,
-        grandTotal: Math.round(grandTotal * 100) / 100
-      },
-      meta: {
-        buildingId: contract.building._id,
-        capacity: contract.capacity,
-        monthlyRent: contract.monthlyRent,
-        securityDeposit: contract.securityDeposit,
-        startDate: contract.contractStartDate,
-        endDate: contract.contractEndDate,
-        prorationApplied: prorate
-      }
+      invoiceNumber,
+      client: contract.client._id,
+      contract: contractId,
+      building: contract.building._id,
+      issueDate,
+      dueDate,
+      billingPeriod: startEnd,
+      items,
+      subtotal: round2(subtotal),
+      taxes,
+      total,
+      amountPaid: 0,
+      balanceDue: total,
+      status: "issued",
+      notes: `Auto-created from contract (${issueOn})`
     };
 
     // Create the invoice
@@ -120,7 +118,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
  * Calculate prorated rent for the first month
  */
 function calculateProratedRent(contract, prorate, taxRate) {
-  const startDate = new Date(contract.contractStartDate);
+  const startDate = new Date(contract.startDate);
   const monthlyRent = contract.monthlyRent;
   
   let total = monthlyRent;
@@ -146,12 +144,7 @@ function calculateProratedRent(contract, prorate, taxRate) {
   }
 
   return {
-    code: "RENT",
     description: description,
-    quantity: 1,
-    unitPrice: monthlyRent,
-    proration: prorationData,
-    taxRate: taxRate,
     total: total
   };
 }
@@ -161,7 +154,67 @@ function calculateProratedRent(contract, prorate, taxRate) {
  */
 function getInvoicePeriod(startDate) {
   const date = new Date(startDate);
+  if (isNaN(date.getTime())) {
+    throw new Error(`Invalid startDate for period: ${startDate}`);
+  }
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function getBillingPeriodRange(startDate, endDate) {
+  // Ensure we have valid dates
+  const s = new Date(startDate);
+  if (isNaN(s.getTime())) {
+    throw new Error(`Invalid startDate: ${startDate}`);
+  }
+  
+  const periodStart = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+  // Always set end date to last day of the month
+  const monthEnd = new Date(s.getFullYear(), s.getMonth() + 1, 0);
+  
+  // For invoice creation, always use the last day of the month as end date
+  let periodEnd = monthEnd;
+  
+  return { start: periodStart, end: periodEnd };
+}
+
+async function generateInvoiceNumber(period) {
+  const prefix = `INV-${period}-`;
+  
+  // Retry up to 5 times to handle race conditions
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      // Get the highest existing sequence number for this period
+      const lastInvoice = await Invoice.findOne(
+        { invoiceNumber: { $regex: `^${prefix}` } },
+        { invoiceNumber: 1 }
+      ).sort({ invoiceNumber: -1 });
+      
+      let nextSeq = 1;
+      if (lastInvoice) {
+        const lastSeq = parseInt(lastInvoice.invoiceNumber.split('-').pop());
+        nextSeq = lastSeq + 1;
+      }
+      
+      const invoiceNumber = `${prefix}${String(nextSeq).padStart(4, '0')}`;
+      
+      // Check if this number already exists (race condition check)
+      const exists = await Invoice.findOne({ invoiceNumber });
+      if (!exists) {
+        return invoiceNumber;
+      }
+      
+      // If it exists, try again with a small delay
+      await new Promise(resolve => setTimeout(resolve, 50 * attempt));
+    } catch (error) {
+      if (attempt === 5) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+    }
+  }
+  
+  // Fallback: use timestamp suffix
+  const timestamp = Date.now().toString().slice(-4);
+  return `${prefix}${timestamp}`;
+}
+
+function round2(n) { return Math.round(n * 100) / 100; }
 export default { createInvoiceFromContract };

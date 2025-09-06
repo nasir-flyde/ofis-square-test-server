@@ -86,16 +86,20 @@ export const createContract = async (req, res) => {
     // Grant initial credits if specified
     if (initialCredits && Number(initialCredits) > 0) {
       const WalletService = (await import("../services/walletService.js")).default;
-      const finalCreditValue = creditValueAtSignup || process.env.DEFAULT_CREDIT_VALUE || 200;
-      
-      await WalletService.grantCredits({
-        clientId,
-        credits: Number(initialCredits),
-        valuePerCredit: Number(finalCreditValue),
-        refType: "contract",
-        refId: created._id,
-        meta: { note: "Contract signup credit grant" }
-      });
+      if (initialCredits > 0) {
+        try {
+          await WalletService.grantCredits({
+            clientId,
+            credits: initialCredits,
+            refType: "contract",
+            refId: created._id,
+            meta: { contractId: created._id, capacity, monthlyRent }
+          });
+          console.log(`Granted ${initialCredits} credits to client ${clientId}`);
+        } catch (creditError) {
+          console.error("Failed to grant credits:", creditError);
+        }
+      }
     }
 
     return res.status(201).json({ message: "Contract created", contract: created });

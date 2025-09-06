@@ -62,7 +62,47 @@ export const upsertBasicDetails = async (req, res) => {
 
 export const getClients = async (_req, res) => {
   try {
-    const clients = await Client.find().sort({ createdAt: -1 });
+    const clients = await Client.aggregate([
+      {
+        $lookup: {
+          from: "clientcreditwallets",
+          localField: "_id",
+          foreignField: "client",
+          as: "wallet"
+        }
+      },
+      {
+        $lookup: {
+          from: "credittransactions",
+          localField: "_id",
+          foreignField: "client",
+          as: "transactions"
+        }
+      },
+      {
+        $addFields: {
+          wallet: { $arrayElemAt: ["$wallet", 0] },
+          totalCredits: {
+            $sum: {
+              $map: {
+                input: {
+                  $filter: {
+                    input: "$transactions",
+                    cond: { $eq: ["$$this.type", "grant"] }
+                  }
+                },
+                as: "transaction",
+                in: "$$transaction.credits"
+              }
+            }
+          }
+        }
+      },
+      {
+        $sort: { createdAt: -1 }
+      }
+    ]);
+    
     return res.json({ success: true, data: clients });
   } catch (err) {
     console.error("getClients error:", err);

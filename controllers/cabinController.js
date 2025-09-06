@@ -121,6 +121,102 @@ export const allocateCabin = async (req, res) => {
   }
 };
 
+// Get a single cabin by ID
+export const getCabinById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cabin = await Cabin.findById(id)
+      .populate("building", "name address city")
+      .populate("allocatedTo", "companyName contactPerson phone email")
+      .populate("contract", "startDate endDate status")
+      .populate("desks", "number status allocatedAt releasedAt");
+    
+    if (!cabin) {
+      return res.status(404).json({ success: false, message: "Cabin not found" });
+    }
+    
+    return res.json({ success: true, data: cabin });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Update a cabin
+export const updateCabin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { building, floor, number, type, capacity, status } = req.body || {};
+
+    // Check if cabin exists
+    const existingCabin = await Cabin.findById(id);
+    if (!existingCabin) {
+      return res.status(404).json({ success: false, message: "Cabin not found" });
+    }
+
+    // If building is being changed, verify it exists
+    if (building && building !== existingCabin.building.toString()) {
+      const buildingDoc = await Building.findById(building);
+      if (!buildingDoc) {
+        return res.status(404).json({ success: false, message: "Building not found" });
+      }
+    }
+
+    // If number is being changed, check for duplicates in the building
+    if (number && number !== existingCabin.number) {
+      const buildingId = building || existingCabin.building;
+      const duplicate = await Cabin.findOne({ 
+        building: buildingId, 
+        number: number,
+        _id: { $ne: id }
+      });
+      if (duplicate) {
+        return res.status(409).json({ success: false, message: "Cabin number already exists in this building" });
+      }
+    }
+
+    const cabin = await Cabin.findByIdAndUpdate(
+      id,
+      {
+        building,
+        floor,
+        number,
+        type,
+        capacity,
+        status
+      },
+      { new: true, runValidators: true }
+    ).populate("building", "name address city")
+     .populate("allocatedTo", "companyName contactPerson phone email")
+     .populate("contract", "startDate endDate status");
+
+    return res.json({ success: true, data: cabin });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Delete a cabin
+export const deleteCabin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cabin = await Cabin.findById(id);
+
+    if (!cabin) {
+      return res.status(404).json({ success: false, message: "Cabin not found" });
+    }
+
+    // Check if cabin is currently occupied
+    if (cabin.status === "occupied") {
+      return res.status(409).json({ success: false, message: "Cannot delete occupied cabin. Please release it first." });
+    }
+
+    await Cabin.findByIdAndDelete(id);
+    return res.json({ success: true, message: "Cabin deleted successfully" });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // Release a cabin
 export const releaseCabin = async (req, res) => {
   try {
