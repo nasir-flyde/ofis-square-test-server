@@ -22,7 +22,18 @@ const httpServer = createServer(app);
 initSocket(httpServer);
 
 // Middlewares
-app.use(cors());
+const corsOptions = {
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001', 
+    'https://ofis-square-admin.vercel.app'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 app.use("/api", apiRoutes);
