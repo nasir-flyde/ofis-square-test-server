@@ -28,6 +28,8 @@ export const createContract = async (req, res) => {
       terms,
     } = req.body || {};
 
+ 
+
     if (!clientId) return res.status(400).json({ error: "clientId is required" });
     if (!buildingId) return res.status(400).json({ error: "buildingId is required" });
     if (!capacity || capacity <= 0) return res.status(400).json({ error: "capacity must be a positive number" });
@@ -149,6 +151,113 @@ export const getContractById = async (req, res) => {
   } catch (err) {
     console.error("getContractById error:", err);
     return res.status(500).json({ success: false, message: "Failed to fetch contract" });
+  }
+};
+
+// Delete a contract (admin only)
+export const deleteContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid contract id" });
+    }
+
+    const existing = await Contract.findById(id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    await Contract.deleteOne({ _id: id });
+    return res.json({ success: true, message: "Contract deleted" });
+  } catch (err) {
+    console.error("deleteContract error:", err);
+    return res.status(500).json({ success: false, message: "Failed to delete contract" });
+  }
+};
+
+// Update a contract (admin only)
+export const updateContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      clientId,
+      buildingId,
+      capacity,
+      monthlyRent: monthlyRentOverride,
+      initialCredits,
+      creditValueAtSignup,
+      securityDeposit,
+      contractStartDate,
+      contractEndDate,
+      terms,
+    } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid contract id" });
+    }
+
+    const existing = await Contract.findById(id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Validation
+    if (!clientId) return res.status(400).json({ error: "clientId is required" });
+    if (!buildingId) return res.status(400).json({ error: "buildingId is required" });
+    if (!capacity || capacity <= 0) return res.status(400).json({ error: "capacity must be a positive number" });
+
+    if (!mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ error: "Invalid clientId" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(buildingId)) {
+      return res.status(400).json({ error: "Invalid buildingId" });
+    }
+
+    // Fetch building to get pricing
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({ error: "Building not found" });
+    }
+    if (building.status !== "active") {
+      return res.status(400).json({ error: "Building is not active" });
+    }
+    if (building.pricing == null || building.pricing < 0) {
+      return res.status(400).json({ error: "Building pricing is not configured" });
+    }
+
+    // Compute monthly rent (allow override if provided)
+    let monthlyRent = null;
+    if (monthlyRentOverride !== undefined && monthlyRentOverride !== null && monthlyRentOverride !== "") {
+      const mr = Number(monthlyRentOverride);
+      if (Number.isNaN(mr) || mr < 0) {
+        return res.status(400).json({ error: "monthlyRent must be a non-negative number" });
+      }
+      monthlyRent = mr;
+    } else {
+      monthlyRent = building.pricing * Number(capacity);
+    }
+
+    const start = contractStartDate ? new Date(contractStartDate) : existing.startDate;
+    const end = contractEndDate ? new Date(contractEndDate) : existing.endDate;
+
+    const updateData = {
+      client: clientId,
+      building: buildingId,
+      startDate: start,
+      endDate: end,
+      capacity: Number(capacity),
+      monthlyRent: monthlyRent,
+      ...(initialCredits && { initialCredits: Number(initialCredits) }),
+      ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
+      ...(securityDeposit && { securityDeposit: Number(securityDeposit) }),
+      ...(terms && { terms }),
+    };
+
+    const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
+    return res.json({ success: true, message: "Contract updated", contract: updated });
+  } catch (err) {
+    console.error("updateContract error:", err);
+    return res.status(500).json({ success: false, message: "Failed to update contract" });
   }
 };
 

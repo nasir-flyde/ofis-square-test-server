@@ -7,7 +7,9 @@ import {
   handleZohoSignWebhook,
   uploadSignedContract,
   generateContractPDF,
-  createContract
+  createContract,
+  deleteContract,
+  updateContract
 } from "../controllers/contractController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import multer from "multer";
@@ -29,6 +31,12 @@ router.post("/", authMiddleware, createContract);
 
 // Get contract by ID (admin only)
 router.get("/:id", authMiddleware, getContractById);
+
+// Update a contract (admin only)
+router.put("/:id", authMiddleware, updateContract);
+
+// Delete a contract (admin only)
+router.delete("/:id", authMiddleware, deleteContract);
 
 // Send contract for digital signature (admin only)
 router.post("/:id/send-for-signature", authMiddleware, sendForSignature);

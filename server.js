@@ -27,7 +27,8 @@ const corsOptions = {
     'http://localhost:3000',
     'http://localhost:5001',
     'http://localhost:5173',
-    'https://ofis-square-admin.vercel.app'
+    'https://ofis-square-admin.vercel.app',
+    'https://ofis-square-frontend.vercel.app'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
