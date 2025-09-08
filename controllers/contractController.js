@@ -127,13 +127,13 @@ const ZOHO_SIGN_BASE_URL = getZohoSignBaseUrl();
 export const getContracts = async (req, res) => {
   try {
     const contracts = await Contract.find()
-      .populate("client", "companyName email contactPerson")
-      .populate("building", "name address pricing")
+      .populate("client", "companyName email contactPerson phone companyAddress")
+      .populate("building", "name address pricing city state")
       .sort({ createdAt: -1 });
-    return res.json(contracts);
+    return res.json({ success: true, data: contracts });
   } catch (err) {
     console.error("getContracts error:", err);
-    return res.status(500).json({ error: "Failed to fetch contracts" });
+    return res.status(500).json({ success: false, message: "Failed to fetch contracts" });
   }
 };
 
@@ -142,13 +142,13 @@ export const getContractById = async (req, res) => {
   try {
     const { id } = req.params;
     const contract = await Contract.findById(id)
-      .populate("client")
-      .populate("building", "name address pricing");
-    if (!contract) return res.status(404).json({ error: "Contract not found" });
-    return res.json(contract);
+      .populate("client", "companyName email contactPerson phone companyAddress")
+      .populate("building", "name address pricing city state");
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+    return res.json({ success: true, data: contract });
   } catch (err) {
     console.error("getContractById error:", err);
-    return res.status(500).json({ error: "Failed to fetch contract" });
+    return res.status(500).json({ success: false, message: "Failed to fetch contract" });
   }
 };
 

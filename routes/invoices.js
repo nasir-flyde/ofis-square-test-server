@@ -11,6 +11,7 @@ import {
   getInvoicePdf,
   recordInvoicePayment,
   zohoWebhook,
+  downloadInvoicePdf,
 } from "../controllers/invoiceController.js";
 
 const router = express.Router();
@@ -26,6 +27,7 @@ router.post("/:id/push-zoho",pushInvoiceToZoho);
 router.post("/:id/send", authMiddleware, sendInvoiceEmail);
 router.post("/:id/sync", authMiddleware, syncInvoiceFromZoho);
 router.get("/:id/pdf", authMiddleware, getInvoicePdf);
+router.get("/:id/download-pdf", authMiddleware, downloadInvoicePdf);
 router.post("/:id/payments", authMiddleware, recordInvoicePayment);
 
 // Webhook (no auth)

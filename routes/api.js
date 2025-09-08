@@ -17,6 +17,7 @@ import meRoutes from "./me.js";
 import ticketCategoriesRoutes from "./ticketCategories.js";
 import walletRoutes from "./wallet.js";
 import memberRoutes from "./members.js";
+import userRoutes from "./users.js";
 
 const router = express.Router();
 
@@ -39,5 +40,6 @@ router.use("/tickets", ticketsRoutes);
 router.use("/ticket-categories", ticketCategoriesRoutes);
 router.use("/wallet", walletRoutes);
 router.use("/members", memberRoutes);
+router.use("/users", userRoutes);
 
 export default router;

@@ -3,6 +3,8 @@ import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Building from "../models/buildingModel.js";
 import Cabin from "../models/cabinModel.js";
+import PdfPrinter from "pdfmake";
+import getInvoiceTemplate from "./invoiceTemplate.js";
 import {
   createZohoInvoiceFromLocal,
   getZohoInvoice,
@@ -136,6 +138,59 @@ export const createInvoice = async (req, res) => {
     if (error && error.code === 11000) {
       return res.status(409).json({ success: false, message: "Duplicate invoiceNumber" });
     }
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// pdfmake fonts (use built-in Helvetica to avoid external font files)
+function getFonts() {
+  return {
+    Helvetica: {
+      normal: 'Helvetica',
+      bold: 'Helvetica-Bold',
+      italics: 'Helvetica-Oblique',
+      bolditalics: 'Helvetica-BoldOblique'
+    }
+  };
+}
+
+// GET /api/invoices/:id/download-pdf - generate and stream an invoice PDF
+export const downloadInvoicePdf = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id)
+      .populate('client', 'companyName contactPerson email phone companyAddress')
+      .lean();
+
+    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
+
+    const data = {
+      invoiceNumber: invoice.invoiceNumber,
+      issueDate: invoice.issueDate,
+      dueDate: invoice.dueDate,
+      client: invoice.client || {},
+      billingPeriod: invoice.billingPeriod || {},
+      items: invoice.items || [],
+      subtotal: invoice.subtotal || 0,
+      discount: invoice.discount || { type: 'flat', value: 0, amount: 0 },
+      taxes: invoice.taxes || [],
+      total: invoice.total || 0,
+      amountPaid: invoice.amountPaid || 0,
+      balanceDue: invoice.balanceDue || 0,
+      notes: invoice.notes || ''
+    };
+
+    const docDefinition = getInvoiceTemplate(data);
+    const printer = new PdfPrinter(getFonts());
+    const pdfDoc = printer.createPdfKitDocument(docDefinition, { defaultStyle: { font: 'Helvetica' } });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="invoice_${invoice.invoiceNumber || id}.pdf"`);
+
+    pdfDoc.pipe(res);
+    pdfDoc.end();
+  } catch (error) {
+    console.error('downloadInvoicePdf error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -21,7 +21,7 @@ export const listRooms = async (req, res) => {
     if (amenity) filter.amenities = { $in: [amenity] };
     if (q) filter.name = { $regex: q, $options: "i" };
 
-    const rooms = await MeetingRoom.find(filter).sort({ name: 1 });
+    const rooms = await MeetingRoom.find(filter).populate('building', 'name address city').sort({ name: 1 });
     return res.json({ success: true, data: rooms });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -31,7 +31,7 @@ export const listRooms = async (req, res) => {
 // Get a room by ID
 export const getRoomById = async (req, res) => {
   try {
-    const room = await MeetingRoom.findById(req.params.id);
+    const room = await MeetingRoom.findById(req.params.id).populate('building', 'name address city');
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
     return res.json({ success: true, data: room });
   } catch (error) {
