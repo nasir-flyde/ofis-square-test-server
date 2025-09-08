@@ -67,14 +67,14 @@ export const updateAvailability = async (req, res) => {
   }
 };
 
-// Delete (soft by status)
+// Delete (hard delete)
 export const deleteRoom = async (req, res) => {
   try {
     const room = await MeetingRoom.findById(req.params.id);
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
-    room.status = "inactive";
-    await room.save();
-    return res.json({ success: true, data: room });
+    
+    await MeetingRoom.deleteOne({ _id: req.params.id });
+    return res.json({ success: true, message: "Meeting room deleted" });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
