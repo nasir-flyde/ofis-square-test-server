@@ -1,6 +1,7 @@
 import DayPass from "../models/dayPassModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Guest from "../models/guestModel.js";
+import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
 
 // Helper: generate invoice number like INV-YYYY-MM-0001 (resets monthly)
@@ -27,20 +28,47 @@ async function generateInvoiceNumber() {
 }
 
 // POST /api/daypasses
-// Body: { guestId | guest (object), building, date, price, notes?, expiresAt? }
+// Body: { guestId | guest (object) | visitorId, building, date, price, notes?, expiresAt? }
 export const createDayPass = async (req, res) => {
   try {
-    const { guestId, guest: guestPayload, building, date, price, notes, expiresAt } = req.body || {};
+    const { guestId, guest: guestPayload, visitorId, building, date, price, notes, expiresAt } = req.body || {};
     if (!building) return res.status(400).json({ success: false, message: "building is required" });
     if (!date) return res.status(400).json({ success: false, message: "date is required" });
     if (price == null) return res.status(400).json({ success: false, message: "price is required" });
 
-    // Resolve or create Guest
+    // Resolve or create Guest/Visitor
     let guestDoc = null;
-    if (guestId) {
+    let visitorDoc = null;
+    
+    if (visitorId) {
+      // Use visitor system (new flow)
+      visitorDoc = await Visitor.findById(visitorId);
+      if (!visitorDoc) return res.status(404).json({ success: false, message: "Visitor not found" });
+      
+      // Create or find guest record for the visitor
+      const query = [];
+      if (visitorDoc.email) query.push({ email: visitorDoc.email.toLowerCase() });
+      if (visitorDoc.phone) query.push({ phone: visitorDoc.phone });
+      
+      if (query.length > 0) {
+        guestDoc = await Guest.findOne({ $or: query });
+      }
+      
+      if (!guestDoc) {
+        guestDoc = await Guest.create({
+          name: visitorDoc.name,
+          email: visitorDoc.email,
+          phone: visitorDoc.phone,
+          companyName: visitorDoc.companyName,
+          notes: `Created from visitor: ${visitorDoc._id}`,
+        });
+      }
+    } else if (guestId) {
+      // Use existing guest system (legacy flow)
       guestDoc = await Guest.findById(guestId);
       if (!guestDoc) return res.status(404).json({ success: false, message: "Guest not found" });
     } else if (guestPayload) {
+      // Create new guest (legacy flow)
       if (!guestPayload.name) {
         return res.status(400).json({ success: false, message: "guest.name is required when creating a new guest" });
       }
@@ -61,7 +89,7 @@ export const createDayPass = async (req, res) => {
         });
       }
     } else {
-      return res.status(400).json({ success: false, message: "Provide guestId or guest details" });
+      return res.status(400).json({ success: false, message: "Provide visitorId, guestId, or guest details" });
     }
 
     const buildingDoc = await Building.findById(building);

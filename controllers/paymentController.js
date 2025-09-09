@@ -69,6 +69,31 @@ export const createPayment = async (req, res) => {
   }
 };
 
+// DELETE /api/payments/:id
+export const deletePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const payment = await Payment.findById(id);
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment not found" });
+    }
+    try {
+      const invoiceExists = await Invoice.findById(payment.invoice).select('_id');
+      if (invoiceExists) {
+        await applyInvoicePayment(payment.invoice, -Number(payment.amount || 0));
+      }
+    } catch (_) {
+    }
+
+    await Payment.findByIdAndDelete(id);
+
+    return res.json({ success: true, message: "Payment deleted successfully", deletedPaymentId: id });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // GET /api/payments
 export const getPayments = async (req, res) => {
   try {

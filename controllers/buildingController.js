@@ -1,6 +1,5 @@
 import Building from "../models/buildingModel.js";
 
-// Create a new building
 export const createBuilding = async (req, res) => {
   try {
     const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing } = req.body || {};
@@ -28,7 +27,6 @@ export const createBuilding = async (req, res) => {
   }
 };
 
-// Get buildings (optionally filter by status/city)
 export const getBuildings = async (req, res) => {
   try {
     const { status, city } = req.query || {};
@@ -43,7 +41,6 @@ export const getBuildings = async (req, res) => {
   }
 };
 
-// Get a single building by ID
 export const getBuildingById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -59,7 +56,6 @@ export const getBuildingById = async (req, res) => {
   }
 };
 
-// Update a building
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
@@ -92,7 +88,6 @@ export const updateBuilding = async (req, res) => {
   }
 };
 
-// Delete a building
 export const deleteBuilding = async (req, res) => {
   try {
     const { id } = req.params;

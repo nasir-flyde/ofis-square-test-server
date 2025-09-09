@@ -5,7 +5,6 @@ import { createJWT } from "../middlewares/createJwt.js";
 import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
 
-// Client signup: creates both User (role: client) and Client, returns token with clientId
 export const clientSignup = async (req, res) => {
   try {
     const { name, email, phone, password, roleId } = req.body;
@@ -17,8 +16,6 @@ export const clientSignup = async (req, res) => {
     if (!email && !phone) {
       return res.status(400).json({ error: "Either email or phone is required" });
     }
-
-    // Check for existing user by email or phone
     const query = {};
     if (email) query.email = email.toLowerCase().trim();
     if (phone) query.phone = phone.trim();
@@ -30,8 +27,6 @@ export const clientSignup = async (req, res) => {
     if (existingUser) {
       return res.status(400).json({ error: "User already exists with this email or phone" });
     }
-
-    // Find role by MongoDB _id or default by roleName 'client'
     let role;
     if (roleId) {
       if (!mongoose.Types.ObjectId.isValid(roleId)) {
@@ -56,7 +51,6 @@ export const clientSignup = async (req, res) => {
     const user = new Users(userPayload);
     await user.save();
 
-    // Create Client record at signup time only
     const client = await Client.create({
       contactPerson: user.name,
       email: user.email || undefined,
@@ -64,8 +58,6 @@ export const clientSignup = async (req, res) => {
       companyDetailsComplete: false,
       kycStatus: "none",
     });
-
-    // Create JWT token
     const token = createJWT(
       user._id.toString(),
       user.email,
@@ -74,8 +66,6 @@ export const clientSignup = async (req, res) => {
       user.phone,
       client._id.toString()
     );
-
-    // Return sanitized user
     const safeUser = {
       _id: user._id,
       name: user.name,
@@ -94,7 +84,6 @@ export const clientSignup = async (req, res) => {
   }
 };
 
-// Admin/staff login (same behavior as previous login)
 export const adminLogin = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
@@ -102,24 +91,17 @@ export const adminLogin = async (req, res) => {
     if ((!email && !phone) || !password) {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
-
-    // Find user by email or phone
     const query = email 
       ? { email: email.toLowerCase().trim() } 
       : { phone: phone.trim() };
-
     const user = await Users.findOne(query);
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
-
-    // Verify password (plain text as requested)
     const isMatch = user.password === password;
     if (!isMatch) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
-
-    // Get role and check login permission
     const role = await Role.findById(user.role);
     if (!role) {
       return res.status(401).json({ error: "User role not found" });
@@ -128,8 +110,6 @@ export const adminLogin = async (req, res) => {
     if (role.canLogin === false) {
       return res.status(403).json({ error: "Role is not allowed to login" });
     }
-
-    // Create JWT token with roleName
     const token = createJWT(
       user._id.toString(),
       user.email,
@@ -138,7 +118,6 @@ export const adminLogin = async (req, res) => {
       user.phone
     );
 
-    // Return sanitized user
     const safeUser = {
       _id: user._id,
       name: user.name,
@@ -157,7 +136,6 @@ export const adminLogin = async (req, res) => {
   }
 };
 
-// Client login: requires role 'client' and existing Client record; includes clientId in JWT
 export const clientLogin = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
@@ -182,8 +160,6 @@ export const clientLogin = async (req, res) => {
     if ((role.roleName || "").toLowerCase() !== "client") {
       return res.status(403).json({ error: "Not a client account" });
     }
-
-    // Client must already exist (created at signup)
     const client = await Client.findOne({
       $or: [
         ...(user.email ? [{ email: user.email }] : []),
@@ -221,10 +197,9 @@ export const clientLogin = async (req, res) => {
   }
 };
 
-// Get current user profile
 export const getMe = async (req, res) => {
   try {
-    const user = req.user; // Set by auth middleware
+    const user = req.user; 
     const role = await Role.findById(user.role);
 
     const safeUser = {

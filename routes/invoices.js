@@ -12,6 +12,7 @@ import {
   recordInvoicePayment,
   zohoWebhook,
   downloadInvoicePdf,
+  deleteInvoice,
 } from "../controllers/invoiceController.js";
 
 const router = express.Router();
@@ -29,6 +30,7 @@ router.post("/:id/sync", authMiddleware, syncInvoiceFromZoho);
 router.get("/:id/pdf", authMiddleware, getInvoicePdf);
 router.get("/:id/download-pdf", authMiddleware, downloadInvoicePdf);
 router.post("/:id/payments", authMiddleware, recordInvoicePayment);
+router.delete("/:id", authMiddleware, deleteInvoice);
 
 // Webhook (no auth)
 router.post("/webhook/zoho", zohoWebhook);

@@ -1,4 +1,6 @@
 import Users from "../models/userModel.js";
+import Role from "../models/roleModel.js";
+import bcrypt from "bcryptjs";
 
 // GET /api/users - Get all users with optional filters
 export const getUsers = async (req, res) => {
@@ -7,8 +9,6 @@ export const getUsers = async (req, res) => {
     
     const filter = {};
     if (role) filter.role = role;
-    
-    // Add search functionality for name, email, or phone
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -20,8 +20,8 @@ export const getUsers = async (req, res) => {
     const skip = (page - 1) * limit;
     
     const users = await Users.find(filter)
-      .populate('role', 'name permissions')
-      .select('-password') // Exclude password field
+      .populate('role', 'roleName permissions')
+      .select('-password')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -43,12 +43,11 @@ export const getUsers = async (req, res) => {
   }
 };
 
-// GET /api/users/:id - Get user by ID
 export const getUserById = async (req, res) => {
   try {
     const user = await Users.findById(req.params.id)
-      .populate('role', 'name permissions')
-      .select('-password'); // Exclude password field
+      .populate('role', 'roleName permissions')
+      .select('-password');
     
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
@@ -56,6 +55,135 @@ export const getUserById = async (req, res) => {
 
     return res.json({ success: true, data: user });
   } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const createUser = async (req, res) => {
+  try {
+    const { name, email, phone, password, role } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !phone || !password || !role) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "All fields are required" 
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await Users.findOne({
+      $or: [{ email }, { phone }]
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User with this email or phone already exists" 
+      });
+    }
+
+    // Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Create new user
+    const newUser = new Users({
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      password: hashedPassword,
+      role
+    });
+
+    const savedUser = await newUser.save();
+    
+    // Populate role and exclude password
+    const populatedUser = await Users.findById(savedUser._id)
+      .populate('role', 'roleName permissions')
+      .select('-password');
+
+    return res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      data: populatedUser
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User with this email or phone already exists" 
+      });
+    }
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// PUT /api/users/:id - Update user
+export const updateUser = async (req, res) => {
+  try {
+    const { name, email, phone, password, role } = req.body;
+    const userId = req.params.id;
+
+    // Check if user exists
+    const existingUser = await Users.findById(userId);
+    if (!existingUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Check for duplicate email/phone (excluding current user)
+    if (email || phone) {
+      const duplicateQuery = {
+        _id: { $ne: userId },
+        $or: []
+      };
+      
+      if (email) duplicateQuery.$or.push({ email: email.toLowerCase().trim() });
+      if (phone) duplicateQuery.$or.push({ phone: phone.trim() });
+      
+      if (duplicateQuery.$or.length > 0) {
+        const duplicate = await Users.findOne(duplicateQuery);
+        if (duplicate) {
+          return res.status(400).json({ 
+            success: false, 
+            message: "User with this email or phone already exists" 
+          });
+        }
+      }
+    }
+
+    // Prepare update data
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (email) updateData.email = email.toLowerCase().trim();
+    if (phone) updateData.phone = phone.trim();
+    if (role) updateData.role = role;
+
+    // Hash password if provided
+    if (password && password.trim()) {
+      const saltRounds = 10;
+      updateData.password = await bcrypt.hash(password.trim(), saltRounds);
+    }
+
+    // Update user
+    const updatedUser = await Users.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    ).populate('role', 'roleName permissions').select('-password');
+
+    return res.json({
+      success: true,
+      message: "User updated successfully",
+      data: updatedUser
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User with this email or phone already exists" 
+      });
+    }
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -75,6 +203,52 @@ export const deleteUser = async (req, res) => {
       success: true, 
       message: "User deleted successfully",
       deletedUserId: req.params.id 
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+export const getStaffUsers = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search } = req.query;
+
+    // Find the Role document for 'staff'
+    const staffRole = await Role.findOne({ roleName: 'staff' }).select('_id');
+    if (!staffRole) {
+      return res.status(404).json({ success: false, message: "Role 'staff' not found" });
+    }
+
+    const filter = { role: staffRole._id };
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const parsedLimit = parseInt(limit);
+    const parsedPage = parseInt(page);
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    const users = await Users.find(filter)
+      .populate('role', 'roleName permissions')
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parsedLimit);
+
+    const total = await Users.countDocuments(filter);
+
+    return res.json({
+      success: true,
+      data: users,
+      pagination: {
+        page: parsedPage,
+        limit: parsedLimit,
+        total,
+        pages: Math.ceil(total / parsedLimit)
+      }
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

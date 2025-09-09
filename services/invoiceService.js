@@ -19,7 +19,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
   } = options;
 
   try {
-    // Load contract with populated data
     const contract = await Contract.findById(contractId)
       .populate("client")
       .populate("building", "name address pricing");
@@ -27,8 +26,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     if (!contract) {
       throw new Error("Contract not found");
     }
-
-    // Check if invoice already exists for this contract and period
     const period = getInvoicePeriod(contract.startDate);
     const startEnd = getBillingPeriodRange(contract.startDate, contract.endDate);
     const existingInvoice = await Invoice.findOne({ 
@@ -42,14 +39,13 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       return existingInvoice;
     }
 
-    const issueDate = new Date();
-    // Set due date to the last day of the billing month
+
+    const issueDate = new Date(contract.startDate);
     const dueDate = new Date(startEnd.end);
 
     const items = [];
     let subtotal = 0;
 
-    // Add prorated monthly rent
     if (contract.monthlyRent > 0) {
       const rentItem = calculateProratedRent(contract, prorate, taxRate);
       items.push({
@@ -60,8 +56,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       });
       subtotal += rentItem.total;
     }
-
-    // Add security deposit
     if (includeDeposit && contract.securityDeposit > 0) {
       const depositItem = {
         description: "Security Deposit (refundable)",
@@ -73,7 +67,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       subtotal += depositItem.amount;
     }
 
-    // Calculate taxes (apply tax only on rent item; deposit non-taxable)
     const taxableAmount = items.reduce((sum, item) => {
       if (item.description.toLowerCase().includes("rent")) return sum + item.amount;
       return sum;
@@ -102,7 +95,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       notes: `Auto-created from contract (${issueOn})`
     };
 
-    // Create the invoice
     const invoice = await Invoice.create(invoiceData);
     
     console.log(`Auto-created invoice ${invoice._id} for contract ${contractId}`);

@@ -10,6 +10,7 @@ import apiRoutes from "./routes/api.js";
 import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
+import { scheduleNoShowUpdates } from "./utils/cronJobs.js";
 
 // Load .env from this directory explicitly to be robust against different CWDs
 const __filename = fileURLToPath(import.meta.url);
@@ -49,6 +50,9 @@ mongoose
 app.get("/", (req, res) => {
   res.send("✅ Ofis Square Backend is working!");
 });
+
+// Initialize cron jobs
+scheduleNoShowUpdates();
 
 // Start Server
 const PORT = process.env.PORT || 5001;

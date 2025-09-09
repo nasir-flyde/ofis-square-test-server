@@ -11,7 +11,6 @@ const memberSchema = new Schema(
     companyName: { type: String, trim: true },
     role: { type: String, trim: true },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
-    // Optional association to a client/company account
     client: { type: Schema.Types.ObjectId, ref: "Client", index: true },
   },
   { timestamps: true, collection: "members" }
@@ -20,3 +19,4 @@ const memberSchema = new Schema(
 memberSchema.index({ phone: 1 }, { sparse: true });
 
 export default mongoose.model("Member", memberSchema);
+ 

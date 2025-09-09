@@ -1,4 +1,5 @@
 import Invoice from "../models/invoiceModel.js";
+import Payment from "../models/paymentModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Building from "../models/buildingModel.js";
@@ -430,6 +431,31 @@ export const updateInvoiceStatus = async (req, res) => {
     await invoice.save();
 
     return res.json({ success: true, data: invoice });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+// DELETE /api/invoices/:id
+export const deleteInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const invoice = await Invoice.findById(id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: "Invoice not found" });
+    }
+
+    // Prevent deleting invoices that have payments
+    const paymentCount = await Payment.countDocuments({ invoice: id });
+    if (paymentCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete invoice with existing payments. Please delete related payments first.",
+      });
+    }
+
+    await Invoice.findByIdAndDelete(id);
+    return res.json({ success: true, message: "Invoice deleted successfully", deletedInvoiceId: id });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

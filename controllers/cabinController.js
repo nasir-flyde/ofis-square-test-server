@@ -3,7 +3,6 @@ import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 
-// List cabins with optional filters
 export const getCabins = async (req, res) => {
   try {
     const { building, floor, status, type } = req.query || {};
@@ -26,7 +25,6 @@ export const getCabins = async (req, res) => {
   }
 };
 
-// Create a new cabin/desk
 export const createCabin = async (req, res) => {
   try {
     const { building, floor, number, type, capacity } = req.body || {};
@@ -45,10 +43,7 @@ export const createCabin = async (req, res) => {
       return res.status(409).json({ success: false, message: "Cabin number already exists in this building" });
     }
 
-    // Create cabin first
     const cabin = await Cabin.create({ building, floor, number, type, capacity });
-
-    // Auto-create desks according to capacity (default to capacity or 1)
     const deskCount = Math.max(1, Number(capacity || 1));
     const deskDocs = [];
     for (let i = 1; i <= deskCount; i++) {
@@ -61,7 +56,6 @@ export const createCabin = async (req, res) => {
       cabin.desks = createdDesks.map((d) => d._id);
       await cabin.save();
     } catch (e) {
-      // If desk creation fails (e.g., duplicates), keep cabin but report partial failure
       return res.status(201).json({
         success: true,
         data: cabin,
@@ -76,7 +70,6 @@ export const createCabin = async (req, res) => {
   }
 };
 
-// Allocate a cabin to a client using client's active contract (no contractId required)
 export const allocateCabin = async (req, res) => {
   try {
     const { clientId, cabinId } = req.body || {};
@@ -96,7 +89,6 @@ export const allocateCabin = async (req, res) => {
       return res.status(409).json({ success: false, message: `Cabin is not available (status: ${cabin.status})` });
     }
 
-    // Find an active contract for this client
     const activeContract = await Contract.findOne({
       client: client._id,
       status: "active",
@@ -121,7 +113,6 @@ export const allocateCabin = async (req, res) => {
   }
 };
 
-// Get a single cabin by ID
 export const getCabinById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -141,27 +132,21 @@ export const getCabinById = async (req, res) => {
   }
 };
 
-// Update a cabin
 export const updateCabin = async (req, res) => {
   try {
     const { id } = req.params;
     const { building, floor, number, type, capacity, status } = req.body || {};
-
-    // Check if cabin exists
     const existingCabin = await Cabin.findById(id);
     if (!existingCabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });
     }
 
-    // If building is being changed, verify it exists
     if (building && building !== existingCabin.building.toString()) {
       const buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
         return res.status(404).json({ success: false, message: "Building not found" });
       }
     }
-
-    // If number is being changed, check for duplicates in the building
     if (number && number !== existingCabin.number) {
       const buildingId = building || existingCabin.building;
       const duplicate = await Cabin.findOne({ 
@@ -204,8 +189,6 @@ export const deleteCabin = async (req, res) => {
     if (!cabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });
     }
-
-    // Check if cabin is currently occupied
     if (cabin.status === "occupied") {
       return res.status(409).json({ success: false, message: "Cannot delete occupied cabin. Please release it first." });
     }
@@ -217,7 +200,6 @@ export const deleteCabin = async (req, res) => {
   }
 };
 
-// Release a cabin
 export const releaseCabin = async (req, res) => {
   try {
     const { id } = req.params;
