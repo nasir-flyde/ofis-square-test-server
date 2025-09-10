@@ -2,6 +2,7 @@ import Cabin from "../models/cabinModel.js";
 import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
+import Desk from "../models/deskModel.js";
 
 export const getCabins = async (req, res) => {
   try {
