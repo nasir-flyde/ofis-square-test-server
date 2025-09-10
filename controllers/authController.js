@@ -106,9 +106,11 @@ export const adminLogin = async (req, res) => {
     if (!role) {
       return res.status(401).json({ error: "User role not found" });
     }
-
     if (role.canLogin === false) {
       return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+    if ((role.roleName || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ error: "Not an admin account" });
     }
     const token = createJWT(
       user._id.toString(),
