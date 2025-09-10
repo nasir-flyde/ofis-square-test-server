@@ -25,7 +25,7 @@ initSocket(httpServer);
 // Middlewares
 const corsOptions = {
   origin: [
-    'http://localhost:3000',
+    'http://localhost:5174',
     'http://localhost:5001',
     'http://localhost:5173',
     'https://ofis-square-admin.vercel.app',

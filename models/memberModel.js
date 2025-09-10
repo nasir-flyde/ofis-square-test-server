@@ -12,6 +12,8 @@ const memberSchema = new Schema(
     role: { type: String, trim: true },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     client: { type: Schema.Types.ObjectId, ref: "Client", index: true },
+    desk: { type: Schema.Types.ObjectId, ref: "Desk", default: null, index: true },
+    user: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
   },
   { timestamps: true, collection: "members" }
 );

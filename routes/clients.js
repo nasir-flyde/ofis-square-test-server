@@ -11,19 +11,53 @@ import {
   submitKycDocuments,
   verifyKyc,
   rejectKyc,
+  getClientProfile,
+  getClientBookings,
+  getClientInvoices,
+  getClientContracts,
+  getClientTickets,
+  createClientTicket,
+  getClientMembers,
+  createClientMember,
+  updateClientMember,
+  deleteClientMember,
+  getClientAvailableDesks,
+  allocateDeskToMember,
+  getClientDashboard,
+  releaseDeskFromMember,
+  getClientCreditManagement
 } from "../controllers/clientController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 
 const router = express.Router();
 
 router.post("/", authMiddleware, createClient);
-// Requires JWT; clientMiddleware extracts clientId for the controller
+
 router.post("/basic-details", authMiddleware, upsertBasicDetails);
+
+router.get("/dashboard", clientMiddleware, getClientDashboard);
+router.get("/profile", clientMiddleware, getClientProfile);
+router.get("/credits", clientMiddleware, getClientCreditManagement);
+
+router.get("/bookings", clientMiddleware, getClientBookings);
+router.get("/invoices", clientMiddleware, getClientInvoices);
+router.get("/contracts", clientMiddleware, getClientContracts);
+router.get("/tickets", clientMiddleware, getClientTickets);
+router.post("/tickets", clientMiddleware, createClientTicket);
+
+router.get("/members", clientMiddleware, getClientMembers);
+router.post("/members", clientMiddleware, createClientMember);
+router.put("/members/:id", clientMiddleware, updateClientMember);
+router.delete("/members/:id", clientMiddleware, deleteClientMember);
+
+router.get("/desks", clientMiddleware, getClientAvailableDesks); // Desk allocation
+router.post('/desks/allocate', clientMiddleware, allocateDeskToMember);
+router.post('/desks/release', clientMiddleware, releaseDeskFromMember);
+
 router.get("/", getClients);
 router.get("/:id", getClientById);
 router.put("/:id", updateClient);
 router.delete("/:id", deleteClient);
-// Accept file uploads (memory storage) for KYC documents
 router.post("/:id/kyc",authMiddleware, kycUploads, submitKycDocuments);
 router.post("/:id/kyc/verify",authMiddleware, verifyKyc);
 router.post("/:id/kyc/reject", authMiddleware, rejectKyc);
