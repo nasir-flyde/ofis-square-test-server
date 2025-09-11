@@ -27,6 +27,7 @@ const corsOptions = {
   origin: [
     'http://localhost:3000',
     'http://localhost:5001',
+    'https://ofis-square-client.vercel.app',
     'http://localhost:5173',
     'https://ofis-square-admin.vercel.app',
     'https://ofis-square-frontend.vercel.app'
