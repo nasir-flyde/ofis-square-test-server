@@ -15,6 +15,7 @@ const draftPaymentSchema = new mongoose.Schema(
     paymentDate: { type: Date, required: true },
     currency: { type: String, default: "INR" },
     notes: { type: String, trim: true },
+    screenshots: [{ type: String }], // Array of image URLs/paths
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],

@@ -30,6 +30,7 @@ const paymentSchema = new mongoose.Schema(
     bankName: { type: String, trim: true },
     accountNumber: { type: String, trim: true },
     notes: { type: String, trim: true },
+    screenshots: [{ type: String }], // Array of image URLs/paths
   },
   {
     timestamps: true,

@@ -4,7 +4,6 @@ import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 
-// List desks with optional filters
 export const getDesks = async (req, res) => {
   try {
     const { building, cabin, status } = req.query || {};
@@ -24,7 +23,6 @@ export const getDesks = async (req, res) => {
   }
 };
 
-// Create a desk, and attach it to the cabin.desks array
 export const createDesk = async (req, res) => {
   try {
     const { building, cabin, number } = req.body || {};

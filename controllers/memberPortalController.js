@@ -247,13 +247,20 @@ export const createMyTicket = async (req, res) => {
       return res.status(400).json({ success: false, message: "Subject and description are required" });
     }
 
+    // Get building ID from member's client
+    const member = await Member.findById(req.memberId).populate("client", "building");
+    if (!member || !member.client || !member.client.building) {
+      return res.status(400).json({ success: false, message: "Member client or building not found. Please contact admin." });
+    }
+
     const ticketData = {
       subject: subject.trim(),
       description: description.trim(),
       priority,
       images,
       createdBy: req.memberId,
-      client: req.clientId
+      client: req.clientId,
+      building: member.client.building
     };
 
     if (category && category.categoryId) {

@@ -216,7 +216,8 @@ export const memberLogin = async (req, res) => {
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    // Direct password comparison without decryption (since passwords are stored as plain text for members)
+    const isMatch = password === user.password;
     if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
     const role = await Role.findById(user.role);

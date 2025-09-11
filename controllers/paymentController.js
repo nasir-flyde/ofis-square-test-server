@@ -132,3 +132,47 @@ export const getPaymentById = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// GET /clients/payments - Client-specific payments endpoint
+export const getClientPayments = async (req, res) => {
+  try {
+    const clientId = req.clientId; // from clientMiddleware
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 10, type, from, to } = req.query;
+    const query = { client: clientId };
+    
+    if (type) query.type = type;
+    if (from || to) {
+      query.paymentDate = {};
+      if (from) query.paymentDate.$gte = new Date(from);
+      if (to) query.paymentDate.$lte = new Date(to);
+    }
+
+    const payments = await Payment.find(query)
+      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate building cabin")
+      .sort({ paymentDate: -1, createdAt: -1 })
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit));
+
+    const total = await Payment.countDocuments(query);
+
+    return res.json({
+      success: true,
+      data: {
+        payments,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getClientPayments error:", err);
+    return res.status(500).json({ error: "Failed to fetch client payments" });
+  }
+};

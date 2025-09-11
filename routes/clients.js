@@ -25,8 +25,11 @@ import {
   allocateDeskToMember,
   getClientDashboard,
   releaseDeskFromMember,
-  getClientCreditManagement
+  getClientCreditManagement,
+  getCurrentClientProfile,
+  updateCurrentClientProfile
 } from "../controllers/clientController.js";
+import { getClientPayments } from "../controllers/paymentController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 
 const router = express.Router();
@@ -39,8 +42,13 @@ router.get("/dashboard", clientMiddleware, getClientDashboard);
 router.get("/profile", clientMiddleware, getClientProfile);
 router.get("/credits", clientMiddleware, getClientCreditManagement);
 
+// Settings page endpoints
+router.get("/me", clientMiddleware, getCurrentClientProfile);
+router.put("/me", clientMiddleware, updateCurrentClientProfile);
+
 router.get("/bookings", clientMiddleware, getClientBookings);
 router.get("/invoices", clientMiddleware, getClientInvoices);
+router.get("/payments", clientMiddleware, getClientPayments);
 router.get("/contracts", clientMiddleware, getClientContracts);
 router.get("/tickets", clientMiddleware, getClientTickets);
 router.post("/tickets", clientMiddleware, createClientTicket);

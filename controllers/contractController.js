@@ -85,6 +85,14 @@ export const createContract = async (req, res) => {
 
     const created = await Contract.create(payload);
 
+    // Update client with building ID when contract is created
+    try {
+      await Client.findByIdAndUpdate(clientId, { building: buildingId });
+      console.log(`Updated client ${clientId} with building ${buildingId}`);
+    } catch (clientUpdateError) {
+      console.error("Failed to update client building:", clientUpdateError);
+    }
+
     // Grant initial credits if specified
     if (initialCredits && Number(initialCredits) > 0) {
       const WalletService = (await import("../services/walletService.js")).default;
