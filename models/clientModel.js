@@ -8,7 +8,6 @@ const clientSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     companyAddress: { type: String, trim: true },
     companyDetailsComplete: { type: Boolean, default: false },
-    // Zoho Books integration
     zohoBooksContactId: { type: String, trim: true, index: true },
     kycStatus: {
       type: String,
@@ -17,6 +16,8 @@ const clientSchema = new mongoose.Schema(
     },
     kycDocuments: { type: mongoose.Schema.Types.Mixed, default: null },
     kycRejectionReason: { type: String, default: undefined },
+    ownerUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },
+    building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", index: true, default: null },
   },
   {
     timestamps: true,

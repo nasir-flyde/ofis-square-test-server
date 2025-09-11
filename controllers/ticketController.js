@@ -56,16 +56,46 @@ export const getAllTickets = async (req, res) => {
 // POST /api/tickets
 export const createTicket = async (req, res) => {
   try {
-    const { subject, building, description } = req.body || {};
-    if (!subject || !description || !building) {
-      return res.status(400).json({ error: "subject, description, building are required" });
+    const { subject, description } = req.body || {};
+    if (!subject || !description) {
+      return res.status(400).json({ error: "subject and description are required" });
     }
 
-    const ticketData = {
+    const { userId, clientId, memberId, loginType } = req.user || {};
+    
+    let ticketData = {
       ...req.body,
       status: req.body.status || "open",
       latestUpdate: req.body.latestUpdate || `Ticket created`,
     };
+
+    if (loginType === "client" && clientId) {
+      const Client = (await import("../models/clientModel.js")).default;
+      const client = await Client.findById(clientId).select("building");
+      
+      if (!client || !client.building) {
+        return res.status(400).json({ error: "Client building not found. Please contact admin." });
+      }
+      
+      ticketData.building = client.building;
+      ticketData.client = clientId;
+      ticketData.createdBy = null;
+      
+    } else if (loginType === "member" && memberId) {
+      const Member = (await import("../models/memberModel.js")).default;
+      const member = await Member.findById(memberId).populate("client", "building");
+      
+      if (!member || !member.client || !member.client.building) {
+        return res.status(400).json({ error: "Member client or building not found. Please contact admin." });
+      }
+      
+      ticketData.building = member.client.building;
+      ticketData.client = member.client._id;
+      ticketData.createdBy = memberId;
+      
+    } else {
+      return res.status(400).json({ error: "Invalid user type or missing authentication data" });
+    }
 
     const ticket = await Ticket.create(ticketData);
 

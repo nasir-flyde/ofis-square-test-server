@@ -4,6 +4,8 @@ import Role from "../models/roleModel.js";
 import { createJWT } from "../middlewares/createJwt.js";
 import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
+import Member from "../models/memberModel.js";
+import bcrypt from "bcryptjs";
 
 export const clientSignup = async (req, res) => {
   try {
@@ -195,6 +197,86 @@ export const clientLogin = async (req, res) => {
     res.json({ token, user: safeUser, clientId: client._id });
   } catch (err) {
     console.error("clientLogin error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const memberLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    // Direct password comparison without decryption (since passwords are stored as plain text for members)
+    const isMatch = password === user.password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    if ((role.roleName || "").toLowerCase() !== "member") {
+      return res.status(403).json({ error: "Not a member account" });
+    }
+
+    let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
+    if (!member) {
+      const fallbackQuery = user.email 
+        ? { email: user.email } 
+        : { phone: user.phone };
+      const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
+      
+      if (!fallbackMember) {
+        return res.status(404).json({ error: "Member record not found. Please contact admin." });
+      }
+      
+      // Update member to link to user for future logins
+      fallbackMember.user = user._id;
+      await fallbackMember.save();
+      member = fallbackMember;
+    }
+
+    if (!member.client) {
+      return res.status(404).json({ error: "Member is not associated with a client. Please contact admin." });
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      member.client._id.toString(),
+      member._id.toString()
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.json({ 
+      token, 
+      user: safeUser, 
+      memberId: member._id,
+      clientId: member.client._id 
+    });
+  } catch (err) {
+    console.error("memberLogin error:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

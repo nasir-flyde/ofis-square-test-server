@@ -11,11 +11,12 @@ const ticketSchema = new mongoose.Schema(
       subCategory: { type: String },
     },
     status: { type: String, enum: ["open", "inprogress", "resolved", "closed", "pending"], default: "open" },
-    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "Users" },
+    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building" },
     cabin: { type: mongoose.Schema.Types.ObjectId, ref: "Cabin" },
     latestUpdate: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "Member" },
+    client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
     images: { type: [String], default: [] },
   },
   { timestamps: true, collection: "tickets" }

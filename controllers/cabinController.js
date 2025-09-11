@@ -222,3 +222,38 @@ export const releaseCabin = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
+export const getAvailableCabinsByBuilding = async (req, res) => {
+  try {
+    const { buildingId } = req.params;
+    
+    if (!buildingId) {
+      return res.status(400).json({ success: false, message: "Building ID is required" });
+    }
+
+    // Verify building exists
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({ success: false, message: "Building not found" });
+    }
+
+    // Get available cabins in the building
+    const cabins = await Cabin.find({ 
+      building: buildingId, 
+      status: "available" 
+    })
+      .populate("building", "name address city")
+      .sort({ floor: 1, number: 1 });
+
+    return res.json({ 
+      success: true, 
+      data: {
+        building,
+        cabins
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
