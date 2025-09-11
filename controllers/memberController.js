@@ -90,7 +90,7 @@ export const getMemberById = async (req, res) => {
 // Update member
 export const updateMember = async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, companyName, role, client, status } = req.body || {};
+    const { firstName, lastName, email, phone, companyName, role, client, status, user } = req.body || {};
     
     // Validate client exists if provided
     if (client) {
@@ -110,7 +110,8 @@ export const updateMember = async (req, res) => {
         companyName,
         role,
         client,
-        status
+        status,
+        user
       },
       { new: true, runValidators: true }
     ).populate('client', 'name email');

@@ -17,6 +17,8 @@ const clientSchema = new mongoose.Schema(
     },
     kycDocuments: { type: mongoose.Schema.Types.Mixed, default: null },
     kycRejectionReason: { type: String, default: undefined },
+    // Primary user account linked to this client (auto-created on client creation if possible)
+    ownerUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },
   },
   {
     timestamps: true,

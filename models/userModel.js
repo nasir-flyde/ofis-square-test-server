@@ -38,5 +38,5 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Use a distinct model name to avoid clashing with existing models/User.js (which exports "User")
-export default mongoose.model("Users", userSchema);
+// Export as "User" to match the ref in memberModel
+export default mongoose.model("User", userSchema);

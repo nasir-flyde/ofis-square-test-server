@@ -2,6 +2,16 @@ import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
 import imagekit from "../utils/imageKit.js";
 import Contract from "../models/contractModel.js";
+import Invoice from "../models/invoiceModel.js";
+import Ticket from "../models/ticketModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
+import CreditTransaction from "../models/creditTransactionModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import Member from "../models/memberModel.js";
+import Desk from "../models/deskModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
+import bcrypt from "bcrypt";
 
 // Create client (standard create using model field names)
 export const createClient = async (req, res) => {
@@ -20,6 +30,30 @@ export const createClient = async (req, res) => {
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
     const client = await Client.create(payload);
+    try {
+      if (client?.email && client?.phone) {
+        const roleClient = await Role.findOne({ roleName: "client" });
+        if (roleClient) {
+          const tempPassword = Math.random().toString(36).slice(-10);
+          const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+          const name = client.contactPerson?.trim() || client.companyName?.trim() || "Client User";
+          const user = await User.create({
+            role: roleClient._id,
+            name,
+            email: client.email,
+            phone: client.phone,
+            password: hashedPassword,
+          });
+
+          client.ownerUser = user._id;
+          await client.save();
+        }
+      }
+    } catch (userErr) {
+      console.error("createClient: failed to auto-create user:", userErr?.message || userErr);
+    }
+
     return res.status(201).json({ message: "Client created", client });
   } catch (err) {
     console.error("createClient error:", err);
@@ -29,7 +63,7 @@ export const createClient = async (req, res) => {
 
 export const upsertBasicDetails = async (req, res) => {
   try {
-    const clientId = req.clientId; // set by clientMiddleware from JWT when available
+    const clientId = req.clientId;
     const payload = {
       companyName: req.body?.company_name?.trim(),
       contactPerson: req.body?.contact_person?.trim(),
@@ -39,10 +73,32 @@ export const upsertBasicDetails = async (req, res) => {
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-
-    // If no clientId in token, create a new client from provided basic details
     if (!clientId) {
       const created = await Client.create(payload);
+      try {
+        if (created?.email && created?.phone) {
+          const roleClient = await Role.findOne({ roleName: "client" });
+          if (roleClient) {
+            const rawPassword = (req.body?.password && String(req.body.password).trim()) || '123456';
+            const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
+            const name = created.contactPerson?.trim() || created.companyName?.trim() || "Client User";
+            const user = await User.create({
+              role: roleClient._id,
+              name,
+              email: created.email,
+              phone: created.phone,
+              password: hashedPassword,
+            });
+
+            created.ownerUser = user._id;
+            await created.save();
+          }
+        }
+      } catch (userErr) {
+        console.error("upsertBasicDetails: failed to auto-create user:", userErr?.message || userErr);
+      }
+
       return res.status(201).json({ message: "Client created from basic details", client: created });
     }
 
@@ -240,5 +296,761 @@ export const rejectKyc = async (req, res) => {
   } catch (err) {
     console.error("rejectKyc error:", err);
     return res.status(500).json({ error: "Failed to reject KYC" });
+  }
+};
+
+// Client Dashboard API - Get dashboard stats and recent activity
+export const getClientDashboard = async (req, res) => {
+  try {
+    const clientId = req.clientId; // from clientMiddleware
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    // Get client info
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    // Get active bookings count
+    const activeBookings = await MeetingBooking.countDocuments({
+      client: clientId,
+      status: { $in: ["confirmed", "active"] }
+    });
+
+    // Get pending invoices count
+    const pendingInvoices = await Invoice.countDocuments({
+      client: clientId,
+      status: { $in: ["issued", "overdue"] }
+    });
+
+    // Get open tickets count
+    const openTickets = await Ticket.countDocuments({
+      createdBy: clientId,
+      status: { $in: ["open", "inprogress", "pending"] }
+    });
+
+    // Get recent activity (last 10 items)
+    const recentInvoices = await Invoice.find({ client: clientId })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .select('invoiceNumber status total createdAt');
+
+    const recentBookings = await MeetingBooking.find({ client: clientId })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .populate('meetingRoom', 'name')
+      .select('meetingRoom status startTime createdAt');
+
+    const recentTickets = await Ticket.find({ createdBy: clientId })
+      .sort({ createdAt: -1 })
+      .limit(2)
+      .select('subject status priority createdAt');
+
+    // Format recent activity
+    const recentActivity = [];
+    
+    recentInvoices.forEach(invoice => {
+      recentActivity.push({
+        type: 'invoice',
+        title: `Invoice ${invoice.invoiceNumber} ${invoice.status}`,
+        description: `Amount: ₹${invoice.total}`,
+        timestamp: invoice.createdAt,
+        status: invoice.status
+      });
+    });
+
+    recentBookings.forEach(booking => {
+      recentActivity.push({
+        type: 'booking',
+        title: `Meeting room booking ${booking.status}`,
+        description: `Room: ${booking.meetingRoom?.name || 'N/A'}`,
+        timestamp: booking.createdAt,
+        status: booking.status
+      });
+    });
+
+    recentTickets.forEach(ticket => {
+      recentActivity.push({
+        type: 'ticket',
+        title: `Support ticket: ${ticket.subject}`,
+        description: `Priority: ${ticket.priority}`,
+        timestamp: ticket.createdAt,
+        status: ticket.status
+      });
+    });
+
+    // Sort by timestamp and limit to 5 most recent
+    recentActivity.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const limitedActivity = recentActivity.slice(0, 5);
+
+    const dashboardData = {
+      stats: {
+        activeBookings,
+        pendingInvoices,
+        openTickets
+      },
+      recentActivity: limitedActivity,
+      client: {
+        companyName: client.companyName,
+        contactPerson: client.contactPerson,
+        email: client.email,
+        kycStatus: client.kycStatus
+      }
+    };
+
+    return res.json({ success: true, data: dashboardData });
+  } catch (err) {
+    console.error("getClientDashboard error:", err);
+    return res.status(500).json({ error: "Failed to fetch dashboard data" });
+  }
+};
+
+// Get client profile with cabin, invoice, and contract details
+export const getClientProfile = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    // Get allocated cabin details
+    const allocatedCabin = await mongoose.model('Cabin').findOne({ allocatedTo: clientId })
+      .populate('building', 'name address')
+      .populate('contract', 'startDate endDate monthlyRent status');
+
+    // Get recent invoices (last 5)
+    const recentInvoices = await Invoice.find({ client: clientId })
+      .populate('building', 'name')
+      .populate('cabin', 'number')
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    // Get active contracts
+    const contracts = await Contract.find({ client: clientId })
+      .populate('building', 'name address')
+      .sort({ createdAt: -1 });
+
+    const profileData = {
+      ...client.toObject(),
+      allocatedCabin,
+      recentInvoices,
+      contracts
+    };
+
+    return res.json({ success: true, data: profileData });
+  } catch (err) {
+    console.error("getClientProfile error:", err);
+    return res.status(500).json({ error: "Failed to fetch client profile" });
+  }
+};
+
+// Get client bookings
+export const getClientBookings = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 10, status } = req.query;
+    const query = { client: clientId };
+    if (status) query.status = status;
+
+    const bookings = await MeetingBooking.find(query)
+      .populate('meetingRoom', 'name capacity')
+      .populate('building', 'name address')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await MeetingBooking.countDocuments(query);
+
+    return res.json({
+      success: true,
+      data: {
+        bookings,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getClientBookings error:", err);
+    return res.status(500).json({ error: "Failed to fetch client bookings" });
+  }
+};
+
+// Get client invoices
+export const getClientInvoices = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 10, status } = req.query;
+    const query = { client: clientId };
+    if (status) query.status = status;
+
+    const invoices = await Invoice.find(query)
+      .populate('building', 'name')
+      .populate('cabin', 'name')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Invoice.countDocuments(query);
+
+    return res.json({
+      success: true,
+      data: {
+        invoices,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getClientInvoices error:", err);
+    return res.status(500).json({ error: "Failed to fetch client invoices" });
+  }
+};
+
+// Get client contracts
+export const getClientContracts = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const contracts = await Contract.find({ client: clientId })
+      .populate('building', 'name address')
+      .sort({ createdAt: -1 });
+
+    return res.json({ success: true, data: contracts });
+  } catch (err) {
+    console.error("getClientContracts error:", err);
+    return res.status(500).json({ error: "Failed to fetch client contracts" });
+  }
+};
+
+// Get client tickets
+export const getClientTickets = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 10, status } = req.query;
+    const query = { client: clientId };
+    if (status) query.status = status;
+
+    const tickets = await Ticket.find(query)
+      .populate('building', 'name')
+      .populate('cabin', 'name')
+      .populate('assignedTo', 'name')
+      .populate('createdBy', 'firstName lastName email phone')
+      .populate('category.categoryId', 'name description subCategories')
+      .sort({ createdAt: -1 })
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit));
+
+    const total = await Ticket.countDocuments(query);
+
+    return res.json({
+      success: true,
+      data: {
+        tickets,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / Number(limit))
+        }
+      }
+    });
+  } catch (err) {
+    console.error('getClientTickets error:', err);
+    return res.status(500).json({ error: 'Failed to fetch client tickets' });
+  }
+};
+
+// Create client ticket
+export const createClientTicket = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { subject, description, priority = "low", category, images } = req.body || {};
+    
+    if (!subject || !description) {
+      return res.status(400).json({ error: "Subject and description are required" });
+    }
+
+    // Create ticket with client reference
+    const ticket = await Ticket.create({
+      subject,
+      description,
+      priority,
+      category,
+      images: images || [],
+      client: clientId,
+      status: "open" // Default status for new tickets
+    });
+
+    return res.status(201).json({ success: true, data: ticket });
+  } catch (err) {
+    console.error("createClientTicket error:", err);
+    return res.status(500).json({ error: "Failed to create ticket" });
+  }
+};
+
+// Get client members
+export const getClientMembers = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 10, status } = req.query;
+    const query = { client: clientId };
+    if (status) query.status = status;
+
+    const members = await Member.find(query)
+      .populate('desk', 'number status building cabin')
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Member.countDocuments(query);
+
+    return res.json({
+      success: true,
+      data: {
+        members,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getClientMembers error:", err);
+    return res.status(500).json({ error: "Failed to fetch client members" });
+  }
+};
+
+// Create member for client
+export const createClientMember = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { firstName, lastName, email, phone, role, password } = req.body || {};
+    
+    if (!firstName) {
+      return res.status(400).json({ error: "firstName is required" });
+    }
+
+    let userId = null;
+
+    // Create user automatically if email is provided
+    if (email) {
+      try {
+        // Find client role (default role for members)
+        const clientRole = await Role.findOne({ roleName: "client" });
+        
+        if (clientRole) {
+          const rawPassword = (password && String(password).trim()) || '123456';
+          const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
+          const user = await User.create({
+            name: `${firstName} ${lastName || ''}`.trim(),
+            email: email,
+            password: hashedPassword,
+            phone: phone,
+            role: clientRole._id,
+            isActive: true
+          });
+
+          userId = user._id;
+        }
+      } catch (userErr) {
+        console.log("Failed to create user for member:", userErr.message);
+      }
+    }
+
+    const member = await Member.create({
+      firstName,
+      lastName,
+      email,
+      phone,
+      role,
+      client: clientId,
+      user: userId,
+      status: "active"
+    });
+
+    return res.status(201).json({ success: true, data: member });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+    console.error("createClientMember error:", err);
+    return res.status(500).json({ error: "Failed to create member" });
+  }
+};
+
+// Update client member
+export const updateClientMember = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { id } = req.params;
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { firstName, lastName, email, phone, role, status } = req.body || {};
+
+    const member = await Member.findOneAndUpdate(
+      { _id: id, client: clientId }, // Ensure member belongs to this client
+      {
+        firstName,
+        lastName,
+        email,
+        phone,
+        role,
+        status
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" });
+    }
+
+    return res.json({ success: true, data: member });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+    console.error("updateClientMember error:", err);
+    return res.status(500).json({ error: "Failed to update member" });
+  }
+};
+
+// Delete client member
+export const deleteClientMember = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { id } = req.params;
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const member = await Member.findOneAndDelete({ _id: id, client: clientId });
+    
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" });
+    }
+
+    return res.json({ success: true, message: "Member deleted successfully" });
+  } catch (err) {
+    console.error("deleteClientMember error:", err);
+    return res.status(500).json({ error: "Failed to delete member" });
+  }
+};
+
+// Get available desks for client's allocated cabin
+export const getClientAvailableDesks = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    // Find client's allocated cabin
+    const allocatedCabin = await mongoose.model('Cabin').findOne({ allocatedTo: clientId })
+      .populate('building', 'name address');
+
+    if (!allocatedCabin) {
+      return res.status(404).json({ error: "No cabin allocated to this client" });
+    }
+
+    // Get all desks in the allocated cabin
+    const desks = await Desk.find({ cabin: allocatedCabin._id })
+      .populate('building', 'name')
+      .populate('cabin', 'number floor')
+      .sort({ number: 1 });
+
+    return res.json({
+      success: true,
+      data: {
+        cabin: allocatedCabin,
+        desks
+      }
+    });
+  } catch (err) {
+    console.error("getClientAvailableDesks error:", err);
+    return res.status(500).json({ error: "Failed to fetch available desks" });
+  }
+};
+
+// Allocate desk to member
+export const allocateDeskToMember = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { memberId, deskId } = req.body || {};
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    if (!memberId || !deskId) {
+      return res.status(400).json({ error: "memberId and deskId are required" });
+    }
+
+    // Verify member belongs to this client
+    const member = await Member.findOne({ _id: memberId, client: clientId });
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" });
+    }
+
+    // Check if member already has a desk allocated
+    if (member.desk) {
+      return res.status(409).json({ error: "Member already has a desk allocated" });
+    }
+
+    // Verify desk exists and is available
+    const desk = await Desk.findById(deskId).populate("building cabin");
+    if (!desk) {
+      return res.status(404).json({ error: "Desk not found" });
+    }
+
+    if (desk.status !== "available") {
+      return res.status(409).json({ error: `Desk is not available (status: ${desk.status})` });
+    }
+
+    // Verify desk is in client's allocated cabin
+    const allocatedCabin = await mongoose.model('Cabin').findOne({ allocatedTo: clientId });
+    if (!allocatedCabin || String(desk.cabin._id) !== String(allocatedCabin._id)) {
+      return res.status(403).json({ error: "Desk is not in your allocated cabin" });
+    }
+
+    // Update desk status and member desk reference
+    desk.status = "occupied";
+    desk.allocatedAt = new Date();
+    desk.releasedAt = undefined;
+    await desk.save();
+
+    // Update member with desk reference
+    member.desk = desk._id;
+    await member.save();
+
+    return res.json({ 
+      success: true, 
+      message: "Desk allocated to member successfully", 
+      data: { member, desk } 
+    });
+  } catch (err) {
+    console.error("allocateDeskToMember error:", err);
+    return res.status(500).json({ error: "Failed to allocate desk to member" });
+  }
+};
+
+// Release desk from member
+export const releaseDeskFromMember = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { memberId } = req.body || {};
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    if (!memberId) {
+      return res.status(400).json({ error: "memberId is required" });
+    }
+
+    // Verify member belongs to this client and has a desk
+    const member = await Member.findOne({ _id: memberId, client: clientId }).populate('desk');
+    if (!member) {
+      return res.status(404).json({ error: "Member not found" });
+    }
+
+    if (!member.desk) {
+      return res.status(400).json({ error: "Member does not have an allocated desk" });
+    }
+
+    const desk = member.desk;
+
+    // Update desk status
+    desk.status = "available";
+    desk.releasedAt = new Date();
+    await desk.save();
+
+    // Remove desk reference from member
+    member.desk = null;
+    await member.save();
+
+    return res.json({ 
+      success: true, 
+      message: "Desk released from member successfully", 
+      data: { member, desk } 
+    });
+  } catch (err) {
+    console.error("releaseDeskFromMember error:", err);
+    return res.status(500).json({ error: "Failed to release desk from member" });
+  }
+};
+
+// Get client credit management data
+export const getClientCreditManagement = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const { page = 1, limit = 20, type, member, startDate, endDate } = req.query;
+
+    // Get client credit wallet
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    
+    // Build transaction query
+    const transactionQuery = { client: clientId };
+    if (type && type !== 'all') transactionQuery.type = type;
+    if (member && member !== 'all') transactionQuery.member = member;
+    
+    if (startDate || endDate) {
+      transactionQuery.createdAt = {};
+      if (startDate) transactionQuery.createdAt.$gte = new Date(startDate);
+      if (endDate) transactionQuery.createdAt.$lte = new Date(endDate);
+    }
+
+    // Get transactions with pagination
+    const transactions = await CreditTransaction.find(transactionQuery)
+      .populate('member', 'firstName lastName email')
+      .populate('refId')
+      .sort({ createdAt: -1 })
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit));
+
+    const totalTransactions = await CreditTransaction.countDocuments(transactionQuery);
+
+    // Get credit summary by type
+    const creditSummary = await CreditTransaction.aggregate([
+      { $match: { client: new mongoose.Types.ObjectId(clientId) } },
+      {
+        $group: {
+          _id: '$type',
+          totalCredits: { $sum: '$credits' },
+          totalValue: { $sum: { $multiply: ['$credits', '$valuePerCredit'] } },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get top spending members
+    const topSpenders = await CreditTransaction.aggregate([
+      { 
+        $match: { 
+          client: new mongoose.Types.ObjectId(clientId),
+          type: 'consume',
+          member: { $ne: null }
+        } 
+      },
+      {
+        $group: {
+          _id: '$member',
+          totalCredits: { $sum: '$credits' },
+          totalValue: { $sum: { $multiply: ['$credits', '$valuePerCredit'] } },
+          transactionCount: { $sum: 1 }
+        }
+      },
+      { $sort: { totalCredits: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'members',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'member'
+        }
+      },
+      { $unwind: '$member' }
+    ]);
+
+    // Get monthly credit usage trend (last 6 months)
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    const monthlyTrend = await CreditTransaction.aggregate([
+      { 
+        $match: { 
+          client: new mongoose.Types.ObjectId(clientId),
+          createdAt: { $gte: sixMonthsAgo }
+        } 
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            type: '$type'
+          },
+          credits: { $sum: '$credits' },
+          value: { $sum: { $multiply: ['$credits', '$valuePerCredit'] } }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } }
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        wallet: wallet || { balance: 0, creditValue: 200, currency: 'INR' },
+        transactions,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total: totalTransactions,
+          pages: Math.ceil(totalTransactions / Number(limit))
+        },
+        summary: {
+          creditSummary,
+          topSpenders,
+          monthlyTrend
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getClientCreditManagement error:", err);
+    return res.status(500).json({ error: "Failed to fetch credit management data" });
   }
 };
