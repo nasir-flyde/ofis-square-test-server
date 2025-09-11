@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import DraftPayment from "../models/draftPaymentModel.js";
 import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
+import imagekit from "../utils/imageKit.js";
 
 // Helper: apply amount delta to invoice and set status fields
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -31,11 +32,9 @@ async function applyInvoicePayment(invoiceId, deltaAmount) {
   return invoice;
 }
 
-// POST /api/draft-payments
-// Access: client or admin (use clientMiddleware on route)
 export const createDraftPayment = async (req, res) => {
   try {
-    const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, currency, notes } = req.body || {};
+    const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, currency, notes, screenshots } = req.body || {};
 
     if (!invoiceId) return res.status(400).json({ success: false, message: "invoice is required" });
     if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: "amount must be > 0" });
@@ -44,8 +43,30 @@ export const createDraftPayment = async (req, res) => {
     const invoice = await Invoice.findById(invoiceId);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
-    // Determine submitting client context
     const submittingClient = req.clientId || client || invoice.client;
+    
+    // Handle file uploads to ImageKit
+    let screenshotUrls = [];
+    if (req.files && req.files.length > 0) {
+      const folder = process.env.IMAGEKIT_PAYMENT_FOLDER || "/ofis-square/payments";
+      const uploadPromises = req.files.map(async (file) => {
+        try {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `payment_${Date.now()}_${file.originalname}`,
+            folder,
+          });
+          return result.url;
+        } catch (error) {
+          console.error('ImageKit upload error:', error);
+          throw new Error(`Failed to upload ${file.originalname}`);
+        }
+      });
+      screenshotUrls = await Promise.all(uploadPromises);
+    } else if (screenshots && Array.isArray(screenshots)) {
+      // Handle base64 screenshots (fallback)
+      screenshotUrls = screenshots;
+    }
 
     const draft = await DraftPayment.create({
       invoice: invoiceId,
@@ -56,6 +77,7 @@ export const createDraftPayment = async (req, res) => {
       paymentDate: new Date(paymentDate),
       currency: currency || undefined,
       notes: notes || undefined,
+      screenshots: screenshotUrls,
       status: "pending",
       submittedByClient: req.clientId || undefined,
     });
@@ -102,6 +124,7 @@ export const approveDraftPayment = async (req, res) => {
         paymentDate: draft.paymentDate,
         currency: draft.currency || undefined,
         notes: draft.notes || undefined,
+        screenshots: draft.screenshots || [], // Transfer screenshots from draft
       },
     ], { session });
 

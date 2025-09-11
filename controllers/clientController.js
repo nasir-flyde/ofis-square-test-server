@@ -12,6 +12,7 @@ import Desk from "../models/deskModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import bcrypt from "bcrypt";
+import { getClientPayments } from "./paymentController.js";
 
 // Create client (standard create using model field names)
 export const createClient = async (req, res) => {
@@ -30,31 +31,55 @@ export const createClient = async (req, res) => {
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
     const client = await Client.create(payload);
+    let createdOwnerUserId = null;
+    let ownerUserInfo = undefined;
     try {
       if (client?.email && client?.phone) {
-        const roleClient = await Role.findOne({ roleName: "client" });
-        if (roleClient) {
-          const tempPassword = Math.random().toString(36).slice(-10);
-          const hashedPassword = await bcrypt.hash(tempPassword, 10);
+        // Find or create 'client' role (case-insensitive)
+        let roleClient = await Role.findOne({ roleName: { $regex: /^client$/i } });
+        if (!roleClient) {
+          roleClient = await Role.create({ roleName: "client", permissions: [] });
+        }
 
+        // Try to find existing user by email or phone
+        let user = await User.findOne({
+          $or: [
+            ...(client.email ? [{ email: client.email }] : []),
+            ...(client.phone ? [{ phone: client.phone }] : []),
+          ],
+        });
+
+        if (!user) {
+          // Per requirement: do not hash; set a default plain password
           const name = client.contactPerson?.trim() || client.companyName?.trim() || "Client User";
-          const user = await User.create({
+          user = await User.create({
             role: roleClient._id,
             name,
-            email: client.email,
-            phone: client.phone,
-            password: hashedPassword,
+            email: client.email || undefined,
+            phone: client.phone || undefined,
+            password: '123456',
           });
-
-          client.ownerUser = user._id;
-          await client.save();
+        } else if (!user.role) {
+          // If user exists without a role, assign client role
+          user.role = roleClient._id;
+          await user.save();
         }
+
+        client.ownerUser = user._id;
+        createdOwnerUserId = user._id;
+        await client.save();
+      } else {
+        ownerUserInfo = {
+          note: "Owner user not created. Both email and phone are required to create a user.",
+          hasEmail: Boolean(client?.email),
+          hasPhone: Boolean(client?.phone)
+        };
       }
     } catch (userErr) {
       console.error("createClient: failed to auto-create user:", userErr?.message || userErr);
     }
 
-    return res.status(201).json({ message: "Client created", client });
+    return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo });
   } catch (err) {
     console.error("createClient error:", err);
     return res.status(500).json({ error: "Failed to create client" });
@@ -75,34 +100,8 @@ export const upsertBasicDetails = async (req, res) => {
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
     if (!clientId) {
       const created = await Client.create(payload);
-      try {
-        if (created?.email && created?.phone) {
-          const roleClient = await Role.findOne({ roleName: "client" });
-          if (roleClient) {
-            const rawPassword = (req.body?.password && String(req.body.password).trim()) || '123456';
-            const hashedPassword = await bcrypt.hash(rawPassword, 10);
-
-            const name = created.contactPerson?.trim() || created.companyName?.trim() || "Client User";
-            const user = await User.create({
-              role: roleClient._id,
-              name,
-              email: created.email,
-              phone: created.phone,
-              password: hashedPassword,
-            });
-
-            created.ownerUser = user._id;
-            await created.save();
-          }
-        }
-      } catch (userErr) {
-        console.error("upsertBasicDetails: failed to auto-create user:", userErr?.message || userErr);
-      }
-
       return res.status(201).json({ message: "Client created from basic details", client: created });
     }
-
-    // If clientId exists, validate and update
     if (!mongoose.Types.ObjectId.isValid(clientId)) {
       return res.status(400).json({ error: "Invalid client id in token" });
     }
@@ -136,6 +135,22 @@ export const getClients = async (_req, res) => {
         }
       },
       {
+        $lookup: {
+          from: "contracts",
+          localField: "_id",
+          foreignField: "client",
+          as: "contracts"
+        }
+      },
+      {
+        $lookup: {
+          from: "cabins",
+          localField: "_id",
+          foreignField: "allocatedTo",
+          as: "allocatedCabins"
+        }
+      },
+      {
         $addFields: {
           wallet: { $arrayElemAt: ["$wallet", 0] },
           totalCredits: {
@@ -151,6 +166,22 @@ export const getClients = async (_req, res) => {
                 in: "$$transaction.credits"
               }
             }
+          },
+          hasActiveContract: {
+            $gt: [
+              {
+                $size: {
+                  $filter: {
+                    input: "$contracts",
+                    cond: { $eq: ["$$this.status", "active"] }
+                  }
+                }
+              },
+              0
+            ]
+          },
+          hasCabin: {
+            $gt: [{ $size: "$allocatedCabins" }, 0]
           }
         }
       },
@@ -313,10 +344,10 @@ export const getClientDashboard = async (req, res) => {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    // Get active bookings count
+    // Get active bookings count (meeting bookings use status: booked | cancelled | completed)
     const activeBookings = await MeetingBooking.countDocuments({
       client: clientId,
-      status: { $in: ["confirmed", "active"] }
+      status: { $in: ["booked"] }
     });
 
     // Get pending invoices count
@@ -325,9 +356,9 @@ export const getClientDashboard = async (req, res) => {
       status: { $in: ["issued", "overdue"] }
     });
 
-    // Get open tickets count
+    // Get open tickets count (tickets are associated by client)
     const openTickets = await Ticket.countDocuments({
-      createdBy: clientId,
+      client: clientId,
       status: { $in: ["open", "inprogress", "pending"] }
     });
 
@@ -340,10 +371,10 @@ export const getClientDashboard = async (req, res) => {
     const recentBookings = await MeetingBooking.find({ client: clientId })
       .sort({ createdAt: -1 })
       .limit(3)
-      .populate('meetingRoom', 'name')
-      .select('meetingRoom status startTime createdAt');
+      .populate('room', 'name')
+      .select('room status start end createdAt');
 
-    const recentTickets = await Ticket.find({ createdBy: clientId })
+    const recentTickets = await Ticket.find({ client: clientId })
       .sort({ createdAt: -1 })
       .limit(2)
       .select('subject status priority createdAt');
@@ -365,7 +396,7 @@ export const getClientDashboard = async (req, res) => {
       recentActivity.push({
         type: 'booking',
         title: `Meeting room booking ${booking.status}`,
-        description: `Room: ${booking.meetingRoom?.name || 'N/A'}`,
+        description: `Room: ${booking.room?.name || 'N/A'}`,
         timestamp: booking.createdAt,
         status: booking.status
       });
@@ -464,11 +495,10 @@ export const getClientBookings = async (req, res) => {
     if (status) query.status = status;
 
     const bookings = await MeetingBooking.find(query)
-      .populate('meetingRoom', 'name capacity')
-      .populate('building', 'name address')
+      .populate('room', 'name capacity')
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit));
 
     const total = await MeetingBooking.countDocuments(query);
 
@@ -604,7 +634,13 @@ export const createClientTicket = async (req, res) => {
       return res.status(400).json({ error: "Subject and description are required" });
     }
 
-    // Create ticket with client reference
+    // Get building ID from client table
+    const client = await Client.findById(clientId).select("building");
+    if (!client || !client.building) {
+      return res.status(400).json({ error: "Client building not found. Please contact admin." });
+    }
+
+    // Create ticket with client reference and building from client table
     const ticket = await Ticket.create({
       subject,
       description,
@@ -612,7 +648,9 @@ export const createClientTicket = async (req, res) => {
       category,
       images: images || [],
       client: clientId,
-      status: "open" // Default status for new tickets
+      building: client.building,
+      createdBy: null,
+      status: "open"
     });
 
     return res.status(201).json({ success: true, data: ticket });
@@ -680,19 +718,19 @@ export const createClientMember = async (req, res) => {
     // Create user automatically if email is provided
     if (email) {
       try {
-        // Find client role (default role for members)
-        const clientRole = await Role.findOne({ roleName: "client" });
+        // Find member role with specific ID
+        const memberRole = await Role.findById("68bfc2b86ecb1276d721bf71");
         
-        if (clientRole) {
-          const rawPassword = (password && String(password).trim()) || '123456';
-          const hashedPassword = await bcrypt.hash(rawPassword, 10);
-
+        if (memberRole) {
+          const rawPassword = '123456';
+          // Remove password encryption - store as plain text
+          
           const user = await User.create({
             name: `${firstName} ${lastName || ''}`.trim(),
             email: email,
-            password: hashedPassword,
+            password: rawPassword, // Store password without encryption
             phone: phone,
-            role: clientRole._id,
+            role: memberRole._id,
             isActive: true
           });
 
@@ -801,18 +839,36 @@ export const getClientAvailableDesks = async (req, res) => {
     if (!allocatedCabin) {
       return res.status(404).json({ error: "No cabin allocated to this client" });
     }
+    const activeContract = await Contract.findOne({ 
+      client: clientId, 
+      status: 'active' 
+    }).sort({ createdAt: -1 });
 
-    // Get all desks in the allocated cabin
-    const desks = await Desk.find({ cabin: allocatedCabin._id })
+    const contractCapacity = activeContract?.capacity || 0;
+    const allDesks = await Desk.find({ cabin: allocatedCabin._id })
       .populate('building', 'name')
       .populate('cabin', 'number floor')
       .sort({ number: 1 });
+    const allocatedDesksCount = await Member.countDocuments({ 
+      client: clientId, 
+      desk: { $ne: null } 
+    });
+
+    const availableDesks = allDesks.filter(desk => desk.status === 'available');
+    const canAllocateMore = allocatedDesksCount < contractCapacity;
+    const remainingCapacity = Math.max(0, contractCapacity - allocatedDesksCount);
+    const desksToShow = canAllocateMore ? availableDesks.slice(0, remainingCapacity) : [];
 
     return res.json({
       success: true,
       data: {
         cabin: allocatedCabin,
-        desks
+        desks: allDesks,
+        availableDesks: desksToShow,
+        contractCapacity,
+        allocatedDesksCount,
+        remainingCapacity,
+        canAllocateMore
       }
     });
   } catch (err) {
@@ -835,15 +891,40 @@ export const allocateDeskToMember = async (req, res) => {
       return res.status(400).json({ error: "memberId and deskId are required" });
     }
 
+    // Get client's active contract to check capacity
+    const activeContract = await Contract.findOne({ 
+      client: clientId, 
+      status: 'active' 
+    }).sort({ createdAt: -1 });
+
+    if (!activeContract) {
+      return res.status(400).json({ error: "No active contract found for this client" });
+    }
+
+    const contractCapacity = activeContract.capacity || 0;
+
+    // Count currently allocated desks for this client
+    const allocatedDesksCount = await Member.countDocuments({ 
+      client: clientId, 
+      desk: { $ne: null } 
+    });
+
+    // Check if allocation would exceed contract capacity
+    if (allocatedDesksCount >= contractCapacity) {
+      return res.status(400).json({ 
+        error: `Cannot allocate more desks. Contract capacity is ${contractCapacity} and ${allocatedDesksCount} desks are already allocated.` 
+      });
+    }
+
     // Verify member belongs to this client
     const member = await Member.findOne({ _id: memberId, client: clientId });
     if (!member) {
-      return res.status(404).json({ error: "Member not found" });
+      return res.status(404).json({ error: "Member not found or does not belong to this client" });
     }
 
-    // Check if member already has a desk allocated
+    // Check if member already has a desk
     if (member.desk) {
-      return res.status(409).json({ error: "Member already has a desk allocated" });
+      return res.status(400).json({ error: "Member already has a desk allocated" });
     }
 
     // Verify desk exists and is available
@@ -853,7 +934,7 @@ export const allocateDeskToMember = async (req, res) => {
     }
 
     if (desk.status !== "available") {
-      return res.status(409).json({ error: `Desk is not available (status: ${desk.status})` });
+      return res.status(400).json({ error: "Desk is not available" });
     }
 
     // Verify desk is in client's allocated cabin
@@ -875,7 +956,7 @@ export const allocateDeskToMember = async (req, res) => {
     return res.json({ 
       success: true, 
       message: "Desk allocated to member successfully", 
-      data: { member, desk } 
+      data: { member, desk, remainingCapacity: contractCapacity - allocatedDesksCount - 1 } 
     });
   } catch (err) {
     console.error("allocateDeskToMember error:", err);
@@ -1052,5 +1133,85 @@ export const getClientCreditManagement = async (req, res) => {
   } catch (err) {
     console.error("getClientCreditManagement error:", err);
     return res.status(500).json({ error: "Failed to fetch credit management data" });
+  }
+};
+
+// Get current client profile (for settings page)
+export const getCurrentClientProfile = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const client = await Client.findById(clientId).select('-ownerUser -kycDocuments');
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    return res.json({ success: true, data: client });
+  } catch (err) {
+    console.error("getCurrentClientProfile error:", err);
+    return res.status(500).json({ error: "Failed to fetch client profile" });
+  }
+};
+
+// Update current client profile (for settings page)
+export const updateCurrentClientProfile = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const {
+      companyName,
+      contactPerson,
+      email,
+      phone,
+      companyAddress,
+      documentName,
+      documentLink
+    } = req.body || {};
+
+    // Validate required fields
+    if (!companyName || !contactPerson || !email || !phone) {
+      return res.status(400).json({ 
+        error: "Company name, contact person, email, and phone are required" 
+      });
+    }
+
+    // Update client profile
+    const updatedClient = await Client.findByIdAndUpdate(
+      clientId,
+      {
+        $set: {
+          companyName: companyName.trim(),
+          contactPerson: contactPerson.trim(),
+          email: email.toLowerCase().trim(),
+          phone: phone.trim(),
+          companyAddress: companyAddress?.trim() || "",
+          documentName: documentName?.trim() || "",
+          documentLink: documentLink?.trim() || ""
+        }
+      },
+      { new: true, runValidators: true }
+    ).select('-ownerUser -kycDocuments');
+
+    if (!updatedClient) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: "Profile updated successfully",
+      data: updatedClient 
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+    console.error("updateCurrentClientProfile error:", err);
+    return res.status(500).json({ error: "Failed to update client profile" });
   }
 };

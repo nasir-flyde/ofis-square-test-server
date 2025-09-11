@@ -12,17 +12,15 @@ import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
 import { scheduleNoShowUpdates } from "./utils/cronJobs.js";
 
-// Load .env from this directory explicitly to be robust against different CWDs
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, ".env") }); // 🔑 Load env variables
+dotenv.config({ path: path.resolve(__dirname, ".env") });
 
 const app = express();
 const httpServer = createServer(app);
 
 initSocket(httpServer);
 
-// Middlewares
 const corsOptions = {
   origin: [
     'http://localhost:5174',
@@ -37,11 +35,11 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.use("/api", apiRoutes);
 
-// MongoDB Connection using .env
 mongoose
   .connect(process.env.MONGODB_URI || "mongodb+srv://nasir-flyde:Nsa%4019786@ofis-square-db.xaajgtt.mongodb.net/test")
   .then(() => console.log("✅ MongoDB Connected DB"))
@@ -51,10 +49,8 @@ app.get("/", (req, res) => {
   res.send("✅ Ofis Square Backend is working!");
 });
 
-// Initialize cron jobs
 scheduleNoShowUpdates();
 
-// Start Server
 const PORT = process.env.PORT || 5001;
 httpServer.listen(PORT, () => {
   console.log(`🚀 Ofis Square Server running on http://localhost:${PORT}`);
