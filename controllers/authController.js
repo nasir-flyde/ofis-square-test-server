@@ -281,6 +281,61 @@ export const memberLogin = async (req, res) => {
   }
 };
 
+export const communityLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    if ((role.roleName || "").toLowerCase() !== "community") {
+      return res.status(403).json({ error: "Not a community account" });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.json({ token, user: safeUser });
+  } catch (err) {
+    console.error("communityLogin error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 export const getMe = async (req, res) => {
   try {
     const user = req.user; 

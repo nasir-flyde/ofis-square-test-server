@@ -21,6 +21,7 @@ import walletRoutes from "./wallet.js";
 import memberRoutes from "./members.js";
 import memberPortalRoutes from "./memberPortal.js";
 import userRoutes from "./users.js";
+import communityRoutes from "./community.js";
 
 const router = express.Router();
 
@@ -47,5 +48,6 @@ router.use("/wallet", walletRoutes);
 router.use("/members", memberRoutes);
 router.use("/member-portal", memberPortalRoutes);
 router.use("/users", userRoutes);
+router.use("/community", communityRoutes);
 
 export default router;

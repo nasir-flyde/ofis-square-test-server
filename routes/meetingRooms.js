@@ -1,12 +1,13 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
+import communityMiddleware from "../middlewares/communityMiddleware.js";
 import { createRoom, listRooms, getRoomById, updateRoom, updateAvailability, deleteRoom } from "../controllers/meetingRoomController.js";
 
 const router = express.Router();
 
-router.get("/", authMiddleware, listRooms);
-router.post("/", authMiddleware, createRoom);
-router.get("/:id", authMiddleware, getRoomById);
+router.get("/", listRooms);
+router.post("/", authMiddleware,createRoom);
+router.get("/:id", authMiddleware,communityMiddleware, getRoomById);
 router.patch("/:id", authMiddleware, updateRoom);
 router.patch("/:id/availability", authMiddleware, updateAvailability);
 router.delete("/:id", authMiddleware, deleteRoom);

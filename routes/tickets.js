@@ -17,7 +17,7 @@ router.post("/", createTicket);
 router.get("/stats", getTicketStats);
 router.get("/staff/:userId", getStaffTickets);
 router.get("/:id", getTicketById);
-router.patch("/:id", authMiddleware, updateTicket);
+router.patch("/:id", updateTicket);
 router.delete("/:id", authMiddleware, deleteTicket);
 
 export default router;

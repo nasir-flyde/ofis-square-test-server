@@ -12,7 +12,7 @@ import {
 const router = express.Router();
 
 router.get("/", authMiddleware, getUsers);
-router.get("/staff", authMiddleware, getStaffUsers);
+router.get("/staff",getStaffUsers);
 router.get("/:id", authMiddleware, getUserById);
 router.post("/", authMiddleware, createUser);
 router.put("/:id", authMiddleware, updateUser);

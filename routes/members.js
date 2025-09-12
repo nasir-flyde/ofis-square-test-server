@@ -15,7 +15,7 @@ const router = express.Router();
 router.post("/", authVerify, checkPermission("admin"), createMember);
 
 // Get all members with filters
-router.get("/", authVerify, getMembers);
+router.get("/",getMembers);
 
 // Get member by ID
 router.get("/:id", authVerify, getMemberById);
