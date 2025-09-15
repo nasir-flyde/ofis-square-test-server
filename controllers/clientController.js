@@ -13,26 +13,103 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
+import { createContact } from "../utils/zohoBooks.js";
 
-// Create client (standard create using model field names)
 export const createClient = async (req, res) => {
   try {
     const body = req.body || {};
-    // Map common inputs and enforce admin-driven flow defaults
-    const payload = {
+    
+    // Basic company info
+    const basicInfo = {
       companyName: body.companyName ?? body.company_name ?? undefined,
+      legalName: body.legalName ?? body.legal_name ?? undefined,
       contactPerson: body.contactPerson ?? body.contact_person ?? undefined,
       email: body.email ? String(body.email).toLowerCase().trim() : undefined,
       phone: body.phone ? String(body.phone).trim() : undefined,
+      website: body.website ?? undefined,
       companyAddress: body.companyAddress ?? body.company_address ?? undefined,
-      companyDetailsComplete: true,
-      kycStatus: "pending",
+      industry: body.industry ?? undefined,
     };
+
+    // Commercial details
+    const commercialDetails = {
+      contactType: body.contactType ?? body.contact_type ?? "customer",
+      customerSubType: body.customerSubType ?? body.customer_sub_type ?? "business",
+      creditLimit: body.creditLimit ?? body.credit_limit ?? undefined,
+      contactNumber: body.contactNumber ?? body.contact_number ?? undefined,
+      isPortalEnabled: body.isPortalEnabled ?? body.is_portal_enabled ?? false,
+      paymentTerms: body.paymentTerms ?? body.payment_terms ?? undefined,
+      paymentTermsLabel: body.paymentTermsLabel ?? body.payment_terms_label ?? undefined,
+      notes: body.notes ?? undefined,
+    };
+
+    // Address details - handle nested objects with proper field mapping
+    const addressDetails = {
+      billingAddress: body.billingAddress ?? body.billing_address ?? undefined,
+      shippingAddress: body.shippingAddress ?? body.shipping_address ?? undefined,
+    };
+
+    // Contact persons - handle array with proper field mapping
+    let contactPersons = body.contactPersons ?? body.contact_persons ?? [];
+    if (Array.isArray(contactPersons)) {
+      contactPersons = contactPersons.map(person => ({
+        salutation: person.salutation ?? undefined,
+        first_name: person.first_name ?? person.firstName ?? undefined,
+        last_name: person.last_name ?? person.lastName ?? undefined,
+        email: person.email ? String(person.email).toLowerCase().trim() : undefined,
+        phone: person.phone ?? undefined,
+        mobile: person.mobile ?? undefined,
+        designation: person.designation ?? undefined,
+        department: person.department ?? undefined,
+        is_primary_contact: person.is_primary_contact ?? person.isPrimaryContact ?? false,
+        communication_preference: {
+          is_sms_enabled: person.communication_preference?.is_sms_enabled ?? person.isSmsEnabled ?? false,
+          is_whatsapp_enabled: person.communication_preference?.is_whatsapp_enabled ?? person.isWhatsappEnabled ?? false,
+        },
+        enable_portal: person.enable_portal ?? person.enablePortal ?? false,
+      }));
+    }
+
+    // Tax and compliance
+    const taxDetails = {
+      gstNumber: body.gstNumber ?? body.gst_number ?? undefined, // legacy field
+      gstNo: body.gstNo ?? body.gst_no ?? undefined,
+      gstTreatment: body.gstTreatment ?? body.gst_treatment ?? undefined,
+      isTaxable: body.isTaxable ?? body.is_taxable ?? true,
+      taxRegNo: body.taxRegNo ?? body.tax_reg_no ?? undefined,
+    };
+
+    // Zoho linkage
+    const zohoDetails = {
+      pricebookId: body.pricebookId ?? body.pricebook_id ?? undefined,
+      currencyId: body.currencyId ?? body.currency_id ?? undefined,
+      zohoBooksContactId: body.zohoBooksContactId ?? body.zoho_books_contact_id ?? undefined,
+    };
+
+    // Status and ownership fields
+    const statusDetails = {
+      companyDetailsComplete: body.companyDetailsComplete ?? body.company_details_complete ?? true,
+      kycStatus: body.kycStatus ?? body.kyc_status ?? "pending",
+      building: body.building ?? body.buildingId ?? undefined,
+    };
+
+    // Merge all sections into payload
+    const payload = {
+      ...basicInfo,
+      ...commercialDetails,
+      ...addressDetails,
+      contactPersons,
+      ...taxDetails,
+      ...zohoDetails,
+      ...statusDetails,
+    };
+    
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
     const client = await Client.create(payload);
     let createdOwnerUserId = null;
     let ownerUserInfo = undefined;
+    let zohoContactId = null;
     try {
       if (client?.email && client?.phone) {
         // Find or create 'client' role (case-insensitive)
@@ -68,6 +145,31 @@ export const createClient = async (req, res) => {
         client.ownerUser = user._id;
         createdOwnerUserId = user._id;
         await client.save();
+
+        // Also create a primary Member record for this client (owner)
+        try {
+          const existingOwnerMember = await Member.findOne({
+            client: client._id,
+            user: user._id,
+            role: "owner",
+          });
+
+          if (!existingOwnerMember) {
+            await Member.create({
+              firstName: (client.contactPerson || client.companyName || "Owner").trim(),
+              lastName: "",
+              email: client.email || undefined,
+              phone: client.phone || undefined,
+              companyName: client.companyName || undefined,
+              role: "owner",
+              client: client._id,
+              user: user._id,
+              status: "active",
+            });
+          }
+        } catch (memberErr) {
+          console.error("createClient: failed to create owner member:", memberErr?.message || memberErr);
+        }
       } else {
         ownerUserInfo = {
           note: "Owner user not created. Both email and phone are required to create a user.",
@@ -78,8 +180,68 @@ export const createClient = async (req, res) => {
     } catch (userErr) {
       console.error("createClient: failed to auto-create user:", userErr?.message || userErr);
     }
+    try {
+      if (!client.zohoBooksContactId) {
+        const zohoPayload = {
+          contact_name: client.companyName || client.contactPerson || "Unknown",
+          company_name: client.companyName,
+          email: client.email,
+          phone: client.phone,
+          website: client.website,
+          contact_type: client.contactType || "customer",
+          is_customer: true,
+          customer_sub_type: client.customerSubType || "business",
+          payment_terms: client.paymentTerms,
+          payment_terms_label: client.paymentTermsLabel,
+          notes: client.notes,
+          billing_address: client.billingAddress,
+          shipping_address: client.shippingAddress,
+          // Sanitize contact persons to only include Zoho-supported fields
+          contact_persons: Array.isArray(client.contactPersons)
+            ? client.contactPersons.map((cp) => ({
+                salutation: cp?.salutation || undefined,
+                first_name: cp?.first_name || cp?.firstName || undefined,
+                last_name: cp?.last_name || cp?.lastName || undefined,
+                email: cp?.email || undefined,
+                phone: cp?.phone || undefined,
+                mobile: cp?.mobile || cp?.phone || undefined,
+                designation: cp?.designation || undefined,
+                department: cp?.department || undefined,
+                is_primary_contact: cp?.is_primary_contact ?? cp?.isPrimaryContact ?? false,
+                enable_portal: cp?.enable_portal ?? cp?.enablePortal ?? false,
+              }))
+            : []
+        };
 
-    return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo });
+        // Remove undefined/empty fields
+        Object.keys(zohoPayload).forEach(key => {
+          if (zohoPayload[key] === undefined || zohoPayload[key] === null || zohoPayload[key] === '') {
+            delete zohoPayload[key];
+          }
+        });
+
+        console.log("createClient: Creating Zoho contact for client:", client._id);
+        const zohoResponse = await createContact(zohoPayload);
+        
+        if (zohoResponse?.contact?.contact_id) {
+          client.zohoBooksContactId = zohoResponse.contact.contact_id;
+          await client.save();
+          zohoContactId = zohoResponse.contact.contact_id;
+          console.log("createClient: Successfully created Zoho contact:", zohoContactId);
+        }
+      } else {
+        zohoContactId = client.zohoBooksContactId;
+      }
+    } catch (zohoErr) {
+      console.error(
+        "createClient: Zoho Books contact sync failed:",
+        zohoErr?.message || zohoErr,
+        "status:", zohoErr?.status,
+        "response:", JSON.stringify(zohoErr?.response || {}, null, 2)
+      );
+    }
+
+    return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo, zohoContactId });
   } catch (err) {
     console.error("createClient error:", err);
     return res.status(500).json({ error: "Failed to create client" });
@@ -90,11 +252,16 @@ export const upsertBasicDetails = async (req, res) => {
   try {
     const clientId = req.clientId;
     const payload = {
-      companyName: req.body?.company_name?.trim(),
-      contactPerson: req.body?.contact_person?.trim(),
+      companyName: req.body?.company_name?.trim() || req.body?.companyName?.trim(),
+      legalName: req.body?.legalName?.trim(),
+      contactPerson: req.body?.contact_person?.trim() || req.body?.contactPerson?.trim(),
       email: req.body?.email?.toLowerCase().trim(),
       phone: req.body?.phone?.trim(),
+      website: req.body?.website?.trim(),
+      companyAddress: req.body?.companyAddress?.trim(),
+      industry: req.body?.industry?.trim(),
       companyDetailsComplete: true,
+      gstNumber: (req.body?.gstNumber || req.body?.gst_number)?.trim(),
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -112,6 +279,101 @@ export const upsertBasicDetails = async (req, res) => {
   } catch (err) {
     console.error("upsertBasicDetails error:", err);
     return res.status(500).json({ error: "Failed to save client details" });
+  }
+};
+
+// Update commercial details
+export const updateCommercialDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = {
+      contactType: req.body?.contactType,
+      customerSubType: req.body?.customerSubType,
+      creditLimit: req.body?.creditLimit,
+      contactNumber: req.body?.contactNumber,
+      isPortalEnabled: req.body?.isPortalEnabled,
+      paymentTerms: req.body?.paymentTerms,
+      paymentTermsLabel: req.body?.paymentTermsLabel,
+      notes: req.body?.notes,
+    };
+
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+    
+    const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    return res.json({ message: "Commercial details updated", client });
+  } catch (err) {
+    console.error("updateCommercialDetails error:", err);
+    return res.status(500).json({ error: "Failed to update commercial details" });
+  }
+};
+
+// Update address details
+export const updateAddressDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = {
+      billingAddress: req.body?.billingAddress,
+      shippingAddress: req.body?.shippingAddress,
+    };
+
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+    
+    const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    return res.json({ message: "Address details updated", client });
+  } catch (err) {
+    console.error("updateAddressDetails error:", err);
+    return res.status(500).json({ error: "Failed to update address details" });
+  }
+};
+
+// Update contact persons
+export const updateContactPersons = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contactPersons } = req.body;
+
+    if (!Array.isArray(contactPersons)) {
+      return res.status(400).json({ error: "Contact persons must be an array" });
+    }
+    
+    const client = await Client.findByIdAndUpdate(
+      id, 
+      { $set: { contactPersons } }, 
+      { new: true }
+    );
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    return res.json({ message: "Contact persons updated", client });
+  } catch (err) {
+    console.error("updateContactPersons error:", err);
+    return res.status(500).json({ error: "Failed to update contact persons" });
+  }
+};
+
+// Update tax details
+export const updateTaxDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = {
+      gstNo: req.body?.gstNo,
+      gstTreatment: req.body?.gstTreatment,
+      isTaxable: req.body?.isTaxable,
+      taxRegNo: req.body?.taxRegNo,
+    };
+
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+    
+    const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    return res.json({ message: "Tax details updated", client });
+  } catch (err) {
+    console.error("updateTaxDetails error:", err);
+    return res.status(500).json({ error: "Failed to update tax details" });
   }
 };
 
@@ -257,6 +519,8 @@ export const submitKycDocuments = async (req, res) => {
           size: f.size,
           url: result?.url,
           fileId: result?.fileId,
+          name: result.name,
+          filePath: result.filePath,
         };
         if (!uploadsByField[f.fieldname]) uploadsByField[f.fieldname] = [];
         uploadsByField[f.fieldname].push(entry);
@@ -275,7 +539,13 @@ export const submitKycDocuments = async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: "Client not found" });
-    return res.json({ message: "KYC submitted and set to verified", client: updated });
+    
+    console.log(`KYC documents submitted for client ${id}, status set to verified`);
+    return res.json({ 
+      message: "KYC documents submitted successfully. Awaiting verification.", 
+      client: updated,
+      nextStep: "verification"
+    });
   } catch (err) {
     console.error("submitKycDocuments error:", err);
     return res.status(500).json({ error: "Failed to submit KYC documents" });
@@ -285,28 +555,68 @@ export const submitKycDocuments = async (req, res) => {
 export const verifyKyc = async (req, res) => {
   try {
     const { id } = req.params;
-    const updated = await Client.findByIdAndUpdate(id, { $set: { kycStatus: "verified" } }, { new: true });
-    if (!updated) return res.status(404).json({ error: "Client not found" });
+    const { buildingId, capacity = 4, monthlyRent } = req.body || {};
+    
+    const client = await Client.findById(id);
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    
+    // Update KYC status to verified
+    const updated = await Client.findByIdAndUpdate(
+      id, 
+      { $set: { kycStatus: "verified" } }, 
+      { new: true }
+    );
 
-    // After verification, create a draft Contract for this client
+    // After KYC verification, automatically create a draft contract
+    let contractId = null;
     try {
-      const start = new Date();
-      const end = new Date(start);
-      end.setFullYear(start.getFullYear() + 1);
-
-      await Contract.create({
-        client: id,
-        startDate: start,
-        endDate: end,
-        fileUrl: "placeholder",
-        // status will default to 'draft' based on the model
-      });
+      const Contract = (await import("../models/contractModel.js")).default;
+      const Building = (await import("../models/buildingModel.js")).default;
+      
+      // Get default building if not specified
+      let targetBuildingId = buildingId;
+      if (!targetBuildingId && updated.building) {
+        targetBuildingId = updated.building;
+      }
+      if (!targetBuildingId) {
+        // Get first active building as fallback
+        const defaultBuilding = await Building.findOne({ status: "active" });
+        targetBuildingId = defaultBuilding?._id;
+      }
+      
+      if (targetBuildingId) {
+        const building = await Building.findById(targetBuildingId);
+        const calculatedRent = monthlyRent || (building?.pricing ? building.pricing * capacity : 15000);
+        
+        const contract = await Contract.create({
+          client: id,
+          building: targetBuildingId,
+          startDate: new Date(),
+          endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          capacity: capacity,
+          monthlyRent: calculatedRent,
+          status: "draft",
+          fileUrl: "placeholder",
+        });
+        
+        contractId = contract._id;
+        
+        // Update client with building reference
+        await Client.findByIdAndUpdate(id, { building: targetBuildingId });
+        
+        console.log(`Auto-created contract ${contractId} for verified client ${id}`);
+      }
     } catch (e) {
-      // Log but do not block the response
       console.error("verifyKyc: failed to create contract:", e);
+      // Don't fail KYC verification if contract creation fails
     }
 
-    return res.json({ message: "KYC verified", client: updated });
+    return res.json({ 
+      message: "KYC verified successfully", 
+      client: updated,
+      contractId,
+      nextStep: contractId ? "contract_review" : "manual_contract_creation"
+    });
   } catch (err) {
     console.error("verifyKyc error:", err);
     return res.status(500).json({ error: "Failed to verify KYC" });

@@ -85,6 +85,31 @@ export const createContract = async (req, res) => {
 
     const created = await Contract.create(payload);
 
+    // Auto-generate and upload contract PDF
+    try {
+      const populatedContract = await Contract.findById(created._id)
+        .populate("client")
+        .populate("building", "name address pricing");
+      
+      const pdfBuffer = await generateContractPDFBuffer(populatedContract);
+      const fileName = `contract_${created._id}_${Date.now()}.pdf`;
+      
+      const uploadResponse = await imagekit.upload({
+        file: pdfBuffer,
+        fileName: fileName,
+        folder: "/contracts"
+      });
+      
+      // Update contract with the uploaded PDF URL
+      await Contract.findByIdAndUpdate(created._id, { fileUrl: uploadResponse.url });
+      created.fileUrl = uploadResponse.url;
+      
+      console.log(`Contract PDF uploaded: ${uploadResponse.url}`);
+    } catch (pdfError) {
+      console.error("Failed to generate/upload contract PDF:", pdfError);
+      // Don't fail contract creation if PDF upload fails
+    }
+
     // Update client with building ID when contract is created
     try {
       await Client.findByIdAndUpdate(clientId, { building: buildingId });
@@ -683,6 +708,13 @@ async function verifyDocumentExists(requestId) {
       });
 
       const result = await response.json();
+      // Fail fast on OAuth scope issues instead of retrying
+      const msgStr = (result && (result.message || result.code)) ? String(result.message || result.code) : "";
+      if (result?.code === 9040 || /invalid oauth scope/i.test(msgStr)) {
+        const guidance = "Zoho Sign returned 'Invalid Oauth Scope'. Ensure your refresh token has Zoho Sign scopes and that ZOHO_SIGN_REFRESH_TOKEN is used. Minimum recommended scopes: ZohoSign.documents.ALL, ZohoSign.requests.ALL, ZohoSign.organization.READ.";
+        console.error("Zoho Sign scope error while verifying document:", { result, guidance });
+        throw new Error(guidance);
+      }
       if (result.status === "success" && result.requests) {
         console.log(`Document ${requestId} verified on attempt ${attempt}`);
         return result.requests;
