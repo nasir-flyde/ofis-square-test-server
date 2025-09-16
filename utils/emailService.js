@@ -2,7 +2,7 @@ import nodemailer from 'nodemailer';
 
 // Create transporter using the same Mailtrap configuration as visitorController
 const createTransporter = () => {
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     host: 'bulk.smtp.mailtrap.io',
     port: 587,
     auth: {
