@@ -11,8 +11,28 @@ export const handleZohoBooksWebhook = async (req, res) => {
     console.log("Zoho Books webhook received:", {
       headers: req.headers,
       body: req.body,
+      method: req.method,
+      url: req.url,
       timestamp: new Date().toISOString()
     });
+
+    // Check for API key authentication first
+    const apiKey = process.env.ZOHO_BOOKS_API_KEY;
+    const authHeader = req.headers.authorization;
+    
+    if (apiKey && authHeader) {
+      const providedKey = authHeader.replace(/^Bearer\s+/i, '').replace(/^ApiKey\s+/i, '');
+      if (providedKey !== apiKey) {
+        console.error("Zoho Books webhook API key verification failed");
+        return res.status(401).json({ 
+          error: "Invalid API key",
+          timestamp: new Date().toISOString()
+        });
+      }
+      console.log("Zoho Books webhook API key verified successfully");
+    } else if (apiKey) {
+      console.warn("Zoho Books webhook API key configured but no Authorization header found");
+    }
 
     // Verify webhook signature if secret is configured
     const secret = process.env.ZOHO_BOOKS_WEBHOOK_SECRET;
