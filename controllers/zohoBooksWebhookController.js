@@ -11,28 +11,8 @@ export const handleZohoBooksWebhook = async (req, res) => {
     console.log("Zoho Books webhook received:", {
       headers: req.headers,
       body: req.body,
-      method: req.method,
-      url: req.url,
       timestamp: new Date().toISOString()
     });
-
-    // Check for API key authentication first
-    const apiKey = process.env.ZOHO_BOOKS_API_KEY;
-    const authHeader = req.headers.authorization;
-    
-    if (apiKey && authHeader) {
-      const providedKey = authHeader.replace(/^Bearer\s+/i, '').replace(/^ApiKey\s+/i, '');
-      if (providedKey !== apiKey) {
-        console.error("Zoho Books webhook API key verification failed");
-        return res.status(401).json({ 
-          error: "Invalid API key",
-          timestamp: new Date().toISOString()
-        });
-      }
-      console.log("Zoho Books webhook API key verified successfully");
-    } else if (apiKey) {
-      console.warn("Zoho Books webhook API key configured but no Authorization header found");
-    }
 
     // Verify webhook signature if secret is configured
     const secret = process.env.ZOHO_BOOKS_WEBHOOK_SECRET;
@@ -115,32 +95,8 @@ async function processZohoBooksEvent(payload) {
   console.log("Processing Zoho Books event:", {
     event_type: eventType,
     data_keys: Object.keys(data || {}),
-    has_contact: !!payload?.contact,
-    has_customer: !!payload?.customer,
-    has_payload_field: !!payload?.payload,
-    payload_content: payload?.payload
+    has_contact: !!payload?.contact
   });
-
-  // Handle webhook verification or test requests (empty payload)
-  if (payload?.payload === '' || (Object.keys(payload).length === 1 && payload?.payload !== undefined)) {
-    console.log("Detected Zoho Books webhook verification/test request");
-    return { 
-      status: "verified", 
-      reason: "Webhook verification successful",
-      message: "Zoho Books webhook endpoint is working correctly"
-    };
-  }
-
-  // If Zoho sent form-encoded with a JSON string in `payload`, parse it and re-process
-  if (typeof payload?.payload === 'string' && payload.payload.trim().length > 0) {
-    try {
-      const parsed = JSON.parse(payload.payload);
-      console.log("Parsed JSON from form-encoded payload");
-      return await processZohoBooksEvent(parsed);
-    } catch (e) {
-      console.warn("Failed to parse payload JSON string:", e?.message || e);
-    }
-  }
 
   // Handle contact creation events with explicit event type
   if (eventType === "contact_created" || eventType === "ContactCreated") {
@@ -152,12 +108,12 @@ async function processZohoBooksEvent(payload) {
     return await handleContactUpdated(data);
   }
 
-  // Handle direct contact/customer payload (Zoho Books may send contact or customer directly without event_type)
-  if ((payload?.contact || payload?.customer) && !eventType) {
+  // Handle direct contact payload (Zoho Books sends contact data directly without event_type)
+  if (payload?.contact && !eventType) {
     console.log("Detected direct contact payload from Zoho Books webhook");
     
     // Check if this is a new contact by looking at created_time vs last_modified_time
-    const contact = payload.contact || payload.customer;
+    const contact = payload.contact;
     const createdTime = new Date(contact.created_time);
     const modifiedTime = new Date(contact.last_modified_time);
     
@@ -179,24 +135,22 @@ async function processZohoBooksEvent(payload) {
     status: "ignored", 
     reason: "Unhandled event type or missing contact data",
     event_type: eventType,
-    has_contact: !!payload?.contact,
-    has_customer: !!payload?.customer,
-    payload_keys: Object.keys(payload || {})
+    has_contact: !!payload?.contact
   };
 }
 
 async function handleContactCreated(contactData) {
   try {
-    const contact = contactData?.contact || contactData?.customer || contactData;
+    const contact = contactData?.contact || contactData;
     
     if (!contact) {
       console.warn("No contact data found in webhook payload");
       return { status: "ignored", reason: "No contact data" };
     }
 
-    const contactId = contact.contact_id || contact.customer_id;
+    const contactId = contact.contact_id;
     const email = contact.email;
-    const companyName = contact.company_name || contact.contact_name || contact.customer_name;
+    const companyName = contact.company_name || contact.contact_name;
 
     console.log(`Processing contact creation for: ${companyName} (${email}) - Zoho ID: ${contactId}`);
 
@@ -317,12 +271,12 @@ async function handleContactUpdated(contactData) {
 }
 
 async function mapZohoContactToClient(contact) {
-  // Map Zoho contact/customer fields to client model
+  // Map Zoho contact fields to client model
   const clientData = {
-    companyName: contact.company_name || contact.customer_name || contact.contact_name || "Unknown Company",
-    legalName: contact.legal_name || contact.company_name || contact.customer_name,
-    contactPerson: contact.contact_name || contact.customer_name || (contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : undefined) || "Unknown",
-    email: contact.email ? String(contact.email).toLowerCase().trim() : undefined,
+    companyName: contact.company_name || contact.contact_name || "Unknown Company",
+    legalName: contact.legal_name || contact.company_name,
+    contactPerson: contact.contact_name || (contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : undefined) || "Unknown",
+    email: contact.email ? contact.email.toLowerCase().trim() : undefined,
     phone: contact.phone || contact.mobile || undefined,
     website: contact.website || undefined,
     
@@ -380,7 +334,7 @@ async function mapZohoContactToClient(contact) {
       })) : [],
 
     // Zoho linkage
-    zohoBooksContactId: contact.contact_id || contact.customer_id,
+    zohoBooksContactId: contact.contact_id,
     currencyId: contact.currency_id || undefined,
     pricebookId: contact.pricebook_id || undefined,
 
