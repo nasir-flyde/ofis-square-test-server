@@ -1,0 +1,298 @@
+import crypto from "crypto";
+import Contract from "../models/contractModel.js";
+import { createInvoiceFromContract } from "../services/invoiceService.js";
+
+export const handleZohoSignWebhook = async (req, res) => {
+  try {
+    console.log("Zoho Sign webhook received:", {
+      headers: req.headers,
+      body: req.body,
+      timestamp: new Date().toISOString()
+    });
+
+    // Verify webhook signature if configured
+    const secret = process.env.ZOHO_SIGN_WEBHOOK_SECRET;
+    const sigHeader = req.headers["x-zoho-webhook-signature"] || 
+                     req.headers["x-zoho-signature"] || 
+                     req.headers["zoho-webhook-signature"];
+    
+    let rawBodyStr = "";
+    if (Buffer.isBuffer(req.body)) {
+      rawBodyStr = req.body.toString("utf8");
+    } else if (typeof req.body === "string") {
+      rawBodyStr = req.body;
+    } else {
+      rawBodyStr = JSON.stringify(req.body || {});
+    }
+    if (secret && sigHeader) {
+      try {
+        const hmac = crypto.createHmac("sha256", secret).update(rawBodyStr).digest("hex");
+        const expectedSignature = `sha256=${hmac}`;
+        
+        if (sigHeader !== hmac && sigHeader !== expectedSignature) {
+          console.error("Webhook signature verification failed:", {
+            received: sigHeader,
+            expected: hmac,
+            expectedWithPrefix: expectedSignature
+          });
+          return res.status(401).json({ 
+            error: "Invalid webhook signature",
+            timestamp: new Date().toISOString()
+          });
+        }
+        console.log("Webhook signature verified successfully");
+      } catch (e) {
+        console.error("Webhook signature verification error:", e);
+        return res.status(401).json({ 
+          error: "Webhook signature verification failed",
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else if (secret) {
+      console.warn("Webhook secret configured but no signature header found");
+    }
+    let payload;
+    try {
+      payload = typeof rawBodyStr === "string" && rawBodyStr.length ? 
+                JSON.parse(rawBodyStr) : req.body;
+    } catch (e) {
+      console.error("Invalid JSON payload:", e);
+      return res.status(400).json({ 
+        error: "Invalid JSON payload",
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Process the webhook event
+    const result = await processZohoSignEvent(payload);
+    
+    return res.status(200).json({
+      message: "Webhook processed successfully",
+      result,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error("Zoho Sign webhook error:", err);
+    return res.status(500).json({ 
+      error: "Webhook processing failed",
+      message: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Process different types of Zoho Sign events
+async function processZohoSignEvent(payload) {
+  const { 
+    request_id, 
+    request_status, 
+    actions, 
+    event_type,
+    document_id,
+    recipient_email,
+    recipient_name 
+  } = payload || {};
+
+  console.log("Processing Zoho Sign event:", {
+    request_id,
+    request_status,
+    event_type,
+    document_id,
+    recipient_email
+  });
+
+  if (!request_id) {
+    console.warn("No request_id found in webhook payload");
+    return { status: "ignored", reason: "No request_id provided" };
+  }
+
+  // Find contract by Zoho Sign request ID
+  const contract = await Contract.findOne({ zohoSignRequestId: request_id })
+    .populate("client", "companyName email contactPerson")
+    .populate("building", "name address");
+
+  if (!contract) {
+    console.log(`Webhook received for unknown request_id: ${request_id}`);
+    return { 
+      status: "ignored", 
+      reason: "Contract not found",
+      request_id 
+    };
+  }
+
+  console.log(`Found contract ${contract._id} for request_id: ${request_id}`);
+
+  // Process based on event type or request status
+  const updateResult = await updateContractStatus(contract, {
+    request_status,
+    event_type,
+    actions,
+    recipient_email,
+    recipient_name
+  });
+
+  return {
+    status: "processed",
+    contract_id: contract._id,
+    old_status: contract.status,
+    ...updateResult
+  };
+}
+
+// Update contract status based on Zoho Sign event
+async function updateContractStatus(contract, eventData) {
+  const { request_status, event_type, actions, recipient_email } = eventData;
+  
+  let newStatus = contract.status;
+  let updateData = {};
+  let actionTaken = "none";
+
+  // Handle different event types and statuses
+  switch (request_status) {
+    case "completed":
+    case "signed":
+      if (contract.status !== "active") {
+        newStatus = "active";
+        updateData.signedAt = new Date();
+        actionTaken = "activated";
+        console.log(`Contract ${contract._id} marked as active (signed)`);
+      }
+      break;
+
+    case "declined":
+    case "rejected":
+      if (contract.status === "pending_signature") {
+        newStatus = "draft"; // Reset to draft for re-sending
+        updateData.declinedAt = new Date();
+        actionTaken = "declined";
+        console.log(`Contract ${contract._id} declined, reset to draft`);
+      }
+      break;
+
+    case "expired":
+      if (contract.status === "pending_signature") {
+        newStatus = "draft"; // Reset to draft for re-sending
+        updateData.expiredAt = new Date();
+        actionTaken = "expired";
+        console.log(`Contract ${contract._id} expired, reset to draft`);
+      }
+      break;
+
+    case "in_progress":
+    case "sent":
+      // Document is sent and waiting for signature
+      if (contract.status === "draft") {
+        newStatus = "pending_signature";
+        actionTaken = "sent_for_signature";
+        console.log(`Contract ${contract._id} sent for signature`);
+      }
+      break;
+
+    default:
+      console.log(`Unhandled request_status: ${request_status} for contract ${contract._id}`);
+  }
+
+  // Handle specific event types
+  if (event_type) {
+    switch (event_type) {
+      case "REQUEST_SIGNED":
+      case "DOCUMENT_SIGNED":
+        if (contract.status !== "active") {
+          newStatus = "active";
+          updateData.signedAt = new Date();
+          actionTaken = "activated";
+        }
+        break;
+
+      case "REQUEST_DECLINED":
+      case "DOCUMENT_DECLINED":
+        if (contract.status === "pending_signature") {
+          newStatus = "draft";
+          updateData.declinedAt = new Date();
+          actionTaken = "declined";
+        }
+        break;
+
+      case "REQUEST_EXPIRED":
+        if (contract.status === "pending_signature") {
+          newStatus = "draft";
+          updateData.expiredAt = new Date();
+          actionTaken = "expired";
+        }
+        break;
+    }
+  }
+
+  // Update contract if status changed
+  if (newStatus !== contract.status) {
+    updateData.status = newStatus;
+    await Contract.findByIdAndUpdate(contract._id, updateData);
+    console.log(`Contract ${contract._id} status updated: ${contract.status} → ${newStatus}`);
+
+    // Auto-create invoice when contract becomes active
+    if (newStatus === "active") {
+      try {
+        const invoice = await createInvoiceFromContract(contract._id, {
+          issueOn: "activation",
+          prorate: true,
+          includeDeposit: true,
+          dueDays: 7
+        });
+        console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id} via webhook`);
+        actionTaken += "_with_invoice";
+      } catch (invoiceError) {
+        console.error("Failed to auto-create invoice from webhook:", invoiceError);
+        // Don't fail the webhook processing if invoice creation fails
+      }
+    }
+  }
+
+  return {
+    new_status: newStatus,
+    action_taken: actionTaken,
+    updated_fields: Object.keys(updateData)
+  };
+}
+
+// Health check endpoint for webhook
+export const webhookHealthCheck = async (req, res) => {
+  return res.status(200).json({
+    status: "healthy",
+    service: "Zoho Sign Webhook Handler",
+    timestamp: new Date().toISOString(),
+    version: "1.0.0"
+  });
+};
+
+// Test endpoint for webhook (development only)
+export const testWebhook = async (req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  const testPayload = {
+    request_id: "test_request_123",
+    request_status: "completed",
+    event_type: "REQUEST_SIGNED",
+    recipient_email: "test@example.com",
+    recipient_name: "Test User",
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    const result = await processZohoSignEvent(testPayload);
+    return res.status(200).json({
+      message: "Test webhook processed",
+      test_payload: testPayload,
+      result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: "Test webhook failed",
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
