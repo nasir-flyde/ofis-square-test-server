@@ -5,14 +5,51 @@ import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 
-// Handle Zoho Books contact creation webhook
+// Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
   try {
     console.log("Zoho Books webhook received:", {
       headers: req.headers,
       body: req.body,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      url: req.url,
+      contentType: req.headers['content-type']
     });
+
+    // Handle x-www-form-urlencoded payload format
+    let payload = req.body;
+    if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+      if (req.body?.payload) {
+        try {
+          payload = JSON.parse(req.body.payload);
+          console.log("Parsed form-urlencoded payload");
+        } catch (e) {
+          console.error("Failed to parse form-urlencoded payload:", e);
+          return res.status(400).json({ 
+            error: "Invalid form-urlencoded payload",
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Basic webhook security - check for Zoho Books user agent and organization ID
+    const userAgent = req.headers['user-agent'];
+    const orgId = req.headers['x-com-zoho-organizationid'];
+    const expectedOrgId = process.env.ZOHO_ORG_ID || '60047183737';
+    
+    if (!userAgent?.includes('ZohoBooks')) {
+      console.warn("Webhook received from non-Zoho Books user agent:", userAgent);
+    }
+    
+    if (orgId && orgId !== expectedOrgId) {
+      console.error("Webhook from unauthorized organization:", orgId);
+      return res.status(403).json({ 
+        error: "Unauthorized organization",
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // Verify webhook signature if secret is configured
     const secret = process.env.ZOHO_BOOKS_WEBHOOK_SECRET;
@@ -57,18 +94,6 @@ export const handleZohoBooksWebhook = async (req, res) => {
       console.warn("Zoho Books webhook secret configured but no signature header found");
     }
 
-    let payload;
-    try {
-      payload = typeof rawBodyStr === "string" && rawBodyStr.length ? 
-                JSON.parse(rawBodyStr) : req.body;
-    } catch (e) {
-      console.error("Invalid JSON payload:", e);
-      return res.status(400).json({ 
-        error: "Invalid JSON payload",
-        timestamp: new Date().toISOString()
-      });
-    }
-
     // Process the webhook event
     const result = await processZohoBooksEvent(payload);
     
@@ -95,37 +120,58 @@ async function processZohoBooksEvent(payload) {
   console.log("Processing Zoho Books event:", {
     event_type: eventType,
     data_keys: Object.keys(data || {}),
-    has_contact: !!payload?.contact
+    has_contact: !!payload?.contact,
+    has_customer: !!payload?.customer
   });
 
-  // Handle contact creation events with explicit event type
-  if (eventType === "contact_created" || eventType === "ContactCreated") {
-    return await handleContactCreated(data);
+  // Handle customer creation events with explicit event type
+  if (eventType === "customer_created" || eventType === "CustomerCreated") {
+    return await handleCustomerCreated(data);
   }
 
-  // Handle contact update events with explicit event type
-  if (eventType === "contact_updated" || eventType === "ContactUpdated") {
-    return await handleContactUpdated(data);
+  // Handle customer update events with explicit event type
+  if (eventType === "customer_updated" || eventType === "CustomerUpdated") {
+    return await handleCustomerUpdated(data);
   }
 
-  // Handle direct contact payload (Zoho Books sends contact data directly without event_type)
-  if (payload?.contact && !eventType) {
-    console.log("Detected direct contact payload from Zoho Books webhook");
+  // Handle direct customer payload (Zoho Books sends customer data directly without event_type)
+  if (payload?.customer && !eventType) {
+    console.log("Detected direct customer payload from Zoho Books webhook");
     
-    // Check if this is a new contact by looking at created_time vs last_modified_time
+    // Check if this is a new customer by looking at created_time vs last_modified_time
+    const customer = payload.customer;
+    const createdTime = new Date(customer.created_time);
+    const modifiedTime = new Date(customer.last_modified_time);
+    
+    // If created and modified times are very close (within 5 seconds), treat as creation
+    const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
+    const isNewCustomer = timeDiff < 5000; // 5 seconds threshold
+    
+    if (isNewCustomer) {
+      console.log("Processing as customer creation event");
+      return await handleCustomerCreated({ customer });
+    } else {
+      console.log("Processing as customer update event");
+      return await handleCustomerUpdated({ customer });
+    }
+  }
+
+  // Legacy support: Handle contact payload (for backward compatibility)
+  if (payload?.contact && !eventType) {
+    console.log("Detected legacy contact payload from Zoho Books webhook");
+    
     const contact = payload.contact;
     const createdTime = new Date(contact.created_time);
     const modifiedTime = new Date(contact.last_modified_time);
     
-    // If created and modified times are very close (within 5 seconds), treat as creation
     const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
-    const isNewContact = timeDiff < 5000; // 5 seconds threshold
+    const isNewContact = timeDiff < 5000;
     
     if (isNewContact) {
-      console.log("Processing as contact creation event");
+      console.log("Processing legacy contact as creation event");
       return await handleContactCreated({ contact });
     } else {
-      console.log("Processing as contact update event");
+      console.log("Processing legacy contact as update event");
       return await handleContactUpdated({ contact });
     }
   }
@@ -133,12 +179,146 @@ async function processZohoBooksEvent(payload) {
   console.log(`Unhandled Zoho Books event type: ${eventType}`);
   return { 
     status: "ignored", 
-    reason: "Unhandled event type or missing contact data",
+    reason: "Unhandled event type or missing customer/contact data",
     event_type: eventType,
-    has_contact: !!payload?.contact
+    has_contact: !!payload?.contact,
+    has_customer: !!payload?.customer
   };
 }
 
+// Handle customer creation (primary function for Zoho Books)
+async function handleCustomerCreated(customerData) {
+  try {
+    const customer = customerData?.customer || customerData;
+    
+    if (!customer) {
+      console.warn("No customer data found in webhook payload");
+      return { status: "ignored", reason: "No customer data" };
+    }
+
+    const customerId = customer.customer_id;
+    const email = customer.email;
+    const companyName = customer.company_name || customer.customer_name;
+
+    console.log(`Processing customer creation for: ${companyName} (${email}) - Zoho ID: ${customerId}`);
+
+    // Check if client already exists with this Zoho customer ID
+    const existingClient = await Client.findOne({ zohoBooksContactId: customerId });
+    if (existingClient) {
+      console.log(`Client already exists for Zoho customer ID: ${customerId}`);
+      return { 
+        status: "ignored", 
+        reason: "Client already exists",
+        client_id: existingClient._id 
+      };
+    }
+
+    // Check if client exists by email
+    if (email) {
+      const existingByEmail = await Client.findOne({ email: email.toLowerCase() });
+      if (existingByEmail) {
+        // Update existing client with Zoho customer ID
+        existingByEmail.zohoBooksContactId = customerId;
+        await existingByEmail.save();
+        console.log(`Updated existing client ${existingByEmail._id} with Zoho customer ID: ${customerId}`);
+        return { 
+          status: "updated", 
+          reason: "Added Zoho ID to existing client",
+          client_id: existingByEmail._id 
+        };
+      }
+    }
+
+    // Create new client from Zoho customer data
+    const clientData = await mapZohoCustomerToClient(customer);
+    const newClient = await Client.create(clientData);
+
+    console.log(`Created new client ${newClient._id} from Zoho customer ${customerId}`);
+
+    // Create user and member records if email and phone are available
+    let createdUserId = null;
+    if (newClient.email && newClient.phone) {
+      try {
+        createdUserId = await createUserAndMemberForClient(newClient);
+      } catch (userErr) {
+        console.error("Failed to create user/member for Zoho-created client:", userErr);
+      }
+    }
+
+    // Send welcome email
+    if (newClient.email) {
+      try {
+        const emailResult = await sendWelcomeEmail({
+          companyName: newClient.companyName,
+          contactPerson: newClient.contactPerson,
+          email: newClient.email
+        });
+        
+        if (emailResult.success) {
+          console.log(`Welcome email sent to ${newClient.email} for Zoho-created client`);
+        } else {
+          console.error(`Failed to send welcome email:`, emailResult.error);
+        }
+      } catch (emailErr) {
+        console.error("Welcome email error for Zoho-created client:", emailErr);
+      }
+    }
+
+    return {
+      status: "created",
+      client_id: newClient._id,
+      zoho_customer_id: customerId,
+      user_created: !!createdUserId,
+      user_id: createdUserId
+    };
+
+  } catch (err) {
+    console.error("Error handling Zoho customer creation:", err);
+    throw err;
+  }
+}
+
+async function handleCustomerUpdated(customerData) {
+  try {
+    const customer = customerData?.customer || customerData;
+    const customerId = customer?.customer_id;
+
+    if (!customerId) {
+      return { status: "ignored", reason: "No customer ID" };
+    }
+
+    // Find existing client by Zoho customer ID
+    const existingClient = await Client.findOne({ zohoBooksContactId: customerId });
+    if (!existingClient) {
+      console.log(`No client found for updated Zoho customer ID: ${customerId}`);
+      return { status: "ignored", reason: "Client not found" };
+    }
+
+    // Update client with new data from Zoho
+    const updatedData = await mapZohoCustomerToClient(customer);
+    
+    // Remove fields that shouldn't be overwritten
+    delete updatedData.zohoBooksContactId; // Keep existing
+    delete updatedData.kycStatus; // Don't reset KYC status
+    delete updatedData.building; // Don't change building assignment
+
+    await Client.findByIdAndUpdate(existingClient._id, { $set: updatedData });
+
+    console.log(`Updated client ${existingClient._id} from Zoho customer update`);
+
+    return {
+      status: "updated",
+      client_id: existingClient._id,
+      zoho_customer_id: customerId
+    };
+
+  } catch (err) {
+    console.error("Error handling Zoho customer update:", err);
+    throw err;
+  }
+}
+
+// Legacy contact handlers (for backward compatibility)
 async function handleContactCreated(contactData) {
   try {
     const contact = contactData?.contact || contactData;
@@ -270,6 +450,91 @@ async function handleContactUpdated(contactData) {
   }
 }
 
+// Map Zoho customer fields to client model (primary mapping function)
+async function mapZohoCustomerToClient(customer) {
+  // Map Zoho customer fields to client model
+  const clientData = {
+    companyName: customer.company_name || customer.customer_name || "Unknown Company",
+    legalName: customer.legal_name || customer.company_name,
+    contactPerson: customer.customer_name || (customer.first_name && customer.last_name ? `${customer.first_name} ${customer.last_name}` : undefined) || "Unknown",
+    email: customer.email ? customer.email.toLowerCase().trim() : undefined,
+    phone: customer.phone || customer.mobile || undefined,
+    website: customer.website || undefined,
+    
+    // Commercial details
+    contactType: customer.contact_type || "customer",
+    customerSubType: customer.customer_sub_type || "business",
+    creditLimit: customer.credit_limit || undefined,
+    isPortalEnabled: customer.is_portal_enabled || false,
+    paymentTerms: customer.payment_terms || undefined,
+    paymentTermsLabel: customer.payment_terms_label || undefined,
+    notes: customer.notes || undefined,
+
+    // Tax details
+    gstNo: customer.gst_no || undefined,
+    gstTreatment: customer.gst_treatment || undefined,
+    isTaxable: customer.is_taxable !== false, // Default to true
+    taxRegNo: customer.tax_reg_no || undefined,
+
+    // Address details
+    billingAddress: customer.billing_address ? {
+      attention: customer.billing_address.attention || undefined,
+      address: customer.billing_address.address || undefined,
+      street2: customer.billing_address.street2 || undefined,
+      city: customer.billing_address.city || undefined,
+      state: customer.billing_address.state || undefined,
+      zip: customer.billing_address.zip || undefined,
+      country: customer.billing_address.country || undefined,
+      phone: customer.billing_address.phone || undefined
+    } : undefined,
+
+    shippingAddress: customer.shipping_address ? {
+      attention: customer.shipping_address.attention || undefined,
+      address: customer.shipping_address.address || undefined,
+      street2: customer.shipping_address.street2 || undefined,
+      city: customer.shipping_address.city || undefined,
+      state: customer.shipping_address.state || undefined,
+      zip: customer.shipping_address.zip || undefined,
+      country: customer.shipping_address.country || undefined,
+      phone: customer.shipping_address.phone || undefined
+    } : undefined,
+
+    // Contact persons (if available)
+    contactPersons: Array.isArray(customer.contact_persons) ? 
+      customer.contact_persons.map(cp => ({
+        salutation: cp.salutation || undefined,
+        first_name: cp.first_name || undefined,
+        last_name: cp.last_name || undefined,
+        email: cp.email ? cp.email.toLowerCase().trim() : undefined,
+        phone: cp.phone || undefined,
+        mobile: cp.mobile || undefined,
+        designation: cp.designation || undefined,
+        department: cp.department || undefined,
+        is_primary_contact: cp.is_primary_contact || false,
+        enable_portal: cp.enable_portal || false
+      })) : [],
+
+    // Zoho linkage
+    zohoBooksContactId: customer.customer_id,
+    currencyId: customer.currency_id || undefined,
+    pricebookId: customer.pricebook_id || undefined,
+
+    // Status
+    companyDetailsComplete: true,
+    kycStatus: "pending"
+  };
+
+  // Remove undefined fields
+  Object.keys(clientData).forEach(key => {
+    if (clientData[key] === undefined) {
+      delete clientData[key];
+    }
+  });
+
+  return clientData;
+}
+
+// Legacy contact mapping function (for backward compatibility)
 async function mapZohoContactToClient(contact) {
   // Map Zoho contact fields to client model
   const clientData = {
@@ -433,19 +698,32 @@ export const testZohoBooksWebhook = async (req, res) => {
   }
 
   const testPayload = {
-    event_type: "contact_created",
+    event_type: "customer_created",
     data: {
-      contact: {
-        contact_id: "test_contact_123",
-        contact_name: "Test Company",
-        company_name: "Test Company Ltd",
+      customer: {
+        customer_id: "test_customer_123",
+        customer_name: "Test Company",
+        company_name: "Test Company Ltd", 
         email: "test@testcompany.com",
-        phone: "+1234567890",
+        phone: "1234567890",
+        mobile: "1234567890",
         contact_type: "customer",
         customer_sub_type: "business",
+        created_time: new Date().toISOString(),
+        last_modified_time: new Date().toISOString(),
+        status: "active",
+        currency_code: "INR",
         billing_address: {
           attention: "Test Person",
           address: "123 Test Street",
+          city: "Test City",
+          state: "Test State",
+          zip: "12345",
+          country: "India"
+        },
+        shipping_address: {
+          attention: "Test Person",
+          address: "123 Test Street", 
           city: "Test City",
           state: "Test State",
           zip: "12345",
