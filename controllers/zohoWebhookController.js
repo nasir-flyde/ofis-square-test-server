@@ -9,8 +9,6 @@ export const handleZohoSignWebhook = async (req, res) => {
       body: req.body,
       timestamp: new Date().toISOString()
     });
-
-    // Verify webhook signature if configured
     const secret = process.env.ZOHO_SIGN_WEBHOOK_SECRET;
     const sigHeader = req.headers["x-zoho-webhook-signature"] || 
                      req.headers["x-zoho-signature"] || 
@@ -82,54 +80,67 @@ export const handleZohoSignWebhook = async (req, res) => {
   }
 };
 
-// Process different types of Zoho Sign events
 async function processZohoSignEvent(payload) {
+  const requests = payload?.requests || {};
+  const notifications = payload?.notifications || {};
+  
   const { 
     request_id, 
     request_status, 
-    actions, 
+    actions,
+    document_ids,
+    owner_email,
+    request_name
+  } = requests;
+
+  const {
     event_type,
-    document_id,
-    recipient_email,
-    recipient_name 
-  } = payload || {};
+    operation_type,
+    performed_by_email,
+    activity
+  } = notifications;
+  const finalRequestId = request_id || payload?.request_id;
+  const finalRequestStatus = request_status || payload?.request_status;
+  const finalEventType = event_type || payload?.event_type || operation_type;
 
   console.log("Processing Zoho Sign event:", {
-    request_id,
-    request_status,
-    event_type,
-    document_id,
-    recipient_email
+    request_id: finalRequestId,
+    request_status: finalRequestStatus,
+    event_type: finalEventType,
+    operation_type,
+    activity,
+    owner_email,
+    request_name
   });
 
-  if (!request_id) {
-    console.warn("No request_id found in webhook payload");
+  if (!finalRequestId) {
+    console.warn("No request_id found in webhook payload", { payload });
     return { status: "ignored", reason: "No request_id provided" };
   }
 
-  // Find contract by Zoho Sign request ID
-  const contract = await Contract.findOne({ zohoSignRequestId: request_id })
+  const contract = await Contract.findOne({ zohoSignRequestId: finalRequestId })
     .populate("client", "companyName email contactPerson")
     .populate("building", "name address");
 
   if (!contract) {
-    console.log(`Webhook received for unknown request_id: ${request_id}`);
+    console.log(`Webhook received for unknown request_id: ${finalRequestId}`);
     return { 
       status: "ignored", 
       reason: "Contract not found",
-      request_id 
+      request_id: finalRequestId 
     };
   }
 
-  console.log(`Found contract ${contract._id} for request_id: ${request_id}`);
+  console.log(`Found contract ${contract._id} for request_id: ${finalRequestId}`);
 
   // Process based on event type or request status
   const updateResult = await updateContractStatus(contract, {
-    request_status,
-    event_type,
+    request_status: finalRequestStatus,
+    event_type: finalEventType,
+    operation_type,
+    activity,
     actions,
-    recipient_email,
-    recipient_name
+    performed_by_email
   });
 
   return {
@@ -140,15 +151,12 @@ async function processZohoSignEvent(payload) {
   };
 }
 
-// Update contract status based on Zoho Sign event
 async function updateContractStatus(contract, eventData) {
-  const { request_status, event_type, actions, recipient_email } = eventData;
+  const { request_status, event_type, operation_type, activity, actions, performed_by_email } = eventData;
   
   let newStatus = contract.status;
   let updateData = {};
   let actionTaken = "none";
-
-  // Handle different event types and statuses
   switch (request_status) {
     case "completed":
     case "signed":
@@ -193,11 +201,13 @@ async function updateContractStatus(contract, eventData) {
       console.log(`Unhandled request_status: ${request_status} for contract ${contract._id}`);
   }
 
-  // Handle specific event types
-  if (event_type) {
-    switch (event_type) {
+  // Handle specific event types and operation types
+  const eventToCheck = event_type || operation_type;
+  if (eventToCheck) {
+    switch (eventToCheck) {
       case "REQUEST_SIGNED":
       case "DOCUMENT_SIGNED":
+      case "RequestCompleted":
         if (contract.status !== "active") {
           newStatus = "active";
           updateData.signedAt = new Date();
@@ -207,6 +217,7 @@ async function updateContractStatus(contract, eventData) {
 
       case "REQUEST_DECLINED":
       case "DOCUMENT_DECLINED":
+      case "RequestDeclined":
         if (contract.status === "pending_signature") {
           newStatus = "draft";
           updateData.declinedAt = new Date();
@@ -215,12 +226,44 @@ async function updateContractStatus(contract, eventData) {
         break;
 
       case "REQUEST_EXPIRED":
+      case "RequestExpired":
         if (contract.status === "pending_signature") {
           newStatus = "draft";
           updateData.expiredAt = new Date();
           actionTaken = "expired";
         }
         break;
+
+      case "RequestSent":
+      case "REQUEST_SENT":
+        if (contract.status === "draft") {
+          newStatus = "pending_signature";
+          actionTaken = "sent_for_signature";
+        }
+        break;
+    }
+  }
+
+  // Handle activity-based detection
+  if (activity && typeof activity === "string") {
+    if (activity.toLowerCase().includes("completed")) {
+      if (contract.status !== "active") {
+        newStatus = "active";
+        updateData.signedAt = new Date();
+        actionTaken = "activated";
+      }
+    } else if (activity.toLowerCase().includes("declined")) {
+      if (contract.status === "pending_signature") {
+        newStatus = "draft";
+        updateData.declinedAt = new Date();
+        actionTaken = "declined";
+      }
+    } else if (activity.toLowerCase().includes("expired")) {
+      if (contract.status === "pending_signature") {
+        newStatus = "draft";
+        updateData.expiredAt = new Date();
+        actionTaken = "expired";
+      }
     }
   }
 
