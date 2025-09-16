@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 import { getValidAccessToken } from "./zohoTokenManager.js";
 
-const ORG_ID = "60047183737";
+const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID || "60047183737";
 // Use zohoapis.com domain as per Zoho's updated requirements
 const BASE_URL = "https://www.zohoapis.in/books/v3";
 
@@ -260,17 +260,49 @@ export async function findOrCreateContactFromClient(clientDoc) {
 // -------------------
 // Create invoice in Zoho
 // -------------------
-export async function createZohoInvoiceFromLocal(invoiceDoc) {
+export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
   try {
     const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
+
+    // Build Zoho-compliant payload from our local models
+    const {
+      invoiceNumber,
+      issueDate,
+      dueDate,
+      items = [],
+      discount = {},
+      notes = "",
+      billingPeriod,
+    } = invoiceDoc || {};
+
+    // Ensure we have a Zoho contact to attach as customer
+    const customer_id = await findOrCreateContactFromClient(clientDoc || {});
+
+    const line_items = (items || []).map((it) => ({
+      item_id: it.item_id || 2865532000000048245, // Use provided item_id or default
+      rate: Number(it.unitPrice || it.rate || 0),
+      quantity: Number(it.quantity || 1),
+    }));
+
+    const payload = {
+      customer_id,
+      date: issueDate ? new Date(issueDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+      ...(dueDate ? { due_date: new Date(dueDate).toISOString().slice(0, 10) } : {}),
+      line_items,
+      notes: notes || "Looking forward for your business.",
+      terms: billingPeriod && billingPeriod.start && billingPeriod.end
+        ? `Billing Period: ${new Date(billingPeriod.start).toISOString().slice(0, 10)} to ${new Date(billingPeriod.end).toISOString().slice(0, 10)}`
+        : "Terms & Conditions apply",
+    };
+
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(invoiceDoc),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");

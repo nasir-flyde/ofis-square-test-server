@@ -20,10 +20,8 @@ async function testZohoToken() {
     if (token) {
       console.log("✅ Successfully obtained access token:");
       console.log(`Token: ${token.slice(0, 20)}...`);
-      
-      // Test a simple API call
       console.log("\n🌐 Testing API call with token...");
-      const testResponse = await fetch("https://books.zohoapis.in/api/v3/contacts?organization_id=60047183737", {
+      const testResponse = await fetch("https://www.zohoapis.in/books/api/v3/contacts?organization_id=60047183737", {
         method: "GET",
         headers: { 
           Authorization: `Zoho-oauthtoken ${token}`,
