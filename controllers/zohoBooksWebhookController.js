@@ -94,24 +94,48 @@ async function processZohoBooksEvent(payload) {
 
   console.log("Processing Zoho Books event:", {
     event_type: eventType,
-    data_keys: Object.keys(data || {})
+    data_keys: Object.keys(data || {}),
+    has_contact: !!payload?.contact
   });
 
-  // Handle contact creation events
+  // Handle contact creation events with explicit event type
   if (eventType === "contact_created" || eventType === "ContactCreated") {
     return await handleContactCreated(data);
   }
 
-  // Handle contact update events (optional)
+  // Handle contact update events with explicit event type
   if (eventType === "contact_updated" || eventType === "ContactUpdated") {
     return await handleContactUpdated(data);
+  }
+
+  // Handle direct contact payload (Zoho Books sends contact data directly without event_type)
+  if (payload?.contact && !eventType) {
+    console.log("Detected direct contact payload from Zoho Books webhook");
+    
+    // Check if this is a new contact by looking at created_time vs last_modified_time
+    const contact = payload.contact;
+    const createdTime = new Date(contact.created_time);
+    const modifiedTime = new Date(contact.last_modified_time);
+    
+    // If created and modified times are very close (within 5 seconds), treat as creation
+    const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
+    const isNewContact = timeDiff < 5000; // 5 seconds threshold
+    
+    if (isNewContact) {
+      console.log("Processing as contact creation event");
+      return await handleContactCreated({ contact });
+    } else {
+      console.log("Processing as contact update event");
+      return await handleContactUpdated({ contact });
+    }
   }
 
   console.log(`Unhandled Zoho Books event type: ${eventType}`);
   return { 
     status: "ignored", 
-    reason: "Unhandled event type",
-    event_type: eventType 
+    reason: "Unhandled event type or missing contact data",
+    event_type: eventType,
+    has_contact: !!payload?.contact
   };
 }
 
