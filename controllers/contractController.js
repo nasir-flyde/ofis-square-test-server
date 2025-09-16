@@ -522,8 +522,15 @@ export const handleZohoSignWebhook = async (req, res) => {
     if (request_status === "completed") {
       newStatus = "active";
       updateData.signedAt = new Date();
+      try {
+        const signedDocumentUrl = await downloadSignedDocument(request_id);
+        updateData.fileUrl = signedDocumentUrl;
+        console.log(`Downloaded signed document for contract ${contract._id}: ${signedDocumentUrl}`);
+      } catch (downloadError) {
+        console.error(`Failed to download signed document for contract ${contract._id}:`, downloadError);
+      }
     } else if (request_status === "declined") {
-      newStatus = "draft"; // Reset to draft for re-sending
+      newStatus = "draft"; 
       updateData.declinedAt = new Date();
     }
 
@@ -752,6 +759,38 @@ async function getZohoSignDocumentStatus(requestId) {
   }
   
   return result.requests;
+}
+
+// Helper function: Download signed document from Zoho Sign
+async function downloadSignedDocument(requestId) {
+  try {
+    const accessToken = await getAccessToken();
+    const response = await fetch(`${ZOHO_SIGN_BASE_URL}/requests/${requestId}/pdf`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Zoho-oauthtoken ${accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to download signed document: HTTP ${response.status}`);
+    }
+
+    const pdfBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Upload to ImageKit
+    const fileName = `signed_contract_${requestId}_${Date.now()}.pdf`;
+    const uploadResponse = await imagekit.upload({
+      file: pdfBuffer,
+      fileName: fileName,
+      folder: "/contracts/signed"
+    });
+
+    return uploadResponse.url;
+  } catch (error) {
+    console.error("Failed to download and upload signed document:", error);
+    throw error;
+  }
 }
 
 // Generate contract PDF using template
