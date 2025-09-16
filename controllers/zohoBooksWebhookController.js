@@ -96,6 +96,7 @@ async function processZohoBooksEvent(payload) {
     event_type: eventType,
     data_keys: Object.keys(data || {}),
     has_contact: !!payload?.contact,
+    has_customer: !!payload?.customer,
     has_payload_field: !!payload?.payload,
     payload_content: payload?.payload
   });
@@ -110,6 +111,17 @@ async function processZohoBooksEvent(payload) {
     };
   }
 
+  // If Zoho sent form-encoded with a JSON string in `payload`, parse it and re-process
+  if (typeof payload?.payload === 'string' && payload.payload.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(payload.payload);
+      console.log("Parsed JSON from form-encoded payload");
+      return await processZohoBooksEvent(parsed);
+    } catch (e) {
+      console.warn("Failed to parse payload JSON string:", e?.message || e);
+    }
+  }
+
   // Handle contact creation events with explicit event type
   if (eventType === "contact_created" || eventType === "ContactCreated") {
     return await handleContactCreated(data);
@@ -120,12 +132,12 @@ async function processZohoBooksEvent(payload) {
     return await handleContactUpdated(data);
   }
 
-  // Handle direct contact payload (Zoho Books sends contact data directly without event_type)
-  if (payload?.contact && !eventType) {
+  // Handle direct contact/customer payload (Zoho Books may send contact or customer directly without event_type)
+  if ((payload?.contact || payload?.customer) && !eventType) {
     console.log("Detected direct contact payload from Zoho Books webhook");
     
     // Check if this is a new contact by looking at created_time vs last_modified_time
-    const contact = payload.contact;
+    const contact = payload.contact || payload.customer;
     const createdTime = new Date(contact.created_time);
     const modifiedTime = new Date(contact.last_modified_time);
     
@@ -148,22 +160,23 @@ async function processZohoBooksEvent(payload) {
     reason: "Unhandled event type or missing contact data",
     event_type: eventType,
     has_contact: !!payload?.contact,
+    has_customer: !!payload?.customer,
     payload_keys: Object.keys(payload || {})
   };
 }
 
 async function handleContactCreated(contactData) {
   try {
-    const contact = contactData?.contact || contactData;
+    const contact = contactData?.contact || contactData?.customer || contactData;
     
     if (!contact) {
       console.warn("No contact data found in webhook payload");
       return { status: "ignored", reason: "No contact data" };
     }
 
-    const contactId = contact.contact_id;
+    const contactId = contact.contact_id || contact.customer_id;
     const email = contact.email;
-    const companyName = contact.company_name || contact.contact_name;
+    const companyName = contact.company_name || contact.contact_name || contact.customer_name;
 
     console.log(`Processing contact creation for: ${companyName} (${email}) - Zoho ID: ${contactId}`);
 
@@ -284,12 +297,12 @@ async function handleContactUpdated(contactData) {
 }
 
 async function mapZohoContactToClient(contact) {
-  // Map Zoho contact fields to client model
+  // Map Zoho contact/customer fields to client model
   const clientData = {
-    companyName: contact.company_name || contact.contact_name || "Unknown Company",
-    legalName: contact.legal_name || contact.company_name,
-    contactPerson: contact.contact_name || (contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : undefined) || "Unknown",
-    email: contact.email ? contact.email.toLowerCase().trim() : undefined,
+    companyName: contact.company_name || contact.customer_name || contact.contact_name || "Unknown Company",
+    legalName: contact.legal_name || contact.company_name || contact.customer_name,
+    contactPerson: contact.contact_name || contact.customer_name || (contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : undefined) || "Unknown",
+    email: contact.email ? String(contact.email).toLowerCase().trim() : undefined,
     phone: contact.phone || contact.mobile || undefined,
     website: contact.website || undefined,
     
@@ -347,7 +360,7 @@ async function mapZohoContactToClient(contact) {
       })) : [],
 
     // Zoho linkage
-    zohoBooksContactId: contact.contact_id,
+    zohoBooksContactId: contact.contact_id || contact.customer_id,
     currencyId: contact.currency_id || undefined,
     pricebookId: contact.pricebook_id || undefined,
 
