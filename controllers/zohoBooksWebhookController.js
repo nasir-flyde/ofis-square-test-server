@@ -95,8 +95,20 @@ async function processZohoBooksEvent(payload) {
   console.log("Processing Zoho Books event:", {
     event_type: eventType,
     data_keys: Object.keys(data || {}),
-    has_contact: !!payload?.contact
+    has_contact: !!payload?.contact,
+    has_payload_field: !!payload?.payload,
+    payload_content: payload?.payload
   });
+
+  // Handle webhook verification or test requests (empty payload)
+  if (payload?.payload === '' || (Object.keys(payload).length === 1 && payload?.payload !== undefined)) {
+    console.log("Detected Zoho Books webhook verification/test request");
+    return { 
+      status: "verified", 
+      reason: "Webhook verification successful",
+      message: "Zoho Books webhook endpoint is working correctly"
+    };
+  }
 
   // Handle contact creation events with explicit event type
   if (eventType === "contact_created" || eventType === "ContactCreated") {
@@ -135,7 +147,8 @@ async function processZohoBooksEvent(payload) {
     status: "ignored", 
     reason: "Unhandled event type or missing contact data",
     event_type: eventType,
-    has_contact: !!payload?.contact
+    has_contact: !!payload?.contact,
+    payload_keys: Object.keys(payload || {})
   };
 }
 
