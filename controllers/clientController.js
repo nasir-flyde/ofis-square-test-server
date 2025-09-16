@@ -14,6 +14,7 @@ import Role from "../models/roleModel.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
 import { createContact } from "../utils/zohoBooks.js";
+import { sendWelcomeEmail } from "../utils/emailService.js";
 
 export const createClient = async (req, res) => {
   try {
@@ -239,6 +240,26 @@ export const createClient = async (req, res) => {
         "status:", zohoErr?.status,
         "response:", JSON.stringify(zohoErr?.response || {}, null, 2)
       );
+    }
+
+    // Send welcome email after successful client creation
+    try {
+      if (client.email) {
+        const emailResult = await sendWelcomeEmail({
+          companyName: client.companyName,
+          contactPerson: client.contactPerson,
+          email: client.email
+        });
+        
+        if (emailResult.success) {
+          console.log(`Welcome email sent successfully to ${client.email}`);
+        } else {
+          console.error(`Failed to send welcome email to ${client.email}:`, emailResult.error);
+        }
+      }
+    } catch (emailErr) {
+      console.error("createClient: Welcome email sending failed:", emailErr?.message || emailErr);
+      // Don't fail client creation if email fails
     }
 
     return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo, zohoContactId });

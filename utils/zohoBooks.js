@@ -1,15 +1,17 @@
 import fetch from "node-fetch";
+import { getValidAccessToken } from "./zohoTokenManager.js";
 
 const ORG_ID = "60047183737";
-const AUTH_TOKEN = "1000.db952bf25eaa8481db4320356065f946.6253d366cf2e5cb78c1c76dcab5bd786";
+// Use zohoapis.com domain as per Zoho's updated requirements
 const BASE_URL = "https://www.zohoapis.in/books/v3";
 
 export async function getContacts() {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}` },
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
@@ -21,8 +23,9 @@ export async function getContacts() {
 }
 
 export async function createContact(payload) {
+  const authToken = await getValidAccessToken();
   const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}`;
-  const maskedToken = AUTH_TOKEN ? `${String(AUTH_TOKEN).slice(0, 8)}…` : undefined;
+  const maskedToken = authToken ? `${String(authToken).slice(0, 8)}…` : undefined;
   const startTime = Date.now();
 
   // Pre-request diagnostics
@@ -128,7 +131,7 @@ export async function createContact(payload) {
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}`,
+        Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(sanitizeContactPayload(payload)),
@@ -259,11 +262,12 @@ export async function findOrCreateContactFromClient(clientDoc) {
 // -------------------
 export async function createZohoInvoiceFromLocal(invoiceDoc) {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}`,
+        Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(invoiceDoc),
@@ -279,10 +283,11 @@ export async function createZohoInvoiceFromLocal(invoiceDoc) {
 
 export async function getZohoInvoicePdfUrl(invoiceId) {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices/${invoiceId}?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}` },
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
@@ -295,11 +300,12 @@ export async function getZohoInvoicePdfUrl(invoiceId) {
 }
 export async function sendZohoInvoiceEmail(invoiceId, emailPayload = {}) {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices/${invoiceId}/email?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}`,
+        Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(emailPayload),
@@ -314,10 +320,11 @@ export async function sendZohoInvoiceEmail(invoiceId, emailPayload = {}) {
 }
 export async function getZohoInvoice(invoiceId) {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices/${invoiceId}?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}` },
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
@@ -332,11 +339,12 @@ export async function getZohoInvoice(invoiceId) {
 // -------------------
 export async function recordZohoPayment(invoiceId, paymentData) {
   try {
+    const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices/${invoiceId}/payment?organization_id=${ORG_ID}`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Zoho-oauthtoken ${AUTH_TOKEN}`,
+        Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(paymentData),

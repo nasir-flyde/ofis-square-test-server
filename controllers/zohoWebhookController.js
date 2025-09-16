@@ -1,6 +1,11 @@
 import crypto from "crypto";
 import Contract from "../models/contractModel.js";
+import Client from "../models/clientModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
+import Member from "../models/memberModel.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { sendWelcomeEmail } from "../utils/emailService.js";
 
 export const handleZohoSignWebhook = async (req, res) => {
   try {

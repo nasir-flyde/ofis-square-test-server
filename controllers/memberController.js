@@ -38,7 +38,6 @@ export const createMember = async (req, res) => {
   }
 };
 
-// Get all members with optional filters
 export const getMembers = async (req, res) => {
   try {
     const { client, status, page = 1, limit = 20 } = req.query;
@@ -50,7 +49,7 @@ export const getMembers = async (req, res) => {
     const skip = (page - 1) * limit;
     
     const members = await Member.find(filter)
-      .populate('client', 'name email')
+      .populate('client', 'companyName contactPerson email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -75,7 +74,7 @@ export const getMembers = async (req, res) => {
 // Get member by ID
 export const getMemberById = async (req, res) => {
   try {
-    const member = await Member.findById(req.params.id).populate('client', 'name email');
+    const member = await Member.findById(req.params.id).populate('client', 'companyName contactPerson email');
     
     if (!member) {
       return res.status(404).json({ success: false, message: "Member not found" });
@@ -114,7 +113,7 @@ export const updateMember = async (req, res) => {
         user
       },
       { new: true, runValidators: true }
-    ).populate('client', 'name email');
+    ).populate('client', 'companyName contactPerson email');
 
     if (!member) {
       return res.status(404).json({ success: false, message: "Member not found" });
