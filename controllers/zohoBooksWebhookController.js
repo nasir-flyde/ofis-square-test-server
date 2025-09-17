@@ -3,6 +3,7 @@ import Client from "../models/clientModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
+import Invoice from "../models/invoiceModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 
 // Handle Zoho Books customer creation webhook
@@ -120,7 +121,8 @@ async function processZohoBooksEvent(payload) {
     event_type: eventType,
     data_keys: Object.keys(data || {}),
     has_contact: !!payload?.contact,
-    has_customer: !!payload?.customer
+    has_customer: !!payload?.customer,
+    has_invoice: !!payload?.invoice
   });
 
   // Handle customer creation events with explicit event type
@@ -153,6 +155,18 @@ async function processZohoBooksEvent(payload) {
       console.log("Processing as customer update event");
       return await handleCustomerUpdated({ customer });
     }
+  }
+
+  // Handle invoice events (Zoho Books sends invoice data directly without event_type)
+  if (payload?.invoice && !eventType) {
+    console.log("Detected invoice payload from Zoho Books webhook");
+    return await handleInvoiceEvent(payload.invoice);
+  }
+
+  // Handle invoice creation/update events with explicit event type
+  if (eventType === "invoice_created" || eventType === "InvoiceCreated" || 
+      eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
+    return await handleInvoiceEvent(data.invoice || data);
   }
 
   // Legacy support: Handle contact payload (for backward compatibility)
@@ -749,3 +763,153 @@ export const testZohoBooksWebhook = async (req, res) => {
     });
   }
 };
+
+// Handle invoice creation/update from Zoho Books webhook
+async function handleInvoiceEvent(invoiceData) {
+  try {
+    console.log("Processing invoice event:", {
+      invoice_id: invoiceData.invoice_id,
+      invoice_number: invoiceData.invoice_number,
+      customer_id: invoiceData.customer_id,
+      status: invoiceData.status,
+      total: invoiceData.total,
+      created_time: invoiceData.created_time,
+      last_modified_time: invoiceData.last_modified_time
+    });
+
+    // Find the client by Zoho Books contact ID
+    let client = null;
+    if (invoiceData.customer_id) {
+      client = await Client.findOne({ zohoBooksContactId: invoiceData.customer_id });
+      if (!client) {
+        console.warn(`No client found with zohoBooksContactId: ${invoiceData.customer_id} for invoice ${invoiceData.invoice_id}`);
+      }
+    }
+
+    // Check if invoice already exists
+    let existingInvoice = await Invoice.findOne({ zohoInvoiceId: invoiceData.invoice_id });
+    
+    // Check for idempotency - don't update if we have newer data
+    if (existingInvoice && existingInvoice.zohoLastModifiedAt) {
+      const existingModifiedTime = new Date(existingInvoice.zohoLastModifiedAt);
+      const incomingModifiedTime = new Date(invoiceData.last_modified_time);
+      
+      if (incomingModifiedTime <= existingModifiedTime) {
+        console.log(`Skipping invoice ${invoiceData.invoice_id} - incoming data is not newer`);
+        return {
+          action: "skipped",
+          reason: "not_newer",
+          invoice_id: invoiceData.invoice_id
+        };
+      }
+    }
+
+    // Map Zoho invoice data to our schema
+    const mappedInvoiceData = {
+      // Core invoice fields
+      invoice_number: invoiceData.invoice_number,
+      date: invoiceData.date ? new Date(invoiceData.date) : new Date(),
+      due_date: invoiceData.due_date ? new Date(invoiceData.due_date) : null,
+      
+      // Financial fields
+      sub_total: parseFloat(invoiceData.sub_total || 0),
+      tax_total: parseFloat(invoiceData.tax_total || 0),
+      total: parseFloat(invoiceData.total || 0),
+      amount_paid: parseFloat(invoiceData.payment_made || 0),
+      balance: parseFloat(invoiceData.balance || 0),
+      discount: parseFloat(invoiceData.discount_total || 0),
+      discount_type: invoiceData.discount_type || "entity_level",
+      
+      // Status and metadata
+      status: mapZohoStatusToLocal(invoiceData.status),
+      notes: invoiceData.notes || "",
+      currency_code: invoiceData.currency_code || "INR",
+      exchange_rate: parseFloat(invoiceData.exchange_rate || 1),
+      
+      // Zoho-specific fields
+      zohoInvoiceId: invoiceData.invoice_id,
+      zohoInvoiceNumber: invoiceData.invoice_number,
+      zohoStatus: invoiceData.status,
+      invoiceUrl: invoiceData.invoice_url,
+      zohoPdfUrl: invoiceData.pdf_url,
+      zohoLastModifiedAt: new Date(invoiceData.last_modified_time),
+      
+      // Client reference
+      client: client ? client._id : null,
+      customer_id: invoiceData.customer_id,
+      
+      // Additional Zoho fields
+      gst_treatment: invoiceData.gst_treatment || "business_gst",
+      place_of_supply: invoiceData.place_of_supply || "MH",
+      payment_terms: parseInt(invoiceData.payment_terms || 30),
+      payment_terms_label: invoiceData.payment_terms_label || "Net 30",
+      is_inclusive_tax: invoiceData.is_inclusive_tax || false,
+      
+      // Map line items if present
+      line_items: (invoiceData.line_items || []).map(item => ({
+        description: item.description || item.name || "",
+        name: item.name || item.description || "",
+        quantity: parseInt(item.quantity || 1),
+        rate: parseFloat(item.rate || 0),
+        unitPrice: parseFloat(item.rate || 0),
+        amount: parseFloat(item.item_total || 0),
+        item_total: parseFloat(item.item_total || 0),
+        unit: item.unit || "nos",
+        tax_name: item.tax_name || "GST",
+        tax_percentage: parseFloat(item.tax_percentage || 0),
+        item_id: item.item_id || null
+      }))
+    };
+
+    let result;
+    if (existingInvoice) {
+      // Update existing invoice
+      await Invoice.findByIdAndUpdate(existingInvoice._id, mappedInvoiceData);
+      console.log(`Updated invoice ${invoiceData.invoice_id} in database`);
+      result = {
+        action: "updated",
+        invoice_id: invoiceData.invoice_id,
+        local_id: existingInvoice._id
+      };
+    } else {
+      // Create new invoice
+      const newInvoice = await Invoice.create(mappedInvoiceData);
+      console.log(`Created invoice ${invoiceData.invoice_id} in database with local ID ${newInvoice._id}`);
+      result = {
+        action: "created",
+        invoice_id: invoiceData.invoice_id,
+        local_id: newInvoice._id
+      };
+    }
+
+    // Add client linking info to result
+    if (client) {
+      result.client_linked = true;
+      result.client_id = client._id;
+    } else {
+      result.client_linked = false;
+      result.customer_id = invoiceData.customer_id;
+    }
+
+    return result;
+
+  } catch (error) {
+    console.error("Error processing invoice webhook:", error);
+    throw error;
+  }
+}
+
+// Map Zoho invoice status to our local status values
+function mapZohoStatusToLocal(zohoStatus) {
+  const statusMap = {
+    'draft': 'draft',
+    'sent': 'issued',
+    'viewed': 'issued',
+    'paid': 'paid',
+    'overdue': 'overdue',
+    'void': 'void',
+    'partially_paid': 'issued'
+  };
+  
+  return statusMap[zohoStatus?.toLowerCase()] || 'draft';
+}
