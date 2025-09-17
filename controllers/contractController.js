@@ -447,8 +447,6 @@ export const uploadSignedContract = async (req, res) => {
     // contract.zohoSignRequestId = undefined;
 
     await contract.save();
-
-    // Auto-create invoice when contract becomes active
     try {
       const invoice = await createInvoiceFromContract(contract._id, {
         issueOn: "activation",

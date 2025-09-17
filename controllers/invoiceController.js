@@ -14,21 +14,21 @@ import {
   sendZohoInvoiceEmail,
 } from "../utils/zohoBooks.js";
 
-// Helper: generate invoice number like INV-YYYY-MM-0001 (resets monthly)
-async function generateInvoiceNumber() {
+// Helper: generate local invoice number like INV-YYYY-MM-0001 (resets monthly)
+async function generateLocalInvoiceNumber() {
   const now = new Date();
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const prefix = `INV-${yyyy}-${mm}-`;
 
-  // Find the latest invoice for this month
-  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
+  // Find the latest invoice for this month using local_invoice_number
+  const latest = await Invoice.findOne({ local_invoice_number: { $regex: `^${prefix}` } })
     .sort({ createdAt: -1 })
     .lean();
 
   let nextSeq = 1;
-  if (latest && latest.invoice_number) {
-    const parts = latest.invoice_number.split("-");
+  if (latest && latest.local_invoice_number) {
+    const parts = latest.local_invoice_number.split("-");
     const seqStr = parts[3];
     const seq = Number(seqStr);
     if (!Number.isNaN(seq)) nextSeq = seq + 1;
@@ -107,12 +107,13 @@ export const createInvoice = async (req, res) => {
     if (building && !buildingDoc) return res.status(404).json({ success: false, message: "Building not found" });
     if (cabin && !cabinDoc) return res.status(404).json({ success: false, message: "Cabin not found" });
 
-    const invoiceNumber = body.invoiceNumber || (await generateInvoiceNumber());
+    const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
 
     const invoice = await Invoice.create({
       // Updated field names to match new schema
-      invoice_number: invoiceNumber,
+      local_invoice_number: localInvoiceNumber,
+      invoice_number: body.invoiceNumber || null, // Zoho Books invoice number (if provided)
       client,
       contract: contract || undefined,
       building: building || undefined,
@@ -174,44 +175,17 @@ export const createInvoice = async (req, res) => {
       
       ...(meta ? { meta } : {}),
     });
-
-    // Automatically push to Zoho Books if client has zohoBooksContactId
-    try {
-      if (clientDoc.zohoBooksContactId) {
-        const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
-        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
-        
-        // Handle both direct invoice object and nested response structure
-        const invoiceData = zohoResponse.invoice || zohoResponse;
-        
-        if (invoiceData && invoiceData.invoice_id) {
-          invoice.zoho_invoice_id = invoiceData.invoice_id;
-          invoice.zoho_invoice_number = invoiceData.invoice_number;
-          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
-          invoice.zoho_pdf_url = invoiceData.pdf_url;
-          invoice.invoice_url = invoiceData.invoice_url;
-          await invoice.save();
-          
-          console.log(`Auto-pushed manual invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
-        }
-      } else {
-        console.log(`Skipping Zoho push for manual invoice ${invoice._id} - client has no zohoBooksContactId`);
-      }
-    } catch (zohoError) {
-      console.error(`Failed to auto-push manual invoice ${invoice._id} to Zoho Books:`, zohoError.message);
-      // Don't fail the invoice creation if Zoho push fails
-    }
+    console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}. Will be auto-pushed to Zoho Books during payment processing.`);
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {
     if (error && error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Duplicate invoiceNumber" });
+      return res.status(409).json({ success: false, message: "Duplicate local invoice number or Zoho invoice ID" });
     }
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// pdfmake fonts (use built-in Helvetica to avoid external font files)
 function getFonts() {
   return {
     Helvetica: {
@@ -223,7 +197,6 @@ function getFonts() {
   };
 }
 
-// GET /api/invoices/:id/download-pdf - generate and stream an invoice PDF
 export const downloadInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;
@@ -264,42 +237,32 @@ export const downloadInvoicePdf = async (req, res) => {
   }
 };
 
-// POST /api/invoices/:id/push-zoho
+// POST /api/invoices/:id/push-zoho - DEPRECATED: Use payment flow for automatic Zoho creation
 export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
-    if (!invoice.client) return res.status(400).json({ success: false, message: "Invoice missing client" });
-    const client = await Client.findById(invoice.client);
-    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
-
-    // If already pushed, fetch and return
-    if (invoice.zohoInvoiceId) {
-      const zInv = await getZohoInvoice(invoice.zohoInvoiceId);
-      return res.json({ success: true, data: { invoice, zoho: zInv }, message: "Already synced with Zoho" });
+    // Check if already has Zoho ID
+    if (invoice.zoho_invoice_id) {
+      return res.json({ 
+        success: true, 
+        data: invoice, 
+        message: "Invoice already linked to Zoho Books",
+        zoho_invoice_id: invoice.zoho_invoice_id
+      });
     }
 
-    const zInvoice = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
-    
-    // Handle both direct invoice object and nested response structure
-    const invoiceData = zInvoice.invoice || zInvoice;
-    
-    if (!invoiceData || !invoiceData.invoice_id) {
-      return res.status(502).json({ success: false, message: "Failed to create Zoho invoice", details: zInvoice });
-    }
-
-    invoice.zohoInvoiceId = invoiceData.invoice_id;
-    invoice.zohoInvoiceNumber = invoiceData.invoice_number;
-    invoice.zohoStatus = invoiceData.status || invoiceData.status_formatted || undefined;
-    invoice.zohoPdfUrl = invoiceData.pdf_url || undefined;
-    invoice.invoiceUrl = invoiceData.invoice_url || undefined;
-    await invoice.save();
-
-    return res.json({ success: true, data: invoice, zoho: zInvoice });
+    return res.status(200).json({
+      success: true,
+      message: "Manual push deprecated. Invoice will be automatically created in Zoho Books during payment processing.",
+      recommendation: "Use POST /api/payments/zoho-customer-payment to record payments - invoices are auto-created in Zoho.",
+      invoice_id: invoice._id,
+      invoice_number: invoice.invoice_number
+    });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message, details: error.response });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -310,10 +273,10 @@ export const sendInvoiceEmail = async (req, res) => {
     const { to, subject, customMessage } = req.body || {};
     const invoice = await Invoice.findById(id).populate("client", "email");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
     const payload = { to: to || invoice?.client?.email, subject, body: customMessage };
-    const resp = await sendZohoInvoiceEmail(invoice.zohoInvoiceId, payload);
+    const resp = await sendZohoInvoiceEmail(invoice.zoho_invoice_id, payload);
     invoice.sentAt = new Date();
     invoice.zohoStatus = "sent";
     await invoice.save();
@@ -329,9 +292,9 @@ export const syncInvoiceFromZoho = async (req, res) => {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const zInv = await getZohoInvoice(invoice.zohoInvoiceId);
+    const zInv = await getZohoInvoice(invoice.zoho_invoice_id);
     if (zInv) {
       invoice.zohoStatus = zInv.status || zInv.status_formatted || invoice.zohoStatus;
       invoice.zohoPdfUrl = zInv.pdf_url || invoice.zohoPdfUrl;
@@ -357,9 +320,9 @@ export const getInvoicePdf = async (req, res) => {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const url = await getZohoInvoicePdfUrl(invoice.zohoInvoiceId);
+    const url = await getZohoInvoicePdfUrl(invoice.zoho_invoice_id);
     return res.json({ success: true, data: { pdfUrl: url } });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message, details: error.response });
@@ -374,9 +337,9 @@ export const recordInvoicePayment = async (req, res) => {
     if (!amount) return res.status(400).json({ success: false, message: "amount is required" });
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const payment = await recordZohoPayment(invoice.zohoInvoiceId, { amount, date, payment_mode, reference_number });
+    const payment = await recordZohoPayment(invoice.zoho_invoice_id, { amount, date, payment_mode, reference_number });
     invoice.amountPaid = Number(invoice.amountPaid || 0) + Number(amount);
     invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
     if (invoice.balanceDue === 0) {
@@ -399,18 +362,63 @@ export const zohoWebhook = async (req, res) => {
     const event = payload.event_type || payload.event || payload.action;
     const data = payload.data || payload.payload || {};
 
+    // Handle invoice creation from Zoho Books side
+    if (event === "invoice_created" && data.invoice) {
+      const zohoInvoiceId = data.invoice.invoice_id;
+      const zohoInvoiceNumber = data.invoice.invoice_number;
+      
+      if (zohoInvoiceId) {
+        // Check if we already have this invoice
+        const existingInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
+        
+        if (!existingInvoice) {
+          // Create new invoice from Zoho data
+          const newInvoice = await Invoice.create({
+            invoice_number: zohoInvoiceNumber,
+            zoho_invoice_id: zohoInvoiceId,
+            zoho_invoice_number: zohoInvoiceNumber,
+            source: 'webhook',
+            customer_id: data.invoice.customer_id,
+            date: new Date(data.invoice.date),
+            due_date: data.invoice.due_date ? new Date(data.invoice.due_date) : undefined,
+            sub_total: data.invoice.sub_total || 0,
+            discount: data.invoice.discount || 0,
+            tax_total: data.invoice.tax_total || 0,
+            total: data.invoice.total || 0,
+            balance: data.invoice.balance || data.invoice.total || 0,
+            amount_paid: data.invoice.amount_paid || 0,
+            status: data.invoice.status === 'paid' ? 'paid' : 'issued',
+            currency_code: data.invoice.currency_code || 'INR',
+            notes: data.invoice.notes || '',
+            line_items: (data.invoice.line_items || []).map(item => ({
+              description: item.description || item.name,
+              quantity: item.quantity || 1,
+              unitPrice: item.rate || 0,
+              amount: item.item_total || 0,
+              name: item.name,
+              rate: item.rate,
+              unit: item.unit || 'nos',
+              item_total: item.item_total
+            }))
+          });
+          
+          console.log(`✅ Created new invoice from Zoho webhook: ${zohoInvoiceNumber}`);
+        }
+      }
+    }
+
     // Handle payment events
     if (event === "invoice_payment_made" || event === "payment_created") {
       const zohoInvoiceId = data.invoice_id || data.invoice?.invoice_id;
       const amount = Number(data.amount || data.paid_amount || 0);
       if (zohoInvoiceId) {
-        const invoice = await Invoice.findOne({ zohoInvoiceId });
+        const invoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         if (invoice) {
-          invoice.amountPaid = Math.max(0, Number(invoice.amountPaid || 0) + amount);
-          invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
-          if (invoice.balanceDue === 0) {
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + amount);
+          invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+          if (invoice.balance === 0) {
             invoice.status = "paid";
-            invoice.paidAt = new Date();
+            invoice.paid_at = new Date();
           }
           await invoice.save();
         }
@@ -421,10 +429,10 @@ export const zohoWebhook = async (req, res) => {
     if (event === "invoice_status_changed" || event === "invoice_sent") {
       const zohoInvoiceId = data.invoice_id || data.invoice?.invoice_id;
       if (zohoInvoiceId) {
-        const invoice = await Invoice.findOne({ zohoInvoiceId });
+        const invoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         if (invoice) {
-          invoice.zohoStatus = data.status || data.invoice?.status || invoice.zohoStatus;
-          if (event === "invoice_sent") invoice.sentAt = new Date();
+          invoice.zoho_status = data.status || data.invoice?.status || invoice.zoho_status;
+          if (event === "invoice_sent") invoice.sent_at = new Date();
           await invoice.save();
         }
       }
@@ -432,11 +440,12 @@ export const zohoWebhook = async (req, res) => {
 
     return res.json({ success: true });
   } catch (error) {
+    console.error('Zoho webhook error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// GET /api/invoices
+
 export const getInvoices = async (req, res) => {
   try {
     const { client, contract, status, from, to } = req.query || {};

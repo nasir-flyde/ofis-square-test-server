@@ -30,8 +30,10 @@ const invoiceSchema = new mongoose.Schema(
     contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract" },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building" },
     cabin: { type: mongoose.Schema.Types.ObjectId, ref: "Cabin" },
-    invoice_number: { type: String, unique: true },
+    local_invoice_number: { type: String, unique: true }, // Our internal invoice number
+    invoice_number: { type: String }, // Zoho Books invoice number (when synced)
     reference_number: { type: String },
+    source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
     date: { type: Date, default: Date.now },
     due_date: { type: Date },
     billing_period: {
@@ -102,6 +104,9 @@ const invoiceSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Add unique constraint for zoho_invoice_id to prevent duplicates
+invoiceSchema.index({ zoho_invoice_id: 1 }, { unique: true, sparse: true });
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);
 export default Invoice;

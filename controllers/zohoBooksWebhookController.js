@@ -157,19 +157,15 @@ async function processZohoBooksEvent(payload) {
     }
   }
 
-  // Handle invoice events (Zoho Books sends invoice data directly without event_type)
   if (payload?.invoice && !eventType) {
     console.log("Detected invoice payload from Zoho Books webhook");
-    return await handleInvoiceEvent(payload.invoice);
+    return await handleInvoiceFromZoho(payload.invoice);
   }
-
-  // Handle invoice creation/update events with explicit event type
   if (eventType === "invoice_created" || eventType === "InvoiceCreated" || 
       eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
-    return await handleInvoiceEvent(data.invoice || data);
+    return await handleInvoiceFromZoho(data.invoice || data);
   }
 
-  // Legacy support: Handle contact payload (for backward compatibility)
   if (payload?.contact && !eventType) {
     console.log("Detected legacy contact payload from Zoho Books webhook");
     
@@ -916,4 +912,84 @@ function mapZohoStatusToLocal(zohoStatus) {
   };
   
   return statusMap[zohoStatus?.toLowerCase()] || 'draft';
+}
+
+async function handleInvoiceStatusUpdate(invoiceData) {
+  try {
+    if (!invoiceData || !invoiceData.invoice_id) {
+      console.warn("No invoice data or invoice_id found in webhook payload");
+      return { status: "ignored", reason: "No invoice data" };
+    }
+
+    const zohoInvoiceId = invoiceData.invoice_id;
+    console.log(`Processing invoice status update for Zoho invoice: ${zohoInvoiceId}`);
+    const existingInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
+    
+    if (!existingInvoice) {
+      console.log(`Invoice ${zohoInvoiceId} not found locally - likely created directly in Zoho Books. Skipping update.`);
+      return {
+        status: "ignored", 
+        reason: "Invoice not found locally",
+        invoice_id: zohoInvoiceId
+      };
+    }
+
+    const updates = {};
+    if (invoiceData.payment_made !== undefined) {
+      updates.amount_paid = parseFloat(invoiceData.payment_made || 0);
+    }
+    
+    if (invoiceData.balance !== undefined) {
+      updates.balance = parseFloat(invoiceData.balance || 0);
+    }
+    
+    // Update status if changed
+    if (invoiceData.status) {
+      updates.status = mapZohoStatusToLocal(invoiceData.status);
+      updates.zoho_status = invoiceData.status;
+    }
+    
+    // Update URLs if available
+    if (invoiceData.invoice_url) {
+      updates.invoice_url = invoiceData.invoice_url;
+    }
+    
+    if (invoiceData.pdf_url) {
+      updates.zoho_pdf_url = invoiceData.pdf_url;
+    }
+    
+    // Update last modified time
+    if (invoiceData.last_modified_time) {
+      updates.zoho_last_modified_at = new Date(invoiceData.last_modified_time);
+    }
+    
+    // Set paid date if fully paid
+    if (updates.balance === 0 && existingInvoice.balance > 0) {
+      updates.paid_at = new Date();
+    }
+
+    // Apply updates if any
+    if (Object.keys(updates).length > 0) {
+      await Invoice.findByIdAndUpdate(existingInvoice._id, updates);
+      console.log(`Updated invoice ${zohoInvoiceId} with status/payment changes`);
+      
+      return {
+        status: "updated",
+        invoice_id: zohoInvoiceId,
+        local_id: existingInvoice._id,
+        updates: Object.keys(updates)
+      };
+    } else {
+      console.log(`No updates needed for invoice ${zohoInvoiceId}`);
+      return {
+        status: "no_changes",
+        invoice_id: zohoInvoiceId,
+        local_id: existingInvoice._id
+      };
+    }
+
+  } catch (error) {
+    console.error("Error processing invoice status update:", error);
+    throw error;
+  }
 }

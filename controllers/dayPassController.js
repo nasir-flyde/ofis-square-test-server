@@ -4,20 +4,20 @@ import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
 
-// Helper: generate invoice number like INV-YYYY-MM-0001 (resets monthly)
-async function generateInvoiceNumber() {
+// Helper: generate local invoice number like INV-YYYY-MM-0001 (resets monthly)
+async function generateLocalInvoiceNumber() {
   const now = new Date();
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const prefix = `INV-${yyyy}-${mm}-`;
 
-  const latest = await Invoice.findOne({ invoiceNumber: { $regex: `^${prefix}` } })
+  const latest = await Invoice.findOne({ local_invoice_number: { $regex: `^${prefix}` } })
     .sort({ createdAt: -1 })
     .lean();
 
   let nextSeq = 1;
-  if (latest && latest.invoiceNumber) {
-    const parts = latest.invoiceNumber.split("-");
+  if (latest && latest.local_invoice_number) {
+    const parts = latest.local_invoice_number.split("-");
     const seqStr = parts[3];
     const seq = Number(seqStr);
     if (!Number.isNaN(seq)) nextSeq = seq + 1;
@@ -64,11 +64,9 @@ export const createDayPass = async (req, res) => {
         });
       }
     } else if (guestId) {
-      // Use existing guest system (legacy flow)
       guestDoc = await Guest.findById(guestId);
       if (!guestDoc) return res.status(404).json({ success: false, message: "Guest not found" });
     } else if (guestPayload) {
-      // Create new guest (legacy flow)
       if (!guestPayload.name) {
         return res.status(400).json({ success: false, message: "guest.name is required when creating a new guest" });
       }
@@ -113,7 +111,7 @@ export const createDayPass = async (req, res) => {
     });
 
     // 2) Create Invoice for this day pass
-    const invoiceNumber = await generateInvoiceNumber();
+    const localInvoiceNumber = await generateLocalInvoiceNumber();
     const quantity = 1;
     const unitPrice = Number(price) || 0;
     const amount = Math.round(quantity * unitPrice * 100) / 100;
@@ -128,7 +126,8 @@ export const createDayPass = async (req, res) => {
     const buildingName = buildingDoc?.name || "Building";
 
     const invoice = await Invoice.create({
-      invoice_number: invoiceNumber,
+      local_invoice_number: localInvoiceNumber,
+      invoice_number: null, // Will be set when synced to Zoho Books
       guest: guestDoc._id,
       building,
       date: new Date(),

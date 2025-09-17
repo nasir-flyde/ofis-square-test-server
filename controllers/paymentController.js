@@ -217,12 +217,111 @@ async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied) {
   return invoice;
 }
 
-// POST /api/payments/zoho-customer-payment - Record customer payment in Zoho Books
+async function createInvoiceInZoho(invoice, client) {
+  const accessToken = await getValidAccessToken();
+  const orgId = getOrgId();
+
+  if (!orgId) {
+    throw new Error('ZOHO_ORG_ID not configured');
+  }
+
+  if (!client.zohoBooksContactId) {
+    throw new Error('Client must be linked to Zoho Books');
+  }
+
+  // Build Zoho invoice payload from local invoice
+  const zohoInvoicePayload = {
+    customer_id: client.zohoBooksContactId,
+    date: invoice.date ? new Date(invoice.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+    due_date: invoice.due_date ? new Date(invoice.due_date).toISOString().split('T')[0] : new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+    reference_number: invoice.reference_number || '',
+    notes: invoice.notes || '',
+    terms: invoice.terms || '',
+    
+    // Line items
+    line_items: invoice.line_items.map(item => ({
+      name: item.name || item.description,
+      description: item.description,
+      rate: item.unitPrice || item.rate,
+      quantity: item.quantity,
+      unit: item.unit || 'nos',
+      tax_percentage: item.tax_percentage || 18
+    })),
+
+    // Totals
+    sub_total: invoice.sub_total || 0,
+    discount: invoice.discount || 0,
+    discount_type: invoice.discount_type || 'entity_level',
+    tax_total: invoice.tax_total || 0,
+    total: invoice.total || 0,
+    
+    // Additional fields
+    currency_code: invoice.currency_code || 'INR',
+    exchange_rate: invoice.exchange_rate || 1,
+    payment_terms: invoice.payment_terms || 30,
+    payment_terms_label: invoice.payment_terms_label || 'Net 30',
+    shipping_charge: invoice.shipping_charge || 0,
+    adjustment: invoice.adjustment || 0,
+    adjustment_description: invoice.adjustment_description || '',
+    is_inclusive_tax: invoice.is_inclusive_tax || false
+  };
+
+  // Add billing address if available
+  if (invoice.billing_address && Object.keys(invoice.billing_address).length > 0) {
+    zohoInvoicePayload.billing_address = invoice.billing_address;
+  }
+
+  // Add shipping address if available
+  if (invoice.shipping_address && Object.keys(invoice.shipping_address).length > 0) {
+    zohoInvoicePayload.shipping_address = invoice.shipping_address;
+  }
+
+  // Call Zoho Books API to create invoice
+  const zohoUrl = `${getBooksBaseUrl()}/invoices?organization_id=${orgId}`;
+  const zohoResponse = await fetch(zohoUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Zoho-oauthtoken ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(zohoInvoicePayload)
+  });
+
+  const zohoData = await zohoResponse.json();
+
+  if (!zohoResponse.ok) {
+    console.error('Zoho Books invoice creation error:', zohoData);
+    throw new Error(`Zoho Books error: ${zohoData.message || 'Failed to create invoice'}`);
+  }
+
+  const zohoInvoiceId = zohoData.invoice?.invoice_id;
+  const zohoInvoiceNumber = zohoData.invoice?.invoice_number;
+  
+  if (!zohoInvoiceId) {
+    throw new Error('No invoice_id returned from Zoho Books');
+  }
+
+  // Update the local invoice with Zoho Books data
+  invoice.zoho_invoice_id = zohoInvoiceId;
+  invoice.invoice_number = zohoInvoiceNumber; // Use Zoho's invoice number
+  invoice.zoho_invoice_number = zohoInvoiceNumber;
+  invoice.source = 'zoho';
+  await invoice.save();
+
+  console.log(`✅ Updated local invoice ${invoice.local_invoice_number} with Zoho invoice number: ${zohoInvoiceNumber}`);
+
+  return {
+    zoho_invoice_id: zohoInvoiceId,
+    zoho_invoice_number: zohoInvoiceNumber,
+    zoho_data: zohoData.invoice
+  };
+}
+
 export const recordCustomerPayment = async (req, res) => {
   try {
     const {
       clientId,
-      invoices, // [{ invoiceId, amount_applied }]
+      invoices,
       payment_mode = 'BankTransfer',
       amount,
       date,
@@ -291,24 +390,32 @@ export const recordCustomerPayment = async (req, res) => {
       });
     }
 
-    // Validate Zoho invoice IDs exist
-    const missingZohoIds = dbInvoices.filter(inv => !inv.zoho_invoice_id);
-    if (missingZohoIds.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'All invoices must be synced to Zoho Books before recording payments'
-      });
+    // Auto-create invoices in Zoho Books if they don't have zoho_invoice_id
+    for (const dbInvoice of dbInvoices) {
+      if (!dbInvoice.zoho_invoice_id) {
+        console.log(`Creating invoice ${dbInvoice.local_invoice_number} in Zoho Books...`);
+        
+        try {
+          const zohoResult = await createInvoiceInZoho(dbInvoice, client);
+          console.log(`✅ Invoice ${dbInvoice.local_invoice_number} created in Zoho with number: ${zohoResult.zoho_invoice_number}`);
+        } catch (error) {
+          console.error(`❌ Failed to create invoice ${dbInvoice.local_invoice_number} in Zoho:`, error.message);
+          return res.status(400).json({
+            success: false,
+            message: `Failed to create invoice ${dbInvoice.local_invoice_number} in Zoho Books: ${error.message}`
+          });
+        }
+      }
     }
 
     // Validate payment amounts don't exceed outstanding balances
     for (const paymentInv of invoices) {
       const dbInvoice = dbInvoices.find(inv => inv._id.toString() === paymentInv.invoiceId);
       const outstanding = dbInvoice.balance || dbInvoice.total;
-      
       if (Number(paymentInv.amount_applied) > outstanding) {
         return res.status(400).json({
           success: false,
-          message: `Payment amount (${paymentInv.amount_applied}) exceeds outstanding balance (${outstanding}) for invoice ${dbInvoice.invoice_number}`
+          message: `Payment amount (${paymentInv.amount_applied}) exceeds outstanding balance (${outstanding}) for invoice ${dbInvoice.invoice_number || dbInvoice.local_invoice_number}`
         });
       }
     }

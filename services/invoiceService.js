@@ -140,7 +140,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     
     console.log(`Auto-created invoice ${invoice._id} for contract ${contractId}`);
     
-    // Automatically push to Zoho Books if client has zohoBooksContactId
+    // Immediately push to Zoho Books on contract activation (requested behavior)
     try {
       if (contract.client.zohoBooksContactId) {
         const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
@@ -155,14 +155,16 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
           invoice.invoice_url = invoiceData.invoice_url;
           await invoice.save();
           
-          console.log(`Auto-pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+          console.log(`Pushed invoice ${invoice._id} to Zoho Books at activation: ${invoiceData.invoice_id}`);
+        } else {
+          console.warn(`Zoho Books did not return invoice_id for invoice ${invoice._id}`);
         }
       } else {
         console.log(`Skipping Zoho push for invoice ${invoice._id} - client has no zohoBooksContactId`);
       }
     } catch (zohoError) {
-      console.error(`Failed to auto-push invoice ${invoice._id} to Zoho Books:`, zohoError.message);
-      // Don't fail the invoice creation if Zoho push fails
+      console.error(`Failed to push invoice ${invoice._id} to Zoho Books at activation:`, zohoError.message);
+      // Do not fail contract activation if Zoho push fails
     }
     
     return invoice;
