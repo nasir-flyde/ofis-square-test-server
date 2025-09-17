@@ -286,13 +286,23 @@ async function updateContractStatus(contract, eventData) {
         // Try to extract signed document from webhook payload first
         let signedDocumentData = null;
         
-        // Check if we have document_ids in the eventData (from webhook payload)
-        if (eventData.document_ids && Array.isArray(eventData.document_ids) && eventData.document_ids.length > 0) {
-          const firstDoc = eventData.document_ids[0];
+        // Check if we have document_ids in the webhook payload
+        // The document_ids is in the requests object, not directly in eventData
+        const documentIds = req.body?.requests?.document_ids || eventData.requests.document_ids;
+        
+        console.log(`Checking for document_ids in webhook payload for contract ${contract._id}:`, documentIds);
+        
+        if (documentIds && Array.isArray(documentIds) && documentIds.length > 0) {
+          const firstDoc = documentIds[0];
+          console.log(`First document structure:`, firstDoc);
           if (firstDoc.image_string) {
             signedDocumentData = `data:image/jpeg;base64,${firstDoc.image_string}`;
-            console.log(`Found signed document in webhook payload for contract ${contract._id}`);
+            console.log(`Found signed document in webhook payload for contract ${contract._id}, image_string length:`, firstDoc.image_string.length);
+          } else {
+            console.log(`No image_string found in first document for contract ${contract._id}`);
           }
+        } else {
+          console.log(`No document_ids found in webhook payload for contract ${contract._id}`);
         }
         // if (!signedDocumentData) {
         //   signedDocumentData = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
