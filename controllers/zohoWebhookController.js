@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import axios from "axios";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import User from "../models/userModel.js";
@@ -278,8 +279,22 @@ async function updateContractStatus(contract, eventData) {
     await Contract.findByIdAndUpdate(contract._id, updateData);
     console.log(`Contract ${contract._id} status updated: ${contract.status} → ${newStatus}`);
 
-    // Auto-create invoice when contract becomes active
-    if (newStatus === "active") {
+    // Fetch and save signed document when contract becomes active
+    if (newStatus === "active" && contract.zohoSignRequestId) {
+      try {
+        const signedDocumentUrl = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
+        if (signedDocumentUrl) {
+          updateData.fileUrl = signedDocumentUrl;
+          await Contract.findByIdAndUpdate(contract._id, { fileUrl: signedDocumentUrl });
+          console.log(`Updated contract ${contract._id} with signed document URL: ${signedDocumentUrl}`);
+          actionTaken += "_with_signed_document";
+        }
+      } catch (docError) {
+        console.error("Failed to fetch signed document from Zoho Sign:", docError);
+        // Don't fail the webhook processing if document fetch fails
+      }
+
+      // Auto-create invoice when contract becomes active
       try {
         const invoice = await createInvoiceFromContract(contract._id, {
           issueOn: "activation",
