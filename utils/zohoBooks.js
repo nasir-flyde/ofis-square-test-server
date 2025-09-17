@@ -276,24 +276,52 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       billingPeriod,
     } = invoiceDoc || {};
 
-    // Ensure we have a Zoho contact to attach as customer
-    const customer_id = await findOrCreateContactFromClient(clientDoc || {});
+    // ✅ Use existing Zoho contact ID from client (no contact creation)
+    const customer_id = clientDoc?.zohoBooksContactId;
+    
+    if (!customer_id) {
+      throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
+    }
 
-    const line_items = (items || []).map((it) => ({
-      item_id: it.item_id || 2865532000000048245, // Use provided item_id or default
-      rate: Number(it.unitPrice || it.rate || 0),
+    // Handle both old 'items' and new 'line_items' structure
+    const itemsArray = invoiceDoc.line_items || items || [];
+    
+    const line_items = itemsArray.map((it) => ({
+      name: it.name || it.description || "Item",
+      description: it.description || it.name || "Item",
+      // Use the actual amount/item_total as the rate, not the original unitPrice
+      rate: Number(it.amount || it.item_total || it.rate || it.unitPrice || 0),
       quantity: Number(it.quantity || 1),
+      unit: it.unit || "nos",
+      // Don't include item_id if it's not a valid Zoho item ID
+      ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
     }));
+    
+    console.log("Formatted line_items for Zoho:", JSON.stringify(line_items, null, 2));
+    
+    if (!line_items || line_items.length === 0) {
+      throw new Error("Invoice must have at least one line item to create in Zoho Books");
+    }
 
     const payload = {
       customer_id,
-      date: issueDate ? new Date(issueDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-      ...(dueDate ? { due_date: new Date(dueDate).toISOString().slice(0, 10) } : {}),
+      reference_number: invoiceNumber || undefined,
+      date: issueDate
+        ? new Date(issueDate).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10),
+      ...(dueDate
+        ? { due_date: new Date(dueDate).toISOString().slice(0, 10) }
+        : {}),
       line_items,
       notes: notes || "Looking forward for your business.",
-      terms: billingPeriod && billingPeriod.start && billingPeriod.end
-        ? `Billing Period: ${new Date(billingPeriod.start).toISOString().slice(0, 10)} to ${new Date(billingPeriod.end).toISOString().slice(0, 10)}`
-        : "Terms & Conditions apply",
+      terms:
+        billingPeriod && billingPeriod.start && billingPeriod.end
+          ? `Billing Period: ${new Date(billingPeriod.start)
+              .toISOString()
+              .slice(0, 10)} to ${new Date(billingPeriod.end)
+              .toISOString()
+              .slice(0, 10)}`
+          : "Terms & Conditions apply",
     };
 
     const res = await fetch(url, {
@@ -304,6 +332,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       },
       body: JSON.stringify(payload),
     });
+
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data;
@@ -312,6 +341,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     throw err;
   }
 }
+
 
 export async function getZohoInvoicePdfUrl(invoiceId) {
   try {

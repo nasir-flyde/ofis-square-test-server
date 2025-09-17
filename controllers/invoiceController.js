@@ -22,13 +22,13 @@ async function generateInvoiceNumber() {
   const prefix = `INV-${yyyy}-${mm}-`;
 
   // Find the latest invoice for this month
-  const latest = await Invoice.findOne({ invoiceNumber: { $regex: `^${prefix}` } })
+  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
     .sort({ createdAt: -1 })
     .lean();
 
   let nextSeq = 1;
-  if (latest && latest.invoiceNumber) {
-    const parts = latest.invoiceNumber.split("-");
+  if (latest && latest.invoice_number) {
+    const parts = latest.invoice_number.split("-");
     const seqStr = parts[3];
     const seq = Number(seqStr);
     if (!Number.isNaN(seq)) nextSeq = seq + 1;
@@ -111,28 +111,96 @@ export const createInvoice = async (req, res) => {
     const totals = computeTotals(body);
 
     const invoice = await Invoice.create({
-      invoiceNumber,
+      // Updated field names to match new schema
+      invoice_number: invoiceNumber,
       client,
       contract: contract || undefined,
       building: building || undefined,
       cabin: cabin || undefined,
-      issueDate: issueDate ? new Date(issueDate) : new Date(),
-      dueDate: dueDate ? new Date(dueDate) : undefined,
-      billingPeriod: {
+      date: issueDate ? new Date(issueDate) : new Date(),
+      due_date: dueDate ? new Date(dueDate) : undefined,
+      billing_period: {
         start: new Date(billingPeriod.start),
         end: new Date(billingPeriod.end),
       },
-      items: totals.items,
-      subtotal: totals.subtotal,
-      discount: totals.discount,
-      taxes: totals.taxes,
+      
+      // Map items to new line_items structure with Zoho fields
+      line_items: totals.items.map(item => ({
+        description: item.description,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        amount: item.amount,
+        // Zoho Books fields
+        name: item.description,
+        rate: item.unitPrice,
+        unit: "nos",
+        item_total: item.amount
+      })),
+      
+      sub_total: totals.subtotal,
+      discount: totals.discount.amount,
+      discount_type: totals.discount.type,
+      tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
-      amountPaid: totals.amountPaid,
-      balanceDue: totals.balanceDue,
-      status: body.status || "issued",
+      amount_paid: totals.amountPaid,
+      balance: totals.balanceDue,
+      status: body.status || "draft", // Start as draft for Zoho compatibility
       notes: notes || "",
+      
+      // Zoho Books specific fields
+      currency_code: "INR",
+      exchange_rate: 1,
+      gst_treatment: clientDoc.gstTreatment || "business_gst",
+      place_of_supply: "MH", // Default to Maharashtra, should be configurable
+      payment_terms: 30, // Default 30 days
+      payment_terms_label: "Net 30",
+      
+      // Client address mapping (if available)
+      ...(clientDoc.billingAddress && {
+        billing_address: {
+          attention: clientDoc.contactPerson,
+          address: clientDoc.billingAddress.address,
+          city: clientDoc.billingAddress.city,
+          state: clientDoc.billingAddress.state,
+          zip: clientDoc.billingAddress.zip,
+          country: clientDoc.billingAddress.country || "IN",
+          phone: clientDoc.phone
+        }
+      }),
+      
+      // Map customer for Zoho integration
+      customer_id: clientDoc.zohoBooksContactId,
+      gst_no: clientDoc.gstNo,
+      
       ...(meta ? { meta } : {}),
     });
+
+    // Automatically push to Zoho Books if client has zohoBooksContactId
+    try {
+      if (clientDoc.zohoBooksContactId) {
+        const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
+        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
+        
+        // Handle both direct invoice object and nested response structure
+        const invoiceData = zohoResponse.invoice || zohoResponse;
+        
+        if (invoiceData && invoiceData.invoice_id) {
+          invoice.zoho_invoice_id = invoiceData.invoice_id;
+          invoice.zoho_invoice_number = invoiceData.invoice_number;
+          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
+          invoice.zoho_pdf_url = invoiceData.pdf_url;
+          invoice.invoice_url = invoiceData.invoice_url;
+          await invoice.save();
+          
+          console.log(`Auto-pushed manual invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+        }
+      } else {
+        console.log(`Skipping Zoho push for manual invoice ${invoice._id} - client has no zohoBooksContactId`);
+      }
+    } catch (zohoError) {
+      console.error(`Failed to auto-push manual invoice ${invoice._id} to Zoho Books:`, zohoError.message);
+      // Don't fail the invoice creation if Zoho push fails
+    }
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {
@@ -214,15 +282,19 @@ export const pushInvoiceToZoho = async (req, res) => {
     }
 
     const zInvoice = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
-    if (!zInvoice || !zInvoice.invoice_id) {
+    
+    // Handle both direct invoice object and nested response structure
+    const invoiceData = zInvoice.invoice || zInvoice;
+    
+    if (!invoiceData || !invoiceData.invoice_id) {
       return res.status(502).json({ success: false, message: "Failed to create Zoho invoice", details: zInvoice });
     }
 
-    invoice.zohoInvoiceId = zInvoice.invoice_id;
-    invoice.zohoInvoiceNumber = zInvoice.invoice_number;
-    invoice.zohoStatus = zInvoice.status || zInvoice.status_formatted || undefined;
-    invoice.zohoPdfUrl = zInvoice.pdf_url || undefined;
-    invoice.invoiceUrl = zInvoice.invoice_url || undefined;
+    invoice.zohoInvoiceId = invoiceData.invoice_id;
+    invoice.zohoInvoiceNumber = invoiceData.invoice_number;
+    invoice.zohoStatus = invoiceData.status || invoiceData.status_formatted || undefined;
+    invoice.zohoPdfUrl = invoiceData.pdf_url || undefined;
+    invoice.invoiceUrl = invoiceData.invoice_url || undefined;
     await invoice.save();
 
     return res.json({ success: true, data: invoice, zoho: zInvoice });

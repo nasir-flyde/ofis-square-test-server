@@ -78,26 +78,91 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     // Create invoice payload
     const invoiceNumber = await generateInvoiceNumber(period);
     const invoiceData = {
-      invoiceNumber,
+      // Updated field names to match new schema
+      invoice_number: invoiceNumber,
       client: contract.client._id,
       contract: contractId,
       building: contract.building._id,
-      issueDate,
-      dueDate,
-      billingPeriod: startEnd,
-      items,
-      subtotal: round2(subtotal),
-      taxes,
+      date: issueDate,
+      due_date: dueDate,
+      billing_period: startEnd,
+      
+      // Map items to new line_items structure with Zoho fields
+      line_items: items.map(item => ({
+        description: item.description,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        amount: item.amount,
+        // Zoho Books fields
+        name: item.description,
+        rate: item.unitPrice,
+        unit: "nos",
+        item_total: item.amount
+      })),
+      
+      sub_total: round2(subtotal),
+      tax_total: taxes.reduce((s, t) => s + t.amount, 0),
       total,
-      amountPaid: 0,
-      balanceDue: total,
-      status: "issued",
-      notes: `Auto-created from contract (${issueOn})`
+      amount_paid: 0,
+      balance: total,
+      status: "draft", // Start as draft for Zoho compatibility
+      notes: `Auto-created from contract (${issueOn})`,
+      
+      // Zoho Books specific fields
+      currency_code: "INR",
+      exchange_rate: 1,
+      gst_treatment: "business_gst", // Default for business clients
+      place_of_supply: "MH", // Default to Maharashtra, should be configurable
+      payment_terms: 7, // 7 days payment terms
+      payment_terms_label: "Net 7",
+      
+      // Client address mapping (if available)
+      ...(contract.client.billingAddress && {
+        billing_address: {
+          attention: contract.client.contactPerson,
+          address: contract.client.billingAddress.address,
+          city: contract.client.billingAddress.city,
+          state: contract.client.billingAddress.state,
+          zip: contract.client.billingAddress.zip,
+          country: contract.client.billingAddress.country || "IN",
+          phone: contract.client.phone
+        }
+      }),
+      
+      // Map customer for Zoho integration
+      customer_id: contract.client.zohoBooksContactId, // Will be populated when client is synced to Zoho
+      gst_no: contract.client.gstNo
     };
 
     const invoice = await Invoice.create(invoiceData);
     
     console.log(`Auto-created invoice ${invoice._id} for contract ${contractId}`);
+    
+    // Automatically push to Zoho Books if client has zohoBooksContactId
+    try {
+      if (contract.client.zohoBooksContactId) {
+        const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
+        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), contract.client.toObject());
+        const invoiceData = zohoResponse.invoice || zohoResponse;
+        
+        if (invoiceData && invoiceData.invoice_id) {
+          invoice.zoho_invoice_id = invoiceData.invoice_id;
+          invoice.zoho_invoice_number = invoiceData.invoice_number;
+          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
+          invoice.zoho_pdf_url = invoiceData.pdf_url;
+          invoice.invoice_url = invoiceData.invoice_url;
+          await invoice.save();
+          
+          console.log(`Auto-pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+        }
+      } else {
+        console.log(`Skipping Zoho push for invoice ${invoice._id} - client has no zohoBooksContactId`);
+      }
+    } catch (zohoError) {
+      console.error(`Failed to auto-push invoice ${invoice._id} to Zoho Books:`, zohoError.message);
+      // Don't fail the invoice creation if Zoho push fails
+    }
+    
     return invoice;
 
   } catch (error) {

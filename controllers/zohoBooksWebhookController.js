@@ -17,7 +17,6 @@ export const handleZohoBooksWebhook = async (req, res) => {
       contentType: req.headers['content-type']
     });
 
-    // Handle x-www-form-urlencoded payload format
     let payload = req.body;
     if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
       if (req.body?.payload) {

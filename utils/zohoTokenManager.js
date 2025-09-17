@@ -57,10 +57,6 @@ function isTokenValid() {
 }
 
 async function refreshAccessToken() {
-  console.log("🔍 Debug - CLIENT_ID:", CLIENT_ID ? "SET" : "NOT SET");
-  console.log("🔍 Debug - CLIENT_SECRET:", CLIENT_SECRET ? "SET" : "NOT SET");
-  console.log("🔍 Debug - tokenData.refresh_token:", tokenData.refresh_token ? "SET" : "NOT SET");
-  
   if (!CLIENT_ID || !CLIENT_SECRET || !tokenData.refresh_token) {
     throw new Error("Missing OAuth credentials. Please set ZOHO_BOOKS_CLIENT_ID, ZOHO_BOOKS_CLIENT_SECRET, and ZOHO_BOOKS_REFRESH_TOKEN environment variables.");
   }

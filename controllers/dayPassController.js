@@ -128,32 +128,65 @@ export const createDayPass = async (req, res) => {
     const buildingName = buildingDoc?.name || "Building";
 
     const invoice = await Invoice.create({
-      invoiceNumber,
+      invoice_number: invoiceNumber,
       guest: guestDoc._id,
       building,
-      issueDate: new Date(),
-      billingPeriod: { start: startOfDay, end: endOfDay },
-      items: [
+      date: new Date(),
+      billing_period: { start: startOfDay, end: endOfDay },
+      line_items: [
         {
           description: `Day Pass - ${buildingName} - ${descDate}`,
           quantity,
           unitPrice,
           amount,
+          // Zoho Books fields
+          name: `Day Pass - ${buildingName}`,
+          rate: unitPrice,
+          unit: "day",
+          item_total: amount,
         },
       ],
-      subtotal,
-      discount,
-      taxes,
+      sub_total: subtotal,
+      discount: discount.amount,
+      discount_type: "entity_level",
+      tax_total: 0, // No taxes for day passes currently
       total,
-      amountPaid,
-      balanceDue,
-      status: "issued",
+      amount_paid: amountPaid,
+      balance: balanceDue,
+      status: "draft", // Start as draft for Zoho compatibility
       notes: notes || "",
+      
+      // Zoho Books specific fields
+      currency_code: "INR",
+      exchange_rate: 1,
+      gst_treatment: "consumer", // Day passes are typically for consumers
+      place_of_supply: "MH", // Default to Maharashtra
+      payment_terms: 0, // Immediate payment for day passes
+      payment_terms_label: "Due on receipt",
+      
+      // Guest address mapping (if available)
+      ...(guestDoc.address && {
+        billing_address: {
+          attention: guestDoc.name,
+          address: guestDoc.address,
+          phone: guestDoc.phone
+        }
+      })
     });
 
     // 3) Link invoice to day pass
     dayPass.invoice = invoice._id;
     await dayPass.save();
+
+    // 4) Automatically push to Zoho Books if guest has contact info (optional for day passes)
+    try {
+      // For day passes, we can create a simple contact payload if needed
+      // or skip Zoho integration since day passes are typically one-time
+      console.log(`Day pass invoice ${invoice._id} created - Zoho integration skipped for guest transactions`);
+    } catch (zohoError) {
+      console.error(`Failed to push day pass invoice ${invoice._id} to Zoho Books:`, zohoError.message);
+      // Don't fail the day pass creation if Zoho push fails
+    }
 
     return res.status(201).json({ success: true, data: { dayPass, invoice } });
   } catch (error) {

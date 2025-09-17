@@ -197,7 +197,6 @@ export const createClient = async (req, res) => {
           notes: client.notes,
           billing_address: client.billingAddress,
           shipping_address: client.shippingAddress,
-          // Sanitize contact persons to only include Zoho-supported fields
           contact_persons: Array.isArray(client.contactPersons)
             ? client.contactPersons.map((cp) => ({
                 salutation: cp?.salutation || undefined,

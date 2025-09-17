@@ -12,7 +12,6 @@ const createTransporter = () => {
   });
 };
 
-// Welcome email template
 const getWelcomeEmailTemplate = (clientData) => {
   const { companyName, contactPerson, email } = clientData;
   
