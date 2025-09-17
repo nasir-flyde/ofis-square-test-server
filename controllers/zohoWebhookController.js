@@ -157,6 +157,63 @@ async function processZohoSignEvent(payload) {
   };
 }
 
+/**
+ * Fetch signed document URL from Zoho Sign API
+ * @param {string} requestId - Zoho Sign request ID
+ * @returns {Promise<string|null>} - Signed document URL or null if not found
+ */
+async function fetchSignedDocumentUrl(requestId) {
+  try {
+    console.log(`Fetching signed document for request ID: ${requestId}`);
+    
+    // Get access token from environment
+    const accessToken = process.env.ZOHO_SIGN_ACCESS_TOKEN || process.env.ZOHO_ACCESS_TOKEN;
+    
+    if (!accessToken) {
+      console.error("No Zoho Sign access token found in environment variables");
+      return null;
+    }
+
+    // Fetch document details from Zoho Sign API
+    const response = await axios.get(
+      `https://sign.zoho.in/api/v1/requests/${requestId}/document`,
+      {
+        headers: {
+          Authorization: `Zoho-oauthtoken ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 10000 // 10 second timeout
+      }
+    );
+
+    const documents = response.data?.documents;
+    
+    if (!documents || !Array.isArray(documents) || documents.length === 0) {
+      console.log(`No documents found for request ID: ${requestId}`);
+      return null;
+    }
+
+    // Use the first document (assuming one contract document per request)
+    const firstDoc = documents[0];
+    const signedUrl = firstDoc.document_download_url;
+    const docName = firstDoc.document_name;
+
+    console.log(`Found signed document: ${docName} → ${signedUrl}`);
+    
+    return signedUrl;
+    
+  } catch (error) {
+    console.error("Error fetching signed document from Zoho Sign:", {
+      requestId,
+      error: error.response?.data || error.message,
+      status: error.response?.status
+    });
+    
+    // Return null instead of throwing to prevent webhook failure
+    return null;
+  }
+}
+
 async function updateContractStatus(contract, eventData) {
   const { request_status, event_type, operation_type, activity, actions, performed_by_email } = eventData;
   
@@ -317,6 +374,7 @@ async function updateContractStatus(contract, eventData) {
     updated_fields: Object.keys(updateData)
   };
 }
+
 
 // Health check endpoint for webhook
 export const webhookHealthCheck = async (req, res) => {
