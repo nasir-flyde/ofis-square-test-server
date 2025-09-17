@@ -146,7 +146,8 @@ async function processZohoSignEvent(payload) {
     operation_type,
     activity,
     actions,
-    performed_by_email
+    performed_by_email,
+    document_ids: requests?.document_ids || payload?.document_ids
   });
 
   return {
@@ -157,65 +158,8 @@ async function processZohoSignEvent(payload) {
   };
 }
 
-/**
- * Fetch signed document URL from Zoho Sign API
- * @param {string} requestId - Zoho Sign request ID
- * @returns {Promise<string|null>} - Signed document URL or null if not found
- */
-async function fetchSignedDocumentUrl(requestId) {
-  try {
-    console.log(`Fetching signed document for request ID: ${requestId}`);
-    
-    // Get access token from environment
-    const accessToken = process.env.ZOHO_SIGN_ACCESS_TOKEN || process.env.ZOHO_ACCESS_TOKEN;
-    
-    if (!accessToken) {
-      console.error("No Zoho Sign access token found in environment variables");
-      return null;
-    }
-
-    // Fetch document details from Zoho Sign API
-    const response = await axios.get(
-      `https://sign.zoho.in/api/v1/requests/${requestId}/document`,
-      {
-        headers: {
-          Authorization: `Zoho-oauthtoken ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 10000 // 10 second timeout
-      }
-    );
-
-    const documents = response.data?.documents;
-    
-    if (!documents || !Array.isArray(documents) || documents.length === 0) {
-      console.log(`No documents found for request ID: ${requestId}`);
-      return null;
-    }
-
-    // Use the first document (assuming one contract document per request)
-    const firstDoc = documents[0];
-    const signedUrl = firstDoc.document_download_url;
-    const docName = firstDoc.document_name;
-
-    console.log(`Found signed document: ${docName} → ${signedUrl}`);
-    
-    return signedUrl;
-    
-  } catch (error) {
-    console.error("Error fetching signed document from Zoho Sign:", {
-      requestId,
-      error: error.response?.data || error.message,
-      status: error.response?.status
-    });
-    
-    // Return null instead of throwing to prevent webhook failure
-    return null;
-  }
-}
-
 async function updateContractStatus(contract, eventData) {
-  const { request_status, event_type, operation_type, activity, actions, performed_by_email } = eventData;
+  const { request_status, event_type, operation_type, activity, actions, performed_by_email, document_ids } = eventData;
   
   let newStatus = contract.status;
   let updateData = {};
@@ -234,7 +178,7 @@ async function updateContractStatus(contract, eventData) {
     case "declined":
     case "rejected":
       if (contract.status === "pending_signature") {
-        newStatus = "draft"; // Reset to draft for re-sending
+        newStatus = "draft";
         updateData.declinedAt = new Date();
         actionTaken = "declined";
         console.log(`Contract ${contract._id} declined, reset to draft`);
@@ -243,7 +187,7 @@ async function updateContractStatus(contract, eventData) {
 
     case "expired":
       if (contract.status === "pending_signature") {
-        newStatus = "draft"; // Reset to draft for re-sending
+        newStatus = "draft";
         updateData.expiredAt = new Date();
         actionTaken = "expired";
         console.log(`Contract ${contract._id} expired, reset to draft`);
@@ -336,19 +280,36 @@ async function updateContractStatus(contract, eventData) {
     await Contract.findByIdAndUpdate(contract._id, updateData);
     console.log(`Contract ${contract._id} status updated: ${contract.status} → ${newStatus}`);
 
-    // Fetch and save signed document when contract becomes active
+    // Save signed document when contract becomes active
     if (newStatus === "active" && contract.zohoSignRequestId) {
       try {
-        const signedDocumentUrl = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
-        if (signedDocumentUrl) {
-          updateData.fileUrl = signedDocumentUrl;
-          await Contract.findByIdAndUpdate(contract._id, { fileUrl: signedDocumentUrl });
-          console.log(`Updated contract ${contract._id} with signed document URL: ${signedDocumentUrl}`);
+        // Try to extract signed document from webhook payload first
+        let signedDocumentData = null;
+        
+        // Check if we have document_ids in the eventData (from webhook payload)
+        if (eventData.document_ids && Array.isArray(eventData.document_ids) && eventData.document_ids.length > 0) {
+          const firstDoc = eventData.document_ids[0];
+          if (firstDoc.image_string) {
+            // Convert base64 image to data URL
+            signedDocumentData = `data:image/jpeg;base64,${firstDoc.image_string}`;
+            console.log(`Found signed document in webhook payload for contract ${contract._id}`);
+          }
+        }
+        
+        // If no document in webhook payload, try fetching from API
+        if (!signedDocumentData) {
+          signedDocumentData = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
+        }
+        
+        if (signedDocumentData) {
+          updateData.fileUrl = signedDocumentData;
+          await Contract.findByIdAndUpdate(contract._id, { fileUrl: signedDocumentData });
+          console.log(`Updated contract ${contract._id} with signed document data`);
           actionTaken += "_with_signed_document";
         }
       } catch (docError) {
-        console.error("Failed to fetch signed document from Zoho Sign:", docError);
-        // Don't fail the webhook processing if document fetch fails
+        console.error("Failed to process signed document:", docError);
+        // Don't fail the webhook processing if document processing fails
       }
 
       // Auto-create invoice when contract becomes active
