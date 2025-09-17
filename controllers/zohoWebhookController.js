@@ -290,16 +290,13 @@ async function updateContractStatus(contract, eventData) {
         if (eventData.document_ids && Array.isArray(eventData.document_ids) && eventData.document_ids.length > 0) {
           const firstDoc = eventData.document_ids[0];
           if (firstDoc.image_string) {
-            // Convert base64 image to data URL
             signedDocumentData = `data:image/jpeg;base64,${firstDoc.image_string}`;
             console.log(`Found signed document in webhook payload for contract ${contract._id}`);
           }
         }
-        
-        // If no document in webhook payload, try fetching from API
-        if (!signedDocumentData) {
-          signedDocumentData = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
-        }
+        // if (!signedDocumentData) {
+        //   signedDocumentData = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
+        // }
         
         if (signedDocumentData) {
           updateData.fileUrl = signedDocumentData;
