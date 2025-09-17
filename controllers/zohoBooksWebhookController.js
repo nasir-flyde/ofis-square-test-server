@@ -809,7 +809,11 @@ async function handleInvoiceEvent(invoiceData) {
       // Core invoice fields
       invoice_number: invoiceData.invoice_number,
       date: invoiceData.date ? new Date(invoiceData.date) : new Date(),
-      due_date: invoiceData.due_date ? new Date(invoiceData.due_date) : null,
+      // Set due date to end of current month instead of using Zoho's due_date
+      due_date: (() => {
+        const currentDate = new Date();
+        return new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Last day of current month
+      })(),
       
       // Financial fields
       sub_total: parseFloat(invoiceData.sub_total || 0),

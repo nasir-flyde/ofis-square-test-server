@@ -41,7 +41,9 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
 
 
     const issueDate = new Date(contract.startDate);
-    const dueDate = new Date(startEnd.end);
+    // Set due date to end of the current month
+    const currentDate = new Date();
+    const dueDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Last day of current month
 
     const items = [];
     let subtotal = 0;
