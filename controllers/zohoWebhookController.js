@@ -279,16 +279,10 @@ async function updateContractStatus(contract, eventData) {
     updateData.status = newStatus;
     await Contract.findByIdAndUpdate(contract._id, updateData);
     console.log(`Contract ${contract._id} status updated: ${contract.status} → ${newStatus}`);
-
-    // Save signed document when contract becomes active
     if (newStatus === "active" && contract.zohoSignRequestId) {
       try {
-        // Try to extract signed document from webhook payload first
         let signedDocumentData = null;
-        
-        // Check if we have document_ids in the webhook payload
-        // The document_ids is in the requests object, not directly in eventData
-        const documentIds = req.body?.requests?.document_ids || eventData.requests.document_ids;
+        const documentIds = eventData.requests?.document_ids || eventData.document_ids;
         
         console.log(`Checking for document_ids in webhook payload for contract ${contract._id}:`, documentIds);
         
