@@ -6,6 +6,8 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { getAccessToken } from "../utils/zohoSignAuth.js";
+import fetch from "node-fetch";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 
 export const handleZohoSignWebhook = async (req, res) => {
@@ -67,7 +69,6 @@ export const handleZohoSignWebhook = async (req, res) => {
       });
     }
 
-    // Process the webhook event
     const result = await processZohoSignEvent(payload);
     
     return res.status(200).json({
@@ -298,9 +299,10 @@ async function updateContractStatus(contract, eventData) {
         } else {
           console.log(`No document_ids found in webhook payload for contract ${contract._id}`);
         }
-        // if (!signedDocumentData) {
-        //   signedDocumentData = await fetchSignedDocumentUrl(contract.zohoSignRequestId);
-        // }
+        if (!signedDocumentData) {
+          console.log(`Attempting to fetch signed document from Zoho Sign API for request ${contract.zohoSignRequestId}`);
+          signedDocumentData = await fetchSignedDocumentFromZoho(contract.zohoSignRequestId);
+        }
         
         if (signedDocumentData) {
           updateData.fileUrl = signedDocumentData;
@@ -379,3 +381,48 @@ export const testWebhook = async (req, res) => {
     });
   }
 };
+
+async function fetchSignedDocumentFromZoho(requestId) {
+  try {
+    console.log(`Fetching signed document for request ${requestId} from Zoho Sign API`);
+    const accessToken = await getAccessToken();
+    const response = await fetch(`https://sign.zoho.in/api/v1/requests/${requestId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Zoho-oauthtoken ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Zoho Sign API error: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`Zoho Sign API response for request ${requestId}:`, {
+      status: data.status,
+      document_ids_count: data.requests?.document_ids?.length || 0
+    });
+    const documentIds = data.requests?.document_ids || [];
+    
+    for (const doc of documentIds) {
+      console.log(`Checking document ${doc.document_id} for image_string:`, {
+        document_name: doc.document_name,
+        has_image_string: !!doc.image_string,
+        image_string_length: doc.image_string?.length || 0
+      });
+      
+      if (doc.image_string) {
+        console.log(`Found signed document image_string for request ${requestId}, length: ${doc.image_string.length}`);
+        return `data:image/jpeg;base64,${doc.image_string}`;
+      }
+    }
+    
+    console.log(`No image_string found in any document for request ${requestId}`);
+    return null;
+    
+  } catch (error) {
+    console.error(`Error fetching signed document for request ${requestId}:`, error.message);
+    return null;
+  }
+}
