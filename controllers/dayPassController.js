@@ -11,13 +11,13 @@ async function generateLocalInvoiceNumber() {
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const prefix = `INV-${yyyy}-${mm}-`;
 
-  const latest = await Invoice.findOne({ local_invoice_number: { $regex: `^${prefix}` } })
+  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
     .sort({ createdAt: -1 })
     .lean();
 
   let nextSeq = 1;
-  if (latest && latest.local_invoice_number) {
-    const parts = latest.local_invoice_number.split("-");
+  if (latest && latest.invoice_number) {
+    const parts = latest.invoice_number.split("-");
     const seqStr = parts[3];
     const seq = Number(seqStr);
     if (!Number.isNaN(seq)) nextSeq = seq + 1;
@@ -126,8 +126,7 @@ export const createDayPass = async (req, res) => {
     const buildingName = buildingDoc?.name || "Building";
 
     const invoice = await Invoice.create({
-      local_invoice_number: localInvoiceNumber,
-      invoice_number: null, // Will be set when synced to Zoho Books
+      invoice_number: localInvoiceNumber,
       guest: guestDoc._id,
       building,
       date: new Date(),

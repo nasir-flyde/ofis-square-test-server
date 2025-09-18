@@ -246,20 +246,20 @@ async function generateInvoiceNumber(period) {
     try {
       // Get the highest existing sequence number for this period
       const lastInvoice = await Invoice.findOne(
-        { invoiceNumber: { $regex: `^${prefix}` } },
-        { invoiceNumber: 1 }
-      ).sort({ invoiceNumber: -1 });
+        { invoice_number: { $regex: `^${prefix}` } },
+        { invoice_number: 1 }
+      ).sort({ invoice_number: -1 });
       
       let nextSeq = 1;
       if (lastInvoice) {
-        const lastSeq = parseInt(lastInvoice.invoiceNumber.split('-').pop());
+        const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
         nextSeq = lastSeq + 1;
       }
       
       const invoiceNumber = `${prefix}${String(nextSeq).padStart(4, '0')}`;
       
       // Check if this number already exists (race condition check)
-      const exists = await Invoice.findOne({ invoiceNumber });
+      const exists = await Invoice.findOne({ invoice_number: invoiceNumber });
       if (!exists) {
         return invoiceNumber;
       }

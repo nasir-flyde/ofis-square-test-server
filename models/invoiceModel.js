@@ -30,8 +30,7 @@ const invoiceSchema = new mongoose.Schema(
     contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract" },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building" },
     cabin: { type: mongoose.Schema.Types.ObjectId, ref: "Cabin" },
-    local_invoice_number: { type: String, unique: true }, // Our internal invoice number
-    invoice_number: { type: String }, // Zoho Books invoice number (when synced)
+    invoice_number: { type: String }, // Our internal invoice number (local sequence)
     reference_number: { type: String },
     source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
     date: { type: Date, default: Date.now },

@@ -14,21 +14,19 @@ import {
   sendZohoInvoiceEmail,
 } from "../utils/zohoBooks.js";
 
-// Helper: generate local invoice number like INV-YYYY-MM-0001 (resets monthly)
 async function generateLocalInvoiceNumber() {
   const now = new Date();
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const prefix = `INV-${yyyy}-${mm}-`;
 
-  // Find the latest invoice for this month using local_invoice_number
-  const latest = await Invoice.findOne({ local_invoice_number: { $regex: `^${prefix}` } })
+  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
     .sort({ createdAt: -1 })
     .lean();
 
   let nextSeq = 1;
-  if (latest && latest.local_invoice_number) {
-    const parts = latest.local_invoice_number.split("-");
+  if (latest && latest.invoice_number) {
+    const parts = latest.invoice_number.split("-");
     const seqStr = parts[3];
     const seq = Number(seqStr);
     if (!Number.isNaN(seq)) nextSeq = seq + 1;
@@ -38,7 +36,6 @@ async function generateLocalInvoiceNumber() {
   return `${prefix}${suffix}`;
 }
 
-// Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
   const items = (payload.items || []).map((it) => {
     const quantity = Number(it.quantity || 0);
@@ -51,7 +48,6 @@ function computeTotals(payload) {
   const discount = payload.discount || { type: "flat", value: 0 };
   let discountAmount = 0;
   if (discount.type === "percent") {
-    // percent value: compute (subtotal * percent / 100), rounded to 2 decimals
     discountAmount = Math.round(((subtotal * Number(discount.value || 0)) / 100) * 100) / 100;
   } else {
     discountAmount = Number(discount.value || 0);
@@ -63,7 +59,6 @@ function computeTotals(payload) {
 
   const taxes = (payload.taxes || []).map((t) => {
     const rate = Number(t.rate || 0);
-    // percent rate: compute (taxableBase * rate / 100), rounded to 2 decimals
     const amount = Math.round(((taxableBase * rate) / 100) * 100) / 100;
     return { name: t.name, rate, amount };
   });
@@ -84,7 +79,6 @@ function computeTotals(payload) {
   };
 }
 
-// POST /api/invoices  (manual create)
 export const createInvoice = async (req, res) => {
   try {
     const body = req.body || {};
@@ -95,7 +89,6 @@ export const createInvoice = async (req, res) => {
       return res.status(400).json({ success: false, message: "billingPeriod.start and billingPeriod.end are required" });
     }
 
-    // Basic refs validation (best-effort; can be relaxed)
     const [clientDoc, contractDoc, buildingDoc, cabinDoc] = await Promise.all([
       Client.findById(client),
       contract ? Contract.findById(contract) : Promise.resolve(null),
@@ -111,9 +104,7 @@ export const createInvoice = async (req, res) => {
     const totals = computeTotals(body);
 
     const invoice = await Invoice.create({
-      // Updated field names to match new schema
-      local_invoice_number: localInvoiceNumber,
-      invoice_number: body.invoiceNumber || null, // Zoho Books invoice number (if provided)
+      invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
       building: building || undefined,
@@ -125,13 +116,11 @@ export const createInvoice = async (req, res) => {
         end: new Date(billingPeriod.end),
       },
       
-      // Map items to new line_items structure with Zoho fields
       line_items: totals.items.map(item => ({
         description: item.description,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         amount: item.amount,
-        // Zoho Books fields
         name: item.description,
         rate: item.unitPrice,
         unit: "nos",
@@ -145,18 +134,15 @@ export const createInvoice = async (req, res) => {
       total: totals.total,
       amount_paid: totals.amountPaid,
       balance: totals.balanceDue,
-      status: body.status || "draft", // Start as draft for Zoho compatibility
+      status: body.status || "draft",
       notes: notes || "",
-      
-      // Zoho Books specific fields
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: clientDoc.gstTreatment || "business_gst",
-      place_of_supply: "MH", // Default to Maharashtra, should be configurable
-      payment_terms: 30, // Default 30 days
+      place_of_supply: "MH",
+      payment_terms: 30,
       payment_terms_label: "Net 30",
       
-      // Client address mapping (if available)
       ...(clientDoc.billingAddress && {
         billing_address: {
           attention: clientDoc.contactPerson,
@@ -169,7 +155,6 @@ export const createInvoice = async (req, res) => {
         }
       }),
       
-      // Map customer for Zoho integration
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: clientDoc.gstNo,
       
@@ -237,14 +222,11 @@ export const downloadInvoicePdf = async (req, res) => {
   }
 };
 
-// POST /api/invoices/:id/push-zoho - DEPRECATED: Use payment flow for automatic Zoho creation
 export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-
-    // Check if already has Zoho ID
     if (invoice.zoho_invoice_id) {
       return res.json({ 
         success: true, 
@@ -266,7 +248,6 @@ export const pushInvoiceToZoho = async (req, res) => {
   }
 };
 
-// POST /api/invoices/:id/send
 export const sendInvoiceEmail = async (req, res) => {
   try {
     const { id } = req.params;
@@ -286,7 +267,6 @@ export const sendInvoiceEmail = async (req, res) => {
   }
 };
 
-// POST /api/invoices/:id/sync
 export const syncInvoiceFromZoho = async (req, res) => {
   try {
     const { id } = req.params;
@@ -299,7 +279,6 @@ export const syncInvoiceFromZoho = async (req, res) => {
       invoice.zohoStatus = zInv.status || zInv.status_formatted || invoice.zohoStatus;
       invoice.zohoPdfUrl = zInv.pdf_url || invoice.zohoPdfUrl;
       invoice.invoiceUrl = zInv.invoice_url || invoice.invoiceUrl;
-      // Update payments summary if available
       if (typeof zInv.balance === "number" && typeof zInv.total === "number") {
         invoice.amountPaid = Math.max(0, Number(zInv.total) - Number(zInv.balance));
         invoice.balanceDue = Number(zInv.balance);
@@ -314,7 +293,6 @@ export const syncInvoiceFromZoho = async (req, res) => {
   }
 };
 
-// GET /api/invoices/:id/pdf
 export const getInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;

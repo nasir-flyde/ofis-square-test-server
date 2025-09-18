@@ -303,12 +303,11 @@ async function createInvoiceInZoho(invoice, client) {
 
   // Update the local invoice with Zoho Books data
   invoice.zoho_invoice_id = zohoInvoiceId;
-  invoice.invoice_number = zohoInvoiceNumber; // Use Zoho's invoice number
   invoice.zoho_invoice_number = zohoInvoiceNumber;
   invoice.source = 'zoho';
   await invoice.save();
 
-  console.log(`✅ Updated local invoice ${invoice.local_invoice_number} with Zoho invoice number: ${zohoInvoiceNumber}`);
+  console.log(`✅ Updated local invoice ${invoice.invoice_number} with Zoho invoice number: ${zohoInvoiceNumber}`);
 
   return {
     zoho_invoice_id: zohoInvoiceId,
@@ -393,16 +392,16 @@ export const recordCustomerPayment = async (req, res) => {
     // Auto-create invoices in Zoho Books if they don't have zoho_invoice_id
     for (const dbInvoice of dbInvoices) {
       if (!dbInvoice.zoho_invoice_id) {
-        console.log(`Creating invoice ${dbInvoice.local_invoice_number} in Zoho Books...`);
+        console.log(`Creating invoice ${dbInvoice.invoice_number} in Zoho Books...`);
         
         try {
           const zohoResult = await createInvoiceInZoho(dbInvoice, client);
-          console.log(`✅ Invoice ${dbInvoice.local_invoice_number} created in Zoho with number: ${zohoResult.zoho_invoice_number}`);
+          console.log(`✅ Invoice ${dbInvoice.invoice_number} created in Zoho with number: ${zohoResult.zoho_invoice_number}`);
         } catch (error) {
-          console.error(`❌ Failed to create invoice ${dbInvoice.local_invoice_number} in Zoho:`, error.message);
+          console.error(`❌ Failed to create invoice ${dbInvoice.invoice_number} in Zoho:`, error.message);
           return res.status(400).json({
             success: false,
-            message: `Failed to create invoice ${dbInvoice.local_invoice_number} in Zoho Books: ${error.message}`
+            message: `Failed to create invoice ${dbInvoice.invoice_number} in Zoho Books: ${error.message}`
           });
         }
       }
@@ -415,7 +414,7 @@ export const recordCustomerPayment = async (req, res) => {
       if (Number(paymentInv.amount_applied) > outstanding) {
         return res.status(400).json({
           success: false,
-          message: `Payment amount (${paymentInv.amount_applied}) exceeds outstanding balance (${outstanding}) for invoice ${dbInvoice.invoice_number || dbInvoice.local_invoice_number}`
+          message: `Payment amount (${paymentInv.amount_applied}) exceeds outstanding balance (${outstanding}) for invoice ${dbInvoice.invoice_number}`
         });
       }
     }
