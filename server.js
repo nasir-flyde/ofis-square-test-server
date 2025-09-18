@@ -10,7 +10,8 @@ import apiRoutes from "./routes/api.js";
 import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
-import { scheduleNoShowUpdates } from "./utils/cronJobs.js";
+import { scheduleNoShowUpdates, scheduleMonthlyInvoices } from './utils/cronJobs.js';
+import { initializeScheduler } from "./utils/scheduler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +54,8 @@ app.get("/", (req, res) => {
 });
 
 scheduleNoShowUpdates();
+scheduleMonthlyInvoices();
+initializeScheduler();
 
 const PORT = process.env.PORT || 5001;
 httpServer.listen(PORT, () => {
