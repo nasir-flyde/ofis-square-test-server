@@ -2,6 +2,7 @@ import Invoice from "../models/invoiceModel.js";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
+import { generateLocalInvoiceNumber, getInvoicePeriod } from "../utils/invoiceNumberGenerator.js";
 
 /**
  * Auto-create invoice from contract when it becomes active
@@ -26,7 +27,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     if (!contract) {
       throw new Error("Contract not found");
     }
-    const period = getInvoicePeriod(contract.startDate);
     const startEnd = getBillingPeriodRange(contract.startDate, contract.endDate);
     const existingInvoice = await Invoice.findOne({ 
       contract: contractId,
@@ -78,7 +78,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     const total = round2(subtotal + taxTotal);
 
     // Create invoice payload
-    const invoiceNumber = await generateInvoiceNumber(period);
+    const invoiceNumber = await generateLocalInvoiceNumber();
     const invoiceData = {
       // Updated field names to match new schema
       invoice_number: invoiceNumber,
@@ -210,16 +210,6 @@ function calculateProratedRent(contract, prorate, taxRate) {
   };
 }
 
-/**
- * Get invoice period string (YYYY-MM format)
- */
-function getInvoicePeriod(startDate) {
-  const date = new Date(startDate);
-  if (isNaN(date.getTime())) {
-    throw new Error(`Invalid startDate for period: ${startDate}`);
-  }
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
 
 function getBillingPeriodRange(startDate, endDate) {
   // Ensure we have valid dates
@@ -238,44 +228,6 @@ function getBillingPeriodRange(startDate, endDate) {
   return { start: periodStart, end: periodEnd };
 }
 
-async function generateInvoiceNumber(period) {
-  const prefix = `INV-${period}-`;
-  
-  // Retry up to 5 times to handle race conditions
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      // Get the highest existing sequence number for this period
-      const lastInvoice = await Invoice.findOne(
-        { invoice_number: { $regex: `^${prefix}` } },
-        { invoice_number: 1 }
-      ).sort({ invoice_number: -1 });
-      
-      let nextSeq = 1;
-      if (lastInvoice) {
-        const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
-        nextSeq = lastSeq + 1;
-      }
-      
-      const invoiceNumber = `${prefix}${String(nextSeq).padStart(4, '0')}`;
-      
-      // Check if this number already exists (race condition check)
-      const exists = await Invoice.findOne({ invoice_number: invoiceNumber });
-      if (!exists) {
-        return invoiceNumber;
-      }
-      
-      // If it exists, try again with a small delay
-      await new Promise(resolve => setTimeout(resolve, 50 * attempt));
-    } catch (error) {
-      if (attempt === 5) throw error;
-      await new Promise(resolve => setTimeout(resolve, 100 * attempt));
-    }
-  }
-  
-  // Fallback: use timestamp suffix
-  const timestamp = Date.now().toString().slice(-4);
-  return `${prefix}${timestamp}`;
-}
 
 function round2(n) { return Math.round(n * 100) / 100; }
 export default { createInvoiceFromContract };

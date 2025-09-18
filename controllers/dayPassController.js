@@ -3,29 +3,7 @@ import Invoice from "../models/invoiceModel.js";
 import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
-
-// Helper: generate local invoice number like INV-YYYY-MM-0001 (resets monthly)
-async function generateLocalInvoiceNumber() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const prefix = `INV-${yyyy}-${mm}-`;
-
-  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
-    .sort({ createdAt: -1 })
-    .lean();
-
-  let nextSeq = 1;
-  if (latest && latest.invoice_number) {
-    const parts = latest.invoice_number.split("-");
-    const seqStr = parts[3];
-    const seq = Number(seqStr);
-    if (!Number.isNaN(seq)) nextSeq = seq + 1;
-  }
-
-  const suffix = String(nextSeq).padStart(4, "0");
-  return `${prefix}${suffix}`;
-}
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 
 // POST /api/daypasses
 // Body: { guestId | guest (object) | visitorId, building, date, price, notes?, expiresAt? }

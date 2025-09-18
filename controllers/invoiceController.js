@@ -1,11 +1,11 @@
 import Invoice from "../models/invoiceModel.js";
-import Payment from "../models/paymentModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Building from "../models/buildingModel.js";
 import Cabin from "../models/cabinModel.js";
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import {
   createZohoInvoiceFromLocal,
   getZohoInvoice,
@@ -14,28 +14,7 @@ import {
   sendZohoInvoiceEmail,
 } from "../utils/zohoBooks.js";
 
-async function generateLocalInvoiceNumber() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const prefix = `INV-${yyyy}-${mm}-`;
-
-  const latest = await Invoice.findOne({ invoice_number: { $regex: `^${prefix}` } })
-    .sort({ createdAt: -1 })
-    .lean();
-
-  let nextSeq = 1;
-  if (latest && latest.invoice_number) {
-    const parts = latest.invoice_number.split("-");
-    const seqStr = parts[3];
-    const seq = Number(seqStr);
-    if (!Number.isNaN(seq)) nextSeq = seq + 1;
-  }
-
-  const suffix = String(nextSeq).padStart(4, "0");
-  return `${prefix}${suffix}`;
-}
-
+// Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
   const items = (payload.items || []).map((it) => {
     const quantity = Number(it.quantity || 0);

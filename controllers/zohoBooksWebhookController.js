@@ -5,6 +5,7 @@ import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 
 // Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
@@ -783,11 +784,11 @@ async function handleInvoiceEvent(invoiceData) {
     }
 
     // Check if invoice already exists
-    let existingInvoice = await Invoice.findOne({ zohoInvoiceId: invoiceData.invoice_id });
+    let existingInvoice = await Invoice.findOne({ zoho_invoice_id: invoiceData.invoice_id });
     
     // Check for idempotency - don't update if we have newer data
-    if (existingInvoice && existingInvoice.zohoLastModifiedAt) {
-      const existingModifiedTime = new Date(existingInvoice.zohoLastModifiedAt);
+    if (existingInvoice && existingInvoice.zoho_last_modified_at) {
+      const existingModifiedTime = new Date(existingInvoice.zoho_last_modified_at);
       const incomingModifiedTime = new Date(invoiceData.last_modified_time);
       
       if (incomingModifiedTime <= existingModifiedTime) {
@@ -800,10 +801,16 @@ async function handleInvoiceEvent(invoiceData) {
       }
     }
 
+    // Generate our local invoice number for new invoices
+    let localInvoiceNumber = null;
+    if (!existingInvoice) {
+      localInvoiceNumber = await generateLocalInvoiceNumber();
+    }
+
     // Map Zoho invoice data to our schema
     const mappedInvoiceData = {
-      // Core invoice fields
-      invoice_number: invoiceData.invoice_number,
+      // Core invoice fields - use our local number, not Zoho's
+      ...(localInvoiceNumber && { invoice_number: localInvoiceNumber }),
       date: invoiceData.date ? new Date(invoiceData.date) : new Date(),
       // Set due date to end of current month instead of using Zoho's due_date
       due_date: (() => {
@@ -827,12 +834,15 @@ async function handleInvoiceEvent(invoiceData) {
       exchange_rate: parseFloat(invoiceData.exchange_rate || 1),
       
       // Zoho-specific fields
-      zohoInvoiceId: invoiceData.invoice_id,
-      zohoInvoiceNumber: invoiceData.invoice_number,
-      zohoStatus: invoiceData.status,
-      invoiceUrl: invoiceData.invoice_url,
-      zohoPdfUrl: invoiceData.pdf_url,
-      zohoLastModifiedAt: new Date(invoiceData.last_modified_time),
+      zoho_invoice_id: invoiceData.invoice_id,
+      zoho_invoice_number: invoiceData.invoice_number,
+      zoho_status: invoiceData.status,
+      invoice_url: invoiceData.invoice_url,
+      zoho_pdf_url: invoiceData.pdf_url,
+      zoho_last_modified_at: new Date(invoiceData.last_modified_time),
+      
+      // Set source to indicate this came from Zoho webhook
+      source: "webhook",
       
       // Client reference
       client: client ? client._id : null,
