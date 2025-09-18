@@ -159,11 +159,11 @@ async function processZohoBooksEvent(payload) {
 
   if (payload?.invoice && !eventType) {
     console.log("Detected invoice payload from Zoho Books webhook");
-    return await handleInvoiceFromZoho(payload.invoice);
+    return await handleInvoiceEvent(payload.invoice);
   }
   if (eventType === "invoice_created" || eventType === "InvoiceCreated" || 
       eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
-    return await handleInvoiceFromZoho(data.invoice || data);
+    return await handleInvoiceEvent(data.invoice || data);
   }
 
   if (payload?.contact && !eventType) {
