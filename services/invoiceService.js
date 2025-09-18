@@ -14,7 +14,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
   const {
     issueOn = "activation",
     prorate = true,
-    includeDeposit = true,
     dueDays = 7,
     taxRate = 18
   } = options;
@@ -41,9 +40,9 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
 
 
     const issueDate = new Date(contract.startDate);
-    // Set due date to end of the current month
-    const currentDate = new Date();
-    const dueDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Last day of current month
+    // Set due date to 2nd of next month
+    const startDate = new Date(contract.startDate);
+    const dueDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 2); // 2nd of next month
 
     const items = [];
     let subtotal = 0;
@@ -57,16 +56,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
         amount: rentItem.total
       });
       subtotal += rentItem.total;
-    }
-    if (includeDeposit && contract.securityDeposit > 0) {
-      const depositItem = {
-        description: "Security Deposit (refundable)",
-        quantity: 1,
-        unitPrice: contract.securityDeposit,
-        amount: contract.securityDeposit
-      };
-      items.push(depositItem);
-      subtotal += depositItem.amount;
     }
 
     const taxableAmount = items.reduce((sum, item) => {
@@ -187,18 +176,18 @@ function calculateProratedRent(contract, prorate, taxRate) {
   let prorationData = { enabled: false };
 
   if (prorate && startDate.getDate() !== 1) {
-    // Calculate proration
+    // Calculate proration based on remaining days in the month
     const year = startDate.getFullYear();
     const month = startDate.getMonth();
-    const periodDays = new Date(year, month + 1, 0).getDate(); // Days in month
-    const usedDays = periodDays - startDate.getDate() + 1;
-    const proratedAmount = (monthlyRent * usedDays) / periodDays;
+    const periodDays = new Date(year, month + 1, 0).getDate(); // Total days in month
+    const remainingDays = periodDays - startDate.getDate() + 1; // Days from start date to end of month
+    const proratedAmount = (monthlyRent * remainingDays) / periodDays;
     
     total = Math.round(proratedAmount * 100) / 100;
-    description = `Monthly Rent - ${startDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} (prorated ${usedDays}/${periodDays} days)`;
+    description = `Monthly Rent - ${startDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} (prorated ${remainingDays}/${periodDays} days)`;
     prorationData = {
       enabled: true,
-      usedDays: usedDays,
+      remainingDays: remainingDays,
       periodDays: periodDays,
       proratedAmount: total
     };

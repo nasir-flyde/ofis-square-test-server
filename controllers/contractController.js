@@ -22,7 +22,6 @@ export const createContract = async (req, res) => {
       monthlyRent: monthlyRentOverride,
       initialCredits,
       creditValueAtSignup,
-      securityDeposit,
       contractStartDate,
       contractEndDate,
       terms,
@@ -77,7 +76,6 @@ export const createContract = async (req, res) => {
       monthlyRent: monthlyRent,
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
-      ...(securityDeposit && { securityDeposit: Number(securityDeposit) }),
       ...(terms && { terms }),
       status: "draft",
       fileUrl: "placeholder",
@@ -282,7 +280,6 @@ export const updateContract = async (req, res) => {
       monthlyRent: monthlyRent,
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
-      ...(securityDeposit && { securityDeposit: Number(securityDeposit) }),
       ...(terms && { terms }),
     };
 
@@ -451,7 +448,6 @@ export const uploadSignedContract = async (req, res) => {
       const invoice = await createInvoiceFromContract(contract._id, {
         issueOn: "activation",
         prorate: true,
-        includeDeposit: true,
         dueDays: 7
       });
       console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id}`);
@@ -543,7 +539,6 @@ export const handleZohoSignWebhook = async (req, res) => {
           const invoice = await createInvoiceFromContract(contract._id, {
             issueOn: "activation",
             prorate: true,
-            includeDeposit: true,
             dueDays: 7
           });
           console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id} via Zoho Sign webhook`);
@@ -813,7 +808,6 @@ export const generateContractPDF = async (req, res) => {
       buildingAddress: contract.building?.address || "TBD",
       capacity: contract.capacity || 4,
       monthlyRent: contract.monthlyRent || 15000,
-      securityDeposit: contract.securityDeposit || 30000,
       contractStartDate: contract.startDate ? contract.startDate.toLocaleDateString() : new Date().toLocaleDateString(),
       contractEndDate: contract.endDate ? contract.endDate.toLocaleDateString() : new Date(Date.now() + 365*24*60*60*1000).toLocaleDateString(),
       terms: contract.terms || ""

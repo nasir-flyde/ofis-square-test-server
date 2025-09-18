@@ -1089,8 +1089,6 @@ async function handlePaymentReceived(paymentData) {
         };
       }
     }
-
-    // Find the client by Zoho Books customer ID
     let client = null;
     if (paymentData.customer_id) {
       client = await Client.findOne({ zohoBooksContactId: paymentData.customer_id });

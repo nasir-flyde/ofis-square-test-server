@@ -3,6 +3,9 @@ import Invoice from "../models/invoiceModel.js";
 import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
+import Contract from "../models/contractModel.js";
+import CreditTransaction from "../models/creditTransactionModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 
 // POST /api/daypasses
@@ -78,6 +81,25 @@ export const createDayPass = async (req, res) => {
     endOfDay.setHours(23, 59, 59, 999);
     const expiryAt = expiresAt ? new Date(expiresAt) : endOfDay;
 
+    // Check if guest has an active credit-enabled contract
+    let creditContract = null;
+    let shouldUseCredits = false;
+    
+    if (guestDoc.client) {
+      creditContract = await Contract.findOne({
+        client: guestDoc.client,
+        building,
+        status: "active",
+        credit_enabled: true,
+        startDate: { $lte: passDate },
+        endDate: { $gte: passDate }
+      });
+      
+      if (creditContract) {
+        shouldUseCredits = true;
+      }
+    }
+
     // 1) Create DayPass (without invoice reference initially)
     const dayPass = await DayPass.create({
       guest: guestDoc._id,
@@ -88,7 +110,47 @@ export const createDayPass = async (req, res) => {
       price: Number(price),
     });
 
-    // 2) Create Invoice for this day pass
+    if (shouldUseCredits) {
+      // 2a) Use Credit System - Record credit consumption instead of creating invoice
+      const creditsNeeded = Math.ceil(Number(price) / creditContract.credit_value); // Convert price to credits
+      
+      // Create credit transaction
+      await CreditTransaction.create({
+        client: guestDoc.client,
+        member: null, // Day pass usage
+        type: "consume",
+        credits: creditsNeeded,
+        valuePerCredit: creditContract.credit_value,
+        refType: "day_pass",
+        refId: dayPass._id,
+        meta: {
+          description: `Day Pass - ${buildingDoc.name}`,
+          date: passDate.toISOString().slice(0, 10),
+          price: Number(price),
+          building: buildingDoc.name
+        }
+      });
+
+      // Update client credit wallet balance
+      await ClientCreditWallet.findOneAndUpdate(
+        { client: guestDoc.client },
+        { $inc: { balance: -creditsNeeded } },
+        { upsert: true }
+      );
+
+      console.log(`Day pass created using ${creditsNeeded} credits for client ${guestDoc.client}`);
+      
+      return res.status(201).json({ 
+        success: true, 
+        data: { 
+          dayPass, 
+          credits_used: creditsNeeded,
+          credit_value: creditContract.credit_value,
+          message: "Day pass created using credit system"
+        } 
+      });
+    } else {
+      // 2b) Traditional Invoice System - Create invoice immediately
     const localInvoiceNumber = await generateLocalInvoiceNumber();
     const quantity = 1;
     const unitPrice = Number(price) || 0;
@@ -165,6 +227,7 @@ export const createDayPass = async (req, res) => {
     }
 
     return res.status(201).json({ success: true, data: { dayPass, invoice } });
+    }
   } catch (error) {
     if (error && error.code === 11000) {
       return res.status(409).json({ success: false, message: "Duplicate key" });

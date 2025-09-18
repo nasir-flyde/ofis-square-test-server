@@ -2,7 +2,6 @@ import fetch from "node-fetch";
 import { getValidAccessToken } from "./zohoTokenManager.js";
 
 const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID || "60047183737";
-// Use zohoapis.com domain as per Zoho's updated requirements
 const BASE_URL = "https://www.zohoapis.in/books/v3";
 
 export async function getContacts() {
@@ -28,7 +27,6 @@ export async function createContact(payload) {
   const maskedToken = authToken ? `${String(authToken).slice(0, 8)}…` : undefined;
   const startTime = Date.now();
 
-  // Pre-request diagnostics
   console.log("\n===== ZohoBooks:createContact - Request =====");
   console.log("URL:", url);
   console.log("Headers:", { Authorization: `Zoho-oauthtoken ${maskedToken}`, "Content-Type": "application/json" });
@@ -86,10 +84,7 @@ export async function createContact(payload) {
         removed.push(k);
       }
     }
-    // Remove unsupported top-level flags if present
     delete sanitized.is_sms_enabled;
-
-    // Deep sanitize contact_persons if provided
     if (Array.isArray(sanitized.contact_persons)) {
       const cpAllowed = new Set([
         "salutation",
@@ -110,12 +105,10 @@ export async function createContact(payload) {
             if (cpAllowed.has(ck)) {
               out[ck] = cv;
             } else {
-              // Track nested removals for debugging
               removed.push(`contact_persons.${ck}`);
             }
           }
         }
-        // Explicitly strip nested flags if somehow present
         delete out.is_sms_enabled;
         delete out.communication_preference;
         return out;
@@ -146,7 +139,6 @@ export async function createContact(payload) {
       data = { parse_error: String(e?.message || e), raw: rawText };
     }
 
-    // Post-response diagnostics
     console.log("===== ZohoBooks:createContact - Response =====");
     console.log("HTTP:", res.status, res.statusText || "");
     console.log("Duration(ms):", durationMs);
@@ -165,30 +157,24 @@ export async function createContact(payload) {
   }
 }
 
-
-// -------------------
-// Find or create a contact from local client data
-// -------------------
 export async function findOrCreateContactFromClient(clientDoc) {
   const email = clientDoc?.email;
   const companyName = clientDoc?.companyName || clientDoc?.contactPerson || "Unknown";
   const phone = clientDoc?.phone || undefined;
   const contactPerson = clientDoc?.contactPerson || undefined;
 
-  // Try lookup by email
   if (email) {
     const contacts = await getContacts();
     const existing = contacts?.contacts?.find(c => c.email === email);
     if (existing) return existing.contact_id;
   }
 
-  // Map client data to Zoho Books format
   const payload = {
     contact_name: companyName,
     company_name: companyName,
     email,
     phone,
-    mobile: clientDoc?.phone, // Use same phone as mobile
+    mobile: clientDoc?.phone,
     contact_type: clientDoc?.contactType || "customer",
     is_customer: true,
     customer_sub_type: clientDoc?.customerSubType || "business",
@@ -206,14 +192,12 @@ export async function findOrCreateContactFromClient(clientDoc) {
       last_name: cp.last_name || "",
       email: cp.email || "",
       phone: cp.phone || "",
-      mobile: cp.phone || "", // Use same phone as mobile
+      mobile: cp.phone || "",
       designation: cp.designation || "",
       department: cp.department || "",
       is_primary_contact: cp.is_primary_contact || false,
       enable_portal: cp.enable_portal || false
     })) || [],
-    
-    // Billing address from client data
     billing_address: clientDoc?.billingAddress ? {
       attention: clientDoc.billingAddress.attention || contactPerson || "",
       address: clientDoc.billingAddress.address || "",
@@ -227,8 +211,6 @@ export async function findOrCreateContactFromClient(clientDoc) {
       attention: contactPerson || "",
       country: "INDIA"
     },
-    
-    // Shipping address from client data
     shipping_address: clientDoc?.shippingAddress ? {
       attention: clientDoc.shippingAddress.attention || contactPerson || "",
       address: clientDoc.shippingAddress.address || "",
@@ -257,15 +239,10 @@ export async function findOrCreateContactFromClient(clientDoc) {
   return created?.contact?.contact_id;
 }
 
-// -------------------
-// Create invoice in Zoho
-// -------------------
 export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
   try {
     const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
-
-    // Build Zoho-compliant payload from our local models
     const {
       invoiceNumber,
       issueDate,
@@ -275,34 +252,23 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       notes = "",
       billingPeriod,
     } = invoiceDoc || {};
-
-    // ✅ Use existing Zoho contact ID from client (no contact creation)
     const customer_id = clientDoc?.zohoBooksContactId;
-    
     if (!customer_id) {
       throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
     }
-
-    // Handle both old 'items' and new 'line_items' structure
     const itemsArray = invoiceDoc.line_items || items || [];
-    
     const line_items = itemsArray.map((it) => ({
       name: it.name || it.description || "Item",
       description: it.description || it.name || "Item",
-      // Use the actual amount/item_total as the rate, not the original unitPrice
-      rate: Number(it.amount || it.item_total || it.rate || it.unitPrice || 0),
+      rate: Number(it.rate || it.unitPrice || ((it.amount || it.item_total || 0) / (it.quantity || 1))),
       quantity: Number(it.quantity || 1),
       unit: it.unit || "nos",
-      // Don't include item_id if it's not a valid Zoho item ID
       ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
     }));
-    
     console.log("Formatted line_items for Zoho:", JSON.stringify(line_items, null, 2));
-    
     if (!line_items || line_items.length === 0) {
       throw new Error("Invoice must have at least one line item to create in Zoho Books");
     }
-
     const payload = {
       customer_id,
       reference_number: invoiceNumber || undefined,
@@ -323,7 +289,6 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .slice(0, 10)}`
           : "Terms & Conditions apply",
     };
-
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -332,7 +297,6 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       },
       body: JSON.stringify(payload),
     });
-
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data;
@@ -341,7 +305,6 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     throw err;
   }
 }
-
 
 export async function getZohoInvoicePdfUrl(invoiceId) {
   try {
@@ -353,13 +316,13 @@ export async function getZohoInvoicePdfUrl(invoiceId) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
-
     return data?.invoice?.invoice_url || null;
   } catch (err) {
     console.error("❌ Error fetching invoice PDF URL:", err.message);
     throw err;
   }
 }
+
 export async function sendZohoInvoiceEmail(invoiceId, emailPayload = {}) {
   try {
     const authToken = await getValidAccessToken();
@@ -380,6 +343,7 @@ export async function sendZohoInvoiceEmail(invoiceId, emailPayload = {}) {
     throw err;
   }
 }
+
 export async function getZohoInvoice(invoiceId) {
   try {
     const authToken = await getValidAccessToken();
@@ -396,9 +360,7 @@ export async function getZohoInvoice(invoiceId) {
     throw err;
   }
 }
-// -------------------
-// Record Payment for Zoho Invoice
-// -------------------
+
 export async function recordZohoPayment(invoiceId, paymentData) {
   try {
     const authToken = await getValidAccessToken();

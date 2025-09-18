@@ -23,6 +23,7 @@ import memberPortalRoutes from "./memberPortal.js";
 import userRoutes from "./users.js";
 import communityRoutes from "./community.js";
 import webhookRoutes from "./webhooks.js";
+import creditRoutes from "./credits.js";
 
 const router = express.Router();
 
@@ -51,5 +52,6 @@ router.use("/member-portal", memberPortalRoutes);
 router.use("/users", userRoutes);
 router.use("/community", communityRoutes);
 router.use("/webhooks", webhookRoutes);
+router.use("/credits", creditRoutes);
 
 export default router;

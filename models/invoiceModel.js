@@ -33,6 +33,12 @@ const invoiceSchema = new mongoose.Schema(
     invoice_number: { type: String }, // Our internal invoice number (local sequence)
     reference_number: { type: String },
     source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
+    type: { type: String, enum: ["regular", "credit_monthly"], default: "regular" },
+    category: { 
+      type: String, 
+      enum: ["general", "day_pass", "meeting_room", "printing", "amenities", "other"],
+      default: "general"
+    },
     date: { type: Date, default: Date.now },
     due_date: { type: Date },
     billing_period: {
@@ -106,6 +112,16 @@ const invoiceSchema = new mongoose.Schema(
 
 // Add unique constraint for zoho_invoice_id to prevent duplicates
 invoiceSchema.index({ zoho_invoice_id: 1 }, { unique: true, sparse: true });
+
+// Add unique constraint for credit monthly invoices (one per client per month per category)
+invoiceSchema.index(
+  { client: 1, "billing_period.start": 1, "billing_period.end": 1, type: 1, category: 1 }, 
+  { 
+    unique: true, 
+    partialFilterExpression: { type: "credit_monthly" },
+    name: "unique_credit_monthly_invoice_by_category"
+  }
+);
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);
 export default Invoice;
