@@ -4,6 +4,7 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
+import Payment from "../models/paymentModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 
@@ -123,7 +124,8 @@ async function processZohoBooksEvent(payload) {
     data_keys: Object.keys(data || {}),
     has_contact: !!payload?.contact,
     has_customer: !!payload?.customer,
-    has_invoice: !!payload?.invoice
+    has_invoice: !!payload?.invoice,
+    has_payment: !!payload?.payment
   });
 
   // Handle customer creation events with explicit event type
@@ -166,6 +168,16 @@ async function processZohoBooksEvent(payload) {
       eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
     return await handleInvoiceEvent(data.invoice || data);
   }
+  if (payload?.payment && !eventType) {
+    console.log("Detected payment payload from Zoho Books webhook");
+    return await handlePaymentReceived(payload.payment);
+  }
+  if (eventType === "payment_created" || eventType === "PaymentCreated" ||
+      eventType === "payment_updated" || eventType === "PaymentUpdated" ||
+      eventType === "customerpayment_created" || eventType === "CustomerPaymentCreated" ||
+      eventType === "customerpayment_updated" || eventType === "CustomerPaymentUpdated") {
+    return await handlePaymentReceived(data.payment || data);
+  }
 
   if (payload?.contact && !eventType) {
     console.log("Detected legacy contact payload from Zoho Books webhook");
@@ -189,10 +201,12 @@ async function processZohoBooksEvent(payload) {
   console.log(`Unhandled Zoho Books event type: ${eventType}`);
   return { 
     status: "ignored", 
-    reason: "Unhandled event type or missing customer/contact data",
+    reason: "Unhandled event type or missing customer/contact/invoice/payment data",
     event_type: eventType,
     has_contact: !!payload?.contact,
-    has_customer: !!payload?.customer
+    has_customer: !!payload?.customer,
+    has_invoice: !!payload?.invoice,
+    has_payment: !!payload?.payment
   };
 }
 
@@ -707,47 +721,81 @@ export const testZohoBooksWebhook = async (req, res) => {
     return res.status(404).json({ error: "Not found" });
   }
 
-  const testPayload = {
-    event_type: "customer_created",
-    data: {
-      customer: {
-        customer_id: "test_customer_123",
-        customer_name: "Test Company",
-        company_name: "Test Company Ltd", 
-        email: "test@testcompany.com",
-        phone: "1234567890",
-        mobile: "1234567890",
-        contact_type: "customer",
-        customer_sub_type: "business",
-        created_time: new Date().toISOString(),
-        last_modified_time: new Date().toISOString(),
-        status: "active",
-        currency_code: "INR",
-        billing_address: {
-          attention: "Test Person",
-          address: "123 Test Street",
-          city: "Test City",
-          state: "Test State",
-          zip: "12345",
-          country: "India"
-        },
-        shipping_address: {
-          attention: "Test Person",
-          address: "123 Test Street", 
-          city: "Test City",
-          state: "Test State",
-          zip: "12345",
-          country: "India"
+  const { testType = "customer" } = req.query;
+
+  let testPayload;
+
+  if (testType === "payment") {
+    testPayload = {
+      event_type: "customerpayment_created",
+      data: {
+        payment: {
+          payment_id: "test_payment_123",
+          payment_number: "PMT-000001",
+          customer_id: "test_customer_123",
+          amount: 1000.00,
+          date: new Date().toISOString().split('T')[0],
+          payment_mode: "bank_transfer",
+          reference_number: "REF123456",
+          description: "Test payment via webhook",
+          status: "success",
+          currency_code: "INR",
+          account_id: "test_account_123",
+          invoices: [
+            {
+              invoice_id: "test_invoice_123",
+              amount_applied: 1000.00
+            }
+          ],
+          created_time: new Date().toISOString(),
+          last_modified_time: new Date().toISOString()
         }
-      }
-    },
-    timestamp: new Date().toISOString()
-  };
+      },
+      timestamp: new Date().toISOString()
+    };
+  } else {
+    testPayload = {
+      event_type: "customer_created",
+      data: {
+        customer: {
+          customer_id: "test_customer_123",
+          customer_name: "Test Company",
+          company_name: "Test Company Ltd", 
+          email: "test@testcompany.com",
+          phone: "1234567890",
+          mobile: "1234567890",
+          contact_type: "customer",
+          customer_sub_type: "business",
+          created_time: new Date().toISOString(),
+          last_modified_time: new Date().toISOString(),
+          status: "active",
+          currency_code: "INR",
+          billing_address: {
+            attention: "Test Person",
+            address: "123 Test Street",
+            city: "Test City",
+            state: "Test State",
+            zip: "12345",
+            country: "India"
+          },
+          shipping_address: {
+            attention: "Test Person",
+            address: "123 Test Street", 
+            city: "Test City",
+            state: "Test State",
+            zip: "12345",
+            country: "India"
+          }
+        }
+      },
+      timestamp: new Date().toISOString()
+    };
+  }
 
   try {
     const result = await processZohoBooksEvent(testPayload);
     return res.status(200).json({
-      message: "Test Zoho Books webhook processed",
+      message: `Test Zoho Books ${testType} webhook processed`,
       test_payload: testPayload,
       result,
       timestamp: new Date().toISOString()
@@ -1000,6 +1048,206 @@ async function handleInvoiceStatusUpdate(invoiceData) {
 
   } catch (error) {
     console.error("Error processing invoice status update:", error);
+    throw error;
+  }
+}
+
+// Handle payment received webhook from Zoho Books
+async function handlePaymentReceived(paymentData) {
+  try {
+    console.log("Processing payment received event:", {
+      payment_id: paymentData.payment_id,
+      payment_number: paymentData.payment_number,
+      customer_id: paymentData.customer_id,
+      amount: paymentData.amount,
+      date: paymentData.date,
+      payment_mode: paymentData.payment_mode,
+      status: paymentData.status,
+      invoices: paymentData.invoices?.length || 0
+    });
+
+    if (!paymentData.payment_id) {
+      console.warn("No payment_id found in payment webhook payload");
+      return { status: "ignored", reason: "No payment_id" };
+    }
+
+    // Check if payment already exists to avoid duplicates
+    const existingPayment = await Payment.findOne({ zoho_payment_id: paymentData.payment_id });
+    
+    // Check for idempotency - don't update if we have newer data
+    if (existingPayment && existingPayment.updatedAt) {
+      const existingModifiedTime = new Date(existingPayment.updatedAt);
+      const incomingModifiedTime = paymentData.last_modified_time ? 
+        new Date(paymentData.last_modified_time) : new Date();
+      
+      if (incomingModifiedTime <= existingModifiedTime) {
+        console.log(`Skipping payment ${paymentData.payment_id} - incoming data is not newer`);
+        return {
+          action: "skipped",
+          reason: "not_newer",
+          payment_id: paymentData.payment_id
+        };
+      }
+    }
+
+    // Find the client by Zoho Books customer ID
+    let client = null;
+    if (paymentData.customer_id) {
+      client = await Client.findOne({ zohoBooksContactId: paymentData.customer_id });
+      if (!client) {
+        console.warn(`No client found with zohoBooksContactId: ${paymentData.customer_id} for payment ${paymentData.payment_id}`);
+      }
+    }
+
+    // Process invoice applications from the payment
+    const invoiceApplications = [];
+    const invoiceUpdates = [];
+    
+    if (paymentData.invoices && Array.isArray(paymentData.invoices)) {
+      for (const invoiceApplication of paymentData.invoices) {
+        const zohoInvoiceId = invoiceApplication.invoice_id;
+        const amountApplied = parseFloat(invoiceApplication.amount_applied || 0);
+        
+        // Find the local invoice
+        const localInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
+        
+        if (localInvoice) {
+          // Update invoice payment status
+          const currentAmountPaid = parseFloat(localInvoice.amount_paid || 0);
+          const newAmountPaid = currentAmountPaid + amountApplied;
+          const newBalance = Math.max(0, parseFloat(localInvoice.total || 0) - newAmountPaid);
+          
+          const invoiceUpdates = {
+            amount_paid: newAmountPaid,
+            balance: newBalance,
+            last_payment_date: new Date(paymentData.date)
+          };
+          
+          // Update status based on balance
+          if (newBalance === 0) {
+            invoiceUpdates.status = "paid";
+            invoiceUpdates.paid_at = new Date(paymentData.date);
+          } else if (localInvoice.status === "draft") {
+            invoiceUpdates.status = "partially_paid";
+          } else if (localInvoice.status !== "partially_paid" && localInvoice.status !== "paid") {
+            invoiceUpdates.status = "partially_paid";
+          }
+          
+          await Invoice.findByIdAndUpdate(localInvoice._id, invoiceUpdates);
+          console.log(`Updated invoice ${localInvoice.invoice_number} with payment of ${amountApplied}`);
+          
+          invoiceApplications.push({
+            invoice: localInvoice._id,
+            amount_applied: amountApplied,
+            zoho_invoice_id: zohoInvoiceId
+          });
+          
+          invoiceUpdates.push({
+            invoice_id: localInvoice._id,
+            invoice_number: localInvoice.invoice_number,
+            amount_applied: amountApplied,
+            new_balance: newBalance
+          });
+        } else {
+          console.warn(`Local invoice not found for Zoho invoice ID: ${zohoInvoiceId}`);
+          invoiceApplications.push({
+            invoice: null,
+            amount_applied: amountApplied,
+            zoho_invoice_id: zohoInvoiceId
+          });
+        }
+      }
+    }
+
+    // Map Zoho payment mode to our payment types
+    const mapPaymentMode = (zohoMode) => {
+      const modeMap = {
+        'bank_transfer': 'Bank Transfer',
+        'banktransfer': 'Bank Transfer',
+        'cash': 'Cash',
+        'check': 'Cheque',
+        'cheque': 'Cheque',
+        'creditcard': 'CreditCard',
+        'credit_card': 'CreditCard',
+        'debitcard': 'DebitCard',
+        'debit_card': 'DebitCard',
+        'paypal': 'PayPal',
+        'upi': 'UPI',
+        'card': 'Card',
+        'online': 'Online Gateway',
+        'other': 'Other'
+      };
+      
+      return modeMap[zohoMode?.toLowerCase()] || 'Other';
+    };
+
+    // Prepare payment data for local storage
+    const paymentDataToStore = {
+      client: client ? client._id : null,
+      invoices: invoiceApplications,
+      type: mapPaymentMode(paymentData.payment_mode),
+      amount: parseFloat(paymentData.amount || 0),
+      paymentDate: new Date(paymentData.date),
+      referenceNumber: paymentData.reference_number || paymentData.payment_number,
+      notes: paymentData.description || paymentData.notes || `Payment received via Zoho Books - ${paymentData.payment_number}`,
+      currency: paymentData.currency_code || 'INR',
+      
+      // Zoho-specific fields
+      customer_id: paymentData.customer_id,
+      zoho_payment_id: paymentData.payment_id,
+      payment_number: paymentData.payment_number,
+      zoho_status: paymentData.status,
+      deposit_to_account_id: paymentData.account_id,
+      
+      // Audit fields
+      raw_zoho_response: paymentData,
+      source: 'webhook'
+    };
+
+    // Handle single invoice case for backward compatibility
+    if (invoiceApplications.length === 1 && invoiceApplications[0].invoice) {
+      paymentDataToStore.invoice = invoiceApplications[0].invoice;
+    }
+
+    let result;
+    if (existingPayment) {
+      // Update existing payment
+      await Payment.findByIdAndUpdate(existingPayment._id, paymentDataToStore);
+      console.log(`Updated payment ${paymentData.payment_id} in database`);
+      result = {
+        action: "updated",
+        payment_id: paymentData.payment_id,
+        local_id: existingPayment._id,
+        amount: paymentData.amount,
+        invoices_updated: invoiceUpdates
+      };
+    } else {
+      // Create new payment
+      const newPayment = await Payment.create(paymentDataToStore);
+      console.log(`Created payment ${paymentData.payment_id} in database with local ID ${newPayment._id}`);
+      result = {
+        action: "created",
+        payment_id: paymentData.payment_id,
+        local_id: newPayment._id,
+        amount: paymentData.amount,
+        invoices_updated: invoiceUpdates
+      };
+    }
+
+    // Add client linking info to result
+    if (client) {
+      result.client_linked = true;
+      result.client_id = client._id;
+      result.client_name = client.companyName;
+    } else {
+      result.client_linked = false;
+      result.customer_id = paymentData.customer_id;
+    }
+
+    return result;
+
+  } catch (error) {
+    console.error("Error processing payment webhook:", error);
     throw error;
   }
 }
