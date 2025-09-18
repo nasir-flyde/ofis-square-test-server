@@ -1098,42 +1098,35 @@ async function handlePaymentReceived(paymentData) {
         console.warn(`No client found with zohoBooksContactId: ${paymentData.customer_id} for payment ${paymentData.payment_id}`);
       }
     }
-
-    // Process invoice applications from the payment
     const invoiceApplications = [];
-    const invoiceUpdates = [];
+    const invoiceUpdateResults = [];
     
     if (paymentData.invoices && Array.isArray(paymentData.invoices)) {
       for (const invoiceApplication of paymentData.invoices) {
         const zohoInvoiceId = invoiceApplication.invoice_id;
         const amountApplied = parseFloat(invoiceApplication.amount_applied || 0);
-        
-        // Find the local invoice
         const localInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         
         if (localInvoice) {
-          // Update invoice payment status
           const currentAmountPaid = parseFloat(localInvoice.amount_paid || 0);
           const newAmountPaid = currentAmountPaid + amountApplied;
           const newBalance = Math.max(0, parseFloat(localInvoice.total || 0) - newAmountPaid);
           
-          const invoiceUpdates = {
+          const invoiceUpdateData = {
             amount_paid: newAmountPaid,
             balance: newBalance,
             last_payment_date: new Date(paymentData.date)
           };
-          
-          // Update status based on balance
           if (newBalance === 0) {
-            invoiceUpdates.status = "paid";
-            invoiceUpdates.paid_at = new Date(paymentData.date);
+            invoiceUpdateData.status = "paid";
+            invoiceUpdateData.paid_at = new Date(paymentData.date);
           } else if (localInvoice.status === "draft") {
-            invoiceUpdates.status = "partially_paid";
+            invoiceUpdateData.status = "partially_paid";
           } else if (localInvoice.status !== "partially_paid" && localInvoice.status !== "paid") {
-            invoiceUpdates.status = "partially_paid";
+            invoiceUpdateData.status = "partially_paid";
           }
           
-          await Invoice.findByIdAndUpdate(localInvoice._id, invoiceUpdates);
+          await Invoice.findByIdAndUpdate(localInvoice._id, invoiceUpdateData);
           console.log(`Updated invoice ${localInvoice.invoice_number} with payment of ${amountApplied}`);
           
           invoiceApplications.push({
@@ -1142,7 +1135,7 @@ async function handlePaymentReceived(paymentData) {
             zoho_invoice_id: zohoInvoiceId
           });
           
-          invoiceUpdates.push({
+          invoiceUpdateResults.push({
             invoice_id: localInvoice._id,
             invoice_number: localInvoice.invoice_number,
             amount_applied: amountApplied,
@@ -1219,7 +1212,7 @@ async function handlePaymentReceived(paymentData) {
         payment_id: paymentData.payment_id,
         local_id: existingPayment._id,
         amount: paymentData.amount,
-        invoices_updated: invoiceUpdates
+        invoices_updated: invoiceUpdateResults
       };
     } else {
       // Create new payment
@@ -1230,7 +1223,7 @@ async function handlePaymentReceived(paymentData) {
         payment_id: paymentData.payment_id,
         local_id: newPayment._id,
         amount: paymentData.amount,
-        invoices_updated: invoiceUpdates
+        invoices_updated: invoiceUpdateResults
       };
     }
 
