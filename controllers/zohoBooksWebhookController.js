@@ -259,9 +259,9 @@ async function handleCustomerCreated(customerData) {
 
     console.log(`Created new client ${newClient._id} from Zoho customer ${customerId}`);
 
-    // Create user and member records if email and phone are available
+    // Create user and member records if email OR phone are available (not both required)
     let createdUserId = null;
-    if (newClient.email && newClient.phone) {
+    if (newClient.email || newClient.phone) {
       try {
         createdUserId = await createUserAndMemberForClient(newClient);
       } catch (userErr) {
@@ -391,9 +391,9 @@ async function handleContactCreated(contactData) {
 
     console.log(`Created new client ${newClient._id} from Zoho contact ${contactId}`);
 
-    // Create user and member records if email and phone are available
+    // Create user and member records if email OR phone are available (not both required)
     let createdUserId = null;
-    if (newClient.email && newClient.phone) {
+    if (newClient.email || newClient.phone) {
       try {
         createdUserId = await createUserAndMemberForClient(newClient);
       } catch (userErr) {
@@ -481,9 +481,9 @@ async function mapZohoCustomerToClient(customer) {
     companyName: customer.company_name || customer.customer_name || "Unknown Company",
     legalName: customer.legal_name || customer.company_name,
     contactPerson: customer.customer_name || (customer.first_name && customer.last_name ? `${customer.first_name} ${customer.last_name}` : undefined) || "Unknown",
-    email: customer.email ? customer.email.toLowerCase().trim() : undefined,
-    phone: customer.phone || customer.mobile || undefined,
-    website: customer.website || undefined,
+    email: customer.email && customer.email.trim() ? customer.email.toLowerCase().trim() : undefined,
+    phone: customer.phone && customer.phone.trim() ? customer.phone.trim() : (customer.mobile && customer.mobile.trim() ? customer.mobile.trim() : undefined),
+    website: customer.website && customer.website.trim() ? customer.website.trim() : undefined,
     
     // Commercial details
     contactType: customer.contact_type || "customer",
@@ -565,9 +565,9 @@ async function mapZohoContactToClient(contact) {
     companyName: contact.company_name || contact.contact_name || "Unknown Company",
     legalName: contact.legal_name || contact.company_name,
     contactPerson: contact.contact_name || (contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : undefined) || "Unknown",
-    email: contact.email ? contact.email.toLowerCase().trim() : undefined,
-    phone: contact.phone || contact.mobile || undefined,
-    website: contact.website || undefined,
+    email: contact.email && contact.email.trim() ? contact.email.toLowerCase().trim() : undefined,
+    phone: contact.phone && contact.phone.trim() ? contact.phone.trim() : (contact.mobile && contact.mobile.trim() ? contact.mobile.trim() : undefined),
+    website: contact.website && contact.website.trim() ? contact.website.trim() : undefined,
     
     // Commercial details
     contactType: contact.contact_type || "customer",
