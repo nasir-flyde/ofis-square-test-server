@@ -27,7 +27,7 @@ class WalletService {
   }
 
   // Grant credits to a client wallet
-  static async grantCredits({ clientId, credits, valuePerCredit, refType, refId, meta = {} }) {
+  static async grantCredits({ clientId, credits, valuePerCredit, refType, refId, meta = {}, createdBy = null }) {
     const session = await mongoose.startSession();
     
     try {
@@ -45,16 +45,35 @@ class WalletService {
           { session }
         );
         
-        // Create transaction record
+        // Create transaction record with all required fields
         await CreditTransaction.create([{
-          client: clientId,
-          member: null, // Grants are typically admin actions
-          type: "grant",
-          credits,
-          valuePerCredit: finalValuePerCredit,
-          refType,
-          refId,
-          meta
+          clientId: clientId,
+          contractId: refType === 'contract' ? refId : null,
+          itemId: null, // No specific item for credit grants
+          itemSnapshot: {
+            name: "Credit Grant",
+            unit: "credits",
+            pricingMode: "credits",
+            unitCredits: 1,
+            taxable: false,
+            gstRate: 0
+          },
+          quantity: credits,
+          transactionType: "grant",
+          pricingSnapshot: {
+            pricingMode: "credits",
+            unitCredits: 1,
+            creditValueINR: finalValuePerCredit
+          },
+          creditsDelta: credits, // Positive for grants
+          amountINRDelta: credits * finalValuePerCredit, // Positive for grants
+          purpose: meta.reason || "Admin credit grant",
+          description: `Granted ${credits} credits to client`,
+          status: "completed",
+          createdBy: createdBy || new mongoose.Types.ObjectId(), // Use provided or generate dummy ID
+          metadata: {
+            customData: meta
+          }
         }], { session });
       });
       

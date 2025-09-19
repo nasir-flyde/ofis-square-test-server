@@ -82,7 +82,9 @@ export const createInvoice = async (req, res) => {
     const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
 
-    const invoice = await Invoice.create({
+    // Create invoice data using same structure as createInvoiceFromContract
+    const invoiceData = {
+      // Updated field names to match new schema
       invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
@@ -94,7 +96,7 @@ export const createInvoice = async (req, res) => {
         start: new Date(billingPeriod.start),
         end: new Date(billingPeriod.end),
       },
-      
+
       line_items: totals.items.map(item => ({
         description: item.description,
         quantity: item.quantity,
@@ -107,21 +109,18 @@ export const createInvoice = async (req, res) => {
       })),
       
       sub_total: totals.subtotal,
-      discount: totals.discount.amount,
-      discount_type: totals.discount.type,
       tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
       amount_paid: totals.amountPaid,
       balance: totals.balanceDue,
       status: body.status || "draft",
-      notes: notes || "",
+      notes: notes || "Manual invoice creation",
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: clientDoc.gstTreatment || "business_gst",
       place_of_supply: "MH",
-      payment_terms: 30,
-      payment_terms_label: "Net 30",
-      
+      payment_terms: 7,
+      payment_terms_label: "Net 7",
       ...(clientDoc.billingAddress && {
         billing_address: {
           attention: clientDoc.contactPerson,
@@ -133,13 +132,39 @@ export const createInvoice = async (req, res) => {
           phone: clientDoc.phone
         }
       }),
-      
+
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: clientDoc.gstNo,
       
       ...(meta ? { meta } : {}),
-    });
-    console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}. Will be auto-pushed to Zoho Books during payment processing.`);
+    };
+
+    const invoice = await Invoice.create(invoiceData);
+    
+    console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}`);
+    try {
+      if (clientDoc.zohoBooksContactId) {
+        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
+        const invoiceData = zohoResponse.invoice || zohoResponse;
+        
+        if (invoiceData && invoiceData.invoice_id) {
+          invoice.zoho_invoice_id = invoiceData.invoice_id;
+          invoice.zoho_invoice_number = invoiceData.invoice_number;
+          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
+          invoice.zoho_pdf_url = invoiceData.pdf_url;
+          invoice.invoice_url = invoiceData.invoice_url;
+          await invoice.save();
+          
+          console.log(`Pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+        } else {
+          console.warn(`Zoho Books did not return invoice_id for invoice ${invoice._id}`);
+        }
+      } else {
+        console.log(`Skipping Zoho push for invoice ${invoice._id} - client has no zohoBooksContactId`);
+      }
+    } catch (zohoError) {
+      console.error(`Failed to push invoice ${invoice._id} to Zoho Books:`, zohoError.message);
+    }
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {

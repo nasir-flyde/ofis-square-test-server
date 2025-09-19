@@ -36,7 +36,7 @@ const invoiceSchema = new mongoose.Schema(
     type: { type: String, enum: ["regular", "credit_monthly"], default: "regular" },
     category: { 
       type: String, 
-      enum: ["general", "day_pass", "meeting_room", "printing", "amenities", "other"],
+      enum: ["general", "day_pass", "meeting_room", "printing", "amenities", "other", "exceeded_credits", "custom_services"],
       default: "general"
     },
     date: { type: Date, default: Date.now },

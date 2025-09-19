@@ -52,7 +52,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       items.push({
         description: rentItem.description,
         quantity: 1,
-        unitPrice: contract.monthlyRent,
+        unitPrice: rentItem.total, // Use prorated amount as unit price
         amount: rentItem.total
       });
       subtotal += rentItem.total;
@@ -175,8 +175,8 @@ function calculateProratedRent(contract, prorate, taxRate) {
   let description = `Monthly Rent - ${startDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}`;
   let prorationData = { enabled: false };
 
-  if (prorate && startDate.getDate() !== 1) {
-    // Calculate proration based on remaining days in the month
+  if (prorate) {
+    // Always prorate based on remaining days in the month from start date
     const year = startDate.getFullYear();
     const month = startDate.getMonth();
     const periodDays = new Date(year, month + 1, 0).getDate(); // Total days in month
@@ -218,5 +218,189 @@ function getBillingPeriodRange(startDate, endDate) {
 }
 
 
+/**
+ * Create credit purchase invoice
+ * @param {object} params - Invoice parameters
+ * @param {string} params.clientId - Client ObjectId
+ * @param {number} params.credits - Number of credits purchased
+ * @param {object} params.options - Invoice options
+ * @returns {object} Created invoice
+ */
+export const createCreditPurchaseInvoice = async ({ clientId, credits, options = {} }) => {
+  const {
+    description = 'Credits Purchase',
+    taxable = true,
+    gstRate = 18,
+    invoiceDate = new Date(),
+    dueDate = null,
+    notes = '',
+    idempotencyKey = null
+  } = options;
+
+  try {
+    // Get client and contract for credit value
+    const client = await Client.findById(clientId);
+    if (!client) {
+      throw new Error('Client not found');
+    }
+
+    const contract = await Contract.findOne({ 
+      client: clientId, 
+      status: 'active' 
+    }).sort({ createdAt: -1 });
+
+    if (!contract) {
+      throw new Error('No active contract found for client');
+    }
+
+    const creditValue = contract.credit_value || 500; // Default ₹500 per credit
+
+    // Check for existing invoice with same idempotency key
+    if (idempotencyKey) {
+      const existingInvoice = await Invoice.findOne({
+        client: clientId,
+        type: 'credit_purchase',
+        idempotencyKey
+      });
+      if (existingInvoice) {
+        return existingInvoice;
+      }
+    }
+
+    // Calculate amounts
+    const subtotal = credits * creditValue;
+    const taxAmount = taxable ? subtotal * (gstRate / 100) : 0;
+    const total = subtotal + taxAmount;
+
+    // Set due date (default to 7 days from invoice date)
+    const finalDueDate = dueDate || new Date(invoiceDate.getTime() + (7 * 24 * 60 * 60 * 1000));
+
+    const invoiceNumber = await generateLocalInvoiceNumber();
+
+    // Create line items
+    const lineItems = [{
+      description: `${description} (${credits} credits @ ₹${creditValue}/credit)`,
+      quantity: credits,
+      unitPrice: creditValue,
+      amount: subtotal,
+      name: description,
+      rate: creditValue,
+      unit: 'credits',
+      item_total: subtotal
+    }];
+
+    // Create invoice data
+    const invoiceData = {
+      invoice_number: invoiceNumber,
+      client: clientId,
+      contract: contract._id,
+      building: contract.building,
+      date: invoiceDate,
+      due_date: finalDueDate,
+      type: 'credit_purchase',
+      
+      line_items: lineItems,
+      
+      sub_total: round2(subtotal),
+      tax_total: round2(taxAmount),
+      total: round2(total),
+      amount_paid: 0,
+      balance: round2(total),
+      status: 'draft',
+      notes: notes || `Credit purchase: ${credits} credits`,
+      
+      // Zoho Books fields
+      currency_code: 'INR',
+      exchange_rate: 1,
+      gst_treatment: 'business_gst',
+      place_of_supply: 'MH',
+      payment_terms: 7,
+      payment_terms_label: 'Net 7',
+      
+      // Client address mapping
+      ...(client.billingAddress && {
+        billing_address: {
+          attention: client.contactPerson,
+          address: client.billingAddress.address,
+          city: client.billingAddress.city,
+          state: client.billingAddress.state,
+          zip: client.billingAddress.zip,
+          country: client.billingAddress.country || 'IN',
+          phone: client.phone
+        }
+      }),
+      
+      customer_id: client.zohoBooksContactId,
+      gst_no: client.gstNo,
+      idempotencyKey
+    };
+
+    // Add taxes if applicable
+    if (taxable && taxAmount > 0) {
+      invoiceData.taxes = [{
+        name: 'GST',
+        rate: gstRate,
+        amount: round2(taxAmount)
+      }];
+    }
+
+    const invoice = await Invoice.create(invoiceData);
+    
+    console.log(`Created credit purchase invoice ${invoice._id} for ${credits} credits`);
+    
+    return invoice;
+
+  } catch (error) {
+    console.error('Error creating credit purchase invoice:', error);
+    throw error;
+  }
+};
+
+/**
+ * Preview credit purchase invoice totals
+ * @param {string} clientId - Client ObjectId
+ * @param {number} credits - Number of credits
+ * @param {object} options - Preview options
+ * @returns {object} Preview totals
+ */
+export const previewCreditPurchaseInvoice = async (clientId, credits, options = {}) => {
+  const { taxable = true, gstRate = 18 } = options;
+
+  try {
+    const contract = await Contract.findOne({ 
+      client: clientId, 
+      status: 'active' 
+    }).sort({ createdAt: -1 });
+
+    if (!contract) {
+      throw new Error('No active contract found for client');
+    }
+
+    const creditValue = contract.credit_value || 500;
+    const subtotal = credits * creditValue;
+    const taxAmount = taxable ? subtotal * (gstRate / 100) : 0;
+    const total = subtotal + taxAmount;
+
+    return {
+      credits,
+      creditValue,
+      subtotal: round2(subtotal),
+      taxAmount: round2(taxAmount),
+      total: round2(total),
+      taxable,
+      gstRate
+    };
+
+  } catch (error) {
+    console.error('Error previewing credit purchase invoice:', error);
+    throw error;
+  }
+};
+
 function round2(n) { return Math.round(n * 100) / 100; }
-export default { createInvoiceFromContract };
+
+export default { 
+  createInvoiceFromContract, 
+  createCreditPurchaseInvoice, 
+  previewCreditPurchaseInvoice 
+};

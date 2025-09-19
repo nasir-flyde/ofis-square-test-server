@@ -3,11 +3,17 @@ import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Invoice from "../models/invoiceModel.js";
+import CreditCustomItem from "../models/creditCustomItemModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { createZohoInvoiceFromLocal } from "../utils/zohoBooks.js";
+import mongoose from "mongoose";
 
 
 function mapRefTypeToCategory(refType) {
+  if (refType.startsWith('custom_item_')) {
+    return 'custom_services';
+  }
+  
   const mapping = {
     'day_pass': 'day_pass',
     'meeting_booking': 'meeting_room',
@@ -66,17 +72,26 @@ export async function generateMonthlyCreditInvoices(year, month) {
         
         console.log(`\n🔍 Processing client: ${clientName} (${clientId})`);
 
-        // Calculate credit consumption for this month
+        // Calculate credit consumption for this month (including custom items)
         const creditUsage = await calculateMonthlyCreditsUsed(clientId, billingStart, billingEnd);
+        const customItemUsage = await calculateCustomItemUsage(clientId, billingStart, billingEnd);
         const allocatedCredits = contract.allocated_credits || 0;
-        const totalUsedCredits = creditUsage.total_credits;
+        const totalUsedCredits = creditUsage.total_credits + customItemUsage.total_credits;
 
         console.log(`📊 Credits - Allocated: ${allocatedCredits}, Used: ${totalUsedCredits}, Total Extra: ${Math.max(0, totalUsedCredits - allocatedCredits)}`);
         const categoryInvoices = [];
         let remainingAllocatedCredits = allocatedCredits;
 
+        // Combine traditional and custom item usage
+        const combinedBreakdown = { ...creditUsage.breakdown };
+        
+        // Add custom item usage to breakdown
+        for (const [itemKey, itemData] of Object.entries(customItemUsage.breakdown)) {
+          combinedBreakdown[itemKey] = itemData;
+        }
+
         // Process each category
-        for (const [refType, breakdown] of Object.entries(creditUsage.breakdown)) {
+        for (const [refType, breakdown] of Object.entries(combinedBreakdown)) {
           const category = mapRefTypeToCategory(refType);
           const categoryCredits = breakdown.credits;
           const existingInvoice = await Invoice.findOne({
@@ -328,16 +343,65 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
 }
 
 /**
+ * Calculate custom item usage for a client in a billing period
+ * @param {string} clientId - Client ObjectId
+ * @param {Date} startDate - Billing period start
+ * @param {Date} endDate - Billing period end
+ * @returns {object} Custom item usage breakdown
+ */
+async function calculateCustomItemUsage(clientId, startDate, endDate) {
+  const transactions = await CreditTransaction.aggregate([
+    {
+      $match: {
+        clientId: new mongoose.Types.ObjectId(clientId),
+        transactionType: 'usage',
+        status: 'completed',
+        createdAt: { $gte: startDate, $lte: endDate },
+        itemId: { $ne: null } // Only custom item transactions
+      }
+    },
+    {
+      $group: {
+        _id: '$itemId',
+        itemName: { $first: '$itemSnapshot.name' },
+        totalQuantity: { $sum: '$quantity' },
+        totalCredits: { $sum: { $abs: '$creditsDelta' } },
+        totalAmount: { $sum: { $abs: '$amountINRDelta' } },
+        transactions: { $push: '$$ROOT' }
+      }
+    }
+  ]);
+
+  const breakdown = {};
+  let totalCredits = 0;
+
+  for (const item of transactions) {
+    const itemKey = `custom_item_${item._id}`;
+    breakdown[itemKey] = {
+      credits: item.totalCredits,
+      amount: item.totalAmount,
+      quantity: item.totalQuantity,
+      item_name: item.itemName,
+      transactions: item.transactions.length
+    };
+    totalCredits += item.totalCredits;
+  }
+
+  return {
+    total_credits: totalCredits,
+    breakdown
+  };
+}
+
+/**
  * Run consolidation for previous month (typically called on 1st of each month)
  */
 export async function runPreviousMonthConsolidation() {
   const now = new Date();
-  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const year = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const month = now.getMonth() === 0 ? 12 : now.getMonth();
   
-  return await generateMonthlyCreditInvoices(
-    lastMonth.getFullYear(),
-    lastMonth.getMonth() + 1
-  );
+  return await generateMonthlyCreditInvoices(year, month);
 }
 
 export default {
