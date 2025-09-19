@@ -483,19 +483,21 @@ export const generateExceededCreditsInvoice = async (req, res) => {
       });
     }
     
-    // Check if invoice already exists
-    const existingInvoice = await Invoice.findOne({
-      client: clientId,
-      type: "credit_monthly",
-      "billing_period.start": billingStart,
-      "billing_period.end": billingEnd
-    });
-    
-    if (existingInvoice) {
-      return res.status(409).json({
-        success: false,
-        message: `Invoice already exists for this period: ${existingInvoice.invoice_number}`
+    // If singleInvoice is requested, prevent duplicates for the period
+    if (singleInvoice) {
+      const existingInvoice = await Invoice.findOne({
+        client: clientId,
+        type: "credit_monthly",
+        "billing_period.start": billingStart,
+        "billing_period.end": billingEnd
       });
+      
+      if (existingInvoice) {
+        return res.status(409).json({
+          success: false,
+          message: `Invoice already exists for this period: ${existingInvoice.invoice_number}`
+        });
+      }
     }
     
     if (exceededData.extra <= 0) {
@@ -848,7 +850,12 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
 
 // Helper function to create exceeded credits invoice with item breakdown
 async function createExceededCreditsInvoice({ client, contract, billingStart, billingEnd, exceededData, singleInvoice = true }) {
-  const invoiceNumber = await generateLocalInvoiceNumber();
+  let invoiceNumber = await generateLocalInvoiceNumber();
+  // If allowing multiple invoices for same period, append a random 4-digit suffix for clarity
+  if (!singleInvoice) {
+    const rand4 = Math.floor(1000 + Math.random() * 9000);
+    invoiceNumber = `${invoiceNumber}-${rand4}`;
+  }
   const monthName = billingStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   
   // Create line items from exceeded credits by item
@@ -876,7 +883,8 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
     client: client._id,
     contract: contract._id,
     building: contract.building,
-    type: "credit_monthly",
+    // Use 'regular' type when creating additional invoices to avoid unique index collision
+    type: singleInvoice ? "credit_monthly" : "regular",
     category: "exceeded_credits",
     source: "local",
     

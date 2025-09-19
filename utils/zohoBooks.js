@@ -277,10 +277,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       customer_id,
       reference_number: invoiceDoc.invoice_number || invoiceNumber || undefined,
       date: actualIssueDate
-        ? new Date(actualIssueDate).toISOString().slice(0, 10)
-        : new Date().toISOString().slice(0, 10),
+        ? new Date(new Date(actualIssueDate).toDateString()).toISOString().slice(0, 10)
+        : new Date(new Date().toDateString()).toISOString().slice(0, 10),
       ...(actualDueDate
-        ? { due_date: new Date(actualDueDate).toISOString().slice(0, 10) }
+        ? { due_date: new Date(new Date(actualDueDate).toDateString()).toISOString().slice(0, 10) }
         : {}),
       line_items,
       notes: invoiceDoc.notes || notes || "Looking forward for your business.",
@@ -368,7 +368,11 @@ export async function getZohoInvoice(invoiceId) {
 export async function recordZohoPayment(invoiceId, paymentData) {
   try {
     const authToken = await getValidAccessToken();
-    const url = `${BASE_URL}/invoices/${invoiceId}/payment?organization_id=${ORG_ID}`;
+    const url = `${BASE_URL}/customerpayments?organization_id=${ORG_ID}`;
+    
+    console.log("🔗 Zoho Payment URL:", url);
+    console.log("📤 Payment payload:", JSON.stringify(paymentData, null, 2));
+    
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -378,6 +382,9 @@ export async function recordZohoPayment(invoiceId, paymentData) {
       body: JSON.stringify(paymentData),
     });
     const data = await res.json();
+    
+    console.log("📥 Zoho response:", JSON.stringify(data, null, 2));
+    
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data;
   } catch (err) {

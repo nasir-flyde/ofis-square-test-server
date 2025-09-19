@@ -111,7 +111,7 @@ export const getPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(filter)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
       .populate("client", "companyName contactPerson phone email")
       .sort({ paymentDate: -1, createdAt: -1 });
 
@@ -126,7 +126,7 @@ export const getPaymentById = async (req, res) => {
   try {
     const { id } = req.params;
     const payment = await Payment.findById(id)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
       .populate("client", "companyName contactPerson phone email");
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     return res.json({ success: true, data: payment });
@@ -154,7 +154,7 @@ export const getClientPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(query)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate building cabin")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate building cabin")
       .sort({ paymentDate: -1, createdAt: -1 })
       .limit(Number(limit))
       .skip((Number(page) - 1) * Number(limit));

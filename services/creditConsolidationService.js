@@ -295,8 +295,6 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
       });
     }
   }
-
-  // Calculate tax
   const taxableAmount = invoiceAmount;
   const taxRate = 18; // 18% GST
   const taxAmount = Math.round(taxableAmount * (taxRate / 100) * 100) / 100;
@@ -312,8 +310,11 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
     category: category,
     source: "local",
     
-    date: new Date(),
-    due_date: new Date(Date.now() + (contract.credit_terms_days || 30) * 24 * 60 * 60 * 1000),
+    date: new Date(new Date().toDateString()),
+    due_date: (() => {
+      const now = new Date();
+      return new Date(now.getFullYear(), now.getMonth() + 1, 2);
+    })(),
     billing_period: {
       start: billingStart,
       end: billingEnd

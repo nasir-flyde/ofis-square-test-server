@@ -3,33 +3,49 @@ import DraftPayment from "../models/draftPaymentModel.js";
 import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
 import imagekit from "../utils/imageKit.js";
+import { recordZohoPayment } from "../utils/zohoBooks.js";
 
-// Helper: apply amount delta to invoice and set status fields
+// Helper: apply amount delta to invoice and set status fields (aligned with current model)
 async function applyInvoicePayment(invoiceId, deltaAmount) {
-  const invoice = await Invoice.findById(invoiceId);
+  const invoice = await Invoice.findById(invoiceId).populate('client');
   if (!invoice) throw new Error("Invoice not found");
 
-  const amountPaid = Math.max(0, Number(invoice.amountPaid || 0) + Number(deltaAmount || 0));
-  invoice.amountPaid = Math.round(amountPaid * 100) / 100;
-  const balanceDue = Math.max(0, Number(invoice.total || 0) - invoice.amountPaid);
-  invoice.balanceDue = Math.round(balanceDue * 100) / 100;
+  const newAmountPaid = Math.max(0, Number(invoice.amount_paid || 0) + Number(deltaAmount || 0));
+  const newBalance = Math.max(0, Number(invoice.total || 0) - newAmountPaid);
 
-  if (invoice.balanceDue === 0) {
+  invoice.amount_paid = Math.round(newAmountPaid * 100) / 100;
+  invoice.balance = Math.round(newBalance * 100) / 100;
+
+  if (invoice.balance === 0) {
     invoice.status = "paid";
-    invoice.paidAt = invoice.paidAt || new Date();
-  } else if (invoice.status !== "void") {
-    const now = new Date();
-    if (invoice.dueDate && now > new Date(invoice.dueDate)) {
-      invoice.status = "overdue";
-    } else if (invoice.status === "draft") {
-      invoice.status = "issued";
-    } else if (!invoice.status || invoice.status === "issued") {
-      invoice.status = "issued";
-    }
+    invoice.paid_at = new Date();
+  } else if (invoice.amount_paid > 0) {
+    invoice.status = "partially_paid";
   }
 
+  invoice.last_payment_date = new Date();
   await invoice.save();
   return invoice;
+}
+
+// Helper: map payment types to Zoho Books payment modes
+function getZohoPaymentMode(paymentType) {
+  const modeMap = {
+    'cash': 'cash',
+    'check': 'check',
+    'cheque': 'check',
+    'bank_transfer': 'banktransfer',
+    'wire_transfer': 'banktransfer',
+    'credit_card': 'creditcard',
+    'debit_card': 'creditcard',
+    'upi': 'banktransfer',
+    'online': 'banktransfer',
+    'neft': 'banktransfer',
+    'rtgs': 'banktransfer',
+    'imps': 'banktransfer'
+  };
+  
+  return modeMap[paymentType?.toLowerCase()] || 'banktransfer';
 }
 
 export const createDraftPayment = async (req, res) => {
@@ -129,7 +145,7 @@ export const approveDraftPayment = async (req, res) => {
     ], { session });
 
     // Update invoice totals
-    await applyInvoicePayment(draft.invoice, Number(draft.amount));
+    const updatedInvoice = await applyInvoicePayment(draft.invoice, Number(draft.amount));
 
     // Update draft status
     draft.status = "approved";
@@ -140,6 +156,63 @@ export const approveDraftPayment = async (req, res) => {
 
     await session.commitTransaction();
     session.endSession();
+
+    // Sync payment to Zoho Books (after transaction commit)
+    try {
+      if (updatedInvoice?.zoho_invoice_id && updatedInvoice.client?.zohoBooksContactId) {
+        const zohoPaymentData = {
+          customer_id: updatedInvoice.client?.zohoBooksContactId,
+          payment_mode: getZohoPaymentMode(draft.type),
+          amount: Number(draft.amount),
+          date: draft.paymentDate ? new Date(draft.paymentDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+          reference_number: draft.referenceNumber || undefined,
+          description: draft.notes || `Payment for Invoice ${updatedInvoice.invoice_number || updatedInvoice.reference_number || ''}`,
+          invoices: [{
+            invoice_id: updatedInvoice.zoho_invoice_id,
+            amount_applied: Number(draft.amount)
+          }]
+        };
+
+        console.log("🔍 Zoho sync prerequisites check:", {
+          hasZohoInvoiceId: !!updatedInvoice.zoho_invoice_id,
+          hasZohoBooksContactId: !!updatedInvoice.client?.zohoBooksContactId,
+          invoiceId: updatedInvoice.zoho_invoice_id,
+          contactId: updatedInvoice.client?.zohoBooksContactId,
+          clientName: updatedInvoice.client?.companyName
+        });
+
+        console.log("🔄 Syncing payment to Zoho Books:", {
+          invoiceId: updatedInvoice.zoho_invoice_id,
+          amount: draft.amount,
+          paymentMode: zohoPaymentData.payment_mode
+        });
+
+        const zohoResponse = await recordZohoPayment(updatedInvoice.zoho_invoice_id, zohoPaymentData);
+        
+        // Update payment record with Zoho Books payment ID
+        if (zohoResponse?.payment?.payment_id) {
+          await Payment.findByIdAndUpdate(payment[0]._id, {
+            zoho_payment_id: zohoResponse.payment.payment_id,
+            payment_number: zohoResponse.payment.payment_number,
+            zoho_status: zohoResponse.payment.status,
+            raw_zoho_response: zohoResponse.payment,
+            source: "zoho_books"
+          });
+          console.log("✅ Payment synced to Zoho Books:", zohoResponse.payment.payment_id);
+        }
+      } else {
+        console.log("⚠️ Zoho sync skipped:", {
+          reason: !updatedInvoice?.zoho_invoice_id ? "No zoho_invoice_id" : "No zohoBooksContactId",
+          invoiceId: updatedInvoice?._id,
+          zohoInvoiceId: updatedInvoice?.zoho_invoice_id,
+          clientId: updatedInvoice?.client?._id,
+          zohoBooksContactId: updatedInvoice?.client?.zohoBooksContactId
+        });
+      }
+    } catch (zohoError) {
+      console.error("❌ Failed to sync payment to Zoho Books:", zohoError.message);
+      // Don't fail the approval process if Zoho sync fails
+    }
 
     return res.json({ success: true, message: "Draft approved and payment recorded", data: { draft, payment: payment?.[0] } });
   } catch (error) {
@@ -191,7 +264,7 @@ export const getDraftPayments = async (req, res) => {
     }
 
     const drafts = await DraftPayment.find(filter)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amount_paid balance status due_date")
       .populate("client", "companyName contactPerson email phone")
       .populate("submittedByClient", "companyName contactPerson")
       .populate("reviewedBy", "name email")
@@ -208,7 +281,7 @@ export const getDraftPaymentById = async (req, res) => {
   try {
     const { id } = req.params;
     const draft = await DraftPayment.findById(id)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amount_paid balance status due_date")
       .populate("client", "companyName contactPerson email phone")
       .populate("submittedByClient", "companyName contactPerson")
       .populate("reviewedBy", "name email");

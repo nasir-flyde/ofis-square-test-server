@@ -18,6 +18,15 @@ const BuildingSchema = new Schema(
       min: 0,
       default: null 
     },
+    photos: [{
+      fileId: { type: String, required: true },
+      name: { type: String, required: true },
+      url: { type: String, required: true },
+      thumbnailUrl: { type: String },
+      size: { type: Number, required: true },
+      filePath: { type: String, required: true },
+      uploadedAt: { type: Date, default: Date.now }
+    }],
 
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
   },

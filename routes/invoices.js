@@ -13,13 +13,17 @@ import {
   zohoWebhook,
   downloadInvoicePdf,
   deleteInvoice,
+  consolidateInvoices,
+  getConsolidationPreview,
 } from "../controllers/invoiceController.js";
 
 const router = express.Router();
 
 
 router.get("/", getInvoices);
+router.get("/consolidation-preview", authMiddleware, getConsolidationPreview);
 router.post("/", authMiddleware, createInvoice);
+router.post("/consolidate", authMiddleware, consolidateInvoices);
 router.get("/:id", authMiddleware, getInvoiceById);
 router.patch("/:id/status", authMiddleware, updateInvoiceStatus);
 

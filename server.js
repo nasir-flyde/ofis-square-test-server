@@ -44,6 +44,9 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.use("/api", apiRoutes);
 
+// Serve static files for uploaded photos
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 mongoose
   .connect(process.env.MONGODB_URI || "mongodb+srv://nasir-flyde:Nsa%4019786@ofis-square-db.xaajgtt.mongodb.net/test")
   .then(() => console.log("✅ MongoDB Connected DB"))

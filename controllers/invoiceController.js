@@ -3,6 +3,7 @@ import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Building from "../models/buildingModel.js";
 import Cabin from "../models/cabinModel.js";
+import Payment from "../models/paymentModel.js";
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
@@ -520,6 +521,245 @@ export const deleteInvoice = async (req, res) => {
     await Invoice.findByIdAndDelete(id);
     return res.json({ success: true, message: "Invoice deleted successfully", deletedInvoiceId: id });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/invoices/consolidation-preview
+export const getConsolidationPreview = async (req, res) => {
+  try {
+    const { clientId, year, month } = req.query;
+
+    if (!clientId || !year || !month) {
+      return res.status(400).json({
+        success: false,
+        message: "clientId, year, and month are required"
+      });
+    }
+
+    // Validate client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Find invoices for the specified month and year for this client
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const invoicesToConsolidate = await Invoice.find({
+      client: clientId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ['draft', 'issued'] } // Only consolidate unpaid invoices
+    });
+
+    // Calculate totals
+    let totalAmount = 0;
+    for (const invoice of invoicesToConsolidate) {
+      totalAmount += invoice.total || 0;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        invoiceCount: invoicesToConsolidate.length,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        period: {
+          year: parseInt(year),
+          month: parseInt(month),
+          monthName: new Date(year, month - 1).toLocaleString('default', { month: 'long' })
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting consolidation preview:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/invoices/consolidate
+export const consolidateInvoices = async (req, res) => {
+  try {
+    const { year, month, clientId, sendEmail } = req.body;
+
+    if (!year || !month || !clientId) {
+      return res.status(400).json({
+        success: false,
+        message: "year, month, and clientId are required"
+      });
+    }
+
+    // Validate client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Find invoices for the specified month and year for this client
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const invoicesToConsolidate = await Invoice.find({
+      client: clientId,
+      date: { $gte: startDate, $lte: endDate },
+      status: { $in: ['draft', 'issued'] } // Only consolidate unpaid invoices
+    }).populate('client contract building cabin');
+
+    if (invoicesToConsolidate.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No eligible invoices found for consolidation in the specified period"
+      });
+    }
+
+    if (invoicesToConsolidate.length === 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Only one invoice found - consolidation requires multiple invoices"
+      });
+    }
+
+    // Calculate consolidated totals
+    let consolidatedLineItems = [];
+    let consolidatedSubTotal = 0;
+    let consolidatedTaxTotal = 0;
+    let consolidatedTotal = 0;
+    let consolidatedAmountPaid = 0;
+    const consolidatedInvoiceNumbers = [];
+
+    for (const invoice of invoicesToConsolidate) {
+      consolidatedInvoiceNumbers.push(invoice.invoice_number);
+      
+      // Add line items with invoice reference
+      if (invoice.line_items && invoice.line_items.length > 0) {
+        invoice.line_items.forEach(item => {
+          consolidatedLineItems.push({
+            description: `${item.description} (Invoice: ${invoice.invoice_number})`,
+            quantity: item.quantity || 1,
+            unitPrice: item.unitPrice || item.rate || 0,
+            amount: item.amount || item.item_total || 0,
+            name: item.name || item.description,
+            rate: item.rate || item.unitPrice || 0,
+            unit: item.unit || 'nos',
+            item_total: item.item_total || item.amount || 0
+          });
+        });
+      }
+
+      consolidatedSubTotal += invoice.sub_total || 0;
+      consolidatedTaxTotal += invoice.tax_total || 0;
+      consolidatedTotal += invoice.total || 0;
+      consolidatedAmountPaid += invoice.amount_paid || 0;
+    }
+
+    // Generate new invoice number for consolidated invoice
+    const consolidatedInvoiceNumber = await generateLocalInvoiceNumber();
+
+    // Create consolidated invoice
+    const consolidatedInvoice = await Invoice.create({
+      invoice_number: consolidatedInvoiceNumber,
+      client: clientId,
+      date: new Date(),
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+      billing_period: {
+        start: startDate,
+        end: endDate
+      },
+      line_items: consolidatedLineItems,
+      sub_total: consolidatedSubTotal,
+      tax_total: consolidatedTaxTotal,
+      total: consolidatedTotal,
+      amount_paid: consolidatedAmountPaid,
+      balance: consolidatedTotal - consolidatedAmountPaid,
+      status: consolidatedAmountPaid >= consolidatedTotal ? 'paid' : 'issued',
+      notes: `Consolidated invoice for ${new Date(year, month - 1).toLocaleString('default', { month: 'long', year: 'numeric' })}. Original invoices: ${consolidatedInvoiceNumbers.join(', ')}`,
+      currency_code: "INR",
+      exchange_rate: 1,
+      gst_treatment: client.gstTreatment || "business_gst",
+      place_of_supply: "MH",
+      payment_terms: 7,
+      payment_terms_label: "Net 7",
+      customer_id: client.zohoBooksContactId,
+      gst_no: client.gstNo,
+      meta: {
+        consolidated: true,
+        originalInvoices: consolidatedInvoiceNumbers,
+        consolidationDate: new Date()
+      },
+      ...(client.billingAddress && {
+        billing_address: {
+          attention: client.contactPerson,
+          address: client.billingAddress.address,
+          city: client.billingAddress.city,
+          state: client.billingAddress.state,
+          zip: client.billingAddress.zip,
+          country: client.billingAddress.country || "IN",
+          phone: client.phone
+        }
+      })
+    });
+
+    // Mark original invoices as consolidated
+    await Invoice.updateMany(
+      { _id: { $in: invoicesToConsolidate.map(inv => inv._id) } },
+      { 
+        status: 'consolidated',
+        consolidated_into: consolidatedInvoice._id,
+        consolidated_at: new Date()
+      }
+    );
+
+    console.log(`Consolidated ${invoicesToConsolidate.length} invoices into ${consolidatedInvoiceNumber}`);
+
+    // Push to Zoho Books if client has Zoho contact ID
+    try {
+      if (client.zohoBooksContactId) {
+        const zohoResponse = await createZohoInvoiceFromLocal(consolidatedInvoice.toObject(), client.toObject());
+        const invoiceData = zohoResponse.invoice || zohoResponse;
+        
+        if (invoiceData && invoiceData.invoice_id) {
+          consolidatedInvoice.zoho_invoice_id = invoiceData.invoice_id;
+          consolidatedInvoice.zoho_invoice_number = invoiceData.invoice_number;
+          consolidatedInvoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
+          consolidatedInvoice.zoho_pdf_url = invoiceData.pdf_url;
+          consolidatedInvoice.invoice_url = invoiceData.invoice_url;
+          await consolidatedInvoice.save();
+          
+          console.log(`Pushed consolidated invoice ${consolidatedInvoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+
+          // Send email if requested and we have Zoho invoice
+          if (sendEmail && client.email) {
+            try {
+              await sendZohoInvoiceEmail(invoiceData.invoice_id, {
+                to: client.email,
+                subject: `Consolidated Invoice ${consolidatedInvoiceNumber}`,
+                body: `Dear ${client.contactPerson || client.companyName},\n\nPlease find attached your consolidated invoice for ${new Date(year, month - 1).toLocaleString('default', { month: 'long', year: 'numeric' })}.\n\nThis invoice consolidates the following original invoices: ${consolidatedInvoiceNumbers.join(', ')}\n\nThank you for your business.`
+              });
+              
+              consolidatedInvoice.sent_at = new Date();
+              await consolidatedInvoice.save();
+              console.log(`Sent consolidated invoice email to ${client.email}`);
+            } catch (emailError) {
+              console.error(`Failed to send consolidated invoice email:`, emailError.message);
+            }
+          }
+        }
+      }
+    } catch (zohoError) {
+      console.error(`Failed to push consolidated invoice to Zoho Books:`, zohoError.message);
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: consolidatedInvoice,
+      message: `Successfully consolidated ${invoicesToConsolidate.length} invoices`,
+      originalInvoices: consolidatedInvoiceNumbers,
+      emailSent: sendEmail && client.email ? true : false
+    });
+
+  } catch (error) {
+    console.error('Error consolidating invoices:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
