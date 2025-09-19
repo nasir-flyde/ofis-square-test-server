@@ -1141,11 +1141,6 @@ async function handlePaymentReceived(paymentData) {
           });
         } else {
           console.warn(`Local invoice not found for Zoho invoice ID: ${zohoInvoiceId}`);
-          invoiceApplications.push({
-            invoice: null,
-            amount_applied: amountApplied,
-            zoho_invoice_id: zohoInvoiceId
-          });
         }
       }
     }
