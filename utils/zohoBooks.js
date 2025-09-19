@@ -252,6 +252,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       notes = "",
       billingPeriod,
     } = invoiceDoc || {};
+    
+    // Use the correct field names from the invoice document
+    const actualIssueDate = invoiceDoc.date || issueDate;
+    const actualDueDate = invoiceDoc.due_date || dueDate;
     const customer_id = clientDoc?.zohoBooksContactId;
     if (!customer_id) {
       throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
@@ -271,15 +275,15 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     }
     const payload = {
       customer_id,
-      reference_number: invoiceNumber || undefined,
-      date: issueDate
-        ? new Date(issueDate).toISOString().slice(0, 10)
+      reference_number: invoiceDoc.invoice_number || invoiceNumber || undefined,
+      date: actualIssueDate
+        ? new Date(actualIssueDate).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10),
-      ...(dueDate
-        ? { due_date: new Date(dueDate).toISOString().slice(0, 10) }
+      ...(actualDueDate
+        ? { due_date: new Date(actualDueDate).toISOString().slice(0, 10) }
         : {}),
       line_items,
-      notes: notes || "Looking forward for your business.",
+      notes: invoiceDoc.notes || notes || "Looking forward for your business.",
       terms:
         billingPeriod && billingPeriod.start && billingPeriod.end
           ? `Billing Period: ${new Date(billingPeriod.start)
@@ -356,7 +360,7 @@ export async function getZohoInvoice(invoiceId) {
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data?.invoice || null;
   } catch (err) {
-    console.error("❌ Error fetching Zoho Invoice:", err.message);
+    console.error("Error fetching Zoho Invoice:", err.message);
     throw err;
   }
 }
@@ -377,7 +381,7 @@ export async function recordZohoPayment(invoiceId, paymentData) {
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data;
   } catch (err) {
-    console.error("❌ Error recording Zoho Payment:", err.message);
+    console.error("Error recording Zoho Payment:", err.message);
     throw err;
   }
 }

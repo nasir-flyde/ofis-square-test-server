@@ -43,6 +43,8 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     // Set due date to 2nd of next month
     const startDate = new Date(contract.startDate);
     const dueDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 2); // 2nd of next month
+    
+    console.log(`Invoice dates - Issue: ${issueDate.toISOString().slice(0, 10)}, Due: ${dueDate.toISOString().slice(0, 10)}`);
 
     const items = [];
     let subtotal = 0;
