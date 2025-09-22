@@ -1,6 +1,12 @@
 import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
+import DayPass from "../models/dayPassModel.js";
+import DayPassBundle from "../models/dayPassBundleModel.js";
+import Guest from "../models/guestModel.js";
+import Member from "../models/memberModel.js";
+import Contract from "../models/contractModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
 
@@ -605,5 +611,449 @@ export const listCustomerPayments = async (req, res) => {
       success: false,
       message: error.message || 'Failed to list customer payments'
     });
+  }
+};
+
+// Razorpay payment integration for day passes
+export const createRazorpayOrder = async (req, res) => {
+  try {
+    const { dayPassId, bundleId } = req.body;
+
+    if (!dayPassId && !bundleId) {
+      return res.status(400).json({ error: "Day pass ID or Bundle ID is required" });
+    }
+
+    let item, amount, description, buildingName;
+
+    if (dayPassId) {
+      // Single day pass payment
+      const dayPass = await DayPass.findById(dayPassId)
+        .populate('building', 'name openSpacePricing')
+        .populate('invoice', 'total');
+
+      if (!dayPass) {
+        return res.status(404).json({ error: "Day pass not found" });
+      }
+
+      if (dayPass.status !== 'payment_pending') {
+        return res.status(400).json({ error: "Day pass is not pending payment" });
+      }
+
+      amount = dayPass.invoice?.total || dayPass.price;
+      buildingName = dayPass.building?.name || "Workspace";
+      description = `Day Pass - ${buildingName}`;
+      item = { type: 'daypass', id: dayPassId };
+    } else {
+      // Bundle payment
+      const bundle = await DayPassBundle.findById(bundleId)
+        .populate('building', 'name')
+        .populate('invoice', 'total');
+
+      if (!bundle) {
+        return res.status(404).json({ error: "Bundle not found" });
+      }
+
+      if (bundle.status !== 'payment_pending') {
+        return res.status(400).json({ error: "Bundle is not pending payment" });
+      }
+
+      amount = bundle.invoice?.total || bundle.totalAmount;
+      buildingName = bundle.building?.name || "Workspace";
+      description = `Day Pass Bundle - ${buildingName} (${bundle.no_of_dayPasses} passes)`;
+      item = { type: 'bundle', id: bundleId };
+    }
+    
+    res.json({
+      success: true,
+      razorpayKey: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
+      amount: amount * 100, // Convert to paise
+      currency: "INR",
+      item,
+      buildingName,
+      description
+    });
+  } catch (error) {
+    console.error("createRazorpayOrder error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Handle Razorpay payment success
+export const handleRazorpaySuccess = async (req, res) => {
+  try {
+    const { 
+      razorpay_payment_id, 
+      dayPassId,
+      bundleId, 
+      amount 
+    } = req.body;
+
+    if (!razorpay_payment_id || (!dayPassId && !bundleId)) {
+      return res.status(400).json({ error: "Payment ID and Day Pass ID or Bundle ID are required" });
+    }
+
+    let item, customer, invoice, paymentNotes;
+
+    if (dayPassId) {
+      // Single day pass payment
+      const dayPass = await DayPass.findById(dayPassId)
+        .populate('invoice')
+        .populate('customer');
+
+      if (!dayPass) {
+        return res.status(404).json({ error: "Day pass not found" });
+      }
+
+      item = dayPass;
+      customer = dayPass.customer;
+      invoice = dayPass.invoice;
+      paymentNotes = `Razorpay payment for day pass ${dayPass._id}`;
+    } else {
+      // Bundle payment
+      const bundle = await DayPassBundle.findById(bundleId)
+        .populate('invoice')
+        .populate('customer');
+
+      if (!bundle) {
+        return res.status(404).json({ error: "Bundle not found" });
+      }
+
+      item = bundle;
+      customer = bundle.customer;
+      invoice = bundle.invoice;
+      paymentNotes = `Razorpay payment for bundle ${bundle._id}`;
+    }
+
+    // Determine customer type and set appropriate payment fields
+    let paymentData = {
+      invoice: invoice?._id,
+      type: "Razorpay",
+      amount: amount / 100, // Convert from paise
+      paymentDate: new Date(),
+      referenceNumber: razorpay_payment_id,
+      paymentGatewayRef: razorpay_payment_id,
+      currency: "INR",
+      notes: paymentNotes,
+      source: "manual"
+    };
+
+    // Set client or guest based on customer type
+    if (customer) {
+      if (customer.constructor.modelName === 'Guest') {
+        paymentData.guest = customer._id;
+        // Guests don't have associated clients in the current schema
+      }
+      else if (customer.constructor.modelName === 'Member') {
+        // For members, try to get associated client
+        const member = await Member.findById(customer._id).populate('client');
+        if (member?.client) {
+          paymentData.client = member.client._id;
+        }
+      }
+      else if (customer.constructor.modelName === 'Client') {
+        paymentData.client = customer._id;
+      }
+    }
+
+    // Create payment record
+    const payment = new Payment(paymentData);
+    await payment.save();
+
+    // Update item status to issued
+    item.status = "issued";
+    await item.save();
+
+    // If bundle, also update all associated day passes to issued
+    if (bundleId) {
+      await DayPass.updateMany(
+        { bundle: bundleId },
+        { status: "issued" }
+      );
+    }
+
+    // Update invoice if exists
+    if (invoice) {
+      await applyInvoicePayment(invoice._id, amount / 100);
+    }
+
+    const responseMessage = dayPassId 
+      ? "Payment successful, day pass issued"
+      : "Payment successful, bundle and day passes issued";
+
+    res.json({
+      success: true,
+      message: responseMessage,
+      item,
+      payment: {
+        id: payment._id,
+        razorpay_payment_id,
+        amount: payment.amount,
+        status: "completed"
+      }
+    });
+  } catch (error) {
+    console.error("handleRazorpaySuccess error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Razorpay webhook handler for payment status updates
+export const handleRazorpayWebhook = async (req, res) => {
+  try {
+    const { event, payload } = req.body;
+    
+    // Verify webhook signature if needed
+    // const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+    //   .update(JSON.stringify(req.body))
+    //   .digest('hex');
+    
+    console.log('Razorpay webhook received:', event);
+    
+    if (event === 'payment.captured' || event === 'payment.authorized') {
+      const paymentId = payload.payment?.entity?.id;
+      const amount = payload.payment?.entity?.amount;
+      
+      if (paymentId) {
+        // Find existing payment record by gateway reference
+        const existingPayment = await Payment.findOne({
+          paymentGatewayRef: paymentId
+        });
+        
+        if (existingPayment) {
+          console.log('Payment already processed:', paymentId);
+          return res.status(200).json({ status: 'already_processed' });
+        }
+        
+        // Find day pass by payment reference (if stored during order creation)
+        // For now, we'll log the webhook for manual processing
+        console.log('Webhook payment details:', {
+          paymentId,
+          amount: amount / 100,
+          status: payload.payment?.entity?.status
+        });
+        
+        // TODO: Implement automatic day pass status update based on payment ID
+        // This would require storing payment ID during order creation
+      }
+    }
+    
+    res.status(200).json({ status: 'received' });
+  } catch (error) {
+    console.error('Razorpay webhook error:', error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+};
+
+// Credit-based payment for day passes
+export const payWithCredits = async (req, res) => {
+  try {
+    const { dayPassId, bundleId, memberId } = req.body;
+
+    if (!memberId) {
+      return res.status(400).json({ error: "Member ID is required for credit payments" });
+    }
+
+    if (!dayPassId && !bundleId) {
+      return res.status(400).json({ error: "Day pass ID or Bundle ID is required" });
+    }
+
+    // Find member and get associated client
+    const member = await Member.findById(memberId).populate('client');
+    if (!member || !member.client) {
+      return res.status(404).json({ error: "Member or associated client not found" });
+    }
+
+    const clientId = member.client._id;
+
+    // Check if client has active credit-enabled contract
+    const contract = await Contract.findOne({
+      client: clientId,
+      credit_enabled: true,
+      status: "active"
+    });
+
+    if (!contract) {
+      return res.status(400).json({ 
+        error: "No active credit-enabled contract found for this client" 
+      });
+    }
+
+    // Get credit wallet
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const currentBalance = wallet?.balance || 0;
+    const creditValue = contract.credit_value || 500;
+
+    let item, totalAmount, creditsRequired;
+
+    if (dayPassId) {
+      // Single day pass
+      const dayPass = await DayPass.findById(dayPassId)
+        .populate('building', 'openSpacePricing')
+        .populate('invoice', 'total');
+
+      if (!dayPass) {
+        return res.status(404).json({ error: "Day pass not found" });
+      }
+
+      if (dayPass.status !== 'payment_pending') {
+        return res.status(400).json({ error: "Day pass is not pending payment" });
+      }
+
+      totalAmount = dayPass.invoice?.total || dayPass.price;
+      creditsRequired = Math.ceil(totalAmount / creditValue);
+      item = dayPass;
+    } else {
+      // Bundle
+      const bundle = await DayPassBundle.findById(bundleId)
+        .populate('building', 'name')
+        .populate('invoice', 'total');
+
+      if (!bundle) {
+        return res.status(404).json({ error: "Bundle not found" });
+      }
+
+      if (bundle.status !== 'payment_pending') {
+        return res.status(400).json({ error: "Bundle is not pending payment" });
+      }
+
+      totalAmount = bundle.invoice?.total || bundle.totalAmount;
+      creditsRequired = Math.ceil(totalAmount / creditValue);
+      item = bundle;
+    }
+
+    // Check if sufficient credits
+    if (currentBalance < creditsRequired) {
+      return res.status(400).json({ 
+        error: "Insufficient credits",
+        required: creditsRequired,
+        available: currentBalance,
+        shortfall: creditsRequired - currentBalance
+      });
+    }
+
+    // Deduct credits directly from wallet (no CreditTransaction record)
+    const balanceAfter = currentBalance - creditsRequired;
+
+    // Update wallet balance
+    await ClientCreditWallet.findOneAndUpdate(
+      { client: clientId },
+      { 
+        $inc: { balance: -creditsRequired },
+        $set: { 
+          creditValue: creditValue,
+          status: "active"
+        }
+      },
+      { upsert: true }
+    );
+
+    // Update item status to issued
+    item.status = "issued";
+    await item.save();
+
+    // If bundle, also update all associated day passes to issued
+    if (bundleId) {
+      await DayPass.updateMany(
+        { bundle: bundleId },
+        { status: "issued" }
+      );
+    }
+
+    // Create payment record for tracking
+    const payment = new Payment({
+      invoice: item.invoice,
+      client: clientId,
+      type: "Credits",
+      amount: totalAmount,
+      paymentDate: new Date(),
+      referenceNumber: `CRED-${Date.now()}`,
+      currency: "INR",
+      notes: `Credit payment - ${creditsRequired} credits used`,
+      source: "manual"
+    });
+
+    await payment.save();
+
+    // Update invoice if exists
+    if (item.invoice) {
+      await applyInvoicePayment(item.invoice._id, totalAmount);
+    }
+
+    const responseMessage = dayPassId 
+      ? "Day pass purchased successfully with credits"
+      : "Bundle purchased successfully with credits";
+
+    res.json({
+      success: true,
+      message: responseMessage,
+      transaction: {
+        creditsUsed: creditsRequired,
+        amount: totalAmount,
+        balanceAfter
+      },
+      item,
+      payment: {
+        id: payment._id,
+        amount: payment.amount,
+        status: "completed"
+      }
+    });
+
+  } catch (error) {
+    console.error("payWithCredits error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Get member's credit balance
+export const getMemberCreditBalance = async (req, res) => {
+  try {
+    const { memberId } = req.params;
+
+    // Find member and get associated client
+    const member = await Member.findById(memberId).populate('client');
+    if (!member || !member.client) {
+      return res.status(404).json({ error: "Member or associated client not found" });
+    }
+
+    const clientId = member.client._id;
+
+    // Check if client has active credit-enabled contract
+    const contract = await Contract.findOne({
+      client: clientId,
+      credit_enabled: true,
+      status: "active"
+    });
+
+    if (!contract) {
+      return res.json({
+        success: true,
+        creditEnabled: false,
+        balance: 0,
+        creditValue: 0,
+        message: "No active credit-enabled contract found"
+      });
+    }
+
+    // Get credit wallet
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const balance = wallet?.balance || 0;
+    const creditValue = contract.credit_value || 500;
+
+    res.json({
+      success: true,
+      creditEnabled: true,
+      balance,
+      creditValue,
+      balanceINR: balance * creditValue,
+      client: {
+        id: clientId,
+        name: member.client.companyName
+      }
+    });
+
+  } catch (error) {
+    console.error("getMemberCreditBalance error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 };

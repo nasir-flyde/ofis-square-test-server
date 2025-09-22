@@ -1,12 +1,17 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
-import { 
-  createPayment, 
-  getPayments, 
-  getPaymentById, 
+import {
+  createPayment,
+  getPayments,
+  getPaymentById,
   deletePayment,
+  createRazorpayOrder,
+  handleRazorpaySuccess,
+  handleRazorpayWebhook,
   recordCustomerPayment,
-  listCustomerPayments
+  listCustomerPayments,
+  payWithCredits,
+  getMemberCreditBalance
 } from "../controllers/paymentController.js";
 
 const router = express.Router();
@@ -29,5 +34,14 @@ router.post("/zoho-customer-payment", authMiddleware, recordCustomerPayment);
 
 // List customer payments from Zoho Books
 router.get("/zoho-customer-payments", authMiddleware, listCustomerPayments);
+
+// Razorpay day pass payment routes
+router.post("/razorpay/create-order", createRazorpayOrder);
+router.post("/razorpay/success", handleRazorpaySuccess);
+router.post("/razorpay/webhook", handleRazorpayWebhook);
+
+// Credit payment routes
+router.post('/credits/pay', payWithCredits);
+router.get('/credits/balance/:memberId', getMemberCreditBalance);
 
 export default router;

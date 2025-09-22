@@ -9,7 +9,8 @@ const paymentInvoiceSchema = new mongoose.Schema({
 const paymentSchema = new mongoose.Schema(
   {
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", index: true },
-    client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true, index: true },
+    client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
+    guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", index: true },
 
     invoices: [paymentInvoiceSchema],
 
@@ -22,6 +23,7 @@ const paymentSchema = new mongoose.Schema(
         "UPI",
         "Card",
         "CreditCard",
+        "Credits",
         "DebitCard",
         "Cheque",
         "Online Gateway",

@@ -18,6 +18,11 @@ const BuildingSchema = new Schema(
       min: 0,
       default: null 
     },
+    openSpacePricing: {
+      type: Number,
+      min: 0,
+      default: null
+    },
     photos: [{
       fileId: { type: String, required: true },
       name: { type: String, required: true },

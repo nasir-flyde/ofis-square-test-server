@@ -1,237 +1,632 @@
 import DayPass from "../models/dayPassModel.js";
-import Invoice from "../models/invoiceModel.js";
+import DayPassBundle from "../models/dayPassBundleModel.js";
+import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
-import Building from "../models/buildingModel.js";
-import Contract from "../models/contractModel.js";
-import CreditTransaction from "../models/creditTransactionModel.js";
-import ClientCreditWallet from "../models/clientCreditWalletModel.js";
-import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import Invoice from "../models/invoiceModel.js";
+import Payment from "../models/paymentModel.js";
+import mongoose from "mongoose";
+import crypto from "crypto";
 
-// POST /api/daypasses
-// Body: { guestId | guest (object) | visitorId, building, date, price, notes?, expiresAt? }
-export const createDayPass = async (req, res) => {
+// Create single day pass (not from bundle)
+export const createSingleDayPass = async (req, res) => {
   try {
-    const { guestId, guest: guestPayload, visitorId, building, date, price, notes, expiresAt } = req.body || {};
-    if (!building) return res.status(400).json({ success: false, message: "building is required" });
-    if (!date) return res.status(400).json({ success: false, message: "date is required" });
-    if (price == null) return res.status(400).json({ success: false, message: "price is required" });
+    const { customerId, memberId, buildingId, notes } = req.body;
 
-    // Resolve or create Guest/Visitor
-    let guestDoc = null;
-    let visitorDoc = null;
-    
-    if (visitorId) {
-      // Use visitor system (new flow)
-      visitorDoc = await Visitor.findById(visitorId);
-      if (!visitorDoc) return res.status(404).json({ success: false, message: "Visitor not found" });
-      
-      // Create or find guest record for the visitor
-      const query = [];
-      if (visitorDoc.email) query.push({ email: visitorDoc.email.toLowerCase() });
-      if (visitorDoc.phone) query.push({ phone: visitorDoc.phone });
-      
-      if (query.length > 0) {
-        guestDoc = await Guest.findOne({ $or: query });
-      }
-      
-      if (!guestDoc) {
-        guestDoc = await Guest.create({
-          name: visitorDoc.name,
-          email: visitorDoc.email,
-          phone: visitorDoc.phone,
-          companyName: visitorDoc.companyName,
-          notes: `Created from visitor: ${visitorDoc._id}`,
-        });
-      }
-    } else if (guestId) {
-      guestDoc = await Guest.findById(guestId);
-      if (!guestDoc) return res.status(404).json({ success: false, message: "Guest not found" });
-    } else if (guestPayload) {
-      if (!guestPayload.name) {
-        return res.status(400).json({ success: false, message: "guest.name is required when creating a new guest" });
-      }
-      // Try to find existing by email or phone to avoid duplicates
-      const query = [];
-      if (guestPayload.email) query.push({ email: guestPayload.email.toLowerCase() });
-      if (guestPayload.phone) query.push({ phone: guestPayload.phone });
-      if (query.length > 0) {
-        guestDoc = await Guest.findOne({ $or: query });
-      }
-      if (!guestDoc) {
-        guestDoc = await Guest.create({
-          name: guestPayload.name,
-          email: guestPayload.email,
-          phone: guestPayload.phone,
-          companyName: guestPayload.companyName,
-          notes: guestPayload.notes,
-        });
-      }
-    } else {
-      return res.status(400).json({ success: false, message: "Provide visitorId, guestId, or guest details" });
+    if (!customerId || !buildingId) {
+      return res.status(400).json({ 
+        error: "Customer ID and Building ID are required" 
+      });
     }
 
-    const buildingDoc = await Building.findById(building);
-    if (!buildingDoc) return res.status(404).json({ success: false, message: "Building not found" });
-
-    const passDate = new Date(date);
-    const startOfDay = new Date(passDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(passDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    const expiryAt = expiresAt ? new Date(expiresAt) : endOfDay;
-
-    // Check if guest has an active credit-enabled contract
-    let creditContract = null;
-    let shouldUseCredits = false;
+    // Verify customer exists - could be Guest or Member
+    let customer = null;
+    let customerType = 'guest';
     
-    if (guestDoc.client) {
-      creditContract = await Contract.findOne({
-        client: guestDoc.client,
-        building,
-        status: "active",
-        credit_enabled: true,
-        startDate: { $lte: passDate },
-        endDate: { $gte: passDate }
-      });
-      
-      if (creditContract) {
-        shouldUseCredits = true;
+    // First try to find as Guest
+    customer = await Guest.findById(customerId);
+    
+    // If not found as Guest, try as Member
+    if (!customer) {
+      const Member = (await import('../models/memberModel.js')).default;
+      customer = await Member.findById(customerId);
+      if (customer) {
+        customerType = 'member';
       }
     }
+    
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
 
-    // 1) Create DayPass (without invoice reference initially)
-    const dayPass = await DayPass.create({
-      guest: guestDoc._id,
-      building,
-      date: passDate,
-      expiresAt: expiryAt,
-      status: "active",
-      price: Number(price),
-    });
+    // Verify building exists and get pricing
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({ error: "Building not found" });
+    }
 
-    if (shouldUseCredits) {
-      // 2a) Use Credit System - Record credit consumption instead of creating invoice
-      const creditsNeeded = Math.ceil(Number(price) / creditContract.credit_value); // Convert price to credits
-      
-      // Create credit transaction
-      await CreditTransaction.create({
-        client: guestDoc.client,
-        member: null, // Day pass usage
-        type: "consume",
-        credits: creditsNeeded,
-        valuePerCredit: creditContract.credit_value,
-        refType: "day_pass",
-        refId: dayPass._id,
-        meta: {
-          description: `Day Pass - ${buildingDoc.name}`,
-          date: passDate.toISOString().slice(0, 10),
-          price: Number(price),
-          building: buildingDoc.name
-        }
+    if (!building.openSpacePricing) {
+      return res.status(400).json({ 
+        error: "Day pass pricing not configured for this building" 
+      });
+    }
+
+    const price = building.openSpacePricing;
+    const taxAmount = Math.round(price * 0.18); // 18% GST
+    const totalAmount = price + taxAmount;
+
+    // Set booking date (today) and expiry at end of day
+    const bookingDate = new Date();
+    const expiresAt = new Date();
+    // Normalize bookingDate to start of day for consistency
+    bookingDate.setHours(0, 0, 0, 0);
+    expiresAt.setHours(23, 59, 59, 999);
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Create day pass with payment_pending status
+      const dayPass = new DayPass({
+        customer: customerId,
+        member: customerType === 'member' ? customerId : (memberId || null),
+        building: buildingId,
+        bundle: null, // Single pass, not from bundle
+        // Use booking date as the day for the pass; invitation can still set visitor/date later
+        date: bookingDate,
+        expiresAt,
+        price,
+        status: "payment_pending",
+        notes,
+        createdBy: req.user?._id
       });
 
-      // Update client credit wallet balance
-      await ClientCreditWallet.findOneAndUpdate(
-        { client: guestDoc.client },
-        { $inc: { balance: -creditsNeeded } },
-        { upsert: true }
-      );
+      await dayPass.save({ session });
 
-      console.log(`Day pass created using ${creditsNeeded} credits for client ${guestDoc.client}`);
-      
-      return res.status(201).json({ 
-        success: true, 
-        data: { 
-          dayPass, 
-          credits_used: creditsNeeded,
-          credit_value: creditContract.credit_value,
-          message: "Day pass created using credit system"
-        } 
+      // Create invoice (schema: invoiceModel.js)
+      const invoice = new Invoice({
+        client: null,
+        guest: customerId,
+        building: buildingId,
+        type: "regular",
+        category: "day_pass",
+        invoice_number: `DP-${Date.now()}`,
+        line_items: [{
+          description: `Day Pass - ${building.name}`,
+          quantity: 1,
+          unitPrice: price,
+          amount: price,
+          rate: price
+        }],
+        sub_total: price,
+        tax_total: taxAmount,
+        total: totalAmount,
+        status: "draft",
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
       });
-    } else {
-      // 2b) Traditional Invoice System - Create invoice immediately
-    const localInvoiceNumber = await generateLocalInvoiceNumber();
-    const quantity = 1;
-    const unitPrice = Number(price) || 0;
-    const amount = Math.round(quantity * unitPrice * 100) / 100;
-    const subtotal = amount;
-    const discount = { type: "flat", value: 0, amount: 0 };
-    const taxes = [];
-    const total = subtotal; // no taxes/discount for now
-    const amountPaid = 0;
-    const balanceDue = total - amountPaid;
 
-    const descDate = startOfDay.toISOString().slice(0, 10); // YYYY-MM-DD
-    const buildingName = buildingDoc?.name || "Building";
+      await invoice.save({ session });
 
-    const invoice = await Invoice.create({
-      invoice_number: localInvoiceNumber,
-      guest: guestDoc._id,
-      building,
-      date: new Date(),
-      billing_period: { start: startOfDay, end: endOfDay },
-      line_items: [
-        {
-          description: `Day Pass - ${buildingName} - ${descDate}`,
-          quantity,
-          unitPrice,
-          amount,
-          // Zoho Books fields
-          name: `Day Pass - ${buildingName}`,
-          rate: unitPrice,
-          unit: "day",
-          item_total: amount,
+      // Link invoice to day pass
+      dayPass.invoice = invoice._id;
+      await dayPass.save({ session });
+
+      await session.commitTransaction();
+
+      // Populate response data
+      await dayPass.populate([
+        { path: 'customer', select: 'name email phone' },
+        { path: 'building', select: 'name address openSpacePricing' },
+        { path: 'invoice', select: 'invoice_number total status' }
+      ]);
+
+      res.status(201).json({
+        message: "Day pass created, payment required",
+        dayPass,
+        invoice: {
+          id: invoice._id,
+          invoice_number: invoice.invoice_number,
+          total: invoice.total,
+          status: invoice.status
         },
-      ],
-      sub_total: subtotal,
-      discount: discount.amount,
-      discount_type: "entity_level",
-      tax_total: 0, // No taxes for day passes currently
-      total,
-      amount_paid: amountPaid,
-      balance: balanceDue,
-      status: "draft", // Start as draft for Zoho compatibility
-      notes: notes || "",
-      
-      // Zoho Books specific fields
-      currency_code: "INR",
-      exchange_rate: 1,
-      gst_treatment: "consumer", // Day passes are typically for consumers
-      place_of_supply: "MH", // Default to Maharashtra
-      payment_terms: 0, // Immediate payment for day passes
-      payment_terms_label: "Due on receipt",
-      
-      // Guest address mapping (if available)
-      ...(guestDoc.address && {
-        billing_address: {
-          attention: guestDoc.name,
-          address: guestDoc.address,
-          phone: guestDoc.phone
+        payment: {
+          required: true,
+          amount: totalAmount,
+          currency: "INR"
         }
-      })
-    });
+      });
 
-    // 3) Link invoice to day pass
-    dayPass.invoice = invoice._id;
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+
+  } catch (error) {
+    console.error("createSingleDayPass error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Invite visitor to a day pass (assign date and generate QR)
+export const inviteVisitor = async (req, res) => {
+  try {
+    const { dayPassId } = req.params;
+    const { 
+      date, 
+      visitorName, 
+      visitorPhone, 
+      visitorEmail,
+      visitorCompany,
+      purpose,
+      numberOfGuests = 1,
+      expectedArrivalTime,
+      expectedDepartureTime
+    } = req.body;
+
+    if (!date || !visitorName) {
+      return res.status(400).json({ error: "Date and visitor name are required" });
+    }
+
+    const dayPass = await DayPass.findById(dayPassId)
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address')
+      .populate('hostMember', 'firstName lastName email phone')
+      .populate('hostClient', 'name email phone')
+      .populate('hostGuest', 'name email phone');
+
+    if (!dayPass) {
+      return res.status(404).json({ error: "Day pass not found" });
+    }
+
+    // Check if day pass is issued (payment completed)
+    if (dayPass.status !== 'issued') {
+      return res.status(400).json({ 
+        error: "Day pass must be paid for before inviting visitors",
+        currentStatus: dayPass.status,
+        requiredStatus: 'issued'
+      });
+    }
+
+    // Set host information from JWT via hostMiddleware (req.hostInfo)
+    if (req.hostInfo?.type && req.hostInfo?.id) {
+      if (req.hostInfo.type === 'member') {
+        dayPass.hostMember = req.hostInfo.id;
+        dayPass.hostClient = null;
+        dayPass.hostGuest = null;
+      } else if (req.hostInfo.type === 'client') {
+        dayPass.hostClient = req.hostInfo.id;
+        dayPass.hostMember = null;
+        dayPass.hostGuest = null;
+      } else if (req.hostInfo.type === 'guest') {
+        dayPass.hostGuest = req.hostInfo.id;
+        dayPass.hostMember = null;
+        dayPass.hostClient = null;
+      }
+    }
+
+    // Set the pass date and visitor details
+    const passDate = new Date(date);
+    passDate.setHours(0, 0, 0, 0);
+    
+    dayPass.date = passDate;
+    dayPass.visitorName = visitorName;
+    dayPass.visitorPhone = visitorPhone;
+    dayPass.visitorEmail = visitorEmail;
+    dayPass.visitorCompany = visitorCompany;
+    dayPass.purpose = purpose;
+    dayPass.numberOfGuests = Math.max(1, parseInt(numberOfGuests) || 1);
+    // Helper to merge a "HH:MM" time into a given date
+    const buildDateTime = (baseDate, timeStr) => {
+      if (!timeStr || typeof timeStr !== 'string') return null;
+      const [hh, mm] = timeStr.split(':').map((v) => parseInt(v, 10));
+      if (
+        Number.isNaN(hh) || Number.isNaN(mm) ||
+        hh < 0 || hh > 23 || mm < 0 || mm > 59
+      ) {
+        return null;
+      }
+      const dt = new Date(baseDate);
+      dt.setHours(hh, mm, 0, 0);
+      return dt;
+    };
+
+    const arrivalDT = buildDateTime(passDate, expectedArrivalTime);
+    const departureDT = buildDateTime(passDate, expectedDepartureTime);
+
+    dayPass.expectedArrivalTime = arrivalDT || null;
+    dayPass.expectedDepartureTime = departureDT || null;
+    dayPass.status = "invited";
+    dayPass.invitedAt = new Date();
+    
+    // Generate QR code and set expiry
+    const qrData = {
+      passId: dayPass._id,
+      visitorName,
+      date: passDate.toISOString(),
+      buildingId: dayPass.building._id,
+      type: 'day_pass'
+    };
+    
+    dayPass.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
+    
+    // Set QR expiry to end of pass date
+    const qrExpiry = new Date(passDate);
+    qrExpiry.setHours(23, 59, 59, 999);
+    dayPass.qrExpiresAt = qrExpiry;
+    
     await dayPass.save();
 
-    // 4) Automatically push to Zoho Books if guest has contact info (optional for day passes)
-    try {
-      // For day passes, we can create a simple contact payload if needed
-      // or skip Zoho integration since day passes are typically one-time
-      console.log(`Day pass invoice ${invoice._id} created - Zoho integration skipped for guest transactions`);
-    } catch (zohoError) {
-      console.error(`Failed to push day pass invoice ${invoice._id} to Zoho Books:`, zohoError.message);
-      // Don't fail the day pass creation if Zoho push fails
+    // Populate host information for response
+    await dayPass.populate([
+      { path: 'hostMember', select: 'firstName lastName email phone' },
+      { path: 'hostClient', select: 'name email phone' },
+      { path: 'hostGuest', select: 'name email phone' }
+    ]);
+
+    // Also create a Visitor record linked to this DayPass
+    const visitorDoc = new Visitor({
+      name: visitorName,
+      email: visitorEmail,
+      phone: visitorPhone,
+      companyName: visitorCompany,
+      purpose,
+      numberOfGuests: Math.max(1, parseInt(numberOfGuests) || 1),
+      expectedVisitDate: passDate,
+      expectedArrivalTime: arrivalDT || null,
+      expectedDepartureTime: departureDT || null,
+      hostMember: dayPass.hostMember || undefined,
+      hostClient: dayPass.hostClient || undefined,
+      hostGuest: dayPass.hostGuest || undefined,
+      status: 'invited',
+      building: dayPass.building,
+      dayPass: dayPass._id,
+      createdBy: req.user?._id || undefined,
+      // Keep QR in sync with DayPass
+      qrToken: dayPass.qrCode,
+      qrExpiresAt: dayPass.qrExpiresAt,
+    });
+
+    await visitorDoc.save();
+
+    // TODO: Send invitation email with QR code similar to visitor system
+    
+    res.json({
+      message: "Visitor invited successfully",
+      dayPass,
+      visitor: {
+        id: visitorDoc._id,
+        name: visitorDoc.name,
+        qrToken: visitorDoc.qrToken,
+        expectedVisitDate: visitorDoc.expectedVisitDate,
+        status: visitorDoc.status,
+      },
+      qrCode: dayPass.qrCode,
+      qrUrl: `${req.protocol}://${req.get('host')}/day-passes/scan?qr=${dayPass.qrCode}`
+    });
+
+  } catch (error) {
+    console.error("inviteVisitor error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Check-in with QR code
+export const checkInWithQR = async (req, res) => {
+  try {
+    const { qrCode, buildingId } = req.body;
+
+    if (!qrCode) {
+      return res.status(400).json({ error: "QR code is required" });
     }
 
-    return res.status(201).json({ success: true, data: { dayPass, invoice } });
+    const dayPass = await DayPass.findOne({ qrCode })
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address');
+
+    if (!dayPass) {
+      return res.status(404).json({ error: "Invalid QR code" });
     }
+
+    // Verify building if provided
+    if (buildingId && String(dayPass.building._id) !== String(buildingId)) {
+      return res.status(400).json({ error: "QR code not valid for this building" });
+    }
+
+    // Check if pass is valid for today
+    const today = new Date();
+    const passDate = new Date(dayPass.date);
+    
+    if (passDate.toDateString() !== today.toDateString()) {
+      return res.status(400).json({ error: "Day pass is not valid for today" });
+    }
+
+    if (dayPass.status !== "invited") {
+      return res.status(400).json({ 
+        error: `Cannot check-in. Pass status: ${dayPass.status}` 
+      });
+    }
+
+    // Perform check-in
+    dayPass.checkInTime = new Date();
+    dayPass.status = "checked_in";
+    await dayPass.save();
+
+    res.json({
+      message: "Check-in successful",
+      dayPass,
+      checkInTime: dayPass.checkInTime,
+      visitor: {
+        name: dayPass.visitorName,
+        phone: dayPass.visitorPhone,
+        email: dayPass.visitorEmail
+      }
+    });
+
   } catch (error) {
-    if (error && error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Duplicate key" });
+    console.error("checkInWithQR error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Check-out with QR code
+export const checkOutWithQR = async (req, res) => {
+  try {
+    const { qrCode, buildingId } = req.body;
+
+    if (!qrCode) {
+      return res.status(400).json({ error: "QR code is required" });
     }
-    return res.status(500).json({ success: false, message: error.message });
+
+    const dayPass = await DayPass.findOne({ qrCode })
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address');
+
+    if (!dayPass) {
+      return res.status(404).json({ error: "Invalid QR code" });
+    }
+
+    // Verify building if provided
+    if (buildingId && String(dayPass.building._id) !== String(buildingId)) {
+      return res.status(400).json({ error: "QR code not valid for this building" });
+    }
+
+    if (dayPass.status !== "checked_in") {
+      return res.status(400).json({ 
+        error: `Cannot check-out. Pass status: ${dayPass.status}` 
+      });
+    }
+
+    // Perform check-out
+    dayPass.checkOutTime = new Date();
+    dayPass.status = "checked_out";
+    await dayPass.save();
+
+    // Calculate duration
+    const duration = Math.round((dayPass.checkOutTime - dayPass.checkInTime) / (1000 * 60)); // minutes
+
+    res.json({
+      message: "Check-out successful",
+      dayPass,
+      checkOutTime: dayPass.checkOutTime,
+      duration: `${duration} minutes`,
+      visitor: {
+        name: dayPass.visitorName,
+        phone: dayPass.visitorPhone,
+        email: dayPass.visitorEmail
+      }
+    });
+
+  } catch (error) {
+    console.error("checkOutWithQR error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Scan QR (auto check-in or check-out based on current status)
+export const scanQR = async (req, res) => {
+  try {
+    const { qrCode, buildingId } = req.body;
+
+    if (!qrCode) {
+      return res.status(400).json({ error: "QR code is required" });
+    }
+
+    const dayPass = await DayPass.findOne({ qrCode })
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address');
+
+    if (!dayPass) {
+      return res.status(404).json({ error: "Invalid QR code" });
+    }
+
+    // Verify building if provided
+    if (buildingId && String(dayPass.building._id) !== String(buildingId)) {
+      return res.status(400).json({ error: "QR code not valid for this building" });
+    }
+
+    // Check if pass is valid for today
+    const today = new Date();
+    const passDate = new Date(dayPass.date);
+    
+    if (passDate.toDateString() !== today.toDateString()) {
+      return res.status(400).json({ error: "Day pass is not valid for today" });
+    }
+
+    let action = "";
+    let timestamp = null;
+
+    // Auto-determine action based on current status
+    if (dayPass.status === "invited") {
+      // Check-in
+      dayPass.checkInTime = new Date();
+      dayPass.status = "checked_in";
+      action = "check_in";
+      timestamp = dayPass.checkInTime;
+    } else if (dayPass.status === "checked_in") {
+      // Check-out
+      dayPass.checkOutTime = new Date();
+      dayPass.status = "checked_out";
+      action = "check_out";
+      timestamp = dayPass.checkOutTime;
+    } else {
+      return res.status(400).json({ 
+        error: `Cannot process scan. Pass status: ${dayPass.status}` 
+      });
+    }
+
+    await dayPass.save();
+
+    // Calculate duration if checking out
+    let duration = null;
+    if (action === "check_out" && dayPass.checkInTime) {
+      duration = Math.round((dayPass.checkOutTime - dayPass.checkInTime) / (1000 * 60)); // minutes
+    }
+
+    res.json({
+      message: `${action.replace('_', '-')} successful`,
+      action,
+      dayPass,
+      timestamp,
+      ...(duration && { duration: `${duration} minutes` }),
+      visitor: {
+        name: dayPass.visitorName,
+        phone: dayPass.visitorPhone,
+        email: dayPass.visitorEmail
+      }
+    });
+
+  } catch (error) {
+    console.error("scanQR error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Get user's day passes
+export const getUserDayPasses = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { status, buildingId, page = 1, limit = 10 } = req.query;
+
+    const query = { customer: customerId };
+    if (status) query.status = status;
+    if (buildingId) query.building = buildingId;
+
+    const skip = (page - 1) * limit;
+
+    const dayPasses = await DayPass.find(query)
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address')
+      .populate('bundle', 'no_of_dayPasses remainingPasses')
+      .populate('invoice', 'invoiceNumber totalAmount status')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await DayPass.countDocuments(query);
+
+    res.json({
+      dayPasses,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalRecords: total,
+        hasMore: skip + dayPasses.length < total
+      }
+    });
+
+  } catch (error) {
+    console.error("getUserDayPasses error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Get day pass details
+export const getDayPassDetails = async (req, res) => {
+  try {
+    const { dayPassId } = req.params;
+
+    const dayPass = await DayPass.findById(dayPassId)
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address openSpacePricing')
+      .populate('bundle', 'no_of_dayPasses remainingPasses validUntil')
+      .populate('invoice', 'invoiceNumber totalAmount status')
+      .populate('payment', 'amount method status');
+
+    if (!dayPass) {
+      return res.status(404).json({ error: "Day pass not found" });
+    }
+
+    res.json({
+      dayPass,
+      canInvite: dayPass.status === "pending",
+      canCheckIn: dayPass.status === "invited" && dayPass.date && 
+                  new Date(dayPass.date).toDateString() === new Date().toDateString(),
+      canCheckOut: dayPass.status === "checked_in"
+    });
+
+  } catch (error) {
+    console.error("getDayPassDetails error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Admin: Get all day passes
+export const getAllDayPasses = async (req, res) => {
+  try {
+    const { 
+      status, 
+      buildingId, 
+      customerId,
+      bundleId,
+      date,
+      page = 1, 
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    const query = {};
+    if (status) query.status = status;
+    if (buildingId) query.building = buildingId;
+    if (customerId) query.customer = customerId;
+    if (bundleId) query.bundle = bundleId;
+    if (date) {
+      const queryDate = new Date(date);
+      const startOfDay = new Date(queryDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(queryDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      query.date = { $gte: startOfDay, $lte: endOfDay };
+    }
+
+    const skip = (page - 1) * limit;
+    const sort = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
+
+    const dayPasses = await DayPass.find(query)
+      .populate('customer', 'name email phone')
+      .populate('building', 'name address')
+      .populate('bundle', 'no_of_dayPasses')
+      .populate('invoice', 'invoiceNumber totalAmount status')
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await DayPass.countDocuments(query);
+
+    res.json({
+      dayPasses,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalRecords: total,
+        hasMore: skip + dayPasses.length < total
+      }
+    });
+
+  } catch (error) {
+    console.error("getAllDayPasses error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 };

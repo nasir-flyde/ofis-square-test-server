@@ -29,7 +29,7 @@ const contractSchema = new mongoose.Schema(
     // Credit system fields
     credit_enabled: {
       type: Boolean,
-      default: false
+      default: true
     },
     allocated_credits: {
       type: Number,
