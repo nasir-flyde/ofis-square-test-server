@@ -5,6 +5,7 @@ import Ticket from "../models/ticketModel.js";
 import Invoice from "../models/invoiceModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import Visitor from "../models/visitorModel.js";
+import mongoose from "mongoose";
 
 export const getCommunityDashboard = async (req, res) => {
   try {
@@ -292,5 +293,165 @@ export const getCommunityStats = async (req, res) => {
       success: false,
       error: "Failed to fetch community stats"
     });
+  }
+};
+
+// Get building-specific tickets for community users
+export const getCommunityTickets = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const { page = 1, limit = 20, status, priority, search } = req.query;
+    
+    const filter = { building: buildingId };
+    if (status) filter.status = status;
+    if (priority) filter.priority = priority;
+    if (search) {
+      filter.$or = [
+        { subject: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { ticketId: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const tickets = await Ticket.find(filter)
+      .populate('building', 'name address')
+      .populate('cabin', 'name')
+      .populate('assignedTo', 'name email')
+      .populate('client', 'contactPerson companyName')
+      .populate('category.categoryId', 'name')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Ticket.countDocuments(filter);
+
+    return res.json({
+      success: true,
+      data: {
+        tickets,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getCommunityTickets error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch tickets" });
+  }
+};
+
+// Get building-specific clients for community users
+export const getCommunityBuildingClients = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const { page = 1, limit = 20, search } = req.query;
+    
+    // Find clients who have members in this building or have tickets/bookings in this building
+    const filter = {
+      $or: [
+        // Clients with members in this building
+        { 
+          _id: { 
+            $in: await Member.distinct('client', { 
+              desk: { 
+                $in: await mongoose.model('Desk').distinct('_id', { building: buildingId })
+              }
+            })
+          }
+        },
+        // Clients with tickets in this building
+        {
+          _id: {
+            $in: await Ticket.distinct('client', { building: buildingId })
+          }
+        },
+        // Clients with meeting bookings in this building
+        {
+          _id: {
+            $in: await MeetingBooking.distinct('client', { 
+              room: {
+                $in: await mongoose.model('MeetingRoom').distinct('_id', { building: buildingId })
+              }
+            })
+          }
+        }
+      ]
+    };
+
+    if (search) {
+      filter.$and = [
+        { $or: filter.$or },
+        {
+          $or: [
+            { contactPerson: { $regex: search, $options: 'i' } },
+            { companyName: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+            { phone: { $regex: search, $options: 'i' } }
+          ]
+        }
+      ];
+      delete filter.$or;
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const clients = await Client.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Client.countDocuments(filter);
+
+    return res.json({
+      success: true,
+      data: {
+        clients,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getCommunityBuildingClients error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch clients" });
+  }
+};
+
+// Get building-specific inventory items for community users
+export const getCommunityInventory = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    // Since there's no inventory model yet, return a placeholder response
+    // This can be updated when inventory model is created
+    return res.json({
+      success: true,
+      data: {
+        items: [],
+        message: "Inventory system not yet implemented for this building"
+      }
+    });
+  } catch (err) {
+    console.error("getCommunityInventory error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch inventory" });
   }
 };

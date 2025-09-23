@@ -1,5 +1,7 @@
 import Member from "../models/memberModel.js";
 import Client from "../models/clientModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
 
 // Create a new member
 export const createMember = async (req, res) => {
@@ -18,6 +20,41 @@ export const createMember = async (req, res) => {
       }
     }
 
+    let createdUserId = null;
+
+    // Create User record if email is provided
+    if (email) {
+      try {
+        // Find or create default "member" role
+        let memberRole = await Role.findOne({ roleName: "member" });
+        if (!memberRole) {
+          memberRole = await Role.create({
+            roleName: "member",
+            description: "Default member role with basic access",
+            canLogin: true,
+            permissions: ["member:read", "member:profile"]
+          });
+        }
+        const defaultPassword = "123456";
+
+        const userData = {
+          name: `${firstName} ${lastName || ''}`.trim(),
+          email: email,
+          phone: phone || `temp_${Date.now()}`,
+          password: defaultPassword,
+          role: memberRole._id
+        };
+
+        const createdUser = await User.create(userData);
+        createdUserId = createdUser._id;
+
+        console.log(`Created user for member: ${email} with default password: ${defaultPassword}`);
+      } catch (userErr) {
+        console.warn("Failed to create user for member:", userErr.message);
+        // Continue with member creation even if user creation fails
+      }
+    }
+
     const member = await Member.create({
       firstName,
       lastName,
@@ -26,7 +63,8 @@ export const createMember = async (req, res) => {
       companyName,
       role,
       client,
-      status: status || "active"
+      status: status || "active",
+      user: createdUserId
     });
 
     return res.status(201).json({ success: true, data: member });

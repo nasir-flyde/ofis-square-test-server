@@ -17,7 +17,11 @@ export const createDayPassBundle = async (req, res) => {
       buildingId, 
       no_of_dayPasses, 
       validityDays = 60,
-      notes 
+      notes,
+      splitSelf = 0,
+      splitOther = 0,
+      datesSelf = [],
+      datesOther = []
     } = req.body;
 
     if (!customerId || !buildingId || !no_of_dayPasses) {
@@ -32,7 +36,46 @@ export const createDayPassBundle = async (req, res) => {
       });
     }
 
-    // Verify customer exists (could be Guest or Member)
+    // Validate split counts
+    if (splitSelf + splitOther > no_of_dayPasses) {
+      return res.status(400).json({ 
+        error: "splitSelf + splitOther cannot exceed no_of_dayPasses" 
+      });
+    }
+
+    if (splitSelf + splitOther === 0) {
+      return res.status(400).json({ 
+        error: "At least one pass must be allocated (splitSelf or splitOther)" 
+      });
+    }
+
+    if (splitSelf > 0 && datesSelf.length !== splitSelf) {
+      return res.status(400).json({ 
+        error: "datesSelf array length must match splitSelf count" 
+      });
+    }
+
+    // No date validation for "other" bookings - dates will be set later in manage flow
+
+    // Parse and validate dates
+    const parsedDatesSelf = datesSelf.map(date => {
+      const parsed = new Date(date);
+      if (isNaN(parsed.getTime())) {
+        throw new Error(`Invalid date in datesSelf: ${date}`);
+      }
+      return parsed;
+    });
+
+    // Only parse datesOther if provided (for "other" bookings, dates are optional at booking time)
+    const parsedDatesOther = datesOther.length > 0 ? datesOther.map(date => {
+      const parsed = new Date(date);
+      if (isNaN(parsed.getTime())) {
+        throw new Error(`Invalid date in datesOther: ${date}`);
+      }
+      return parsed;
+    }) : [];
+
+    // Verify customer exists (could be Guest, Member, or Client)
     let customer = await Guest.findById(customerId);
     let customerType = 'guest';
     
@@ -40,6 +83,14 @@ export const createDayPassBundle = async (req, res) => {
       customer = await Member.findById(customerId);
       if (customer) {
         customerType = 'member';
+      }
+    }
+    
+    if (!customer) {
+      const Client = (await import('../models/clientModel.js')).default;
+      customer = await Client.findById(customerId);
+      if (customer) {
+        customerType = 'client';
       }
     }
     
@@ -81,6 +132,10 @@ export const createDayPassBundle = async (req, res) => {
         building: buildingId,
         no_of_dayPasses,
         remainingPasses: no_of_dayPasses,
+        countsSelf: splitSelf,
+        countsOther: splitOther,
+        plannedDatesSelf: parsedDatesSelf,
+        plannedDatesOther: parsedDatesOther,
         totalAmount: finalAmount,
         validFrom,
         validUntil,
@@ -91,13 +146,35 @@ export const createDayPassBundle = async (req, res) => {
 
       // Create individual day pass records (status: pending)
       const dayPasses = [];
-      for (let i = 0; i < no_of_dayPasses; i++) {
+      
+      // Create passes for "self" bookings
+      for (let i = 0; i < splitSelf; i++) {
         const dayPass = new DayPass({
           customer: customerId,
           member: memberId || null,
           building: buildingId,
           bundle: bundle._id,
           date: null, // Will be set when invited
+          visitDate: parsedDatesSelf[i],
+          bookingFor: "self",
+          expiresAt: validUntil,
+          price: pricePerPass,
+          status: "payment_pending",
+          createdBy: req.user?._id
+        });
+        dayPasses.push(dayPass);
+      }
+      
+      // Create passes for "other" bookings
+      for (let i = 0; i < splitOther; i++) {
+        const dayPass = new DayPass({
+          customer: customerId,
+          member: memberId || null,
+          building: buildingId,
+          bundle: bundle._id,
+          date: null, // Will be set when invited
+          visitDate: null, // Will be set later in manage flow
+          bookingFor: "other",
           expiresAt: validUntil,
           price: pricePerPass,
           status: "payment_pending",
@@ -110,8 +187,8 @@ export const createDayPassBundle = async (req, res) => {
 
       // Create invoice (schema: invoiceModel.js)
       const invoice = new Invoice({
-        client: null, // Guest purchases
-        guest: customerId,
+        client: customerType === 'client' ? customerId : null,
+        guest: customerType !== 'client' ? customerId : null,
         building: buildingId,
         type: "regular",
         category: "day_pass",

@@ -5,13 +5,14 @@ import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Payment from "../models/paymentModel.js";
+import { issueDayPass } from "../services/dayPassIssuanceService.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 
 // Create single day pass (not from bundle)
 export const createSingleDayPass = async (req, res) => {
   try {
-    const { customerId, memberId, buildingId, notes } = req.body;
+    const { customerId, memberId, buildingId, notes, bookingFor, visitDate } = req.body;
 
     if (!customerId || !buildingId) {
       return res.status(400).json({ 
@@ -19,7 +20,31 @@ export const createSingleDayPass = async (req, res) => {
       });
     }
 
-    // Verify customer exists - could be Guest or Member
+    // Validate new required fields
+    if (!bookingFor || !['self', 'other'].includes(bookingFor)) {
+      return res.status(400).json({ 
+        error: "bookingFor must be 'self' or 'other'" 
+      });
+    }
+
+    // Only require visitDate for "self" bookings
+    if (bookingFor === "self" && !visitDate) {
+      return res.status(400).json({ 
+        error: "visitDate is required for self bookings" 
+      });
+    }
+
+    let parsedVisitDate = null;
+    if (visitDate) {
+      parsedVisitDate = new Date(visitDate);
+      if (isNaN(parsedVisitDate.getTime())) {
+        return res.status(400).json({ 
+          error: "Invalid visitDate format" 
+        });
+      }
+    }
+
+    // Verify customer exists - could be Guest, Member, or Client
     let customer = null;
     let customerType = 'guest';
     
@@ -32,6 +57,15 @@ export const createSingleDayPass = async (req, res) => {
       customer = await Member.findById(customerId);
       if (customer) {
         customerType = 'member';
+      }
+    }
+    
+    // If still not found, try as Client
+    if (!customer) {
+      const Client = (await import('../models/clientModel.js')).default;
+      customer = await Client.findById(customerId);
+      if (customer) {
+        customerType = 'client';
       }
     }
     
@@ -74,6 +108,8 @@ export const createSingleDayPass = async (req, res) => {
         bundle: null, // Single pass, not from bundle
         // Use booking date as the day for the pass; invitation can still set visitor/date later
         date: bookingDate,
+        visitDate: parsedVisitDate,
+        bookingFor,
         expiresAt,
         price,
         status: "payment_pending",
@@ -85,8 +121,8 @@ export const createSingleDayPass = async (req, res) => {
 
       // Create invoice (schema: invoiceModel.js)
       const invoice = new Invoice({
-        client: null,
-        guest: customerId,
+        client: customerType === 'client' ? customerId : null,
+        guest: customerType !== 'client' ? customerId : null,
         building: buildingId,
         type: "regular",
         category: "day_pass",
@@ -625,8 +661,87 @@ export const getAllDayPasses = async (req, res) => {
       }
     });
 
+  } catch (err) {
+    console.error("getAllDayPasses error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Update visitor draft details for "other" bookings
+export const updateVisitorDraft = async (req, res) => {
+  try {
+    const { dayPassId } = req.params;
+    const { name, phone, email, company, purpose } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Visitor name is required" });
+    }
+
+    const dayPass = await DayPass.findById(dayPassId);
+    if (!dayPass) {
+      return res.status(404).json({ error: "Day pass not found" });
+    }
+
+    if (dayPass.bookingFor !== "other") {
+      return res.status(400).json({ error: "Can only update visitor details for 'other' bookings" });
+    }
+
+    // Update visitor draft details
+    dayPass.visitorDetailsDraft = {
+      name: name?.trim(),
+      phone: phone?.trim(),
+      email: email?.trim(),
+      company: company?.trim(),
+      purpose: purpose?.trim()
+    };
+
+    await dayPass.save();
+
+    res.json({
+      success: true,
+      message: "Visitor details updated successfully",
+      dayPass: {
+        _id: dayPass._id,
+        bookingFor: dayPass.bookingFor,
+        visitDate: dayPass.visitDate,
+        status: dayPass.status,
+        visitorDetailsDraft: dayPass.visitorDetailsDraft
+      }
+    });
+
   } catch (error) {
-    console.error("getAllDayPasses error:", error);
+    console.error("updateVisitorDraft error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Manual issuance of day pass (triggers visitor creation)
+export const issueDayPassManual = async (req, res) => {
+  try {
+    const { dayPassId } = req.params;
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const result = await issueDayPass(dayPassId, session);
+      
+      if (result.success) {
+        await session.commitTransaction();
+        res.json(result);
+      } else {
+        await session.abortTransaction();
+        res.status(400).json(result);
+      }
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+
+  } catch (error) {
+    console.error("issueDayPassManual error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

@@ -21,6 +21,7 @@ const communityMiddleware = (req, res, next) => {
         // Attach minimal role info for downstream handlers
         if (roleName && !req.userRole) req.userRole = { roleName };
         if (decoded?.id) req.userId = decoded.id;
+        if (decoded?.buildingId) req.buildingId = decoded.buildingId;
       } catch (e) {
         return res.status(401).json({ error: "Unauthorized" });
       }

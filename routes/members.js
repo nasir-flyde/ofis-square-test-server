@@ -1,6 +1,5 @@
 import express from "express";
-import authVerify from "../middlewares/authVerify.js";
-import checkPermission from "../middlewares/checkPermission.js";
+import authMiddleware from "../middlewares/authVerify.js";
 import {
   createMember,
   getMembers,
@@ -11,19 +10,11 @@ import {
 
 const router = express.Router();
 
-// Create member (admin only)
-router.post("/", authVerify, checkPermission("admin"), createMember);
 
-// Get all members with filters
+router.post("/", createMember);
 router.get("/",getMembers);
-
-// Get member by ID
-router.get("/:id", authVerify, getMemberById);
-
-// Update member (admin only)
-router.put("/:id", authVerify, checkPermission("admin"), updateMember);
-
-// Delete member (admin only)
-router.delete("/:id", authVerify, checkPermission("admin"), deleteMember);
+router.get("/:id", authMiddleware, getMemberById);
+router.put("/:id", authMiddleware, updateMember);
+router.delete("/:id", authMiddleware, deleteMember);
 
 export default router;

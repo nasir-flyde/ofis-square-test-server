@@ -4,7 +4,8 @@ import {
   adminLogin, 
   clientLogin, 
   memberLogin, 
-  communityLogin, 
+  communityLogin,
+  communitySignup,
   onDemandUserSignup,
   onDemandUserLogin,
   getMe 
@@ -19,6 +20,7 @@ router.post("/client/register", clientSignup);
 router.post("/client/login", clientLogin);
 router.post("/admin/login", adminLogin);
 router.post("/member/login", memberLogin);
+router.post("/community/register", communitySignup);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);

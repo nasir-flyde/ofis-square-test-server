@@ -31,6 +31,12 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    buildingId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Building",
+      required: false,
+      index: true,
+    },
   },
   {
     timestamps: true,

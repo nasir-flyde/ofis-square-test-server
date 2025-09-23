@@ -7,6 +7,8 @@ import Guest from "../models/guestModel.js";
 import Member from "../models/memberModel.js";
 import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import CreditTransaction from "../models/creditTransactionModel.js";
+import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceService.js";
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
 
@@ -494,7 +496,7 @@ export const recordCustomerPayment = async (req, res) => {
 
     // Create local payment record
     const paymentData = {
-      client: clientId,
+      client: finalClientId,
       invoices: invoices.map(inv => {
         const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === inv.invoiceId);
         return {
@@ -759,16 +761,21 @@ export const handleRazorpaySuccess = async (req, res) => {
     const payment = new Payment(paymentData);
     await payment.save();
 
-    // Update item status to issued
-    item.status = "issued";
-    await item.save();
-
-    // If bundle, also update all associated day passes to issued
+    // Update item status to issued and create visitor records
     if (bundleId) {
-      await DayPass.updateMany(
-        { bundle: bundleId },
-        { status: "issued" }
-      );
+      // For bundles, get all associated day passes and issue them
+      const dayPasses = await DayPass.find({ bundle: bundleId });
+      const dayPassIds = dayPasses.map(pass => pass._id.toString());
+      
+      // Issue all passes in the bundle (this will create visitor records)
+      await issueDayPassBatch(dayPassIds);
+      
+      // Update bundle status
+      item.status = "issued";
+      await item.save();
+    } else {
+      // For single day pass, use the issuance service
+      await issueDayPass(item._id);
     }
 
     // Update invoice if exists
@@ -793,7 +800,11 @@ export const handleRazorpaySuccess = async (req, res) => {
     });
   } catch (error) {
     console.error("handleRazorpaySuccess error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Error stack:", error.stack);
+    res.status(500).json({ 
+      error: "Internal Server Error",
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -847,27 +858,51 @@ export const handleRazorpayWebhook = async (req, res) => {
 // Credit-based payment for day passes
 export const payWithCredits = async (req, res) => {
   try {
-    const { dayPassId, bundleId, memberId } = req.body;
+    const { dayPassId, bundleId, memberId, clientId } = req.body;
 
-    if (!memberId) {
-      return res.status(400).json({ error: "Member ID is required for credit payments" });
+    if (!memberId && !clientId) {
+      return res.status(400).json({ error: "Member ID or Client ID is required for credit payments" });
     }
 
     if (!dayPassId && !bundleId) {
       return res.status(400).json({ error: "Day pass ID or Bundle ID is required" });
     }
 
-    // Find member and get associated client
-    const member = await Member.findById(memberId).populate('client');
-    if (!member || !member.client) {
-      return res.status(404).json({ error: "Member or associated client not found" });
-    }
+    let member, finalClientId;
 
-    const clientId = member.client._id;
+    if (memberId) {
+      // Direct member access
+      member = await Member.findById(memberId).populate('client');
+      if (!member || !member.client) {
+        return res.status(404).json({ error: "Member or associated client not found" });
+      }
+      finalClientId = member.client._id;
+    } else {
+      // Find member using client ID or client's phone
+      const client = await Client.findById(clientId);
+      if (!client) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      // Find member associated with this client using phone number
+      member = await Member.findOne({ 
+        $or: [
+          { client: clientId },
+          { phone: client.phone }
+        ]
+      }).populate('client');
+
+      if (!member) {
+        return res.status(404).json({ 
+          error: "No member found associated with this client. Member account required for credit payments." 
+        });
+      }
+      finalClientId = clientId;
+    }
 
     // Check if client has active credit-enabled contract
     const contract = await Contract.findOne({
-      client: clientId,
+      client: finalClientId,
       credit_enabled: true,
       status: "active"
     });
@@ -879,7 +914,7 @@ export const payWithCredits = async (req, res) => {
     }
 
     // Get credit wallet
-    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const wallet = await ClientCreditWallet.findOne({ client: finalClientId });
     const currentBalance = wallet?.balance || 0;
     const creditValue = contract.credit_value || 500;
 
@@ -931,12 +966,49 @@ export const payWithCredits = async (req, res) => {
       });
     }
 
-    // Deduct credits directly from wallet (no CreditTransaction record)
     const balanceAfter = currentBalance - creditsRequired;
+
+    // Create CreditTransaction record for the usage
+    const creditTransaction = new CreditTransaction({
+      clientId: finalClientId,
+      contractId: contract._id,
+      itemSnapshot: {
+        name: dayPassId ? "Day Pass" : "Day Pass Bundle",
+        unit: "pass",
+        pricingMode: "credits",
+        unitCredits: dayPassId ? creditsRequired : creditsRequired / item.no_of_dayPasses,
+        taxable: true,
+        gstRate: 18
+      },
+      quantity: dayPassId ? 1 : item.no_of_dayPasses,
+      transactionType: "usage",
+      pricingSnapshot: {
+        pricingMode: "credits",
+        unitCredits: dayPassId ? creditsRequired : creditsRequired / item.no_of_dayPasses,
+        creditValueINR: creditValue
+      },
+      creditsDelta: -creditsRequired, // Negative for usage
+      amountINRDelta: -totalAmount, // Negative for usage
+      purpose: dayPassId ? "Day pass purchase" : "Day pass bundle purchase",
+      description: `Credit payment for ${dayPassId ? 'day pass' : 'bundle'} - ${creditsRequired} credits used`,
+      status: "completed",
+      createdBy: req.user?._id || member._id, // Use authenticated user or member as fallback
+      metadata: {
+        dayPassId: dayPassId || null,
+        bookingId: bundleId || null,
+        customData: {
+          paymentMethod: "credits",
+          originalAmount: totalAmount,
+          creditsUsed: creditsRequired
+        }
+      }
+    });
+
+    await creditTransaction.save();
 
     // Update wallet balance
     await ClientCreditWallet.findOneAndUpdate(
-      { client: clientId },
+      { client: finalClientId },
       { 
         $inc: { balance: -creditsRequired },
         $set: { 
@@ -947,22 +1019,27 @@ export const payWithCredits = async (req, res) => {
       { upsert: true }
     );
 
-    // Update item status to issued
-    item.status = "issued";
-    await item.save();
-
-    // If bundle, also update all associated day passes to issued
+    // Update item status to issued and create visitor records
     if (bundleId) {
-      await DayPass.updateMany(
-        { bundle: bundleId },
-        { status: "issued" }
-      );
+      // For bundles, get all associated day passes and issue them
+      const dayPasses = await DayPass.find({ bundle: bundleId });
+      const dayPassIds = dayPasses.map(pass => pass._id.toString());
+      
+      // Issue all passes in the bundle (this will create visitor records)
+      await issueDayPassBatch(dayPassIds);
+      
+      // Update bundle status
+      item.status = "issued";
+      await item.save();
+    } else {
+      // For single day pass, use the issuance service
+      await issueDayPass(item._id);
     }
 
     // Create payment record for tracking
     const payment = new Payment({
       invoice: item.invoice,
-      client: clientId,
+      client: finalClientId,
       type: "Credits",
       amount: totalAmount,
       paymentDate: new Date(),
@@ -1054,6 +1131,57 @@ export const getMemberCreditBalance = async (req, res) => {
 
   } catch (error) {
     console.error("getMemberCreditBalance error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+// Get client's credit balance directly
+export const getClientCreditBalance = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Find client
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    // Check if client has active credit-enabled contract
+    const contract = await Contract.findOne({
+      client: clientId,
+      credit_enabled: true,
+      status: "active"
+    });
+
+    if (!contract) {
+      return res.json({
+        success: true,
+        creditEnabled: false,
+        balance: 0,
+        creditValue: 0,
+        message: "No active credit-enabled contract found"
+      });
+    }
+
+    // Get credit wallet
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const balance = wallet?.balance || 0;
+    const creditValue = contract.credit_value || 500;
+
+    res.json({
+      success: true,
+      creditEnabled: true,
+      balance,
+      creditValue,
+      balanceINR: balance * creditValue,
+      client: {
+        id: clientId,
+        name: client.companyName || client.contactPerson
+      }
+    });
+
+  } catch (error) {
+    console.error("getClientCreditBalance error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

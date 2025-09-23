@@ -11,7 +11,8 @@ import {
   recordCustomerPayment,
   listCustomerPayments,
   payWithCredits,
-  getMemberCreditBalance
+  getMemberCreditBalance,
+  getClientCreditBalance
 } from "../controllers/paymentController.js";
 
 const router = express.Router();
@@ -43,5 +44,6 @@ router.post("/razorpay/webhook", handleRazorpayWebhook);
 // Credit payment routes
 router.post('/credits/pay', payWithCredits);
 router.get('/credits/balance/:memberId', getMemberCreditBalance);
+router.get('/credits/balance/client/:clientId', getClientCreditBalance);
 
 export default router;

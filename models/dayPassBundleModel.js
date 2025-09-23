@@ -9,6 +9,14 @@ const dayPassBundleSchema = new Schema(
     building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
     no_of_dayPasses: { type: Number, required: true, min: 1 },
     remainingPasses: { type: Number, required: true, min: 0 },
+    
+    // Split counts for self vs other bookings
+    countsSelf: { type: Number, default: 0, min: 0 },
+    countsOther: { type: Number, default: 0, min: 0 },
+    
+    // Planned dates for each type
+    plannedDatesSelf: [{ type: Date }],
+    plannedDatesOther: [{ type: Date }],
     status: {
       type: String,
       enum: ["payment_pending", "issued", "active", "expired", "cancelled"],

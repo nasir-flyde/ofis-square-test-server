@@ -7,7 +7,9 @@ import {
   scanQR,
   getUserDayPasses,
   getDayPassDetails,
-  getAllDayPasses
+  getAllDayPasses,
+  updateVisitorDraft,
+  issueDayPassManual
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -25,6 +27,8 @@ const router = express.Router();
 router.post("/single",createSingleDayPass);
 // Require a valid JWT so hostMiddleware can infer host (member/client/guest)
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
+router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
+router.post("/:dayPassId/issue", issueDayPassManual);
 router.get("/user/:customerId", getUserDayPasses);
 router.get("/:dayPassId", getDayPassDetails);
 

@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
 import Guest from "../models/guestModel.js";
+import Building from "../models/buildingModel.js";
 import bcrypt from "bcryptjs";
 
 export const clientSignup = async (req, res) => {
@@ -204,20 +205,24 @@ export const clientLogin = async (req, res) => {
 
 export const memberLogin = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, phone, password, otp } = req.body;
+
+    // Check if this is OTP-based login
+    if (otp && phone) {
+      // Redirect to OTP verification endpoint
+      return res.status(400).json({ 
+        error: "Please use /api/otp/verify endpoint for OTP-based login",
+        useOtpEndpoint: true 
+      });
+    }
 
     if ((!email && !phone) || !password) {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
-      : { phone: phone.trim() };
-
+    const query = email ? { email } : { phone };
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-    // Direct password comparison without decryption (since passwords are stored as plain text for members)
     const isMatch = password === user.password;
     if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
@@ -238,8 +243,6 @@ export const memberLogin = async (req, res) => {
       if (!fallbackMember) {
         return res.status(404).json({ error: "Member record not found. Please contact admin." });
       }
-      
-      // Update member to link to user for future logins
       fallbackMember.user = user._id;
       await fallbackMember.save();
       member = fallbackMember;
@@ -282,6 +285,103 @@ export const memberLogin = async (req, res) => {
   }
 };
 
+export const communitySignup = async (req, res) => {
+  try {
+    const { name, email, phone, password, buildingId } = req.body;
+
+    if (!name || !password) {
+      return res.status(400).json({ error: "Name and password are required" });
+    }
+
+    if (!email && !phone) {
+      return res.status(400).json({ error: "Either email or phone is required" });
+    }
+
+    if (!buildingId) {
+      return res.status(400).json({ error: "Building ID is required for community users" });
+    }
+
+    // Validate building exists
+    if (!mongoose.Types.ObjectId.isValid(buildingId)) {
+      return res.status(400).json({ error: "Invalid building ID" });
+    }
+
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(400).json({ error: "Building not found" });
+    }
+
+    const query = {};
+    if (email) query.email = email.toLowerCase().trim();
+    if (phone) query.phone = phone.trim();
+
+    const existingUser = await Users.findOne({
+      $or: Object.keys(query).map(key => ({ [key]: query[key] }))
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists with this email or phone" });
+    }
+
+    // Find or create community role
+    let role = await Role.findOne({ roleName: "community" });
+    if (!role) {
+      role = await Role.create({
+        roleName: "community",
+        description: "Community user with building access",
+        canLogin: true,
+        permissions: ["view_dashboard", "manage_visitors", "view_clients"]
+      });
+    }
+
+    const userPayload = {
+      name: name.trim(),
+      password: password,
+      role: role._id,
+      buildingId: buildingId,
+    };
+
+    if (email) userPayload.email = email.toLowerCase().trim();
+    if (phone) userPayload.phone = phone.trim();
+
+    const user = new Users(userPayload);
+    await user.save();
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      null, // clientId
+      null, // memberId
+      buildingId
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      buildingId: user.buildingId,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.status(201).json({ 
+      message: "Community user created successfully", 
+      user: safeUser, 
+      buildingId: buildingId,
+      token 
+    });
+  } catch (err) {
+    console.error("communitySignup error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 export const communityLogin = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
@@ -316,7 +416,10 @@ export const communityLogin = async (req, res) => {
       user.email,
       role._id.toString(),
       role.roleName,
-      user.phone
+      user.phone,
+      null, // clientId
+      null, // memberId
+      user.buildingId
     );
 
     const safeUser = {
@@ -326,11 +429,12 @@ export const communityLogin = async (req, res) => {
       phone: user.phone,
       role: user.role,
       roleName: role.roleName,
+      buildingId: user.buildingId,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
 
-    res.json({ token, user: safeUser });
+    res.json({ token, user: safeUser, buildingId: user.buildingId });
   } catch (err) {
     console.error("communityLogin error:", err);
     res.status(500).json({ error: "Internal Server Error" });
@@ -425,7 +529,16 @@ export const onDemandUserSignup = async (req, res) => {
 
 export const onDemandUserLogin = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, phone, password, otp } = req.body;
+
+    // Check if this is OTP-based login
+    if (otp && phone) {
+      // Redirect to OTP verification endpoint
+      return res.status(400).json({ 
+        error: "Please use /api/otp/verify endpoint for OTP-based login",
+        useOtpEndpoint: true 
+      });
+    }
 
     if ((!email && !phone) || !password) {
       return res.status(400).json({ error: "Email or phone and password are required" });

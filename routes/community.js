@@ -1,26 +1,34 @@
 import express from "express";
-import { 
-  getCommunityDashboard, 
+import {
+  getCommunityDashboard,
   getCommunityStats,
   getCommunityClients,
   getCommunityClientById,
-  getCommunityClientMembers
+  getCommunityClientMembers,
+  getCommunityTickets,
+  getCommunityBuildingClients,
+  getCommunityInventory,
 } from "../controllers/communityController.js";
-import { createBooking as createMeetingBooking } from "../controllers/meetingBookingController.js";
 import communityMiddleware from "../middlewares/communityMiddleware.js";
 
 const router = express.Router();
 
-// Community dashboard routes
+// Community dashboard and stats
 router.get("/dashboard", communityMiddleware, getCommunityDashboard);
 router.get("/stats", communityMiddleware, getCommunityStats);
 
-// Clients and Members (Community access)
+// Community clients
 router.get("/clients", communityMiddleware, getCommunityClients);
 router.get("/clients/:id", communityMiddleware, getCommunityClientById);
 router.get("/clients/:id/members", communityMiddleware, getCommunityClientMembers);
 
-// Meeting bookings (Community access)
-router.post("/meeting-bookings", communityMiddleware, createMeetingBooking);
+// Building-specific clients for community users
+router.get("/building-clients", communityMiddleware, getCommunityBuildingClients);
+
+// Building-specific tickets for community users
+router.get("/tickets", communityMiddleware, getCommunityTickets);
+
+// Building-specific inventory for community users
+router.get("/inventory", communityMiddleware, getCommunityInventory);
 
 export default router;

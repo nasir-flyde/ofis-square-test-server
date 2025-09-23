@@ -17,6 +17,8 @@ const dayPassSchema = new Schema(
     
     // Pass details
     date: { type: Date, default: null },
+    visitDate: { type: Date, default: null }, 
+    bookingFor: { type: String, enum: ["self", "other"], default: "self" }, 
     expiresAt: { type: Date, required: true },
     price: { type: Number, required: true },
     currency: { type: String },
@@ -34,6 +36,16 @@ const dayPassSchema = new Schema(
     visitorEmail: { type: String },
     visitorCompany: { type: String },
     purpose: { type: String },
+    
+    // Draft visitor details for "other" bookings before issuance
+    visitorDetailsDraft: {
+      name: { type: String },
+      phone: { type: String },
+      email: { type: String },
+      company: { type: String },
+      purpose: { type: String }
+    },
+    visitorCreated: { type: Boolean, default: false }, // Track if visitor record was created
     numberOfGuests: { type: Number, default: 1, min: 1 },
     expectedArrivalTime: { type: Date },
     expectedDepartureTime: { type: Date },
