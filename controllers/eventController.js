@@ -706,8 +706,34 @@ const updateEvent = async (req, res) => {
 
     await event.save();
 
-    // Log activity
-    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, oldData, event.toObject());
+    // Log activity with proper before/after comparison
+    await logCRUDActivity(req, 'UPDATE', 'Event', event._id, {
+      before: {
+        title: oldData.title,
+        description: oldData.description,
+        startDate: oldData.startDate,
+        endDate: oldData.endDate,
+        capacity: oldData.capacity,
+        creditsRequired: oldData.creditsRequired,
+        category: oldData.category,
+        location: oldData.location,
+        status: oldData.status
+      },
+      after: {
+        title: event.title,
+        description: event.description,
+        startDate: event.startDate,
+        endDate: event.endDate,
+        capacity: event.capacity,
+        creditsRequired: event.creditsRequired,
+        category: event.category,
+        location: event.location,
+        status: event.status
+      }
+    }, {
+      eventTitle: event.title,
+      updatedFields: allowedUpdates.filter(field => cleanedUpdates[field] !== undefined)
+    });
 
     res.json({
       success: true,

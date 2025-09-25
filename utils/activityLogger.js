@@ -173,6 +173,37 @@ const logCRUDActivity = async (reqOrUserId, action, entity, entityId, changes = 
   const userInfo = req ? extractUserInfo(req) : null;
   const actionText = actionMap[action.toUpperCase()] || action.toLowerCase();
   
+  // Process changes to extract actual field differences
+  let processedChanges = null;
+  if (changes && changes.before && changes.after) {
+    const changedFields = [];
+    const beforeData = changes.before;
+    const afterData = changes.after;
+    
+    // Compare each field
+    Object.keys(afterData).forEach(key => {
+      const beforeValue = beforeData[key];
+      const afterValue = afterData[key];
+      
+      // Handle ObjectId comparison
+      const beforeStr = beforeValue ? String(beforeValue) : beforeValue;
+      const afterStr = afterValue ? String(afterValue) : afterValue;
+      
+      if (beforeStr !== afterStr) {
+        changedFields.push({
+          field: key,
+          oldValue: beforeValue,
+          newValue: afterValue
+        });
+      }
+    });
+    
+    processedChanges = {
+      fields: changedFields,
+      summary: changedFields.map(f => `${f.field}: ${f.oldValue} → ${f.newValue}`).join(', ')
+    };
+  }
+  
   return await logActivity({
     req,
     userId,
@@ -180,7 +211,7 @@ const logCRUDActivity = async (reqOrUserId, action, entity, entityId, changes = 
     entity,
     entityId,
     description: `${userInfo?.userName || 'User'} ${actionText} ${entity.toLowerCase()}${entityId ? ` (ID: ${entityId})` : ''}`,
-    changes,
+    changes: processedChanges || changes,
     metadata: additionalData
   });
 };

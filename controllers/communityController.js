@@ -6,6 +6,7 @@ import Invoice from "../models/invoiceModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import Visitor from "../models/visitorModel.js";
 import mongoose from "mongoose";
+import { logActivity } from "../utils/activityLogger.js";
 
 export const getCommunityDashboard = async (req, res) => {
   try {
@@ -136,6 +137,18 @@ export const getCommunityDashboard = async (req, res) => {
       recentActivity: limitedActivity
     };
     
+    // Log dashboard access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'view',
+      resource: 'community_dashboard',
+      resourceId: null,
+      details: { stats: dashboardData.stats },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
     return res.json({
       success: true,
       data: dashboardData
@@ -180,6 +193,18 @@ export const getCommunityClients = async (_req, res) => {
       { $sort: { createdAt: -1 } }
     ]);
 
+    // Log clients list access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'clients',
+      resourceId: null,
+      details: { count: clients.length },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
     return res.json({ success: true, data: clients });
   } catch (err) {
     console.error("getCommunityClients error:", err);
@@ -193,6 +218,19 @@ export const getCommunityClientById = async (req, res) => {
     const { id } = req.params;
     const client = await Client.findById(id);
     if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+    
+    // Log client view
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'view',
+      resource: 'client',
+      resourceId: id,
+      details: { clientName: client.companyName },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+    
     return res.json({ success: true, data: client });
   } catch (err) {
     console.error("getCommunityClientById error:", err);
@@ -216,6 +254,18 @@ export const getCommunityClientMembers = async (req, res) => {
       .skip((Number(page) - 1) * Number(limit));
 
     const total = await Member.countDocuments(query);
+
+    // Log client members access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'client_members',
+      resourceId: id,
+      details: { memberCount: members.length, page, limit },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
 
     return res.json({
       success: true,
@@ -274,17 +324,31 @@ export const getCommunityStats = async (req, res) => {
       }
     ]);
 
+    const statsData = {
+      period: `${daysBack} days`,
+      totalClients,
+      totalBookings,
+      totalTickets,
+      resolvedTickets,
+      ticketResolutionRate: totalTickets > 0 ? ((resolvedTickets / totalTickets) * 100).toFixed(1) : 0,
+      totalRevenue: totalRevenue[0]?.total || 0
+    };
+
+    // Log stats access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'view',
+      resource: 'community_stats',
+      resourceId: null,
+      details: { period: daysBack, ...statsData },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
     res.json({
       success: true,
-      data: {
-        period: `${daysBack} days`,
-        totalClients,
-        totalBookings,
-        totalTickets,
-        resolvedTickets,
-        ticketResolutionRate: totalTickets > 0 ? ((resolvedTickets / totalTickets) * 100).toFixed(1) : 0,
-        totalRevenue: totalRevenue[0]?.total || 0
-      }
+      data: statsData
     });
 
   } catch (error) {
@@ -330,6 +394,18 @@ export const getCommunityTickets = async (req, res) => {
       .limit(parseInt(limit));
 
     const total = await Ticket.countDocuments(filter);
+
+    // Log tickets access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'community_tickets',
+      resourceId: buildingId,
+      details: { ticketCount: tickets.length, buildingId, filters: { status, priority, search } },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
 
     return res.json({
       success: true,
@@ -415,6 +491,18 @@ export const getCommunityBuildingClients = async (req, res) => {
 
     const total = await Client.countDocuments(filter);
 
+    // Log building clients access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'building_clients',
+      resourceId: buildingId,
+      details: { clientCount: clients.length, buildingId, search },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
     return res.json({
       success: true,
       data: {
@@ -443,6 +531,18 @@ export const getCommunityInventory = async (req, res) => {
 
     // Since there's no inventory model yet, return a placeholder response
     // This can be updated when inventory model is created
+    // Log inventory access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'view',
+      resource: 'community_inventory',
+      resourceId: buildingId,
+      details: { buildingId, status: 'not_implemented' },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
     return res.json({
       success: true,
       data: {

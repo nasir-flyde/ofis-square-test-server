@@ -85,8 +85,20 @@ const activityLogSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.Mixed, // New values
       },
       fields: [{
-        type: String, // List of changed field names
+        field: {
+          type: String,
+          required: true
+        },
+        oldValue: {
+          type: mongoose.Schema.Types.Mixed
+        },
+        newValue: {
+          type: mongoose.Schema.Types.Mixed
+        }
       }],
+      summary: {
+        type: String // Human-readable summary of changes
+      }
     },
 
     // Additional Context
