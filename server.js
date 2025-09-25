@@ -12,6 +12,7 @@ import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
 import { scheduleNoShowUpdates, scheduleMonthlyInvoices } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
+import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,15 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Activity logging middleware disabled: using manual controller logging only
+// If you want to re-enable automatic logging, uncomment the block below.
+// app.use(activityLogMiddleware({
+//   skipRoutes: ['/health', '/status', '/ping', '/api/tickets'],
+//   skipMethods: ['OPTIONS'],
+//   logReadOperations: false, // Set to true if you want to log GET requests
+//   logFailedRequests: true
+// }));
 
 app.use("/api", apiRoutes);
 

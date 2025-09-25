@@ -11,6 +11,7 @@ import imagekit from "../utils/imageKit.js";
 import PdfPrinter from "pdfmake";
 import getContractTemplate from "./contractTemplate.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 
 // Create a new contract (admin only)
 export const createContract = async (req, res) => {
@@ -83,6 +84,16 @@ export const createContract = async (req, res) => {
 
     const created = await Contract.create(payload);
 
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Contract', created._id, null, {
+      clientId,
+      buildingId,
+      capacity,
+      monthlyRent,
+      startDate: start,
+      endDate: end
+    });
+
     // Auto-generate and upload contract PDF
     try {
       const populatedContract = await Contract.findById(created._id)
@@ -138,6 +149,7 @@ export const createContract = async (req, res) => {
     return res.status(201).json({ message: "Contract created", contract: created });
   } catch (err) {
     console.error("createContract error:", err);
+    await logErrorActivity(req, err, 'Contract Creation');
     return res.status(500).json({ error: "Failed to create contract" });
   }
 };
@@ -166,6 +178,7 @@ export const getContracts = async (req, res) => {
     return res.json({ success: true, data: contracts });
   } catch (err) {
     console.error("getContracts error:", err);
+    await logErrorActivity(req, err, 'Get Contracts');
     return res.status(500).json({ success: false, message: "Failed to fetch contracts" });
   }
 };
@@ -181,6 +194,7 @@ export const getContractById = async (req, res) => {
     return res.json({ success: true, data: contract });
   } catch (err) {
     console.error("getContractById error:", err);
+    await logErrorActivity(req, err, 'Get Contract by ID');
     return res.status(500).json({ success: false, message: "Failed to fetch contract" });
   }
 };
@@ -199,9 +213,17 @@ export const deleteContract = async (req, res) => {
     }
 
     await Contract.deleteOne({ _id: id });
+    
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'Contract', id, null, {
+      clientId: existing.client,
+      buildingId: existing.building
+    });
+    
     return res.json({ success: true, message: "Contract deleted" });
   } catch (err) {
     console.error("deleteContract error:", err);
+    await logErrorActivity(req, err, 'Delete Contract');
     return res.status(500).json({ success: false, message: "Failed to delete contract" });
   }
 };
@@ -284,9 +306,22 @@ export const updateContract = async (req, res) => {
     };
 
     const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
+    
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Contract', id, {
+      before: existing.toObject(),
+      after: updated.toObject(),
+      fields: Object.keys(updateData)
+    }, {
+      clientId,
+      buildingId,
+      updatedFields: Object.keys(updateData)
+    });
+    
     return res.json({ success: true, message: "Contract updated", contract: updated });
   } catch (err) {
     console.error("updateContract error:", err);
+    await logErrorActivity(req, err, 'Update Contract');
     return res.status(500).json({ success: false, message: "Failed to update contract" });
   }
 };
@@ -348,6 +383,13 @@ export const sendForSignature = async (req, res) => {
       { new: true }
     );
 
+    // Log contract activity
+    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', 'Contract', id, {
+      zohoSignRequestId: requestId,
+      clientEmail: contract.client.email,
+      clientName: contract.client.companyName
+    });
+
     return res.json({ 
       message: "Contract sent for digital signature", 
       contract: updatedContract,
@@ -355,6 +397,7 @@ export const sendForSignature = async (req, res) => {
     });
   } catch (err) {
     console.error("sendForSignature error:", err);
+    await logErrorActivity(req, err, 'Send Contract for Signature');
     return res.status(500).json({ error: "Failed to send contract for signature" });
   }
 };
@@ -380,6 +423,12 @@ export const checkSignatureStatus = async (req, res) => {
         status: "active",
         signedAt: new Date()
       });
+      
+      // Log contract completion
+      await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', id, {
+        zohoSignRequestId: contract.zohoSignRequestId,
+        signatureStatus: status.request_status
+      });
     }
 
     return res.json({ 
@@ -389,6 +438,7 @@ export const checkSignatureStatus = async (req, res) => {
     });
   } catch (err) {
     console.error("checkSignatureStatus error:", err);
+    await logErrorActivity(req, err, 'Check Signature Status');
     return res.status(500).json({ error: "Failed to check signature status" });
   }
 };
@@ -444,6 +494,12 @@ export const uploadSignedContract = async (req, res) => {
     // contract.zohoSignRequestId = undefined;
 
     await contract.save();
+    
+    // Log contract activation
+    await logContractActivity(req, 'CONTRACT_ACTIVATED', 'Contract', id, {
+      fileUrl,
+      activationMethod: 'manual_upload'
+    });
     try {
       const invoice = await createInvoiceFromContract(contract._id, {
         issueOn: "activation",
@@ -462,6 +518,7 @@ export const uploadSignedContract = async (req, res) => {
     });
   } catch (err) {
     console.error("uploadSignedContract error:", err);
+    await logErrorActivity(req, err, 'Upload Signed Contract');
     return res.status(500).json({ error: "Failed to upload signed contract" });
   }
 };
@@ -552,6 +609,7 @@ export const handleZohoSignWebhook = async (req, res) => {
     return res.status(200).json({ message: "Webhook processed successfully" });
   } catch (err) {
     console.error("handleZohoSignWebhook error:", err);
+    await logErrorActivity(req, err, 'Zoho Sign Webhook');
     return res.status(500).json({ error: "Webhook processing failed" });
   }
 };

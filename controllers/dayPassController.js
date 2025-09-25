@@ -3,11 +3,16 @@ import DayPassBundle from "../models/dayPassBundleModel.js";
 import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";
 import Visitor from "../models/visitorModel.js";
+import Client from "../models/clientModel.js";
+import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import Contract from "../models/contractModel.js";
+import CreditTransaction from "../models/creditTransactionModel.js";
 import Payment from "../models/paymentModel.js";
-import { issueDayPass } from "../services/dayPassIssuanceService.js";
-import mongoose from "mongoose";
+import { logBookingActivity, logPaymentActivity, logErrorActivity } from "../utils/activityLogger.js";
 import crypto from "crypto";
+import mongoose from "mongoose";
 
 // Create single day pass (not from bundle)
 export const createSingleDayPass = async (req, res) => {
@@ -156,19 +161,37 @@ export const createSingleDayPass = async (req, res) => {
         { path: 'invoice', select: 'invoice_number total status' }
       ]);
 
+      // Log activity
+      await logBookingActivity(req, 'CREATE', 'DayPass', dayPass._id, {
+        customerId,
+        memberId,
+        buildingId,
+        date: bookingDate,
+        totalAmount
+      });
+
       res.status(201).json({
-        message: "Day pass created, payment required",
-        dayPass,
-        invoice: {
-          id: invoice._id,
-          invoice_number: invoice.invoice_number,
-          total: invoice.total,
-          status: invoice.status
-        },
-        payment: {
-          required: true,
-          amount: totalAmount,
-          currency: "INR"
+        success: true,
+        message: 'Day pass created successfully',
+        data: {
+          dayPass,
+          invoice,
+          razorpayConfig: {
+            key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
+            amount: totalAmount * 100, // Razorpay expects amount in paise
+            currency: 'INR',
+            name: 'Ofis Square',
+            description: `Day Pass - ${building.name}`,
+            order_id: `daypass_${dayPass._id}`,
+            prefill: {
+              name: customer.companyName,
+              email: customer.email,
+              contact: customer.phone
+            },
+            theme: {
+              color: '#3399cc'
+            }
+          }
         }
       });
 

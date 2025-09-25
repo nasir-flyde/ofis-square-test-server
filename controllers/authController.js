@@ -8,6 +8,7 @@ import Member from "../models/memberModel.js";
 import Guest from "../models/guestModel.js";
 import Building from "../models/buildingModel.js";
 import bcrypt from "bcryptjs";
+import { logAuthActivity, logCRUDActivity } from "../utils/activityLogger.js";
 
 export const clientSignup = async (req, res) => {
   try {
@@ -135,9 +136,22 @@ export const adminLogin = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
+    // Log successful admin login
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: 'admin',
+      loginType: 'admin'
+    });
+
     res.json({ token, user: safeUser });
   } catch (err) {
     console.error("adminLogin error:", err);
+    
+    // Log failed admin login
+    await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
+      userRole: 'admin',
+      loginType: 'admin'
+    });
+    
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

@@ -137,30 +137,54 @@ class WalletService {
         // Create transaction for covered credits
         if (coveredCredits > 0) {
           await CreditTransaction.create([{
-            client: clientId,
-            member: memberId,
-            type: "consume",
-            credits: coveredCredits,
-            valuePerCredit: 500,
-            refType,
-            refId,
+            clientId: clientId,
+            itemSnapshot: {
+              name: meta.title || `${refType} booking`,
+              pricingMode: 'credits',
+              unitCredits: 1
+            },
+            quantity: coveredCredits,
+            transactionType: "usage",
+            pricingSnapshot: {
+              pricingMode: 'credits',
+              creditValueINR: 500
+            },
+            creditsDelta: -coveredCredits,
+            amountINRDelta: -coveredCredits * 500,
+            createdBy: memberId || clientId,
             idempotencyKey,
-            meta: { ...meta, overdraft: false }
+            metadata: { 
+              ...meta, 
+              overdraft: false,
+              bookingId: refId
+            }
           }], { session });
         }
         
         // Create transaction for extra credits (overdraft)
         if (extraCredits > 0) {
           await CreditTransaction.create([{
-            client: clientId,
-            member: memberId,
-            type: "consume",
-            credits: extraCredits,
-            valuePerCredit: 500,
-            refType,
-            refId,
+            clientId: clientId,
+            itemSnapshot: {
+              name: `${meta.title || `${refType} booking`} (Overdraft)`,
+              pricingMode: 'credits',
+              unitCredits: 1
+            },
+            quantity: extraCredits,
+            transactionType: "usage",
+            pricingSnapshot: {
+              pricingMode: 'credits',
+              creditValueINR: 500
+            },
+            creditsDelta: -extraCredits,
+            amountINRDelta: -extraCredits * 500,
+            createdBy: memberId || clientId,
             idempotencyKey: idempotencyKey ? `${idempotencyKey}_overdraft` : null,
-            meta: { ...meta, overdraft: true }
+            metadata: { 
+              ...meta, 
+              overdraft: true,
+              bookingId: refId
+            }
           }], { session });
         }
         

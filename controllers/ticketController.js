@@ -1,5 +1,9 @@
 import Ticket from "../models/ticketModel.js";
+import TicketCategory from "../models/ticketCategoryModel.js";
+import Client from "../models/clientModel.js";
+import Member from "../models/memberModel.js";
 import mongoose from "mongoose";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // GET /api/tickets
 export const getAllTickets = async (req, res) => {
@@ -31,19 +35,23 @@ export const getAllTickets = async (req, res) => {
     sortOptions[sortBy] = sortOrder === "desc" ? -1 : 1;
 
     const tickets = await Ticket.find(filter)
-      .populate("createdBy", "firstName lastName phone email")
-      .populate("assignedTo", "name email phone")
-      .populate("building", "name city")
-      .populate("cabin", "number floor")
-      .populate({ path: "category.categoryId", select: "name description subCategories" })
+      .populate("building", "name")
+      .populate("category", "name")
+      .populate("client", "companyName")
+      .populate("createdBy", "name")
+      .populate("assignedTo", "name")
       .sort(sortOptions)
       .limit(Number(limit))
       .skip((Number(page) - 1) * Number(limit));
 
+    // Manual logging removed - handled by middleware for non-GET requests only
+
     const total = await Ticket.countDocuments(filter);
 
     res.json({
-      tickets,
+      success: true,
+      data: tickets,
+      count: tickets.length,
       totalPages: Math.ceil(total / Number(limit)),
       currentPage: Number(page),
       total,
@@ -70,21 +78,20 @@ export const createTicket = async (req, res) => {
     // Optional user authentication logic - only apply if req.user exists
     if (req.user) {
       const { userId, clientId, memberId, loginType } = req.user;
-      
+
       if (loginType === "client" && clientId) {
         const Client = (await import("../models/clientModel.js")).default;
         const client = await Client.findById(clientId).select("building");
-        
+
         if (client && client.building) {
           ticketData.building = client.building;
           ticketData.client = clientId;
           ticketData.createdBy = null;
         }
-        
       } else if (loginType === "member" && memberId) {
         const Member = (await import("../models/memberModel.js")).default;
         const member = await Member.findById(memberId).populate("client", "building");
-        
+
         if (member && member.client && member.client.building) {
           ticketData.building = member.client.building;
           ticketData.client = member.client._id;
@@ -102,9 +109,28 @@ export const createTicket = async (req, res) => {
       .populate("createdBy", "firstName lastName phone")
       .populate({ path: "category.categoryId", select: "name description subCategories" });
 
-    res.status(201).json(populated);
+    // Log activity
+    await logCRUDActivity(req, "CREATE", "Ticket", ticket._id, null, {
+      title: ticketData.subject,
+      priority: ticketData.priority,
+      categoryId: ticketData.category,
+      clientId: ticketData.client,
+      memberId: ticketData.member,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Ticket created successfully",
+      data: populated,
+    });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error("Error creating ticket:", error);
+    await logErrorActivity(req, error, "Ticket Creation");
+    res.status(500).json({
+      success: false,
+      message: "Failed to create ticket",
+      error: error.message,
+    });
   }
 };
 
@@ -152,8 +178,31 @@ export const updateTicket = async (req, res) => {
       .populate("createdBy", "firstName lastName phone")
       .populate({ path: "category.categoryId", select: "name description subCategories" });
 
+    // Log activity with proper ticket details
+    await logCRUDActivity(req, "UPDATE", "Ticket", ticket._id, {
+      before: {
+        subject: currentTicket.subject,
+        status: currentTicket.status,
+        priority: currentTicket.priority,
+        assignedTo: currentTicket.assignedTo
+      },
+      after: {
+        subject: ticket.subject,
+        status: ticket.status,
+        priority: ticket.priority,
+        assignedTo: ticket.assignedTo
+      }
+    }, {
+      ticketId: ticket.ticketId,
+      subject: ticket.subject,
+      statusChange: currentTicket.status !== ticket.status ? `${currentTicket.status} → ${ticket.status}` : null,
+      assignmentChange: String(currentTicket.assignedTo) !== String(ticket.assignedTo)
+    });
+
     res.json(ticket);
   } catch (error) {
+    console.error("Error updating ticket:", error);
+    await logErrorActivity(req, error, "Ticket Update");
     res.status(400).json({ error: error.message });
   }
 };

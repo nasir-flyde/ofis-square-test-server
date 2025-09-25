@@ -1,5 +1,6 @@
 import Building from "../models/buildingModel.js";
 import imagekit from "../utils/imageKit.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
@@ -48,11 +49,20 @@ export const createBuilding = async (req, res) => {
       totalFloors,
       amenities,
       status,
-      pricing,
-      photos: processedPhotos
+      pricing: pricing || {},
+      photos: processedPhotos,
+      openSpacePricing: req.body.openSpacePricing || 500
     });
 
-    return res.status(201).json({ success: true, data: building });
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Building', building._id, null, {
+      buildingName: name,
+      location: `${city}, ${state}`,
+      totalFloors,
+      photosCount: processedPhotos.length
+    });
+
+    res.status(201).json({ success: true, data: building });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -65,8 +75,9 @@ export const getBuildings = async (req, res) => {
     if (status) filter.status = status;
     if (city) filter.city = city;
 
-    const buildings = await Building.find(filter).sort({ createdAt: -1 });
-    return res.json({ success: true, data: buildings });
+    const buildings = await Building.find().sort({ createdAt: -1 });
+    
+    res.json({ success: true, data: buildings });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -81,7 +92,7 @@ export const getBuildingById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
     
-    return res.json({ success: true, data: building });
+    res.json({ success: true, data: building });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -92,6 +103,7 @@ export const updateBuilding = async (req, res) => {
     const { id } = req.params;
     const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing } = req.body || {};
 
+    const oldBuilding = await Building.findById(id);
     const building = await Building.findByIdAndUpdate(
       id,
       {
@@ -113,7 +125,17 @@ export const updateBuilding = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
 
-    return res.json({ success: true, data: building });
+    // Log activity with changes
+    await logCRUDActivity(req, 'UPDATE', 'Building', id, {
+      before: oldBuilding?.toObject(),
+      after: building.toObject(),
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing })
+    }, {
+      buildingName: building.name,
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing })
+    });
+
+    res.json({ success: true, data: building });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -128,7 +150,13 @@ export const deleteBuilding = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
 
-    return res.json({ success: true, message: "Building deleted successfully" });
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'Building', id, null, {
+      buildingName: building.name,
+      location: `${building.city}, ${building.state}`
+    });
+
+    res.json({ success: true, message: "Building deleted successfully" });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

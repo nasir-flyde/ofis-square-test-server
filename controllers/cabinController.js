@@ -3,6 +3,7 @@ import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Desk from "../models/deskModel.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const getCabins = async (req, res) => {
   try {
@@ -65,8 +66,17 @@ export const createCabin = async (req, res) => {
       });
     }
 
+    await logCRUDActivity(req, 'CREATE', 'Cabin', cabin._id, null, {
+      building,
+      floor,
+      number,
+      type,
+      capacity
+    });
+
     return res.status(201).json({ success: true, data: cabin });
   } catch (error) {
+    await logErrorActivity(req, 'CREATE', 'Cabin', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -108,8 +118,14 @@ export const allocateCabin = async (req, res) => {
     cabin.releasedAt = undefined;
     await cabin.save();
 
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, {
+      clientId,
+      cabinId
+    });
+
     return res.json({ success: true, message: "Cabin allocated successfully", data: { cabin } });
   } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -175,8 +191,18 @@ export const updateCabin = async (req, res) => {
      .populate("allocatedTo", "companyName contactPerson phone email")
      .populate("contract", "startDate endDate status");
 
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, {
+      building,
+      floor,
+      number,
+      type,
+      capacity,
+      status
+    });
+
     return res.json({ success: true, data: cabin });
   } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -195,8 +221,11 @@ export const deleteCabin = async (req, res) => {
     }
 
     await Cabin.findByIdAndDelete(id);
+    await logCRUDActivity(req, 'DELETE', 'Cabin', id, null, null);
+
     return res.json({ success: true, message: "Cabin deleted successfully" });
   } catch (error) {
+    await logErrorActivity(req, 'DELETE', 'Cabin', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -217,8 +246,13 @@ export const releaseCabin = async (req, res) => {
     cabin.releasedAt = new Date();
     await cabin.save();
 
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, {
+      status: 'available'
+    });
+
     return res.json({ success: true, message: "Cabin released successfully", data: cabin });
   } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

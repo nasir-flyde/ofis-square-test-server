@@ -21,6 +21,15 @@ const clientMiddleware = (req, res, next) => {
         // Attach minimal role info for downstream handlers
         if (roleName && !req.userRole) req.userRole = { roleName };
         if (decoded?.clientId) req.clientId = decoded.clientId;
+        // Attach a minimal req.user so other middlewares (activity logger) can read userId
+        if (!req.user && decoded?.id) {
+          req.user = {
+            _id: decoded.id,
+            name: decoded.name || undefined,
+            email: decoded.email || undefined,
+            roleName: roleName || undefined,
+          };
+        }
       } catch (e) {
         return res.status(401).json({ error: "Unauthorized" });
       }

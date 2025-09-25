@@ -1,7 +1,8 @@
-import Users from "../models/userModel.js";
+import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Building from "../models/buildingModel.js";
 import bcrypt from "bcryptjs";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import mongoose from "mongoose";
 
 // GET /api/users - Get all users with optional filters
@@ -21,7 +22,7 @@ export const getUsers = async (req, res) => {
 
     const skip = (page - 1) * limit;
     
-    const users = await Users.find(filter)
+    const users = await User.find(filter)
       .populate('role', 'roleName permissions')
       .populate('buildingId', 'name address')
       .select('-password')
@@ -29,7 +30,9 @@ export const getUsers = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit));
 
-    const total = await Users.countDocuments(filter);
+    const total = await User.countDocuments(filter);
+
+    // Manual logging removed - handled by middleware for non-GET requests only
 
     return res.json({
       success: true,
@@ -48,7 +51,7 @@ export const getUsers = async (req, res) => {
 
 export const getUserById = async (req, res) => {
   try {
-    const user = await Users.findById(req.params.id)
+    const user = await User.findById(req.params.id)
       .populate('role', 'roleName permissions')
       .populate('buildingId', 'name address')
       .select('-password');
@@ -56,6 +59,8 @@ export const getUserById = async (req, res) => {
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
+
+    // Manual logging removed - handled by middleware for non-GET requests only
 
     return res.json({ success: true, data: user });
   } catch (err) {
@@ -65,7 +70,7 @@ export const getUserById = async (req, res) => {
 
 export const createUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, buildingId } = req.body;
+    const { name, email, phone, password, role, buildingId, isActive } = req.body;
 
     // Validate required fields
     if (!name || !email || !phone || !password || !role) {
@@ -111,7 +116,7 @@ export const createUser = async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await Users.findOne({
+    const existingUser = await User.findOne({
       $or: [{ email }, { phone }]
     });
 
@@ -127,32 +132,30 @@ export const createUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // Create new user
-    const userData = {
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      phone: phone.trim(),
+    const user = await User.create({
+      name,
+      email,
+      phone,
       password: hashedPassword,
-      role
-    };
+      role: role,
+      isActive: isActive !== undefined ? isActive : true
+    });
 
-    // Add buildingId for community users
-    if (roleDoc.roleName === "community" && buildingId) {
-      userData.buildingId = buildingId;
-    }
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'User', user._id, null, {
+      userName: name,
+      email,
+      roleId: role
+    });
 
-    const newUser = new Users(userData);
-    const savedUser = await newUser.save();
-    
-    // Populate role and building, exclude password
-    const populatedUser = await Users.findById(savedUser._id)
-      .populate('role', 'roleName permissions')
-      .populate('buildingId', 'name address')
-      .select('-password');
+    // Remove password from response
+    const userResponse = user.toObject();
+    delete userResponse.password;
 
     return res.status(201).json({
       success: true,
-      message: "User created successfully",
-      data: populatedUser
+      message: 'User created successfully',
+      data: userResponse
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -169,10 +172,10 @@ export const createUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { name, email, phone, password, role, buildingId } = req.body;
-    const userId = req.params.id;
+    const id = req.params.id;
 
     // Check if user exists
-    const existingUser = await Users.findById(userId);
+    const existingUser = await User.findById(id);
     if (!existingUser) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
@@ -180,7 +183,7 @@ export const updateUser = async (req, res) => {
     // Check for duplicate email/phone (excluding current user)
     if (email || phone) {
       const duplicateQuery = {
-        _id: { $ne: userId },
+        _id: { $ne: id },
         $or: []
       };
       
@@ -188,7 +191,7 @@ export const updateUser = async (req, res) => {
       if (phone) duplicateQuery.$or.push({ phone: phone.trim() });
       
       if (duplicateQuery.$or.length > 0) {
-        const duplicate = await Users.findOne(duplicateQuery);
+        const duplicate = await User.findOne(duplicateQuery);
         if (duplicate) {
           return res.status(400).json({ 
             success: false, 
@@ -241,16 +244,36 @@ export const updateUser = async (req, res) => {
     }
 
     // Update user
-    const updatedUser = await Users.findByIdAndUpdate(
-      userId,
+    const oldUser = await User.findById(id);
+    const user = await User.findByIdAndUpdate(
+      id,
       updateData,
       { new: true, runValidators: true }
-    ).populate('role', 'roleName permissions').populate('buildingId', 'name address').select('-password');
+    )
+      .populate('role', 'roleName description')
+      .select('-password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'User', id, {
+      before: oldUser ? { ...oldUser.toObject(), password: '[HIDDEN]' } : null,
+      after: { ...user.toObject(), password: '[HIDDEN]' },
+      fields: Object.keys(updateData)
+    }, {
+      userName: user.name,
+      updatedFields: Object.keys(updateData)
+    });
 
     return res.json({
       success: true,
-      message: "User updated successfully",
-      data: updatedUser
+      message: 'User updated successfully',
+      data: user
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -266,23 +289,30 @@ export const updateUser = async (req, res) => {
 // DELETE /api/users/:id - Delete user
 export const deleteUser = async (req, res) => {
   try {
-    const user = await Users.findById(req.params.id);
-    
+    const user = await User.findByIdAndDelete(req.params.id);
+
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
     }
 
-    await Users.findByIdAndDelete(req.params.id);
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'User', user._id, null, {
+      userName: user.name,
+      email: user.email
+    });
 
-    return res.json({ 
-      success: true, 
-      message: "User deleted successfully",
-      deletedUserId: req.params.id 
+    return res.json({
+      success: true,
+      message: 'User deleted successfully'
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 };
+
 export const getStaffUsers = async (req, res) => {
   try {
     const { page = 1, limit = 20, search } = req.query;
@@ -306,18 +336,19 @@ export const getStaffUsers = async (req, res) => {
     const parsedPage = parseInt(page);
     const skip = (parsedPage - 1) * parsedLimit;
 
-    const users = await Users.find(filter)
-      .populate('role', 'roleName permissions')
+    const users = await User.find(filter)
+      .populate('role', 'roleName description')
       .select('-password')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parsedLimit);
+      .sort({ createdAt: -1 });
 
-    const total = await Users.countDocuments(filter);
+    // Manual logging removed - handled by middleware for non-GET requests only
+
+    const total = await User.countDocuments(filter);
 
     return res.json({
       success: true,
       data: users,
+      count: users.length,
       pagination: {
         page: parsedPage,
         limit: parsedLimit,

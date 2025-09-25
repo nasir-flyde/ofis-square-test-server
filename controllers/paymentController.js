@@ -11,6 +11,7 @@ import CreditTransaction from "../models/creditTransactionModel.js";
 import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceService.js";
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
+import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -73,8 +74,17 @@ export const createPayment = async (req, res) => {
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
 
+    // Log payment activity
+    await logPaymentActivity(req, 'PAYMENT_MADE', 'Payment', payment._id, {
+      invoiceId,
+      amount: Number(amount),
+      paymentType: type,
+      referenceNumber
+    });
+
     return res.status(201).json({ success: true, data: { payment, invoice: updatedInvoice } });
   } catch (error) {
+    await logErrorActivity(req, error, 'Create Payment');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -98,8 +108,16 @@ export const deletePayment = async (req, res) => {
 
     await Payment.findByIdAndDelete(id);
 
+    // Log payment deletion
+    await logCRUDActivity(req, 'DELETE', 'Payment', id, null, {
+      invoiceId: payment.invoice,
+      amount: payment.amount,
+      paymentType: payment.type
+    });
+
     return res.json({ success: true, message: "Payment deleted successfully", deletedPaymentId: id });
   } catch (error) {
+    await logErrorActivity(req, error, 'Delete Payment');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -125,6 +143,7 @@ export const getPayments = async (req, res) => {
 
     return res.json({ success: true, data: payments });
   } catch (error) {
+    await logErrorActivity(req, error, 'Get Payments');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -139,6 +158,7 @@ export const getPaymentById = async (req, res) => {
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     return res.json({ success: true, data: payment });
   } catch (error) {
+    await logErrorActivity(req, error, 'Get Payment by ID');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -183,6 +203,7 @@ export const getClientPayments = async (req, res) => {
     });
   } catch (err) {
     console.error("getClientPayments error:", err);
+    await logErrorActivity(req, err, 'Get Client Payments');
     return res.status(500).json({ error: "Failed to fetch client payments" });
   }
 };
@@ -537,6 +558,15 @@ export const recordCustomerPayment = async (req, res) => {
       await updateInvoiceAfterZohoPayment(inv.invoiceId, inv.amount_applied);
     }
 
+    // Log payment activity
+    await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
+      zohoPaymentId: zohoData.payment?.payment_id,
+      clientId,
+      amount: Number(amount),
+      invoiceCount: invoices.length,
+      paymentMode: payment_mode
+    });
+
     return res.status(201).json({
       success: true,
       message: 'Payment recorded successfully in Zoho Books',
@@ -548,6 +578,7 @@ export const recordCustomerPayment = async (req, res) => {
 
   } catch (error) {
     console.error('recordCustomerPayment error:', error);
+    await logErrorActivity(req, error, 'Record Customer Payment');
     return res.status(500).json({
       success: false,
       message: error.message || 'Failed to record customer payment'
@@ -609,6 +640,7 @@ export const listCustomerPayments = async (req, res) => {
 
   } catch (error) {
     console.error('listCustomerPayments error:', error);
+    await logErrorActivity(req, error, 'List Customer Payments');
     return res.status(500).json({
       success: false,
       message: error.message || 'Failed to list customer payments'
@@ -676,6 +708,7 @@ export const createRazorpayOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("createRazorpayOrder error:", error);
+    await logErrorActivity(req, error, 'Create Razorpay Order');
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -761,6 +794,14 @@ export const handleRazorpaySuccess = async (req, res) => {
     const payment = new Payment(paymentData);
     await payment.save();
 
+    // Log payment activity
+    await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
+      razorpayPaymentId: razorpay_payment_id,
+      amount: amount / 100,
+      itemType: dayPassId ? 'daypass' : 'bundle',
+      itemId: dayPassId || bundleId
+    });
+
     // Update item status to issued and create visitor records
     if (bundleId) {
       // For bundles, get all associated day passes and issue them
@@ -801,6 +842,7 @@ export const handleRazorpaySuccess = async (req, res) => {
   } catch (error) {
     console.error("handleRazorpaySuccess error:", error);
     console.error("Error stack:", error.stack);
+    await logErrorActivity(req, error, 'Handle Razorpay Success');
     res.status(500).json({ 
       error: "Internal Server Error",
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -851,6 +893,7 @@ export const handleRazorpayWebhook = async (req, res) => {
     res.status(200).json({ status: 'received' });
   } catch (error) {
     console.error('Razorpay webhook error:', error);
+    await logErrorActivity(req, error, 'Razorpay Webhook');
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 };

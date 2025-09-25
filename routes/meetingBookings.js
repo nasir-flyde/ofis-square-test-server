@@ -10,6 +10,8 @@ const router = express.Router();
 // Booking CRUD
 router.get("/",listBookings);
 router.post("/", authMiddleware,createBooking);
+// Client access to create bookings
+router.post("/client", clientMiddleware, createBooking);
 router.patch("/:id/cancel", authMiddleware, cancelBooking);
 
 // Reports

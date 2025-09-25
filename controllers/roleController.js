@@ -1,4 +1,5 @@
 import Role from "../models/roleModel.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // Temporary safeguard: remove legacy unique index on roleId if present
 const removeLegacyRoleIdIndexIfAny = async () => {
@@ -34,10 +35,21 @@ export const createRole = async (req, res) => {
     const role = await Role.create({
       roleName,
       description,
-      ...(canLogin !== undefined && { canLogin }),
-      ...(Array.isArray(permissions) && { permissions }),
+      permissions,
+      canLogin: canLogin !== undefined ? canLogin : true
     });
-    return res.status(201).json({ message: "Role created", role });
+
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Role', role._id, null, {
+      roleName,
+      permissions: permissions?.length || 0
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Role created successfully',
+      data: role
+    });
   } catch (err) {
     // Fallback: if creation failed due to legacy roleId index, try to drop and retry once
     if (err?.code === 11000 && err?.keyPattern?.roleId) {
@@ -47,16 +59,31 @@ export const createRole = async (req, res) => {
         const role = await Role.create({
           roleName,
           description,
-          ...(canLogin !== undefined && { canLogin }),
-          ...(Array.isArray(permissions) && { permissions }),
+          permissions,
+          canLogin: canLogin !== undefined ? canLogin : true
         });
-        return res.status(201).json({ message: "Role created", role, note: "Dropped legacy roleId index" });
+
+        // Log activity
+        await logCRUDActivity(req, 'CREATE', 'Role', role._id, null, {
+          roleName,
+          permissions: permissions?.length || 0
+        });
+
+        res.status(201).json({
+          success: true,
+          message: 'Role created successfully',
+          data: role
+        });
       } catch (innerErr) {
         console.error("createRole retry error:", innerErr);
       }
     }
     console.error("createRole error:", err);
-    return res.status(500).json({ error: "Internal Server Error" });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create role',
+      error: err.message
+    });
   }
 };
 
@@ -65,9 +92,14 @@ export const getRoles = async (req, res) => {
   try {
     const roles = await Role.find().sort({ createdAt: -1 });
     return res.json(roles);
-  } catch (err) {
-    console.error("getRoles error:", err);
-    return res.status(500).json({ error: "Failed to fetch roles" });
+  } catch (error) {
+    console.error('Error creating role:', error);
+    await logErrorActivity(req, error, 'Role Creation');
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create role',
+      error: error.message
+    });
   }
 };
 
@@ -80,7 +112,11 @@ export const getRoleById = async (req, res) => {
     return res.json(role);
   } catch (err) {
     console.error("getRoleById error:", err);
-    return res.status(500).json({ error: "Failed to fetch role" });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch role',
+      error: err.message
+    });
   }
 };
 
@@ -96,17 +132,43 @@ export const updateRole = async (req, res) => {
       if (conflict) return res.status(409).json({ error: "Another role with same roleName exists" });
     }
 
-    const updated = await Role.findByIdAndUpdate(
+    const oldRole = await Role.findById(id);
+    const role = await Role.findByIdAndUpdate(
       id,
-      { $set: { ...(roleName && { roleName }), ...(description !== undefined && { description }), ...(canLogin !== undefined && { canLogin }), ...(Array.isArray(permissions) && { permissions }) } },
-      { new: true }
+      { roleName, description, permissions, canLogin },
+      { new: true, runValidators: true }
     );
 
-    if (!updated) return res.status(404).json({ error: "Role not found" });
-    return res.json({ message: "Role updated", role: updated });
-  } catch (err) {
-    console.error("updateRole error:", err);
-    return res.status(500).json({ error: "Failed to update role" });
+    if (!role) {
+      return res.status(404).json({
+        success: false,
+        message: 'Role not found'
+      });
+    }
+
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Role', id, {
+      before: oldRole?.toObject(),
+      after: role.toObject(),
+      fields: ['roleName', 'description', 'permissions', 'canLogin']
+    }, {
+      roleName: role.roleName,
+      updatedFields: ['roleName', 'description', 'permissions', 'canLogin']
+    });
+
+    res.json({
+      success: true,
+      message: 'Role updated successfully',
+      data: role
+    });
+  } catch (error) {
+    console.error('Error updating role:', error);
+    await logErrorActivity(req, error, 'Role Update');
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update role',
+      error: error.message
+    });
   }
 };
 
@@ -114,11 +176,31 @@ export const updateRole = async (req, res) => {
 export const deleteRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await Role.findByIdAndDelete(id);
-    if (!deleted) return res.status(404).json({ error: "Role not found" });
-    return res.json({ message: "Role deleted" });
-  } catch (err) {
-    console.error("deleteRole error:", err);
-    return res.status(500).json({ error: "Failed to delete role" });
+    const role = await Role.findByIdAndDelete(id);
+
+    if (!role) {
+      return res.status(404).json({
+        success: false,
+        message: 'Role not found'
+      });
+    }
+
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'Role', id, null, {
+      roleName: role.roleName
+    });
+
+    res.json({
+      success: true,
+      message: 'Role deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting role:', error);
+    await logErrorActivity(req, error, 'Role Deletion');
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete role',
+      error: error.message
+    });
   }
 };

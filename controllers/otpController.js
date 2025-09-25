@@ -92,8 +92,6 @@ export const verifyOtpAndLogin = async (req, res) => {
     }
 
     const normalizedPhone = phone.replace(/\D/g, '');
-
-    // Find OTP record
     const otpRecord = await OTP.findOne({ 
       phone: normalizedPhone,
       expiresAt: { $gt: new Date() }
@@ -102,8 +100,6 @@ export const verifyOtpAndLogin = async (req, res) => {
     if (!otpRecord) {
       return res.status(400).json({ success: false, message: "OTP expired or not found" });
     }
-
-    // Check attempts
     if (otpRecord.attempts >= otpRecord.maxAttempts) {
       await OTP.deleteOne({ _id: otpRecord._id });
       return res.status(400).json({ success: false, message: "Too many failed attempts. Please request a new OTP" });

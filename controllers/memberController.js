@@ -1,7 +1,10 @@
 import Member from "../models/memberModel.js";
+import Building from "../models/buildingModel.js";
+import Cabin from "../models/cabinModel.js";
 import Client from "../models/clientModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // Create a new member
 export const createMember = async (req, res) => {
@@ -55,6 +58,11 @@ export const createMember = async (req, res) => {
       }
     }
 
+    const name = `${firstName} ${lastName || ''}`.trim();
+    const clientId = client || null;
+    const buildingId = null;
+    const cabinId = null;
+
     const member = await Member.create({
       firstName,
       lastName,
@@ -62,12 +70,26 @@ export const createMember = async (req, res) => {
       phone,
       companyName,
       role,
-      client,
-      status: status || "active",
+      client: clientId,
+      desk: null, // Will be assigned later when desk is allocated
+      status: 'active',
       user: createdUserId
     });
 
-    return res.status(201).json({ success: true, data: member });
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Member', member._id, null, {
+      memberName: name,
+      email,
+      clientId,
+      buildingId,
+      cabinId
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Member created successfully',
+      data: member
+    });
   } catch (err) {
     if (err.code === 11000) {
       return res.status(400).json({ success: false, message: "Email already exists" });
@@ -87,22 +109,15 @@ export const getMembers = async (req, res) => {
     const skip = (page - 1) * limit;
     
     const members = await Member.find(filter)
-      .populate('client', 'companyName contactPerson email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+      .populate('client', 'companyName contactPerson')
+      .populate('desk', 'number floor building')
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 });
 
-    const total = await Member.countDocuments(filter);
-
-    return res.json({
+    res.json({
       success: true,
       data: members,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      count: members.length
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -112,7 +127,10 @@ export const getMembers = async (req, res) => {
 // Get member by ID
 export const getMemberById = async (req, res) => {
   try {
-    const member = await Member.findById(req.params.id).populate('client', 'companyName contactPerson email');
+    const member = await Member.findById(req.params.id)
+      .populate('client', 'companyName contactPerson')
+      .populate('desk', 'number floor building')
+      .populate('user', 'name email');
     
     if (!member) {
       return res.status(404).json({ success: false, message: "Member not found" });
@@ -127,37 +145,41 @@ export const getMemberById = async (req, res) => {
 // Update member
 export const updateMember = async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, companyName, role, client, status, user } = req.body || {};
-    
-    // Validate client exists if provided
-    if (client) {
-      const clientExists = await Client.findById(client);
-      if (!clientExists) {
-        return res.status(404).json({ success: false, message: "Client not found" });
-      }
-    }
+    const id = req.params.id;
+    const updateData = req.body || {};
 
+    const oldMember = await Member.findById(id);
     const member = await Member.findByIdAndUpdate(
-      req.params.id,
-      {
-        firstName,
-        lastName,
-        email,
-        phone,
-        companyName,
-        role,
-        client,
-        status,
-        user
-      },
+      id,
+      updateData,
       { new: true, runValidators: true }
-    ).populate('client', 'companyName contactPerson email');
+    )
+      .populate('client', 'companyName contactPerson')
+      .populate('desk', 'number floor building')
+      .populate('user', 'name email');
 
     if (!member) {
-      return res.status(404).json({ success: false, message: "Member not found" });
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found'
+      });
     }
 
-    return res.json({ success: true, data: member });
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Member', id, {
+      before: oldMember?.toObject(),
+      after: member.toObject(),
+      fields: Object.keys(updateData)
+    }, {
+      memberName: member.name,
+      updatedFields: Object.keys(updateData)
+    });
+
+    res.json({
+      success: true,
+      message: 'Member updated successfully',
+      data: member
+    });
   } catch (err) {
     if (err.code === 11000) {
       return res.status(400).json({ success: false, message: "Email already exists" });
@@ -169,13 +191,26 @@ export const updateMember = async (req, res) => {
 // Delete member
 export const deleteMember = async (req, res) => {
   try {
-    const member = await Member.findByIdAndDelete(req.params.id);
-    
+    const id = req.params.id;
+    const member = await Member.findByIdAndDelete(id);
+
     if (!member) {
-      return res.status(404).json({ success: false, message: "Member not found" });
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found'
+      });
     }
 
-    return res.json({ success: true, message: "Member deleted successfully" });
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'Member', id, null, {
+      memberName: member.name,
+      email: member.email
+    });
+
+    res.json({
+      success: true,
+      message: 'Member deleted successfully'
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

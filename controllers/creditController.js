@@ -6,6 +6,7 @@ import Contract from "../models/contractModel.js";
 import CreditCustomItem from "../models/creditCustomItemModel.js";
 import Invoice from "../models/invoiceModel.js";
 import { previewCreditPurchaseInvoice } from "../services/invoiceService.js";
+import { logActivity } from "../utils/activityLogger.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import mongoose from "mongoose";
 
@@ -142,7 +143,25 @@ export const consumeCreditsForItem = async (req, res) => {
     );
     
     const newBalance = currentBalance - creditsToConsume;
-    
+
+    // Activity log: credits consumed
+    await logActivity({
+      req,
+      action: 'UPDATE',
+      entity: 'Credits',
+      entityId: contract.client?._id || clientId,
+      description: `Consumed ${creditsToConsume} credits for ${item.name}`,
+      metadata: {
+        transactionId: transaction._id,
+        clientId,
+        itemId: item._id,
+        quantity,
+        creditsToConsume,
+        balanceBefore: currentBalance,
+        balanceAfter: newBalance
+      }
+    });
+
     return res.json({
       success: true,
       message: `Successfully consumed ${creditsToConsume} credits for ${item.name}`,
@@ -378,6 +397,21 @@ export const grantCredits = async (req, res) => {
     );
 
     console.log(`Granted ${credits} credits to client ${clientId} (wallet only, no invoice)`);
+
+    // Activity log: credits granted
+    await logActivity({
+      req,
+      action: 'CREATE',
+      entity: 'Credits',
+      entityId: clientId,
+      description: `Granted ${credits} credits to client`,
+      metadata: {
+        transactionId: transaction._id,
+        clientId,
+        creditsGranted: credits,
+        creditValue
+      }
+    });
     
     return res.json({
       success: true,
@@ -674,6 +708,24 @@ export const recordCreditTransaction = async (req, res) => {
         { upsert: true }
       );
     }
+
+    // Activity log: generic credit transaction
+    await logActivity({
+      req,
+      action: creditsDelta < 0 ? 'UPDATE' : 'CREATE',
+      entity: 'Credits',
+      entityId: clientId,
+      description: `${creditsDelta < 0 ? 'Consumed' : 'Added'} ${Math.abs(creditsDelta)} credits via ${transactionType}`,
+      metadata: {
+        transactionId: transaction._id,
+        clientId,
+        itemId,
+        transactionType,
+        creditsDelta,
+        amountINRDelta,
+        itemName: finalItemSnapshot.name
+      }
+    });
 
     return res.status(201).json({
       success: true,

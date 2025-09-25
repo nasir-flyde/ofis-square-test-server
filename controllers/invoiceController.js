@@ -1,12 +1,13 @@
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
-import Building from "../models/buildingModel.js";
-import Cabin from "../models/cabinModel.js";
 import Payment from "../models/paymentModel.js";
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import { getValidAccessToken } from "../utils/zohoTokenManager.js";
+import axios from "axios";
+import { logCRUDActivity, logPaymentActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
-import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import {
   createZohoInvoiceFromLocal,
   getZohoInvoice,
@@ -62,23 +63,19 @@ function computeTotals(payload) {
 export const createInvoice = async (req, res) => {
   try {
     const body = req.body || {};
-    const { client, contract, building, cabin, billingPeriod, issueDate, dueDate, notes, meta } = body;
+    const { client, contract, billingPeriod, issueDate, dueDate, notes, meta } = body;
 
     if (!client) return res.status(400).json({ success: false, message: "client is required" });
     if (!billingPeriod || !billingPeriod.start || !billingPeriod.end) {
       return res.status(400).json({ success: false, message: "billingPeriod.start and billingPeriod.end are required" });
     }
 
-    const [clientDoc, contractDoc, buildingDoc, cabinDoc] = await Promise.all([
+    const [clientDoc, contractDoc] = await Promise.all([
       Client.findById(client),
       contract ? Contract.findById(contract) : Promise.resolve(null),
-      building ? Building.findById(building) : Promise.resolve(null),
-      cabin ? Cabin.findById(cabin) : Promise.resolve(null),
     ]);
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
     if (contract && !contractDoc) return res.status(404).json({ success: false, message: "Contract not found" });
-    if (building && !buildingDoc) return res.status(404).json({ success: false, message: "Building not found" });
-    if (cabin && !cabinDoc) return res.status(404).json({ success: false, message: "Cabin not found" });
 
     const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
@@ -89,8 +86,6 @@ export const createInvoice = async (req, res) => {
       invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
-      building: building || undefined,
-      cabin: cabin || undefined,
       date: issueDate ? new Date(issueDate) : new Date(),
       due_date: dueDate ? new Date(dueDate) : undefined,
       billing_period: {
@@ -98,7 +93,7 @@ export const createInvoice = async (req, res) => {
         end: new Date(billingPeriod.end),
       },
 
-      line_items: totals.items.map(item => ({
+      line_items: totals.items.map((item) => ({
         description: item.description,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
@@ -106,9 +101,9 @@ export const createInvoice = async (req, res) => {
         name: item.description,
         rate: item.unitPrice,
         unit: "nos",
-        item_total: item.amount
+        item_total: item.amount,
       })),
-      
+
       sub_total: totals.subtotal,
       tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
@@ -130,24 +125,29 @@ export const createInvoice = async (req, res) => {
           state: clientDoc.billingAddress.state,
           zip: clientDoc.billingAddress.zip,
           country: clientDoc.billingAddress.country || "IN",
-          phone: clientDoc.phone
-        }
+          phone: clientDoc.phone,
+        },
       }),
-
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: clientDoc.gstNo,
-      
       ...(meta ? { meta } : {}),
     };
 
     const invoice = await Invoice.create(invoiceData);
-    
+
+    // Log activity
+    await logCRUDActivity(req, "CREATE", "Invoice", invoice._id, null, {
+      invoiceNumber: invoice.invoice_number,
+      clientId: invoice.client,
+      totalAmount: invoice.total,
+    });
+
     console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}`);
     try {
       if (clientDoc.zohoBooksContactId) {
         const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
         const invoiceData = zohoResponse.invoice || zohoResponse;
-        
+
         if (invoiceData && invoiceData.invoice_id) {
           invoice.zoho_invoice_id = invoiceData.invoice_id;
           invoice.zoho_invoice_number = invoiceData.invoice_number;
@@ -155,7 +155,7 @@ export const createInvoice = async (req, res) => {
           invoice.zoho_pdf_url = invoiceData.pdf_url;
           invoice.invoice_url = invoiceData.invoice_url;
           await invoice.save();
-          
+
           console.log(`Pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
         } else {
           console.warn(`Zoho Books did not return invoice_id for invoice ${invoice._id}`);
@@ -172,57 +172,51 @@ export const createInvoice = async (req, res) => {
     if (error && error.code === 11000) {
       return res.status(409).json({ success: false, message: "Duplicate local invoice number or Zoho invoice ID" });
     }
+    await logErrorActivity(req, error, "Invoice Creation");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-function getFonts() {
-  return {
-    Helvetica: {
-      normal: 'Helvetica',
-      bold: 'Helvetica-Bold',
-      italics: 'Helvetica-Oblique',
-      bolditalics: 'Helvetica-BoldOblique'
-    }
-  };
-}
-
 export const downloadInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;
-    const invoice = await Invoice.findById(id)
-      .populate('client', 'companyName contactPerson email phone companyAddress')
-      .lean();
+    const invoice = await Invoice.findById(id).populate("client", "companyName email");
 
-    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: "Invoice not found" });
+    }
 
     const data = {
-      invoiceNumber: invoice.invoiceNumber,
-      issueDate: invoice.issueDate,
-      dueDate: invoice.dueDate,
+      invoiceNumber: invoice.invoice_number,
+      issueDate: invoice.date,
+      dueDate: invoice.due_date,
       client: invoice.client || {},
-      billingPeriod: invoice.billingPeriod || {},
-      items: invoice.items || [],
-      subtotal: invoice.subtotal || 0,
-      discount: invoice.discount || { type: 'flat', value: 0, amount: 0 },
+      billingPeriod: invoice.billing_period || {},
+      items: invoice.line_items || [],
+      subtotal: invoice.sub_total || 0,
+      discount: invoice.discount || { type: "flat", value: 0, amount: 0 },
       taxes: invoice.taxes || [],
       total: invoice.total || 0,
-      amountPaid: invoice.amountPaid || 0,
-      balanceDue: invoice.balanceDue || 0,
-      notes: invoice.notes || ''
+      amountPaid: invoice.amount_paid || 0,
+      balanceDue: invoice.balance || 0,
+      notes: invoice.notes || "",
     };
 
     const docDefinition = getInvoiceTemplate(data);
     const printer = new PdfPrinter(getFonts());
-    const pdfDoc = printer.createPdfKitDocument(docDefinition, { defaultStyle: { font: 'Helvetica' } });
+    const pdfDoc = printer.createPdfKitDocument(docDefinition, { defaultStyle: { font: "Helvetica" } });
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="invoice_${invoice.invoiceNumber || id}.pdf"`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="invoice_${invoice.invoice_number || id}.pdf"`
+    );
 
     pdfDoc.pipe(res);
     pdfDoc.end();
   } catch (error) {
-    console.error('downloadInvoicePdf error:', error);
+    console.error("downloadInvoicePdf error:", error);
+    await logErrorActivity(req, error, "Download Invoice PDF");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -233,11 +227,11 @@ export const pushInvoiceToZoho = async (req, res) => {
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (invoice.zoho_invoice_id) {
-      return res.json({ 
-        success: true, 
-        data: invoice, 
+      return res.json({
+        success: true,
+        data: invoice,
         message: "Invoice already linked to Zoho Books",
-        zoho_invoice_id: invoice.zoho_invoice_id
+        zoho_invoice_id: invoice.zoho_invoice_id,
       });
     }
 
@@ -246,9 +240,10 @@ export const pushInvoiceToZoho = async (req, res) => {
       message: "Manual push deprecated. Invoice will be automatically created in Zoho Books during payment processing.",
       recommendation: "Use POST /api/payments/zoho-customer-payment to record payments - invoices are auto-created in Zoho.",
       invoice_id: invoice._id,
-      invoice_number: invoice.invoice_number
+      invoice_number: invoice.invoice_number,
     });
   } catch (error) {
+    await logErrorActivity(req, error, "Push Invoice to Zoho");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -263,11 +258,19 @@ export const sendInvoiceEmail = async (req, res) => {
 
     const payload = { to: to || invoice?.client?.email, subject, body: customMessage };
     const resp = await sendZohoInvoiceEmail(invoice.zoho_invoice_id, payload);
-    invoice.sentAt = new Date();
-    invoice.zohoStatus = "sent";
+    invoice.sent_at = new Date();
+    invoice.zoho_status = "sent";
     await invoice.save();
+
+    // Log system activity for Zoho integration
+    await logSystemActivity("INVOICE_SENT", "Invoice", invoice._id, `Invoice ${invoice.invoice_number} sent to Zoho Books`, {
+      zohoInvoiceId: invoice.zoho_invoice_id,
+      totalAmount: invoice.total,
+    });
+
     return res.json({ success: true, data: invoice, zoho: resp });
   } catch (error) {
+    await logErrorActivity(req, error, "Send Invoice Email");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -281,19 +284,20 @@ export const syncInvoiceFromZoho = async (req, res) => {
 
     const zInv = await getZohoInvoice(invoice.zoho_invoice_id);
     if (zInv) {
-      invoice.zohoStatus = zInv.status || zInv.status_formatted || invoice.zohoStatus;
-      invoice.zohoPdfUrl = zInv.pdf_url || invoice.zohoPdfUrl;
-      invoice.invoiceUrl = zInv.invoice_url || invoice.invoiceUrl;
+      invoice.zoho_status = zInv.status || zInv.status_formatted || invoice.zoho_status;
+      invoice.zoho_pdf_url = zInv.pdf_url || invoice.zoho_pdf_url;
+      invoice.invoice_url = zInv.invoice_url || invoice.invoice_url;
       if (typeof zInv.balance === "number" && typeof zInv.total === "number") {
-        invoice.amountPaid = Math.max(0, Number(zInv.total) - Number(zInv.balance));
-        invoice.balanceDue = Number(zInv.balance);
-        if (invoice.balanceDue === 0) invoice.paidAt = invoice.paidAt || new Date();
-        invoice.status = invoice.balanceDue === 0 ? "paid" : invoice.status;
+        invoice.amount_paid = Math.max(0, Number(zInv.total) - Number(zInv.balance));
+        invoice.balance = Number(zInv.balance);
+        if (invoice.balance === 0) invoice.paid_at = invoice.paid_at || new Date();
+        invoice.status = invoice.balance === 0 ? "paid" : invoice.status;
       }
       await invoice.save();
     }
     return res.json({ success: true, data: invoice, zoho: zInv });
   } catch (error) {
+    await logErrorActivity(req, error, "Sync Invoice from Zoho");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -308,6 +312,7 @@ export const getInvoicePdf = async (req, res) => {
     const url = await getZohoInvoicePdfUrl(invoice.zoho_invoice_id);
     return res.json({ success: true, data: { pdfUrl: url } });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoice PDF");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -323,17 +328,26 @@ export const recordInvoicePayment = async (req, res) => {
     if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
     const payment = await recordZohoPayment(invoice.zoho_invoice_id, { amount, date, payment_mode, reference_number });
-    invoice.amountPaid = Number(invoice.amountPaid || 0) + Number(amount);
-    invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
-    if (invoice.balanceDue === 0) {
+    invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(amount);
+    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+    if (invoice.balance === 0) {
       invoice.status = "paid";
-      invoice.paidAt = new Date();
+      invoice.paid_at = new Date();
     }
     invoice.paymentId = payment?.payment_id || invoice.paymentId;
     await invoice.save();
 
+    // Log payment activity
+    await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {
+      paymentId: payment?.payment_id,
+      amount,
+      paymentMode: payment_mode,
+      referenceNumber: reference_number,
+    });
+
     return res.json({ success: true, data: invoice, zoho: payment });
   } catch (error) {
+    await logErrorActivity(req, error, "Record Invoice Payment");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -349,18 +363,18 @@ export const zohoWebhook = async (req, res) => {
     if (event === "invoice_created" && data.invoice) {
       const zohoInvoiceId = data.invoice.invoice_id;
       const zohoInvoiceNumber = data.invoice.invoice_number;
-      
+
       if (zohoInvoiceId) {
         // Check if we already have this invoice
         const existingInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
-        
+
         if (!existingInvoice) {
           // Create new invoice from Zoho data
           const newInvoice = await Invoice.create({
             invoice_number: zohoInvoiceNumber,
             zoho_invoice_id: zohoInvoiceId,
             zoho_invoice_number: zohoInvoiceNumber,
-            source: 'webhook',
+            source: "webhook",
             customer_id: data.invoice.customer_id,
             date: new Date(data.invoice.date),
             due_date: data.invoice.due_date ? new Date(data.invoice.due_date) : undefined,
@@ -370,21 +384,21 @@ export const zohoWebhook = async (req, res) => {
             total: data.invoice.total || 0,
             balance: data.invoice.balance || data.invoice.total || 0,
             amount_paid: data.invoice.amount_paid || 0,
-            status: data.invoice.status === 'paid' ? 'paid' : 'issued',
-            currency_code: data.invoice.currency_code || 'INR',
-            notes: data.invoice.notes || '',
-            line_items: (data.invoice.line_items || []).map(item => ({
+            status: data.invoice.status === "paid" ? "paid" : "issued",
+            currency_code: data.invoice.currency_code || "INR",
+            notes: data.invoice.notes || "",
+            line_items: (data.invoice.line_items || []).map((item) => ({
               description: item.description || item.name,
               quantity: item.quantity || 1,
               unitPrice: item.rate || 0,
               amount: item.item_total || 0,
               name: item.name,
               rate: item.rate,
-              unit: item.unit || 'nos',
-              item_total: item.item_total
-            }))
+              unit: item.unit || "nos",
+              item_total: item.item_total,
+            })),
           });
-          
+
           console.log(`✅ Created new invoice from Zoho webhook: ${zohoInvoiceNumber}`);
         }
       }
@@ -423,11 +437,11 @@ export const zohoWebhook = async (req, res) => {
 
     return res.json({ success: true });
   } catch (error) {
-    console.error('Zoho webhook error:', error);
+    console.error("Zoho webhook error:", error);
+    await logErrorActivity(req, error, "Zoho Webhook");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 export const getInvoices = async (req, res) => {
   try {
@@ -451,6 +465,7 @@ export const getInvoices = async (req, res) => {
 
     return res.json({ success: true, data: invoices });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoices");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -467,6 +482,7 @@ export const getInvoiceById = async (req, res) => {
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     return res.json({ success: true, data: invoice });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoice by ID");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -487,18 +503,26 @@ export const updateInvoiceStatus = async (req, res) => {
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
     if (typeof amountPaid === "number") {
-      invoice.amountPaid = amountPaid;
-      invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
+      invoice.amount_paid = amountPaid;
+      invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
     }
 
     invoice.status = status;
     await invoice.save();
 
+    // Log activity
+    await logCRUDActivity(req, "UPDATE", "Invoice", invoice._id, null, {
+      invoiceNumber: invoice.invoice_number,
+      status,
+    });
+
     return res.json({ success: true, data: invoice });
   } catch (error) {
+    await logErrorActivity(req, error, "Update Invoice Status");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
 // DELETE /api/invoices/:id
 export const deleteInvoice = async (req, res) => {
   try {
@@ -519,8 +543,15 @@ export const deleteInvoice = async (req, res) => {
     }
 
     await Invoice.findByIdAndDelete(id);
+
+    // Log activity
+    await logCRUDActivity(req, "DELETE", "Invoice", id, null, {
+      invoiceNumber: invoice.invoice_number,
+    });
+
     return res.json({ success: true, message: "Invoice deleted successfully", deletedInvoiceId: id });
   } catch (error) {
+    await logErrorActivity(req, error, "Delete Invoice");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -533,7 +564,7 @@ export const getConsolidationPreview = async (req, res) => {
     if (!clientId || !year || !month) {
       return res.status(400).json({
         success: false,
-        message: "clientId, year, and month are required"
+        message: "clientId, year, and month are required",
       });
     }
 
@@ -550,7 +581,7 @@ export const getConsolidationPreview = async (req, res) => {
     const invoicesToConsolidate = await Invoice.find({
       client: clientId,
       date: { $gte: startDate, $lte: endDate },
-      status: { $in: ['draft', 'issued'] } // Only consolidate unpaid invoices
+      status: { $in: ["draft", "issued"] }, // Only consolidate unpaid invoices
     });
 
     // Calculate totals
@@ -567,13 +598,13 @@ export const getConsolidationPreview = async (req, res) => {
         period: {
           year: parseInt(year),
           month: parseInt(month),
-          monthName: new Date(year, month - 1).toLocaleString('default', { month: 'long' })
-        }
-      }
+          monthName: new Date(year, month - 1).toLocaleString("default", { month: "long" }),
+        },
+      },
     });
-
   } catch (error) {
-    console.error('Error getting consolidation preview:', error);
+    console.error("Error getting consolidation preview:", error);
+    await logErrorActivity(req, error, "Get Consolidation Preview");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -586,7 +617,7 @@ export const consolidateInvoices = async (req, res) => {
     if (!year || !month || !clientId) {
       return res.status(400).json({
         success: false,
-        message: "year, month, and clientId are required"
+        message: "year, month, and clientId are required",
       });
     }
 
@@ -603,20 +634,20 @@ export const consolidateInvoices = async (req, res) => {
     const invoicesToConsolidate = await Invoice.find({
       client: clientId,
       date: { $gte: startDate, $lte: endDate },
-      status: { $in: ['draft', 'issued'] } // Only consolidate unpaid invoices
-    }).populate('client contract building cabin');
+      status: { $in: ["draft", "issued"] }, // Only consolidate unpaid invoices
+    }).populate("client contract building cabin");
 
     if (invoicesToConsolidate.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "No eligible invoices found for consolidation in the specified period"
+        message: "No eligible invoices found for consolidation in the specified period",
       });
     }
 
     if (invoicesToConsolidate.length === 1) {
       return res.status(400).json({
         success: false,
-        message: "Only one invoice found - consolidation requires multiple invoices"
+        message: "Only one invoice found - consolidation requires multiple invoices",
       });
     }
 
@@ -630,19 +661,19 @@ export const consolidateInvoices = async (req, res) => {
 
     for (const invoice of invoicesToConsolidate) {
       consolidatedInvoiceNumbers.push(invoice.invoice_number);
-      
+
       // Add line items with invoice reference
       if (invoice.line_items && invoice.line_items.length > 0) {
-        invoice.line_items.forEach(item => {
+        invoice.line_items.forEach((item) => {
           consolidatedLineItems.push({
             description: `${item.description} (Invoice: ${invoice.invoice_number})`,
             quantity: item.quantity || 1,
             unitPrice: item.unitPrice || item.rate || 0,
             amount: item.amount || item.item_total || 0,
-            name: item.name || item.description,
-            rate: item.rate || item.unitPrice || 0,
-            unit: item.unit || 'nos',
-            item_total: item.item_total || item.amount || 0
+            name: item.name,
+            rate: item.rate,
+            unit: item.unit || "nos",
+            item_total: item.item_total,
           });
         });
       }
@@ -664,7 +695,7 @@ export const consolidateInvoices = async (req, res) => {
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
       billing_period: {
         start: startDate,
-        end: endDate
+        end: endDate,
       },
       line_items: consolidatedLineItems,
       sub_total: consolidatedSubTotal,
@@ -672,8 +703,11 @@ export const consolidateInvoices = async (req, res) => {
       total: consolidatedTotal,
       amount_paid: consolidatedAmountPaid,
       balance: consolidatedTotal - consolidatedAmountPaid,
-      status: consolidatedAmountPaid >= consolidatedTotal ? 'paid' : 'issued',
-      notes: `Consolidated invoice for ${new Date(year, month - 1).toLocaleString('default', { month: 'long', year: 'numeric' })}. Original invoices: ${consolidatedInvoiceNumbers.join(', ')}`,
+      status: consolidatedAmountPaid >= consolidatedTotal ? "paid" : "issued",
+      notes: `Consolidated invoice for ${new Date(year, month - 1).toLocaleString(
+        "default",
+        { month: "long", year: "numeric" }
+      )}. Original invoices: ${consolidatedInvoiceNumbers.join(", ")}`,
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: client.gstTreatment || "business_gst",
@@ -685,7 +719,7 @@ export const consolidateInvoices = async (req, res) => {
       meta: {
         consolidated: true,
         originalInvoices: consolidatedInvoiceNumbers,
-        consolidationDate: new Date()
+        consolidationDate: new Date(),
       },
       ...(client.billingAddress && {
         billing_address: {
@@ -695,18 +729,18 @@ export const consolidateInvoices = async (req, res) => {
           state: client.billingAddress.state,
           zip: client.billingAddress.zip,
           country: client.billingAddress.country || "IN",
-          phone: client.phone
-        }
-      })
+          phone: client.phone,
+        },
+      }),
     });
 
     // Mark original invoices as consolidated
     await Invoice.updateMany(
-      { _id: { $in: invoicesToConsolidate.map(inv => inv._id) } },
-      { 
-        status: 'consolidated',
+      { _id: { $in: invoicesToConsolidate.map((inv) => inv._id) } },
+      {
+        status: "consolidated",
         consolidated_into: consolidatedInvoice._id,
-        consolidated_at: new Date()
+        consolidated_at: new Date(),
       }
     );
 
@@ -717,7 +751,7 @@ export const consolidateInvoices = async (req, res) => {
       if (client.zohoBooksContactId) {
         const zohoResponse = await createZohoInvoiceFromLocal(consolidatedInvoice.toObject(), client.toObject());
         const invoiceData = zohoResponse.invoice || zohoResponse;
-        
+
         if (invoiceData && invoiceData.invoice_id) {
           consolidatedInvoice.zoho_invoice_id = invoiceData.invoice_id;
           consolidatedInvoice.zoho_invoice_number = invoiceData.invoice_number;
@@ -725,7 +759,7 @@ export const consolidateInvoices = async (req, res) => {
           consolidatedInvoice.zoho_pdf_url = invoiceData.pdf_url;
           consolidatedInvoice.invoice_url = invoiceData.invoice_url;
           await consolidatedInvoice.save();
-          
+
           console.log(`Pushed consolidated invoice ${consolidatedInvoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
 
           // Send email if requested and we have Zoho invoice
@@ -734,9 +768,14 @@ export const consolidateInvoices = async (req, res) => {
               await sendZohoInvoiceEmail(invoiceData.invoice_id, {
                 to: client.email,
                 subject: `Consolidated Invoice ${consolidatedInvoiceNumber}`,
-                body: `Dear ${client.contactPerson || client.companyName},\n\nPlease find attached your consolidated invoice for ${new Date(year, month - 1).toLocaleString('default', { month: 'long', year: 'numeric' })}.\n\nThis invoice consolidates the following original invoices: ${consolidatedInvoiceNumbers.join(', ')}\n\nThank you for your business.`
+                body: `Dear ${client.contactPerson || client.companyName},\n\nPlease find attached your consolidated invoice for ${new Date(
+                  year,
+                  month - 1
+                ).toLocaleString("default", { month: "long", year: "numeric" })}.\n\nThis invoice consolidates the following original invoices: ${consolidatedInvoiceNumbers.join(
+                  ", "
+                )}\n\nThank you for your business.`,
               });
-              
+
               consolidatedInvoice.sent_at = new Date();
               await consolidatedInvoice.save();
               console.log(`Sent consolidated invoice email to ${client.email}`);
@@ -755,11 +794,11 @@ export const consolidateInvoices = async (req, res) => {
       data: consolidatedInvoice,
       message: `Successfully consolidated ${invoicesToConsolidate.length} invoices`,
       originalInvoices: consolidatedInvoiceNumbers,
-      emailSent: sendEmail && client.email ? true : false
+      emailSent: sendEmail && client.email ? true : false,
     });
-
   } catch (error) {
-    console.error('Error consolidating invoices:', error);
+    console.error("Error consolidating invoices:", error);
+    await logErrorActivity(req, error, "Consolidate Invoices");
     return res.status(500).json({ success: false, message: error.message });
   }
 };

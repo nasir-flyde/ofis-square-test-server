@@ -15,6 +15,7 @@ import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
 import { createContact } from "../utils/zohoBooks.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
+import { logCRUDActivity, logBusinessEvent } from "../utils/activityLogger.js";
 
 export const createClient = async (req, res) => {
   try {
@@ -261,6 +262,15 @@ export const createClient = async (req, res) => {
       // Don't fail client creation if email fails
     }
 
+    // Activity log: Client created
+    await logCRUDActivity(req, 'CREATE', 'Client', client._id, null, {
+      companyName: client.companyName,
+      contactPerson: client.contactPerson,
+      email: client.email,
+      ownerUserId: createdOwnerUserId,
+      zohoContactId
+    });
+
     return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo, zohoContactId });
   } catch (err) {
     console.error("createClient error:", err);
@@ -287,6 +297,12 @@ export const upsertBasicDetails = async (req, res) => {
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
     if (!clientId) {
       const created = await Client.create(payload);
+      // Activity log: Client created via basic details
+      await logCRUDActivity(req, 'CREATE', 'Client', created._id, null, {
+        companyName: created.companyName,
+        contactPerson: created.contactPerson,
+        email: created.email,
+      });
       return res.status(201).json({ message: "Client created from basic details", client: created });
     }
     if (!mongoose.Types.ObjectId.isValid(clientId)) {
@@ -295,6 +311,10 @@ export const upsertBasicDetails = async (req, res) => {
 
     const client = await Client.findByIdAndUpdate(clientId, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
+    // Activity log: basic details updated
+    await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
+      updatedFields: Object.keys(payload)
+    });
     return res.json({ message: "Client basic details updated", client });
   } catch (err) {
     console.error("upsertBasicDetails error:", err);
@@ -322,6 +342,11 @@ export const updateCommercialDetails = async (req, res) => {
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
     
+    // Activity log: commercial details updated
+    await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
+      updatedFields: Object.keys(payload)
+    });
+
     return res.json({ message: "Commercial details updated", client });
   } catch (err) {
     console.error("updateCommercialDetails error:", err);
@@ -343,6 +368,11 @@ export const updateAddressDetails = async (req, res) => {
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
     
+    // Activity log: address details updated
+    await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
+      updatedFields: Object.keys(payload)
+    });
+
     return res.json({ message: "Address details updated", client });
   } catch (err) {
     console.error("updateAddressDetails error:", err);
@@ -367,6 +397,12 @@ export const updateContactPersons = async (req, res) => {
     );
     if (!client) return res.status(404).json({ error: "Client not found" });
     
+    // Activity log: contact persons updated
+    await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
+      updatedFields: ['contactPersons'],
+      count: Array.isArray(contactPersons) ? contactPersons.length : 0
+    });
+
     return res.json({ message: "Contact persons updated", client });
   } catch (err) {
     console.error("updateContactPersons error:", err);
@@ -390,6 +426,11 @@ export const updateTaxDetails = async (req, res) => {
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
     
+    // Activity log: tax details updated
+    await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
+      updatedFields: Object.keys(payload)
+    });
+
     return res.json({ message: "Tax details updated", client });
   } catch (err) {
     console.error("updateTaxDetails error:", err);
@@ -496,6 +537,11 @@ export const updateClient = async (req, res) => {
     const { id } = req.params;
     const updated = await Client.findByIdAndUpdate(id, { $set: req.body || {} }, { new: true });
     if (!updated) return res.status(404).json({ error: "Client not found" });
+    
+    // Activity log: client updated (generic)
+    await logCRUDActivity(req, 'UPDATE', 'Client', id, null, {
+      updatedFields: Object.keys(req.body || {})
+    });
     return res.json({ message: "Client updated", client: updated });
   } catch (err) {
     console.error("updateClient error:", err);
@@ -508,6 +554,12 @@ export const deleteClient = async (req, res) => {
     const { id } = req.params;
     const deleted = await Client.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ error: "Client not found" });
+    
+    // Activity log: client deleted
+    await logCRUDActivity(req, 'DELETE', 'Client', id, null, {
+      companyName: deleted?.companyName,
+      contactPerson: deleted?.contactPerson
+    });
     return res.json({ message: "Client deleted" });
   } catch (err) {
     console.error("deleteClient error:", err);
@@ -561,6 +613,16 @@ export const submitKycDocuments = async (req, res) => {
     if (!updated) return res.status(404).json({ error: "Client not found" });
     
     console.log(`KYC documents submitted for client ${id}, status set to verified`);
+    // Business event: KYC submitted
+    await logBusinessEvent({
+      req,
+      action: 'KYC_SUBMITTED',
+      entity: 'Client',
+      entityId: id,
+      details: {
+        filesUploaded: Object.values(uploadsByField || {}).reduce((acc, arr) => acc + (arr?.length || 0), 0),
+      }
+    });
     return res.json({ 
       message: "KYC documents submitted successfully. Awaiting verification.", 
       client: updated,
@@ -625,11 +687,30 @@ export const verifyKyc = async (req, res) => {
         await Client.findByIdAndUpdate(id, { building: targetBuildingId });
         
         console.log(`Auto-created contract ${contractId} for verified client ${id}`);
+
+        // Business event: contract draft created post KYC verification
+        await logBusinessEvent({
+          req,
+          action: 'CONTRACT_DRAFT_CREATED',
+          entity: 'Contract',
+          entityId: contractId,
+          related: [{ entity: 'Client', id }],
+          details: { building: targetBuildingId, capacity, monthlyRent: calculatedRent }
+        });
       }
     } catch (e) {
       console.error("verifyKyc: failed to create contract:", e);
       // Don't fail KYC verification if contract creation fails
     }
+
+    // Business event: KYC verified
+    await logBusinessEvent({
+      req,
+      action: 'KYC_VERIFIED',
+      entity: 'Client',
+      entityId: id,
+      details: { contractId }
+    });
 
     return res.json({ 
       message: "KYC verified successfully", 
@@ -653,6 +734,16 @@ export const rejectKyc = async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: "Client not found" });
+    
+    // Business event: KYC rejected
+    await logBusinessEvent({
+      req,
+      action: 'KYC_REJECTED',
+      entity: 'Client',
+      entityId: id,
+      details: { reason }
+    });
+
     return res.json({ message: "KYC rejected", client: updated });
   } catch (err) {
     console.error("rejectKyc error:", err);
