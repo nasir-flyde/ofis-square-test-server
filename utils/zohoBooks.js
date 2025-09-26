@@ -273,6 +273,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     if (!line_items || line_items.length === 0) {
       throw new Error("Invoice must have at least one line item to create in Zoho Books");
     }
+    // Enrich payload with GST and terms to satisfy Zoho validations for IN region
     const payload = {
       customer_id,
       reference_number: invoiceDoc.invoice_number || invoiceNumber || undefined,
@@ -292,6 +293,17 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
+      // Additional fields from local invoice (fallbacks included)
+      ...(invoiceDoc.currency_code ? { currency_code: invoiceDoc.currency_code } : {}),
+      ...(typeof invoiceDoc.exchange_rate === 'number' ? { exchange_rate: invoiceDoc.exchange_rate } : {}),
+      ...(invoiceDoc.gst_treatment ? { gst_treatment: invoiceDoc.gst_treatment } : {}),
+      ...(invoiceDoc.place_of_supply ? { place_of_supply: invoiceDoc.place_of_supply } : {}),
+      ...(typeof invoiceDoc.payment_terms === 'number' ? { payment_terms: invoiceDoc.payment_terms } : {}),
+      ...(invoiceDoc.payment_terms_label ? { payment_terms_label: invoiceDoc.payment_terms_label } : {}),
+      // Safer default for Indian orgs if not provided
+      ...(invoiceDoc.gst_treatment ? {} : { gst_treatment: 'business_gst' }),
+      ...(invoiceDoc.place_of_supply ? {} : { place_of_supply: 'MH' }),
+      ...(invoiceDoc.payment_terms ? {} : { payment_terms: 7, payment_terms_label: 'Net 7' })
     };
     const res = await fetch(url, {
       method: "POST",
@@ -301,8 +313,19 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    const rawText = await res.text();
+    let data;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      data = { parse_error: String(e?.message || e), raw: rawText };
+    }
+    if (!res.ok) {
+      // Provide richer error context from Zoho
+      const errMsg = data?.message || data?.code || `Zoho API error (status ${res.status})`;
+      console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
+      throw new Error(errMsg);
+    }
     return data;
   } catch (err) {
     console.error("❌ Error creating invoice:", err.message);

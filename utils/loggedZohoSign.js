@@ -1,6 +1,7 @@
 import apiLogger from './apiLogger.js';
 import { getAccessToken } from '../utils/zohoSignAuth.js';
 import FormData from 'form-data';
+import fetch from 'node-fetch';
 
 /**
  * Logged wrapper for Zoho Sign API calls
@@ -37,41 +38,145 @@ class LoggedZohoSign {
       let fileBuffer = null;
       let fileName = `contract_${contract._id || 'doc'}.pdf`;
       
+      console.log('Contract fileUrl:', contract.fileUrl);
+      console.log('Contract ID:', contract._id);
+      console.log('Contract client:', contract.client?.companyName);
+      
       if (contract.fileUrl) {
+        console.log('Downloading file from URL:', contract.fileUrl);
         const fileResp = await fetch(contract.fileUrl);
         if (!fileResp.ok) {
-          throw new Error(`Failed to download fileUrl: HTTP ${fileResp.status}`);
+          throw new Error(`Failed to download fileUrl: HTTP ${fileResp.status} - ${fileResp.statusText}`);
         }
         fileBuffer = Buffer.from(await fileResp.arrayBuffer());
+        console.log('File buffer size:', fileBuffer.length, 'bytes');
         const urlName = (contract.fileUrl.split('?')[0] || '').split('/').pop();
         if (urlName) fileName = urlName;
+
+        // Ensure filename has .pdf extension
+        if (!/\.pdf$/i.test(fileName)) {
+          fileName = `${fileName}.pdf`;
+        }
+
+        // Basic PDF validation: check magic bytes
+        const isPdf = fileBuffer && fileBuffer.length > 4 && fileBuffer.slice(0, 4).toString() === '%PDF';
+        console.log('PDF validation - First 20 bytes:', fileBuffer.slice(0, 20).toString());
+        console.log('PDF validation - Last 20 bytes:', fileBuffer.slice(-20).toString());
+        console.log('Is valid PDF:', isPdf);
+        
+        if (!isPdf) {
+          console.warn('The downloaded file does not appear to be a PDF. Zoho Sign requires a valid PDF.');
+          console.log('File content preview:', fileBuffer.slice(0, 200).toString());
+          throw new Error('Downloaded file is not a valid PDF');
+        }
+        
+        // Check if file is too small (might be an error page)
+        if (fileBuffer.length < 1000) {
+          console.warn('PDF file seems unusually small:', fileBuffer.length, 'bytes');
+          console.log('Small file content:', fileBuffer.toString());
+        }
       } else {
         // Would need to import generateContractPDFBuffer here
-        throw new Error('No file URL provided for contract');
+        throw new Error('No file URL provided for contract - contract must have a fileUrl to send for signature');
       }
 
-      formData.append('file', fileBuffer, fileName);
-      formData.append('data', JSON.stringify({
+      // Try a different approach - use the exact format Zoho Sign expects
+      formData.append('file', fileBuffer, {
+        filename: fileName,
+        contentType: 'application/pdf'
+      });
+      
+      // Use the exact JSON structure Zoho Sign expects
+      const requestData = {
         requests: {
-          request_name: `Contract for ${contract.client.companyName}`,
+          request_name: `Contract for ${contract.client.companyName || 'Contract'}`,
           expiration_days: 30,
-          is_sequential: true
+          is_sequential: true,
+          email_reminders: true,
+          reminder_period: 5
         }
-      }));
+      };
+      
+      console.log('Request data being sent:', JSON.stringify(requestData, null, 2));
+      formData.append('data', JSON.stringify(requestData));
 
       const accessToken = await getAccessToken();
-      const response = await loggedFetch(`${this.baseUrl}/requests`, {
+      console.log('Access token length:', accessToken ? accessToken.length : 'null');
+      console.log('Zoho Sign base URL:', this.baseUrl);
+      console.log('Form data keys:', Object.keys(formData));
+      
+      // Perform fetch with explicit API logging so it appears in API Call Logs
+      const url = `${this.baseUrl}/requests`;
+      const headers = {
+        ...(typeof formData.getHeaders === 'function' ? formData.getHeaders() : {}),
+        'Authorization': `Zoho-oauthtoken ${accessToken}`
+      };
+
+      // Start API log
+      const requestId = await apiLogger.logOutgoingCall({
+        service: this.service,
+        operation: 'create_document',
         method: 'POST',
-        headers: {
-          ...(typeof formData.getHeaders === 'function' ? formData.getHeaders() : {}),
-          'Authorization': `Zoho-oauthtoken ${accessToken}`
-        },
-        body: formData
+        url,
+        headers,
+        requestBody: { multipart: true, parts: ['file', 'data'] },
+        userId,
+        clientId: clientId || contract.client,
+        relatedEntity: 'contract',
+        relatedEntityId: contract._id,
+        attemptNumber: 1,
+        maxAttempts: 1
       });
 
-      const result = await response.json();
-      if (result.status !== "success") {
+      let response;
+      let result;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: formData
+        });
+
+        const responseText = await response.text();
+        try {
+          result = responseText ? JSON.parse(responseText) : null;
+        } catch (_) {
+          result = responseText;
+        }
+
+        await apiLogger.logResponse({
+          requestId,
+          statusCode: response.status,
+          responseHeaders: Object.fromEntries(response.headers.entries()),
+          responseBody: result,
+          success: response.ok,
+          errorMessage: response.ok ? null : (result?.message || `HTTP ${response.status}`)
+        });
+
+        console.log('Zoho Sign API response:', JSON.stringify(result, null, 2));
+        console.log('Response status:', response.status);
+        console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+      } catch (err) {
+        await apiLogger.logResponse({
+          requestId,
+          statusCode: 0,
+          responseHeaders: {},
+          responseBody: null,
+          success: false,
+          errorMessage: err.message
+        });
+        throw err;
+      }
+      
+      if (result?.status !== "success") {
         const msg = result.message || "Zoho Sign API error";
+        console.error('Zoho Sign API error details:', {
+          status: result.status,
+          message: result.message,
+          code: result.code,
+          errors: result.errors,
+          fullResponse: result
+        });
         throw new Error(`Zoho Sign API error: ${msg}`);
       }
 

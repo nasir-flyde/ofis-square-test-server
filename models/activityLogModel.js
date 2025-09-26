@@ -45,6 +45,8 @@ const activityLogSchema = new mongoose.Schema(
         "CHECK_IN",
         "CHECK_OUT",
         "BULK_OPERATION",
+        "CONTRACT_SENT_FOR_SIGNATURE",
+        "ERROR",
         "CUSTOM"
       ],
     },
