@@ -9,12 +9,12 @@ import {
   retryApiCall,
   getApiLogsHealth
 } from '../controllers/apiLogsController.js';
-import { adminMiddleware } from '../middlewares/authVerify.js';
+import authMiddleware from '../middlewares/authVerify.js';
 
 const router = express.Router();
 
 // Apply admin middleware to all routes
-router.use(adminMiddleware);
+router.use(authMiddleware);
 
 // GET /api/api-logs - List API call logs with filtering and pagination
 router.get('/', getApiLogs);
