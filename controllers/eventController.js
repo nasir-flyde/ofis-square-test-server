@@ -284,11 +284,11 @@ const getEvent = async (req, res) => {
   }
 };
 
-// RSVP for Event (Member)
+// RSVP for Event (Member or Client with memberId)
 const rsvpEvent = async (req, res) => {
   try {
     const { id } = req.params;
-    const memberId = req.memberId;
+    let memberId = req.memberId || req.body?.memberId || req.query?.memberId;
 
     if (!memberId) {
       return res.status(400).json({
@@ -335,6 +335,17 @@ const rsvpEvent = async (req, res) => {
         success: false,
         message: 'Event is at full capacity'
       });
+    }
+
+    // If requester is a client token, validate that provided member belongs to this client
+    if (req.authType === 'client' && req.clientId) {
+      const memberDoc = await Member.findById(memberId);
+      if (!memberDoc || String(memberDoc.clientId) !== String(req.clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Member does not belong to this client'
+        });
+      }
     }
 
     // Check and deduct credits if required
@@ -394,7 +405,7 @@ const rsvpEvent = async (req, res) => {
 const cancelRsvp = async (req, res) => {
   try {
     const { id } = req.params;
-    const memberId = req.memberId;
+    let memberId = req.memberId || req.body?.memberId;
 
     if (!memberId) {
       return res.status(400).json({
@@ -409,6 +420,17 @@ const cancelRsvp = async (req, res) => {
         success: false,
         message: 'Event not found'
       });
+    }
+
+    // If requester is a client token, validate that provided member belongs to this client
+    if (req.authType === 'client' && req.clientId) {
+      const memberDoc = await Member.findById(memberId);
+      if (!memberDoc || String(memberDoc.clientId) !== String(req.clientId)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Member does not belong to this client'
+        });
+      }
     }
 
     // Check if RSVP'd

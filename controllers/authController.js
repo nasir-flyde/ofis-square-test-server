@@ -135,8 +135,6 @@ export const adminLogin = async (req, res) => {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
-
-    // Log successful admin login
     await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
       userRole: 'admin',
       loginType: 'admin'
@@ -146,7 +144,6 @@ export const adminLogin = async (req, res) => {
   } catch (err) {
     console.error("adminLogin error:", err);
     
-    // Log failed admin login
     await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
       userRole: 'admin',
       loginType: 'admin'
@@ -190,13 +187,23 @@ export const clientLogin = async (req, res) => {
       return res.status(404).json({ error: "Client record not found. Please sign up first." });
     }
 
+    // Find the corresponding member record for this client
+    const member = await Member.findOne({ 
+      $or: [
+        { user: user._id, client: client._id },
+        { email: user.email, client: client._id },
+        { phone: user.phone, client: client._id }
+      ]
+    });
+
     const token = createJWT(
       user._id.toString(),
       user.email,
       role._id.toString(),
       role.roleName,
       user.phone,
-      client._id.toString()
+      client._id.toString(),
+      member?._id?.toString()
     );
 
     const safeUser = {
@@ -449,6 +456,10 @@ export const communityLogin = async (req, res) => {
     };
 
     res.json({ token, user: safeUser, buildingId: user.buildingId });
+        await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: 'community',
+      loginType: 'community'
+    });
   } catch (err) {
     console.error("communityLogin error:", err);
     res.status(500).json({ error: "Internal Server Error" });

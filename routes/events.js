@@ -2,6 +2,7 @@ import express from 'express';
 import eventController from '../controllers/eventController.js';
 import authMiddleware from '../middlewares/authVerify.js';
 import memberMiddleware from '../middlewares/memberMiddleware.js';
+import universalMiddleware from '../middlewares/universalAuthVerify.js';
 
 const router = express.Router();
 
@@ -33,8 +34,8 @@ router.delete('/:id', authMiddleware, deleteEvent);
 router.get('/', getEvents); // Public - can filter by status=published
 router.get('/:id', getEvent); // Public - single event details
 
-// Member-only routes (require member auth)
-router.post('/:id/rsvp', memberMiddleware, rsvpEvent);
-router.delete('/:id/rsvp', memberMiddleware, cancelRsvp);
+// RSVP routes (allow member tokens and client tokens with memberId in body)
+router.post('/:id/rsvp', universalMiddleware, rsvpEvent);
+router.delete('/:id/rsvp', universalMiddleware, cancelRsvp);
 
 export default router;

@@ -7,11 +7,24 @@ import Invoice from "../models/invoiceModel.js";
 import Payment from "../models/paymentModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import apiLogger from "../utils/apiLogger.js";
 
 // Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
+  const requestId = await apiLogger.logIncomingWebhook(
+    'zoho_books',
+    'customer_webhook',
+    req.headers,
+    req.body,
+    {
+      userAgent: req.headers['user-agent'],
+      orgId: req.headers['x-com-zoho-organizationid']
+    }
+  );
+
   try {
     console.log("Zoho Books webhook received:", {
+      requestId,
       headers: req.headers,
       body: req.body,
       timestamp: new Date().toISOString(),
@@ -99,19 +112,28 @@ export const handleZohoBooksWebhook = async (req, res) => {
     // Process the webhook event
     const result = await processZohoBooksEvent(payload);
     
-    return res.status(200).json({
+    const response = {
       message: "Zoho Books webhook processed successfully",
       result,
       timestamp: new Date().toISOString()
-    });
+    };
+
+    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+    
+    return res.status(200).json(response);
 
   } catch (err) {
     console.error("Zoho Books webhook error:", err);
-    return res.status(500).json({ 
+    
+    const errorResponse = { 
       error: "Webhook processing failed",
       message: err.message,
       timestamp: new Date().toISOString()
-    });
+    };
+
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, err.message);
+    
+    return res.status(500).json(errorResponse);
   }
 };
 

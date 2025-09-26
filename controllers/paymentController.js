@@ -12,6 +12,8 @@ import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceServ
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
 import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import LoggedRazorpay from "../utils/loggedRazorpay.js";
+import apiLogger from "../utils/apiLogger.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -852,13 +854,32 @@ export const handleRazorpaySuccess = async (req, res) => {
 
 // Razorpay webhook handler for payment status updates
 export const handleRazorpayWebhook = async (req, res) => {
+  const requestId = await apiLogger.logIncomingWebhook(
+    'razorpay',
+    'payment_webhook',
+    req.headers,
+    req.body,
+    {
+      event: req.body?.event,
+      paymentId: req.body?.payload?.payment?.entity?.id
+    }
+  );
+
   try {
     const { event, payload } = req.body;
     
-    // Verify webhook signature if needed
-    // const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-    //   .update(JSON.stringify(req.body))
-    //   .digest('hex');
+    // Use logged Razorpay for webhook signature verification
+    const loggedRazorpay = new LoggedRazorpay();
+    const isValidSignature = await loggedRazorpay.verifyWebhookSignature(
+      JSON.stringify(req.body),
+      req.headers['x-razorpay-signature']
+    );
+    
+    if (!isValidSignature) {
+      const errorResponse = { error: 'Invalid webhook signature' };
+      await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
+      return res.status(401).json(errorResponse);
+    }
     
     console.log('Razorpay webhook received:', event);
     
@@ -866,19 +887,7 @@ export const handleRazorpayWebhook = async (req, res) => {
       const paymentId = payload.payment?.entity?.id;
       const amount = payload.payment?.entity?.amount;
       
-      if (paymentId) {
-        // Find existing payment record by gateway reference
-        const existingPayment = await Payment.findOne({
-          paymentGatewayRef: paymentId
-        });
-        
-        if (existingPayment) {
-          console.log('Payment already processed:', paymentId);
-          return res.status(200).json({ status: 'already_processed' });
-        }
-        
-        // Find day pass by payment reference (if stored during order creation)
-        // For now, we'll log the webhook for manual processing
+      if (paymentId && amount) {
         console.log('Webhook payment details:', {
           paymentId,
           amount: amount / 100,
@@ -890,11 +899,18 @@ export const handleRazorpayWebhook = async (req, res) => {
       }
     }
     
-    res.status(200).json({ status: 'received' });
+    const response = { status: 'received' };
+    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+    
+    res.status(200).json(response);
   } catch (error) {
     console.error('Razorpay webhook error:', error);
     await logErrorActivity(req, error, 'Razorpay Webhook');
-    res.status(500).json({ error: 'Webhook processing failed' });
+    
+    const errorResponse = { error: 'Webhook processing failed' };
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
+    
+    res.status(500).json(errorResponse);
   }
 };
 
