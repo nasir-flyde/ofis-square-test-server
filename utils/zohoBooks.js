@@ -446,3 +446,268 @@ export async function recordZohoPayment(invoiceId, paymentData) {
     throw err;
   }
 }
+
+// ===== ZOHO BOOKS ITEMS API =====
+
+export async function getZohoItems() {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/items?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho items:", err.message);
+    throw err;
+  }
+}
+
+export async function createZohoItem(itemData) {
+  const authToken = await getValidAccessToken();
+  const url = `${BASE_URL}/items?organization_id=${ORG_ID}`;
+  const startTime = Date.now();
+
+  console.log("\n===== ZohoBooks:createItem - Request =====");
+  console.log("URL:", url);
+  console.log("Payload:", JSON.stringify(itemData, null, 2));
+
+  const requestId = await apiLogger.logOutgoingCall({
+    service: 'zoho_books',
+    operation: 'create_item',
+    method: 'POST',
+    url,
+    headers: { Authorization: `Zoho-oauthtoken ${authToken.slice(0, 8)}...` },
+    requestBody: itemData,
+    userId: null,
+    clientId: null,
+    relatedEntity: 'item',
+    relatedEntityId: null,
+    attemptNumber: 1,
+    maxAttempts: 1
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(itemData),
+    });
+
+    const durationMs = Date.now() - startTime;
+    const rawText = await res.text();
+    let data;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      data = { parse_error: String(e?.message || e), raw: rawText };
+    }
+
+    console.log("===== ZohoBooks:createItem - Response =====");
+    console.log("HTTP:", res.status, res.statusText || "");
+    console.log("Duration(ms):", durationMs);
+    console.log("Body:", typeof data === "object" ? JSON.stringify(data, null, 2) : data);
+
+    await apiLogger.logResponse({
+      requestId,
+      statusCode: res.status,
+      responseHeaders: Object.fromEntries(res.headers.entries()),
+      responseBody: data,
+      success: res.ok,
+      errorMessage: res.ok ? null : (data?.message || `HTTP ${res.status}`)
+    });
+
+    if (!res.ok) {
+      const errMsg = data?.message || data?.code || `Zoho API error (status ${res.status})`;
+      console.error("❌ ZohoBooks:createItem failed:", errMsg);
+      throw new Error(errMsg);
+    }
+
+    return data;
+  } catch (err) {
+    await apiLogger.logResponse({
+      requestId,
+      statusCode: 0,
+      responseHeaders: {},
+      responseBody: null,
+      success: false,
+      errorMessage: err.message
+    });
+    console.error("❌ [ZohoBooks] Error creating item:", err?.message || err);
+    throw err;
+  }
+}
+
+export async function updateZohoItem(itemId, itemData) {
+  const authToken = await getValidAccessToken();
+  const url = `${BASE_URL}/items/${itemId}?organization_id=${ORG_ID}`;
+  const startTime = Date.now();
+
+  console.log("\n===== ZohoBooks:updateItem - Request =====");
+  console.log("URL:", url);
+  console.log("Item ID:", itemId);
+  console.log("Payload:", JSON.stringify(itemData, null, 2));
+
+  const requestId = await apiLogger.logOutgoingCall({
+    service: 'zoho_books',
+    operation: 'update_item',
+    method: 'PUT',
+    url,
+    headers: { Authorization: `Zoho-oauthtoken ${authToken.slice(0, 8)}...` },
+    requestBody: itemData,
+    userId: null,
+    clientId: null,
+    relatedEntity: 'item',
+    relatedEntityId: itemId,
+    attemptNumber: 1,
+    maxAttempts: 1
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(itemData),
+    });
+
+    const durationMs = Date.now() - startTime;
+    const rawText = await res.text();
+    let data;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      data = { parse_error: String(e?.message || e), raw: rawText };
+    }
+
+    console.log("===== ZohoBooks:updateItem - Response =====");
+    console.log("HTTP:", res.status, res.statusText || "");
+    console.log("Duration(ms):", durationMs);
+    console.log("Body:", typeof data === "object" ? JSON.stringify(data, null, 2) : data);
+
+    await apiLogger.logResponse({
+      requestId,
+      statusCode: res.status,
+      responseHeaders: Object.fromEntries(res.headers.entries()),
+      responseBody: data,
+      success: res.ok,
+      errorMessage: res.ok ? null : (data?.message || `HTTP ${res.status}`)
+    });
+
+    if (!res.ok) {
+      const errMsg = data?.message || data?.code || `Zoho API error (status ${res.status})`;
+      console.error("❌ ZohoBooks:updateItem failed:", errMsg);
+      throw new Error(errMsg);
+    }
+
+    return data;
+  } catch (err) {
+    await apiLogger.logResponse({
+      requestId,
+      statusCode: 0,
+      responseHeaders: {},
+      responseBody: null,
+      success: false,
+      errorMessage: err.message
+    });
+    console.error("❌ [ZohoBooks] Error updating item:", err?.message || err);
+    throw err;
+  }
+}
+
+export async function getZohoItem(itemId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/items/${itemId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data?.item || null;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho item:", err.message);
+    throw err;
+  }
+}
+
+export async function syncCreditCustomItemToZoho(creditCustomItem) {
+  try {
+    console.log("\n===== Syncing Credit Custom Item to Zoho =====");
+    console.log("Item:", creditCustomItem.name, "| Mode:", creditCustomItem.pricingMode);
+
+    // Prepare Zoho item payload
+    const zohoItemData = {
+      name: creditCustomItem.name,
+      sku: creditCustomItem.code || undefined,
+      unit: creditCustomItem.unit || "nos",
+      description: `${creditCustomItem.name} - ${creditCustomItem.pricingMode === 'credits' ? `${creditCustomItem.unitCredits} credits` : `₹${creditCustomItem.unitPriceINR}`}`,
+      rate: creditCustomItem.pricingMode === 'inr' ? creditCustomItem.unitPriceINR : 500, // Default credit value
+      account_id: null, // Will use default sales account
+      tax_id: creditCustomItem.taxable ? null : undefined, // Use default tax or no tax
+      item_type: "sales",
+      product_type: "service",
+      is_taxable: creditCustomItem.taxable,
+      tax_percentage: creditCustomItem.taxable ? creditCustomItem.gstRate : 0,
+      purchase_rate: 0,
+      purchase_account_id: null,
+      inventory_account_id: null,
+      status: creditCustomItem.active ? "active" : "inactive"
+    };
+
+    // Remove undefined fields
+    Object.keys(zohoItemData).forEach(key => {
+      if (zohoItemData[key] === undefined) {
+        delete zohoItemData[key];
+      }
+    });
+
+    let zohoResponse;
+    
+    if (creditCustomItem.zohoItemId) {
+      // Update existing item
+      console.log("Updating existing Zoho item:", creditCustomItem.zohoItemId);
+      zohoResponse = await updateZohoItem(creditCustomItem.zohoItemId, zohoItemData);
+    } else {
+      // Create new item
+      console.log("Creating new Zoho item");
+      zohoResponse = await createZohoItem(zohoItemData);
+      
+      // Update local record with Zoho item ID
+      if (zohoResponse?.item?.item_id) {
+        creditCustomItem.zohoItemId = zohoResponse.item.item_id;
+        await creditCustomItem.save();
+        console.log("✅ Updated local item with Zoho ID:", zohoResponse.item.item_id);
+      }
+    }
+
+    console.log("✅ Successfully synced item to Zoho Books");
+    return zohoResponse;
+
+  } catch (error) {
+    console.error("❌ Error syncing credit custom item to Zoho:", error.message);
+    throw error;
+  }
+}
+
+export async function findZohoItemByName(itemName) {
+  try {
+    const items = await getZohoItems();
+    return items?.items?.find(item => 
+      item.name?.toLowerCase() === itemName?.toLowerCase() ||
+      item.sku?.toLowerCase() === itemName?.toLowerCase()
+    );
+  } catch (err) {
+    console.error("❌ Error finding Zoho item by name:", err.message);
+    return null;
+  }
+}

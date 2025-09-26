@@ -17,7 +17,13 @@ import {
   updateCustomItem,
   toggleCustomItemStatus,
   deleteCustomItem,
-  getCustomItem
+  getCustomItem,
+  syncItemToZoho,
+  bulkSyncToZoho,
+  getZohoBooksItems,
+  linkZohoItem,
+  unlinkZohoItem,
+  getSyncStatus
 } from "../controllers/creditCustomItemController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import clientMiddleware from "../middlewares/clientMiddleware.js";
@@ -46,5 +52,13 @@ router.get("/custom-items/:id", authMiddleware, getCustomItem);
 router.put("/custom-items/:id", authMiddleware, updateCustomItem);
 router.patch("/custom-items/:id/activate", authMiddleware, toggleCustomItemStatus);
 router.delete("/custom-items/:id", authMiddleware, deleteCustomItem);
+
+// Zoho Books sync endpoints
+router.get("/custom-items/sync-status", authMiddleware, getSyncStatus);
+router.get("/custom-items/zoho-items", authMiddleware, getZohoBooksItems);
+router.post("/custom-items/bulk-sync", authMiddleware, bulkSyncToZoho);
+router.post("/custom-items/:id/sync-to-zoho", authMiddleware, syncItemToZoho);
+router.post("/custom-items/:id/link-zoho", authMiddleware, linkZohoItem);
+router.delete("/custom-items/:id/unlink-zoho", authMiddleware, unlinkZohoItem);
 
 export default router;
