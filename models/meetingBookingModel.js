@@ -5,12 +5,10 @@ const { Schema } = mongoose;
 const meetingBookingSchema = new Schema(
   {
     room: { type: Schema.Types.ObjectId, ref: "MeetingRoom", required: true, index: true },
+    visitors: [{ type: Schema.Types.ObjectId, ref: "Visitor" }],
     member: { type: Schema.Types.ObjectId, ref: "Member", index: true },
-    title: { type: String, trim: true },
-    description: { type: String, trim: true },
     start: { type: Date, required: true, index: true },
     end: { type: Date, required: true, index: true },
-    attendeesCount: { type: Number, default: 1 },
     amenitiesRequested: { type: [String], default: [] },
 
     status: { type: String, enum: ["booked", "cancelled", "completed"], default: "booked", index: true },

@@ -37,7 +37,6 @@ async function checkAvailability(room, start, end) {
     daysOfWeek = [1, 2, 3, 4, 5],
     openTime = "09:00",
     closeTime = "19:00",
-    bufferMinutes = 15,
     minBookingMinutes = 30,
     maxBookingMinutes = 480,
   } = availability;
@@ -69,18 +68,15 @@ if (startHHMM < openTime || endHHMM > closeTime) {
   const isBlackout = (blackoutDates || []).some((d) => new Date(d).toISOString().substring(0, 10) === startDayStr);
   if (isBlackout) return { ok: false, reason: "Room is blacked out on this date" };
 
-  // Conflict check with buffer
-  const bufferedStart = addMinutes(start, -bufferMinutes);
-  const bufferedEnd = addMinutes(end, bufferMinutes);
-
+  // Conflict check without buffer
   const overlap = await MeetingBooking.findOne({
     room: room._id,
     status: "booked",
-    start: { $lt: bufferedEnd },
-    end: { $gt: bufferedStart },
+    start: { $lt: end },
+    end: { $gt: start },
   }).lean();
 
-  if (overlap) return { ok: false, reason: "Time slot conflicts with an existing booking (consider buffer)" };
+  if (overlap) return { ok: false, reason: "Time slot conflicts with an existing booking" };
 
   return { ok: true };
 }
@@ -94,11 +90,9 @@ export const createBooking = async (req, res) => {
       clientId, 
       paymentMethod, 
       idempotencyKey, 
-      title, 
-      description, 
+      visitors,
       start, 
       end, 
-      attendeesCount, 
       amenitiesRequested, 
       currency, 
       amount, 
@@ -149,7 +143,7 @@ export const createBooking = async (req, res) => {
           roomId, 
           durationHours, 
           creditsPerHour,
-          title: title || "Meeting booking"
+          visitorsCount: visitors?.length || 0
         }
       });
 
@@ -173,11 +167,9 @@ export const createBooking = async (req, res) => {
       room: roomId,
       member: member || undefined,
       client: clientId || undefined,
-      title: title || undefined,
-      description: description || undefined,
+      visitors: Array.isArray(visitors) ? visitors : undefined,
       start: new Date(start),
       end: new Date(end),
-      attendeesCount: attendeesCount || undefined,
       amenitiesRequested: Array.isArray(amenitiesRequested) ? amenitiesRequested : undefined,
       status: "booked",
       payment: paymentDetails,
@@ -209,6 +201,7 @@ export const listBookings = async (req, res) => {
     const bookings = await MeetingBooking.find(filter)
       .populate("room", "name capacity amenities")
       .populate("member", "firstName lastName email phone companyName")
+      .populate("visitors", "name email phone company")
       .sort({ start: 1 });
 
     return res.json({ success: true, data: bookings });

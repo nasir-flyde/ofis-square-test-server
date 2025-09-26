@@ -323,16 +323,16 @@ export const createVisitor = async (req, res) => {
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: "Name is required" });
     }
-    if (!hostMemberId) {
-      return res.status(400).json({ success: false, message: "Host member is required" });
-    }
     if (!expectedVisitDate) {
       return res.status(400).json({ success: false, message: "Expected visit date is required" });
     }
 
-    const hostMember = await Member.findById(hostMemberId);
-    if (!hostMember) {
-      return res.status(404).json({ success: false, message: "Host member not found" });
+    let hostMember = null;
+    if (hostMemberId) {
+      hostMember = await Member.findById(hostMemberId);
+      if (!hostMember) {
+        return res.status(404).json({ success: false, message: "Host member not found" });
+      }
     }
 
     if (building) {
@@ -348,7 +348,7 @@ export const createVisitor = async (req, res) => {
       email: email?.trim(),
       phone: phone?.trim(),
       companyName: companyName?.trim(),
-      hostMember: hostMemberId,
+      hostMember: hostMemberId || undefined,
       purpose: purpose?.trim(),
       numberOfGuests: Math.max(1, parseInt(numberOfGuests) || 1),
       expectedVisitDate: new Date(expectedVisitDate),

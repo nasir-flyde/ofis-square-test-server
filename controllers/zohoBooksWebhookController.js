@@ -643,23 +643,32 @@ async function handleItemUpdated(itemData) {
 // Map Zoho item fields to credit custom item model
 async function mapZohoItemToCreditCustomItem(item) {
   const itemRate = parseFloat(item.rate || item.sales_rate || 0);
-  
-  // Determine pricing mode based on rate
-  // If rate is a multiple of 500 (default credit value), use credits mode
   const creditValue = 500; // Default credit value in INR
-  const isCreditsMode = itemRate > 0 && itemRate % creditValue === 0;
   
   const itemData = {
     name: item.name || "Unknown Item",
     code: item.sku || undefined,
     unit: item.unit || "unit",
-    pricingMode: isCreditsMode ? "credits" : "inr",
+    pricingMode: "inr", // Always use INR mode as requested
     
-    // Set pricing based on mode
-    ...(isCreditsMode ? {
-      unitCredits: itemRate / creditValue
-    } : {
-      unitPriceINR: itemRate
+    // Set INR price (required for INR mode)
+    unitPriceINR: itemRate,
+    
+    // Optionally set equivalent credits for reference (not required for INR mode)
+    ...(itemRate > 0 && { 
+      metadata: {
+        equivalentCredits: Math.ceil(itemRate / creditValue),
+        zoho_created_time: item.created_time,
+        zoho_last_modified_time: item.last_modified_time,
+        zoho_item_type: item.item_type,
+        zoho_product_type: item.product_type,
+        zoho_account_id: item.account_id,
+        zoho_account_name: item.account_name,
+        zoho_purchase_account_id: item.purchase_account_id,
+        zoho_purchase_account_name: item.purchase_account_name,
+        zoho_description: item.description,
+        zoho_purchase_description: item.purchase_description
+      }
     }),
     
     // Tax settings
@@ -670,21 +679,7 @@ async function mapZohoItemToCreditCustomItem(item) {
     active: item.status === "active",
     
     // Zoho linkage
-    zohoItemId: item.item_id,
-    
-    // Additional metadata
-    metadata: {
-      zoho_created_time: item.created_time,
-      zoho_last_modified_time: item.last_modified_time,
-      zoho_item_type: item.item_type,
-      zoho_product_type: item.product_type,
-      zoho_account_id: item.account_id,
-      zoho_account_name: item.account_name,
-      zoho_purchase_account_id: item.purchase_account_id,
-      zoho_purchase_account_name: item.purchase_account_name,
-      zoho_description: item.description,
-      zoho_purchase_description: item.purchase_description
-    }
+    zohoItemId: item.item_id
   };
 
   // Remove undefined fields

@@ -10,7 +10,7 @@ export const createRoom = async (req, res) => {
       roomName: room.name,
       buildingId: room.building,
       capacity: room.capacity,
-      hourlyRate: room.hourlyRate
+      dailyRate: room.pricing?.dailyRate
     });
     return res.status(201).json({ success: true, data: room });
   } catch (error) {
@@ -68,10 +68,10 @@ export const getRoomById = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', id, {
       before: oldMeetingRoom?.toObject(),
       after: meetingRoom.toObject(),
-      fields: ['name', 'building', 'capacity', 'amenities', 'hourlyRate', 'status']
+      fields: ['name', 'building', 'capacity', 'amenities', 'pricing', 'status']
     }, {
       roomName: meetingRoom.name,
-      updatedFields: ['name', 'building', 'capacity', 'amenities', 'hourlyRate', 'status']
+      updatedFields: ['name', 'building', 'capacity', 'amenities', 'pricing', 'status']
     });
 
     return res.json({

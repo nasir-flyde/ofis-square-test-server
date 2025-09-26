@@ -33,7 +33,6 @@ import eventCategoriesRoutes from "./eventCategories.js";
 
 const router = express.Router();
 
-// Modular routes (mirroring ezstays-backend style)
 router.use("/health", healthRoutes);
 router.use("/auth", authRoutes);
 router.use("/otp", otpRoutes);
