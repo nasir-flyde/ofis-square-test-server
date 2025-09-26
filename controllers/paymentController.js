@@ -519,7 +519,7 @@ export const recordCustomerPayment = async (req, res) => {
 
     // Create local payment record
     const paymentData = {
-      client: finalClientId,
+      client: clientId,
       invoices: invoices.map(inv => {
         const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === inv.invoiceId);
         return {
@@ -652,6 +652,24 @@ export const listCustomerPayments = async (req, res) => {
 
 // Razorpay payment integration for day passes
 export const createRazorpayOrder = async (req, res) => {
+  // Log incoming API call
+  const requestId = await apiLogger.logIncomingWebhook({
+    service: 'razorpay',
+    operation: 'create_order',
+    method: req.method || 'POST',
+    url: req.originalUrl || req.url || '/api/payments/razorpay/create-order',
+    headers: req.headers || {},
+    requestBody: req.body,
+    webhookSignature: null,
+    webhookVerified: false,
+    webhookEvent: 'create_razorpay_order',
+    statusCode: 200,
+    responseBody: { received: true },
+    success: true,
+    userAgent: req.headers['user-agent'] || null,
+    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+  });
+
   try {
     const { dayPassId, bundleId } = req.body;
 
@@ -699,7 +717,7 @@ export const createRazorpayOrder = async (req, res) => {
       item = { type: 'bundle', id: bundleId };
     }
     
-    res.json({
+    const response = {
       success: true,
       razorpayKey: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
       amount: amount * 100, // Convert to paise
@@ -707,16 +725,40 @@ export const createRazorpayOrder = async (req, res) => {
       item,
       buildingName,
       description
-    });
+    };
+
+    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+    res.json(response);
   } catch (error) {
     console.error("createRazorpayOrder error:", error);
     await logErrorActivity(req, error, 'Create Razorpay Order');
-    res.status(500).json({ error: "Internal Server Error" });
+    
+    const errorResponse = { error: "Internal Server Error" };
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
+    res.status(500).json(errorResponse);
   }
 };
 
 // Handle Razorpay payment success
 export const handleRazorpaySuccess = async (req, res) => {
+  // Log incoming API call
+  const requestId = await apiLogger.logIncomingWebhook({
+    service: 'razorpay',
+    operation: 'payment_success',
+    method: req.method || 'POST',
+    url: req.originalUrl || req.url || '/api/payments/razorpay/success',
+    headers: req.headers || {},
+    requestBody: req.body,
+    webhookSignature: null,
+    webhookVerified: false,
+    webhookEvent: 'razorpay_payment_success',
+    statusCode: 200,
+    responseBody: { received: true },
+    success: true,
+    userAgent: req.headers['user-agent'] || null,
+    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+  });
+
   try {
     const { 
       razorpay_payment_id, 
@@ -830,7 +872,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       ? "Payment successful, day pass issued"
       : "Payment successful, bundle and day passes issued";
 
-    res.json({
+    const response = {
       success: true,
       message: responseMessage,
       item,
@@ -840,15 +882,21 @@ export const handleRazorpaySuccess = async (req, res) => {
         amount: payment.amount,
         status: "completed"
       }
-    });
+    };
+
+    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+    res.json(response);
   } catch (error) {
     console.error("handleRazorpaySuccess error:", error);
     console.error("Error stack:", error.stack);
     await logErrorActivity(req, error, 'Handle Razorpay Success');
-    res.status(500).json({ 
+    
+    const errorResponse = { 
       error: "Internal Server Error",
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    };
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
+    res.status(500).json(errorResponse);
   }
 };
 
