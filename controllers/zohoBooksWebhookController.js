@@ -5,6 +5,7 @@ import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Payment from "../models/paymentModel.js";
+import CreditCustomItem from "../models/creditCustomItemModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import apiLogger from "../utils/apiLogger.js";
@@ -153,7 +154,8 @@ async function processZohoBooksEvent(payload) {
     has_contact: !!payload?.contact,
     has_customer: !!payload?.customer,
     has_invoice: !!payload?.invoice,
-    has_payment: !!payload?.payment
+    has_payment: !!payload?.payment,
+    has_item: !!payload?.item
   });
 
   // Handle customer creation events with explicit event type
@@ -207,6 +209,35 @@ async function processZohoBooksEvent(payload) {
     return await handlePaymentReceived(data.payment || data);
   }
 
+  // Handle item events (for credit custom items sync)
+  if (payload?.item && !eventType) {
+    console.log("Detected item payload from Zoho Books webhook");
+    
+    const item = payload.item;
+    const createdTime = new Date(item.created_time);
+    const modifiedTime = new Date(item.last_modified_time);
+    
+    const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
+    const isNewItem = timeDiff < 5000;
+    
+    if (isNewItem) {
+      console.log("Processing item as creation event");
+      return await handleItemCreated({ item });
+    } else {
+      console.log("Processing item as update event");
+      return await handleItemUpdated({ item });
+    }
+  }
+
+  // Handle item events with explicit event type
+  if (eventType === "item_created" || eventType === "ItemCreated") {
+    return await handleItemCreated(data);
+  }
+
+  if (eventType === "item_updated" || eventType === "ItemUpdated") {
+    return await handleItemUpdated(data);
+  }
+
   if (payload?.contact && !eventType) {
     console.log("Detected legacy contact payload from Zoho Books webhook");
     
@@ -229,12 +260,13 @@ async function processZohoBooksEvent(payload) {
   console.log(`Unhandled Zoho Books event type: ${eventType}`);
   return { 
     status: "ignored", 
-    reason: "Unhandled event type or missing customer/contact/invoice/payment data",
+    reason: "Unhandled event type or missing customer/contact/invoice/payment/item data",
     event_type: eventType,
     has_contact: !!payload?.contact,
     has_customer: !!payload?.customer,
     has_invoice: !!payload?.invoice,
-    has_payment: !!payload?.payment
+    has_payment: !!payload?.payment,
+    has_item: !!payload?.item
   };
 }
 
@@ -500,6 +532,169 @@ async function handleContactUpdated(contactData) {
     console.error("Error handling Zoho contact update:", err);
     throw err;
   }
+}
+
+// Handle item creation from Zoho Books webhook
+async function handleItemCreated(itemData) {
+  try {
+    const item = itemData?.item || itemData;
+    
+    if (!item) {
+      console.warn("No item data found in webhook payload");
+      return { status: "ignored", reason: "No item data" };
+    }
+
+    const itemId = item.item_id;
+    const itemName = item.name;
+    const itemRate = parseFloat(item.rate || item.sales_rate || 0);
+
+    console.log(`Processing item creation for: ${itemName} - Zoho ID: ${itemId}, Rate: ${itemRate}`);
+
+    // Check if credit custom item already exists with this Zoho item ID
+    const existingItem = await CreditCustomItem.findOne({ zohoItemId: itemId });
+    if (existingItem) {
+      console.log(`Credit custom item already exists for Zoho item ID: ${itemId}`);
+      return { 
+        status: "ignored", 
+        reason: "Credit custom item already exists",
+        item_id: existingItem._id 
+      };
+    }
+
+    // Check if item exists by name
+    const existingByName = await CreditCustomItem.findOne({ 
+      name: { $regex: new RegExp(`^${itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+    });
+    if (existingByName) {
+      // Update existing item with Zoho item ID
+      existingByName.zohoItemId = itemId;
+      await existingByName.save();
+      console.log(`Updated existing credit custom item ${existingByName._id} with Zoho item ID: ${itemId}`);
+      return { 
+        status: "updated", 
+        reason: "Added Zoho ID to existing item",
+        item_id: existingByName._id 
+      };
+    }
+
+    // Create new credit custom item from Zoho item data
+    const itemDataToCreate = await mapZohoItemToCreditCustomItem(item);
+    const newItem = await CreditCustomItem.create(itemDataToCreate);
+
+    console.log(`Created new credit custom item ${newItem._id} from Zoho item ${itemId}`);
+
+    return {
+      status: "created",
+      item_id: newItem._id,
+      zoho_item_id: itemId,
+      name: itemName,
+      rate: itemRate
+    };
+
+  } catch (err) {
+    console.error("Error handling Zoho item creation:", err);
+    throw err;
+  }
+}
+
+// Handle item update from Zoho Books webhook
+async function handleItemUpdated(itemData) {
+  try {
+    const item = itemData?.item || itemData;
+    const itemId = item?.item_id;
+
+    if (!itemId) {
+      return { status: "ignored", reason: "No item ID" };
+    }
+
+    // Find existing credit custom item by Zoho item ID
+    const existingItem = await CreditCustomItem.findOne({ zohoItemId: itemId });
+    if (!existingItem) {
+      console.log(`No credit custom item found for updated Zoho item ID: ${itemId}`);
+      return { status: "ignored", reason: "Credit custom item not found" };
+    }
+
+    // Update item with new data from Zoho
+    const updatedData = await mapZohoItemToCreditCustomItem(item);
+    
+    // Remove fields that shouldn't be overwritten
+    delete updatedData.zohoItemId; // Keep existing
+    delete updatedData.code; // Don't change existing code
+    delete updatedData.tags; // Don't change existing tags
+    delete updatedData.metadata; // Don't change existing metadata
+
+    await CreditCustomItem.findByIdAndUpdate(existingItem._id, { $set: updatedData });
+
+    console.log(`Updated credit custom item ${existingItem._id} from Zoho item update`);
+
+    return {
+      status: "updated",
+      item_id: existingItem._id,
+      zoho_item_id: itemId,
+      name: item.name
+    };
+
+  } catch (err) {
+    console.error("Error handling Zoho item update:", err);
+    throw err;
+  }
+}
+
+// Map Zoho item fields to credit custom item model
+async function mapZohoItemToCreditCustomItem(item) {
+  const itemRate = parseFloat(item.rate || item.sales_rate || 0);
+  
+  // Determine pricing mode based on rate
+  // If rate is a multiple of 500 (default credit value), use credits mode
+  const creditValue = 500; // Default credit value in INR
+  const isCreditsMode = itemRate > 0 && itemRate % creditValue === 0;
+  
+  const itemData = {
+    name: item.name || "Unknown Item",
+    code: item.sku || undefined,
+    unit: item.unit || "unit",
+    pricingMode: isCreditsMode ? "credits" : "inr",
+    
+    // Set pricing based on mode
+    ...(isCreditsMode ? {
+      unitCredits: itemRate / creditValue
+    } : {
+      unitPriceINR: itemRate
+    }),
+    
+    // Tax settings
+    taxable: item.tax_percentage > 0 || item.is_default_tax_applied || true,
+    gstRate: parseFloat(item.tax_percentage || 18),
+    
+    // Status
+    active: item.status === "active",
+    
+    // Zoho linkage
+    zohoItemId: item.item_id,
+    
+    // Additional metadata
+    metadata: {
+      zoho_created_time: item.created_time,
+      zoho_last_modified_time: item.last_modified_time,
+      zoho_item_type: item.item_type,
+      zoho_product_type: item.product_type,
+      zoho_account_id: item.account_id,
+      zoho_account_name: item.account_name,
+      zoho_purchase_account_id: item.purchase_account_id,
+      zoho_purchase_account_name: item.purchase_account_name,
+      zoho_description: item.description,
+      zoho_purchase_description: item.purchase_description
+    }
+  };
+
+  // Remove undefined fields
+  Object.keys(itemData).forEach(key => {
+    if (itemData[key] === undefined) {
+      delete itemData[key];
+    }
+  });
+
+  return itemData;
 }
 
 // Map Zoho customer fields to client model (primary mapping function)

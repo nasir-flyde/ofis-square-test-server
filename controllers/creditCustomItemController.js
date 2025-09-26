@@ -1,6 +1,7 @@
 import CreditCustomItem from "../models/creditCustomItemModel.js";
 import { syncCreditCustomItemToZoho, getZohoItems, findZohoItemByName } from "../utils/zohoBooks.js";
 import apiLogger from "../utils/apiLogger.js";
+import { logCRUDActivity, logBulkActivity, logSystemActivity } from "../utils/activityLogger.js";
 
 // GET /api/admin/credits/custom-items - Get all custom items
 export const getCustomItems = async (req, res) => {
