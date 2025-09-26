@@ -1,5 +1,6 @@
 import fetch from "node-fetch";
 import { getValidAccessToken } from "./zohoTokenManager.js";
+import apiLogger from "./apiLogger.js";
 
 const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID || "60047183737";
 const BASE_URL = "https://www.zohoapis.in/books/v3";
@@ -293,39 +294,69 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
-      // Additional fields from local invoice (fallbacks included)
-      ...(invoiceDoc.currency_code ? { currency_code: invoiceDoc.currency_code } : {}),
-      ...(typeof invoiceDoc.exchange_rate === 'number' ? { exchange_rate: invoiceDoc.exchange_rate } : {}),
-      ...(invoiceDoc.gst_treatment ? { gst_treatment: invoiceDoc.gst_treatment } : {}),
-      ...(invoiceDoc.place_of_supply ? { place_of_supply: invoiceDoc.place_of_supply } : {}),
-      ...(typeof invoiceDoc.payment_terms === 'number' ? { payment_terms: invoiceDoc.payment_terms } : {}),
-      ...(invoiceDoc.payment_terms_label ? { payment_terms_label: invoiceDoc.payment_terms_label } : {}),
-      // Safer default for Indian orgs if not provided
-      ...(invoiceDoc.gst_treatment ? {} : { gst_treatment: 'business_gst' }),
-      ...(invoiceDoc.place_of_supply ? {} : { place_of_supply: 'MH' }),
-      ...(invoiceDoc.payment_terms ? {} : { payment_terms: 7, payment_terms_label: 'Net 7' })
     };
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Zoho-oauthtoken ${authToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+
+    const headers = {
+      Authorization: `Zoho-oauthtoken ${authToken}`,
+      "Content-Type": "application/json",
+    };
+    const requestId = await apiLogger.logOutgoingCall({
+      service: 'zoho_books',
+      operation: 'create_invoice',
+      method: 'POST',
+      url,
+      headers,
+      requestBody: payload,
+      userId: null,
+      clientId: clientDoc?._id || null,
+      relatedEntity: 'invoice',
+      relatedEntityId: invoiceDoc?._id || null,
+      attemptNumber: 1,
+      maxAttempts: 1
     });
-    const rawText = await res.text();
+
+    let response;
     let data;
     try {
-      data = rawText ? JSON.parse(rawText) : {};
-    } catch (e) {
-      data = { parse_error: String(e?.message || e), raw: rawText };
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      const responseText = await response.text();
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch (_) {
+        data = responseText;
+      }
+
+      await apiLogger.logResponse({
+        requestId,
+        statusCode: response.status,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        responseBody: data,
+        success: response.ok,
+        errorMessage: response.ok ? null : (data?.message || `HTTP ${response.status}`)
+      });
+
+      if (!response.ok) {
+        const errMsg = data?.message || data?.code || `Zoho API error (status ${response.status})`;
+        console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
+        throw new Error(errMsg);
+      }
+    } catch (err) {
+      await apiLogger.logResponse({
+        requestId,
+        statusCode: 0,
+        responseHeaders: {},
+        responseBody: null,
+        success: false,
+        errorMessage: err.message
+      });
+      throw err;
     }
-    if (!res.ok) {
-      // Provide richer error context from Zoho
-      const errMsg = data?.message || data?.code || `Zoho API error (status ${res.status})`;
-      console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
-      throw new Error(errMsg);
-    }
+
     return data;
   } catch (err) {
     console.error("❌ Error creating invoice:", err.message);

@@ -328,9 +328,32 @@ class ApiLogger {
     return stats;
   }
 
-  /**
-   * Clean up old logs based on retention policy
-   */
+  async logWebhookResponse(requestId, statusCode, responseBody, success, errorMessage = null) {
+    try {
+      const logEntry = await ApiCallLog.findOne({ requestId });
+      if (!logEntry) {
+        console.warn(`Webhook log not found for requestId: ${requestId}`);
+        return;
+      }
+
+      const endTime = new Date();
+      const duration = endTime.getTime() - logEntry.startTime.getTime();
+
+      logEntry.endTime = endTime;
+      logEntry.duration = duration;
+      logEntry.statusCode = statusCode;
+      logEntry.responseBody = this._sanitizeResponseBody(responseBody);
+      logEntry.success = success;
+      logEntry.errorMessage = errorMessage;
+
+      await logEntry.save();
+      return logEntry;
+    } catch (error) {
+      console.error('Failed to log webhook response:', error);
+    }
+  }
+
+
   async cleanup() {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);

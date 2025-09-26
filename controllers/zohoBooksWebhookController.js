@@ -11,16 +11,22 @@ import apiLogger from "../utils/apiLogger.js";
 
 // Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
-  const requestId = await apiLogger.logIncomingWebhook(
-    'zoho_books',
-    'customer_webhook',
-    req.headers,
-    req.body,
-    {
-      userAgent: req.headers['user-agent'],
-      orgId: req.headers['x-com-zoho-organizationid']
-    }
-  );
+  const requestId = await apiLogger.logIncomingWebhook({
+    service: 'zoho_books',
+    operation: 'webhook',
+    method: req.method || 'POST',
+    url: req.originalUrl || req.url || '/api/webhooks/zoho-books',
+    headers: req.headers || {},
+    requestBody: req.body,
+    webhookSignature: req.headers['x-zoho-webhook-signature'] || req.headers['x-zoho-signature'] || null,
+    webhookVerified: false, // Will be updated after verification
+    webhookEvent: 'zoho_books_webhook',
+    statusCode: 200,
+    responseBody: { received: true },
+    success: true,
+    userAgent: req.headers['user-agent'] || null,
+    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+  });
 
   try {
     console.log("Zoho Books webhook received:", {
