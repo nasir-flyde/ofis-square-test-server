@@ -374,7 +374,7 @@ export async function getZohoInvoicePdfUrl(invoiceId) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Zoho API error");
-    return data?.invoice?.invoice_url || null;
+    return data?.invoice?.pdf_url || null;
   } catch (err) {
     console.error("❌ Error fetching invoice PDF URL:", err.message);
     throw err;
@@ -402,6 +402,38 @@ export async function sendZohoInvoiceEmail(invoiceId, emailPayload = {}) {
   }
 }
 
+// Fetch raw PDF bytes for one or more Zoho invoice IDs via the bulk PDF endpoint.
+// For our use case, we pass a single zohoInvoiceId.
+export async function fetchZohoInvoicePdfBinary(zohoInvoiceId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/invoices/pdf?organization_id=${ORG_ID}&invoice_ids=${encodeURIComponent(zohoInvoiceId)}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const arrayBuf = await res.arrayBuffer();
+    if (!res.ok) {
+      let errJson;
+      try {
+        errJson = JSON.parse(Buffer.from(arrayBuf).toString("utf8"));
+      } catch (_) {
+        errJson = null;
+      }
+      throw new Error((errJson && errJson.message) || `Zoho API error (status ${res.status})`);
+    }
+
+    const buffer = Buffer.from(arrayBuf);
+    const contentType = res.headers.get("content-type") || "application/pdf";
+    const contentDisposition = res.headers.get("content-disposition") || `attachment; filename="invoice.pdf"`;
+    return { buffer, contentType, contentDisposition };
+  } catch (err) {
+    console.error("❌ Error fetching Zoho invoice PDF binary:", err.message);
+    throw err;
+  }
+}
+
 export async function getZohoInvoice(invoiceId) {
   try {
     const authToken = await getValidAccessToken();
@@ -417,6 +449,65 @@ export async function getZohoInvoice(invoiceId) {
     console.error("Error fetching Zoho Invoice:", err.message);
     throw err;
   }
+}
+
+// Create a public share link for an invoice. Returns the share URL string if successful.
+export async function shareZohoInvoice(invoiceId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/invoices/${invoiceId}/share?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+      },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg = data?.message || "Zoho API error (share)";
+      console.warn("Zoho share POST failed:", errMsg);
+      try {
+        const getRes = await fetch(url, {
+          method: "GET",
+          headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+        });
+        const getData = await getRes.json();
+        if (getRes.ok) {
+          return getData?.share_link?.url || null;
+        }
+      } catch (_) {
+        // ignore secondary failure, throw original
+      }
+      throw new Error(errMsg);
+    }
+    // Expected response shape: { share_link: { url: "https://..." } }
+    return data?.share_link?.url || null;
+  } catch (err) {
+    console.error("❌ Error creating Zoho invoice share link:", err.message);
+    throw err;
+  }
+}
+
+// Convenience: fetch portal invoice_url and attempt to create a public share URL.
+export async function getZohoInvoiceLinks(invoiceId) {
+  const result = { portalUrl: null, publicShareUrl: null };
+  try {
+    const invoice = await getZohoInvoice(invoiceId);
+    result.portalUrl = invoice?.invoice_url || null;
+  } catch (e) {
+    // Non-fatal; we still might create a share link
+    console.warn("Could not fetch invoice for portalUrl:", e?.message || e);
+  }
+
+  try {
+    const shareUrl = await shareZohoInvoice(invoiceId);
+    result.publicShareUrl = shareUrl || null;
+  } catch (e) {
+    // If already shared or any error, we keep publicShareUrl as null and let caller decide next steps
+    console.warn("Could not create public share link:", e?.message || e);
+  }
+
+  return result;
 }
 
 export async function recordZohoPayment(invoiceId, paymentData) {

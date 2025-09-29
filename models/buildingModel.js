@@ -24,12 +24,8 @@ const BuildingSchema = new Schema(
       default: null
     },
     photos: [{
-      fileId: { type: String, required: true },
-      name: { type: String, required: true },
-      url: { type: String, required: true },
-      thumbnailUrl: { type: String },
-      size: { type: Number, required: true },
-      filePath: { type: String, required: true },
+      category: { type: String, required: true, trim: true },
+      imageUrl: { type: String, required: true },
       uploadedAt: { type: Date, default: Date.now }
     }],
 

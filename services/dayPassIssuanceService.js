@@ -143,7 +143,9 @@ const createVisitorForOtherBooking = async (dayPass, session) => {
     const draft = dayPass.visitorDetailsDraft;
     
     if (!draft || !draft.name) {
-      throw new Error("Visitor draft details incomplete for other booking");
+      // Do not block issuance if draft is incomplete; allow managing visitor later
+      console.warn("Visitor draft details incomplete for other booking; skipping visitor creation");
+      return; // gracefully skip
     }
 
     // Set full day time window (00:00 to 23:59)

@@ -9,6 +9,8 @@ import {
   sendInvoiceEmail,
   syncInvoiceFromZoho,
   getInvoicePdf,
+  getInvoiceZohoLinks,
+  getInvoiceZohoPdfBinary,
   recordInvoicePayment,
   zohoWebhook,
   downloadInvoicePdf,
@@ -32,6 +34,8 @@ router.post("/:id/push-zoho",pushInvoiceToZoho);
 router.post("/:id/send", authMiddleware, sendInvoiceEmail);
 router.post("/:id/sync", authMiddleware, syncInvoiceFromZoho);
 router.get("/:id/pdf", authMiddleware, getInvoicePdf);
+router.get("/:id/zoho-links", authMiddleware, getInvoiceZohoLinks);
+router.get("/:id/zoho-pdf",getInvoiceZohoPdfBinary);
 router.get("/:id/download-pdf", authMiddleware, downloadInvoicePdf);
 router.post("/:id/payments", authMiddleware, recordInvoicePayment);
 router.delete("/:id", authMiddleware, deleteInvoice);

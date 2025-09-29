@@ -12,8 +12,11 @@ import {
   createZohoInvoiceFromLocal,
   getZohoInvoice,
   getZohoInvoicePdfUrl,
+  getZohoInvoiceLinks,
+  fetchZohoInvoicePdfBinary,
   recordZohoPayment,
   sendZohoInvoiceEmail,
+  findOrCreateContactFromClient,
 } from "../utils/zohoBooks.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
@@ -224,7 +227,7 @@ export const downloadInvoicePdf = async (req, res) => {
 export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
-    const invoice = await Invoice.findById(id);
+    const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (invoice.zoho_invoice_id) {
       return res.json({
@@ -235,13 +238,40 @@ export const pushInvoiceToZoho = async (req, res) => {
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "Manual push deprecated. Invoice will be automatically created in Zoho Books during payment processing.",
-      recommendation: "Use POST /api/payments/zoho-customer-payment to record payments - invoices are auto-created in Zoho.",
-      invoice_id: invoice._id,
-      invoice_number: invoice.invoice_number,
-    });
+    // Ensure invoice has a client and Zoho contact
+    const client = invoice.client ? invoice.client : await Client.findById(invoice.client);
+    if (!client) {
+      return res.status(400).json({ success: false, message: "Invoice has no linked client or client not found" });
+    }
+
+    try {
+      if (!client.zohoBooksContactId) {
+        const contactId = await findOrCreateContactFromClient(client);
+        if (!contactId) {
+          return res.status(400).json({ success: false, message: "Failed to find or create Zoho contact for client" });
+        }
+        client.zohoBooksContactId = contactId;
+        await client.save();
+      }
+
+      // Create Zoho invoice from local invoice
+      const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
+      const zohoId = zohoResp?.invoice?.invoice_id;
+      const zohoNumber = zohoResp?.invoice?.invoice_number;
+      if (!zohoId) {
+        return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
+      }
+
+      invoice.zoho_invoice_id = zohoId;
+      invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
+      invoice.source = invoice.source || "zoho";
+      await invoice.save();
+
+      return res.json({ success: true, data: invoice, zoho: zohoResp });
+    } catch (err) {
+      await logErrorActivity(req, err, "Push Invoice to Zoho");
+      return res.status(400).json({ success: false, message: err.message });
+    }
   } catch (error) {
     await logErrorActivity(req, error, "Push Invoice to Zoho");
     return res.status(500).json({ success: false, message: error.message });
@@ -313,6 +343,45 @@ export const getInvoicePdf = async (req, res) => {
     return res.json({ success: true, data: { pdfUrl: url } });
   } catch (error) {
     await logErrorActivity(req, error, "Get Invoice PDF");
+    return res.status(500).json({ success: false, message: error.message, details: error.response });
+  }
+};
+
+// GET /api/invoices/:id/zoho-pdf
+// Streams the PDF bytes fetched from Zoho bulk PDF endpoint using the Zoho invoice ID
+export const getInvoiceZohoPdfBinary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id).select("zoho_invoice_id invoice_number");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+
+    const { buffer, contentType, contentDisposition } = await fetchZohoInvoicePdfBinary(invoice.zoho_invoice_id);
+    res.setHeader("Content-Type", contentType || "application/pdf");
+    // Prefer Zoho's disposition; otherwise set a filename using our invoice number/id
+    res.setHeader(
+      "Content-Disposition",
+      contentDisposition || `attachment; filename="invoice_${invoice.invoice_number || id}.pdf"`
+    );
+    return res.status(200).send(buffer);
+  } catch (error) {
+    await logErrorActivity(req, error, "Get Zoho Invoice PDF Binary");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/invoices/:id/zoho-links
+export const getInvoiceZohoLinks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id).select("zoho_invoice_id");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+
+    const links = await getZohoInvoiceLinks(invoice.zoho_invoice_id);
+    return res.json({ success: true, data: links });
+  } catch (error) {
+    await logErrorActivity(req, error, "Get Zoho Invoice Links");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };

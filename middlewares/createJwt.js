@@ -1,6 +1,6 @@
 import jwt from "jsonwebtoken";
 
-export const createJWT = (id, email, roleId, roleName, phone, clientId, memberId, buildingId) => {
+export const createJWT = (id, email, roleId, roleName, phone, clientId, memberId, buildingId, allowedUsingCredits) => {
   return jwt.sign(
     {
       id,
@@ -11,6 +11,7 @@ export const createJWT = (id, email, roleId, roleName, phone, clientId, memberId
       ...(clientId ? { clientId } : {}),
       ...(memberId ? { memberId } : {}),
       ...(buildingId ? { buildingId } : {}),
+      ...(typeof allowedUsingCredits === 'boolean' ? { allowedUsingCredits } : {}),
     },
     process.env.JWT_SECRET || "ofis-square-secret-key",
     {

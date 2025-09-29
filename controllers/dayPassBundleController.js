@@ -121,6 +121,29 @@ export const createDayPassBundle = async (req, res) => {
     const validUntil = new Date();
     validUntil.setDate(validUntil.getDate() + validityDays);
 
+    // If attempting credit payment, enforce member credit usage permission
+    const requestedPaymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+    if (requestedPaymentMethod === 'credits') {
+      // Determine member to check: prefer explicit memberId; else if customer is a member
+      const memberLookupId = memberId || (customerType === 'member' ? customerId : null);
+      if (memberLookupId) {
+        try {
+          const m = await Member.findById(memberLookupId).select('allowedUsingCredits status');
+          if (!m) {
+            return res.status(404).json({ error: 'Member not found for credit payment' });
+          }
+          if (m.status !== 'active') {
+            return res.status(403).json({ error: 'Member is inactive', code: 'MEMBER_INACTIVE' });
+          }
+          if (m.allowedUsingCredits === false) {
+            return res.status(403).json({ error: 'This member is not allowed to use credits', code: 'CREDITS_NOT_ALLOWED' });
+          }
+        } catch (e) {
+          return res.status(500).json({ error: 'Failed to validate member credit permission' });
+        }
+      }
+    }
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -185,33 +208,38 @@ export const createDayPassBundle = async (req, res) => {
 
       await DayPass.insertMany(dayPasses, { session });
 
-      // Create invoice (schema: invoiceModel.js)
-      const invoice = new Invoice({
-        client: customerType === 'client' ? customerId : null,
-        guest: customerType !== 'client' ? customerId : null,
-        building: buildingId,
-        type: "regular",
-        category: "day_pass",
-        invoice_number: `DPB-${Date.now()}`,
-        line_items: [{
-          description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
-          quantity: no_of_dayPasses,
-          unitPrice: pricePerPass,
-          amount: totalAmount,
-          rate: pricePerPass
-        }],
-        sub_total: totalAmount,
-        tax_total: taxAmount,
-        total: finalAmount,
-        status: "draft",
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-      });
+      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+      let invoice = null;
+      if (paymentMethod !== 'credits') {
+        // Create invoice (schema: invoiceModel.js)
+        const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
+        invoice = new Invoice({
+          client: clientIdForInvoice,
+          guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
+          building: buildingId,
+          type: "regular",
+          category: "day_pass",
+          invoice_number: `DPB-${Date.now()}`,
+          line_items: [{
+            description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
+            quantity: no_of_dayPasses,
+            unitPrice: pricePerPass,
+            amount: totalAmount,
+            rate: pricePerPass
+          }],
+          sub_total: totalAmount,
+          tax_total: taxAmount,
+          total: finalAmount,
+          status: "draft",
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        });
 
-      await invoice.save({ session });
+        await invoice.save({ session });
 
-      // Link invoice to bundle
-      bundle.invoice = invoice._id;
-      await bundle.save({ session });
+        // Link invoice to bundle
+        bundle.invoice = invoice._id;
+        await bundle.save({ session });
+      }
 
       await session.commitTransaction();
 
@@ -222,21 +250,24 @@ export const createDayPassBundle = async (req, res) => {
         { path: 'invoice', select: 'invoice_number total status' }
       ]);
 
-      res.status(201).json({
+      const resp = {
         message: "Day pass bundle created successfully",
         bundle,
         dayPassesCreated: no_of_dayPasses,
-        invoice: {
+        payment: {
+          required: paymentMethod !== 'credits',
+          amount: finalAmount
+        }
+      };
+      if (invoice) {
+        resp.invoice = {
           id: invoice._id,
           invoice_number: invoice.invoice_number,
           total: invoice.total,
           status: invoice.status
-        },
-        payment: {
-          required: true,
-          amount: finalAmount
-        }
-      });
+        };
+      }
+      res.status(201).json(resp);
 
     } catch (error) {
       await session.abortTransaction();

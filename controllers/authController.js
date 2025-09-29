@@ -203,7 +203,9 @@ export const clientLogin = async (req, res) => {
       role.roleName,
       user.phone,
       client._id.toString(),
-      member?._id?.toString()
+      member?._id?.toString(),
+      undefined,
+      typeof member?.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined
     );
 
     const safeUser = {
@@ -280,7 +282,9 @@ export const memberLogin = async (req, res) => {
       role.roleName,
       user.phone,
       member.client._id.toString(),
-      member._id.toString()
+      member._id.toString(),
+      undefined,
+      typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined
     );
 
     const safeUser = {
@@ -298,7 +302,8 @@ export const memberLogin = async (req, res) => {
       token, 
       user: safeUser, 
       memberId: member._id,
-      clientId: member.client._id 
+      clientId: member.client._id,
+      allowedUsingCredits: typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true
     });
   } catch (err) {
     console.error("memberLogin error:", err);

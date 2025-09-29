@@ -3,6 +3,7 @@ import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import DayPass from "../models/dayPassModel.js";
 import DayPassBundle from "../models/dayPassBundleModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
 import Guest from "../models/guestModel.js";
 import Member from "../models/memberModel.js";
 import Contract from "../models/contractModel.js";
@@ -650,7 +651,7 @@ export const listCustomerPayments = async (req, res) => {
   }
 };
 
-// Razorpay payment integration for day passes
+// Razorpay payment integration for day passes and meeting rooms
 export const createRazorpayOrder = async (req, res) => {
   // Log incoming API call
   const requestId = await apiLogger.logIncomingWebhook({
@@ -671,10 +672,10 @@ export const createRazorpayOrder = async (req, res) => {
   });
 
   try {
-    const { dayPassId, bundleId } = req.body;
+    const { dayPassId, bundleId, meetingBookingId } = req.body;
 
-    if (!dayPassId && !bundleId) {
-      return res.status(400).json({ error: "Day pass ID or Bundle ID is required" });
+    if (!dayPassId && !bundleId && !meetingBookingId) {
+      return res.status(400).json({ error: "Day pass ID, Bundle ID, or Meeting Booking ID is required" });
     }
 
     let item, amount, description, buildingName;
@@ -697,7 +698,7 @@ export const createRazorpayOrder = async (req, res) => {
       buildingName = dayPass.building?.name || "Workspace";
       description = `Day Pass - ${buildingName}`;
       item = { type: 'daypass', id: dayPassId };
-    } else {
+    } else if (bundleId) {
       // Bundle payment
       const bundle = await DayPassBundle.findById(bundleId)
         .populate('building', 'name')
@@ -715,6 +716,34 @@ export const createRazorpayOrder = async (req, res) => {
       buildingName = bundle.building?.name || "Workspace";
       description = `Day Pass Bundle - ${buildingName} (${bundle.no_of_dayPasses} passes)`;
       item = { type: 'bundle', id: bundleId };
+    } else {
+      // Meeting room booking payment
+      const booking = await MeetingBooking.findById(meetingBookingId)
+        .populate('room', 'name building')
+        .populate('invoice', 'total')
+        .populate({
+          path: 'room',
+          populate: {
+            path: 'building',
+            select: 'name'
+          }
+        });
+
+      if (!booking) {
+        return res.status(404).json({ error: "Meeting booking not found" });
+      }
+
+      if (booking.status !== 'payment_pending') {
+        return res.status(400).json({ error: "Meeting booking is not pending payment" });
+      }
+
+      amount = booking.invoice?.total || booking.payment?.amount;
+      buildingName = booking.room?.building?.name || "Meeting Room";
+      const roomName = booking.room?.name || "Room";
+      const startTime = new Date(booking.start).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      const endTime = new Date(booking.end).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      description = `Meeting Room - ${roomName} (${startTime}-${endTime})`;
+      item = { type: 'meeting', id: meetingBookingId };
     }
     
     const response = {
@@ -763,12 +792,15 @@ export const handleRazorpaySuccess = async (req, res) => {
     const { 
       razorpay_payment_id, 
       dayPassId,
-      bundleId, 
-      amount 
+      bundleId,
+      meetingBookingId,
+      amount,
+      invoiceId,
+      clientId
     } = req.body;
 
-    if (!razorpay_payment_id || (!dayPassId && !bundleId)) {
-      return res.status(400).json({ error: "Payment ID and Day Pass ID or Bundle ID are required" });
+    if (!razorpay_payment_id || (!dayPassId && !bundleId && !meetingBookingId)) {
+      return res.status(400).json({ error: "Payment ID and Day Pass ID, Bundle ID, or Meeting Booking ID are required" });
     }
 
     let item, customer, invoice, paymentNotes;
@@ -787,7 +819,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       customer = dayPass.customer;
       invoice = dayPass.invoice;
       paymentNotes = `Razorpay payment for day pass ${dayPass._id}`;
-    } else {
+    } else if (bundleId) {
       // Bundle payment
       const bundle = await DayPassBundle.findById(bundleId)
         .populate('invoice')
@@ -801,11 +833,35 @@ export const handleRazorpaySuccess = async (req, res) => {
       customer = bundle.customer;
       invoice = bundle.invoice;
       paymentNotes = `Razorpay payment for bundle ${bundle._id}`;
+    } else {
+      // Meeting room booking payment
+      const booking = await MeetingBooking.findById(meetingBookingId)
+        .populate('invoice')
+        .populate({ path: 'member', select: 'firstName lastName email client' })
+        .populate({ path: 'client', select: 'companyName zohoBooksContactId' });
+
+      if (!booking) {
+        return res.status(404).json({ error: "Meeting booking not found" });
+      }
+
+      // Resolve client via booking.client or booking.member.client
+      let resolvedClient = booking.client;
+      if (!resolvedClient && booking.member) {
+        const memberDoc = await Member.findById(booking.member._id).populate('client');
+        if (memberDoc?.client) {
+          resolvedClient = memberDoc.client;
+        }
+      }
+
+      item = booking;
+      customer = resolvedClient || booking.member;
+      invoice = booking.invoice;
+      paymentNotes = `Razorpay payment for meeting booking ${booking._id}`;
     }
 
     // Determine customer type and set appropriate payment fields
     let paymentData = {
-      invoice: invoice?._id,
+      invoice: invoice?._id || (invoiceId || undefined),
       type: "Razorpay",
       amount: amount / 100, // Convert from paise
       paymentDate: new Date(),
@@ -834,6 +890,11 @@ export const handleRazorpaySuccess = async (req, res) => {
       }
     }
 
+    // If clientId explicitly provided by frontend, ensure it is set
+    if (clientId && !paymentData.client) {
+      paymentData.client = clientId;
+    }
+
     // Create payment record
     const payment = new Payment(paymentData);
     await payment.save();
@@ -842,11 +903,11 @@ export const handleRazorpaySuccess = async (req, res) => {
     await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
       razorpayPaymentId: razorpay_payment_id,
       amount: amount / 100,
-      itemType: dayPassId ? 'daypass' : 'bundle',
-      itemId: dayPassId || bundleId
+      itemType: dayPassId ? 'daypass' : (bundleId ? 'bundle' : 'meeting'),
+      itemId: dayPassId || bundleId || meetingBookingId
     });
 
-    // Update item status to issued and create visitor records
+    // Update item status to issued/booked and create visitor records
     if (bundleId) {
       // For bundles, get all associated day passes and issue them
       const dayPasses = await DayPass.find({ bundle: bundleId });
@@ -858,19 +919,191 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Update bundle status
       item.status = "issued";
       await item.save();
-    } else {
+    } else if (dayPassId) {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
+    } else if (meetingBookingId) {
+      // For meeting room booking, update status to booked
+      item.status = "booked";
+      await item.save();
     }
 
-    // Update invoice if exists
+    // Convert paise to INR and floor to avoid rounding up (e.g., 2033.99 -> 2033)
+    const paymentInrFloor = Math.floor(Number(amount) / 100);
+
+    // If invoice not resolved from item but invoiceId was provided, fetch it now
+    if (!invoice && invoiceId) {
+      try {
+        invoice = await Invoice.findById(invoiceId);
+      } catch (_) {}
+    }
+
+    // Update invoice and push to Zoho for meeting bookings
     if (invoice) {
-      await applyInvoicePayment(invoice._id, amount / 100);
+      // If this is a meeting booking flow, mirror day pass Zoho integration
+      if (meetingBookingId) {
+        try {
+          // Re-fetch booking to get client linkage
+          const bookingForZoho = await MeetingBooking.findById(meetingBookingId)
+            .populate({ path: 'member', select: 'client' })
+            .populate({ path: 'client', select: 'zohoBooksContactId companyName' })
+            .populate('invoice');
+
+          // Resolve client
+          let clientForZoho = bookingForZoho?.client;
+          if (!clientForZoho && bookingForZoho?.member) {
+            const mem = await Member.findById(bookingForZoho.member._id).populate('client');
+            clientForZoho = mem?.client || null;
+          }
+
+          if (clientForZoho && !bookingForZoho.invoice?.zoho_invoice_id) {
+            await createInvoiceInZoho(bookingForZoho.invoice, clientForZoho);
+          }
+
+          // If we have client and a zoho invoice id, record customer payment in Zoho
+          if (clientForZoho?.zohoBooksContactId && bookingForZoho.invoice?.zoho_invoice_id) {
+            const accessToken = await getValidAccessToken();
+            const orgId = getOrgId();
+            const zohoUrl = `${getBooksBaseUrl()}/customerpayments?organization_id=${orgId}`;
+            const zohoPayload = {
+              customer_id: clientForZoho.zohoBooksContactId,
+              payment_mode: 'Razorpay',
+              amount: paymentInrFloor,
+              date: new Date().toISOString().slice(0,10),
+              invoices: [{ invoice_id: bookingForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
+              reference_number: razorpay_payment_id,
+              description: paymentNotes
+            };
+
+            const zohoResp = await fetch(zohoUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(zohoPayload)
+            });
+
+            const zohoData = await zohoResp.json();
+            if (zohoResp.ok) {
+              // Update local payment with Zoho details
+              payment.zoho_payment_id = zohoData.payment?.payment_id;
+              payment.payment_number = zohoData.payment?.payment_number;
+              payment.zoho_status = zohoData.payment?.status;
+              payment.raw_zoho_response = zohoData;
+              payment.source = 'zoho_books';
+              await payment.save();
+              // Apply locally now with the same floored amount
+              await applyInvoicePayment(invoice._id, paymentInrFloor);
+            } else {
+              console.error('Zoho customer payment failed for meeting booking:', zohoData);
+              // Even if Zoho fails, apply locally to reflect Razorpay success
+              await applyInvoicePayment(invoice._id, paymentInrFloor);
+            }
+          }
+        } catch (zohoErr) {
+          console.error('Meeting booking Zoho sync error:', zohoErr);
+          // On error, still apply locally
+          await applyInvoicePayment(invoice._id, paymentInrFloor);
+        }
+      }
+
+      // If this is a day pass or bundle payment, sync to Zoho Books similarly
+      if (dayPassId || bundleId) {
+        // Track whether we applied locally during Zoho success to avoid double-applying later
+        let appliedViaZohoSuccess = false;
+        
+        try {
+          // Re-fetch day pass or bundle with customer and invoice populated
+          let itemForZoho = null;
+          let clientForZoho = null;
+          if (dayPassId) {
+            itemForZoho = await DayPass.findById(dayPassId)
+              .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+              .populate('invoice');
+          } else if (bundleId) {
+            itemForZoho = await DayPassBundle.findById(bundleId)
+              .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+              .populate('invoice');
+          }
+
+          // Resolve client depending on customer type
+          // Customer could be Guest, Member, or Client
+          if (itemForZoho?.customer) {
+            const ctor = itemForZoho.customer.constructor?.modelName;
+            if (ctor === 'Client') {
+              clientForZoho = itemForZoho.customer;
+            } else if (ctor === 'Member') {
+              const mem = await Member.findById(itemForZoho.customer._id).populate('client');
+              clientForZoho = mem?.client || null;
+            } else if (ctor === 'Guest') {
+              // Guests have no direct Zoho linkage; skip Zoho sync for guest-only purchases
+              clientForZoho = null;
+            }
+          }
+
+          // Create invoice in Zoho if linked client exists and no zoho invoice yet
+          if (clientForZoho && itemForZoho?.invoice && !itemForZoho.invoice.zoho_invoice_id) {
+            await createInvoiceInZoho(itemForZoho.invoice, clientForZoho);
+          }
+
+
+          // Record customer payment in Zoho if client is linked and invoice exists in Zoho
+          if (clientForZoho?.zohoBooksContactId && itemForZoho?.invoice?.zoho_invoice_id) {
+            const accessToken = await getValidAccessToken();
+            const orgId = getOrgId();
+            const zohoUrl = `${getBooksBaseUrl()}/customerpayments?organization_id=${orgId}`;
+            const zohoPayload = {
+              customer_id: clientForZoho.zohoBooksContactId,
+              payment_mode: 'Razorpay',
+              amount: paymentInrFloor,
+              date: new Date().toISOString().slice(0,10),
+              invoices: [{ invoice_id: itemForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
+              reference_number: razorpay_payment_id,
+              description: paymentNotes
+            };
+
+            const zohoResp = await fetch(zohoUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(zohoPayload)
+            });
+
+            const zohoData = await zohoResp.json();
+            if (zohoResp.ok) {
+              payment.zoho_payment_id = zohoData.payment?.payment_id;
+              payment.payment_number = zohoData.payment?.payment_number;
+              payment.zoho_status = zohoData.payment?.status;
+              payment.raw_zoho_response = zohoData;
+              payment.source = 'zoho_books';
+              await payment.save();
+              await applyInvoicePayment(invoice._id, paymentInrFloor);
+              appliedViaZohoSuccess = true;
+            } else {
+              console.error('Zoho customer payment failed for day pass/bundle:', zohoData);
+              // Apply locally even if Zoho fails
+              await applyInvoicePayment(invoice._id, paymentInrFloor);
+            }
+          }
+        } catch (zohoErr) {
+          console.error('Day pass/bundle Zoho sync error:', zohoErr);
+          // Apply locally on error
+          await applyInvoicePayment(invoice._id, paymentInrFloor);
+        }
+        
+        // Only apply locally if we didn't already apply via Zoho success
+        if (invoice && !appliedViaZohoSuccess) {
+          await applyInvoicePayment(invoice._id, paymentInrFloor);
+        }
+      }
     }
 
     const responseMessage = dayPassId 
       ? "Payment successful, day pass issued"
-      : "Payment successful, bundle and day passes issued";
+      : (bundleId ? "Payment successful, bundle and day passes issued" : "Payment successful, meeting room booked");
 
     const response = {
       success: true,

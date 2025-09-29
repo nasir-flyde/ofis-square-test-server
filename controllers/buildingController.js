@@ -10,31 +10,34 @@ export const createBuilding = async (req, res) => {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
     }
 
-    // Process uploaded photos from ImageKit
+    // Process photos: support either base64 uploads (photo.file) or direct URLs (photo.imageUrl)
     const processedPhotos = [];
     if (photos && Array.isArray(photos)) {
       for (const photo of photos) {
         try {
-          // Upload to ImageKit
-          const uploadResult = await imagekit.upload({
-            file: photo.file, // base64 string
-            fileName: photo.name,
-            folder: "/buildings",
-            useUniqueFileName: true,
-            tags: ["building", name.replace(/\s+/g, '-').toLowerCase()]
-          });
-
-          processedPhotos.push({
-            fileId: uploadResult.fileId,
-            name: uploadResult.name,
-            url: uploadResult.url,
-            thumbnailUrl: uploadResult.thumbnailUrl,
-            size: uploadResult.size,
-            filePath: uploadResult.filePath,
-            uploadedAt: new Date()
-          });
+          const category = (photo.category || 'General').trim();
+          if (photo?.file) {
+            const uploadResult = await imagekit.upload({
+              file: photo.file, // base64 string
+              fileName: photo.name || `${name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/buildings",
+              useUniqueFileName: true,
+              tags: ["building", name.replace(/\s+/g, '-').toLowerCase(), category.replace(/\s+/g, '-').toLowerCase()]
+            });
+            processedPhotos.push({
+              category,
+              imageUrl: uploadResult.url,
+              uploadedAt: new Date()
+            });
+          } else if (photo?.imageUrl) {
+            processedPhotos.push({
+              category,
+              imageUrl: photo.imageUrl,
+              uploadedAt: new Date()
+            });
+          }
         } catch (uploadError) {
-          console.warn("Failed to upload photo:", uploadError);
+          console.warn("Failed to process photo:", uploadError);
         }
       }
     }
@@ -101,23 +104,55 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, openSpacePricing } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
+
+    // If photos provided, process them similarly to create. If not provided, don't change existing photos
+    let processedPhotos;
+    if (photos && Array.isArray(photos)) {
+      processedPhotos = [];
+      for (const photo of photos) {
+        try {
+          const category = (photo.category || 'General').trim();
+          if (photo?.file) {
+            const uploadResult = await imagekit.upload({
+              file: photo.file,
+              fileName: photo.name || `${(name || oldBuilding?.name || 'building').replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/buildings",
+              useUniqueFileName: true,
+              tags: ["building", (name || oldBuilding?.name || 'building').replace(/\s+/g, '-').toLowerCase(), category.replace(/\s+/g, '-').toLowerCase()]
+            });
+            processedPhotos.push({ category, imageUrl: uploadResult.url, uploadedAt: new Date() });
+          } else if (photo?.imageUrl) {
+            processedPhotos.push({ category, imageUrl: photo.imageUrl, uploadedAt: new Date() });
+          }
+        } catch (uploadError) {
+          console.warn("Failed to process photo:", uploadError);
+        }
+      }
+    }
+
+    const updatePayload = {
+      name,
+      address,
+      city,
+      state,
+      country,
+      pincode,
+      totalFloors,
+      amenities,
+      status,
+      pricing,
+      openSpacePricing
+    };
+    if (processedPhotos) {
+      updatePayload.photos = processedPhotos;
+    }
+
     const building = await Building.findByIdAndUpdate(
       id,
-      {
-        name,
-        address,
-        city,
-        state,
-        country,
-        pincode,
-        totalFloors,
-        amenities,
-        status,
-        pricing
-      },
+      updatePayload,
       { new: true, runValidators: true }
     );
 
@@ -129,10 +164,10 @@ export const updateBuilding = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos: processedPhotos ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos: processedPhotos ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });

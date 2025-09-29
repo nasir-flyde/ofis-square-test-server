@@ -3,7 +3,6 @@ import EventCategory from '../models/eventCategoryModel.js';
 import Member from '../models/memberModel.js';
 import Building from '../models/buildingModel.js';
 import MeetingRoom from '../models/meetingRoomModel.js';
-import WalletService from '../services/walletService.js';
 import { logCRUDActivity } from '../utils/activityLogger.js';
 
 // Create Event (Admin/Community)
@@ -288,7 +287,7 @@ const getEvent = async (req, res) => {
 const rsvpEvent = async (req, res) => {
   try {
     const { id } = req.params;
-    let memberId = req.memberId || req.body?.memberId || req.query?.memberId;
+    let memberId = req.user?.memberId || req.memberId || req.body?.memberId || req.query?.memberId;
 
     if (!memberId) {
       return res.status(400).json({
@@ -340,7 +339,7 @@ const rsvpEvent = async (req, res) => {
     // If requester is a client token, validate that provided member belongs to this client
     if (req.authType === 'client' && req.clientId) {
       const memberDoc = await Member.findById(memberId);
-      if (!memberDoc || String(memberDoc.clientId) !== String(req.clientId)) {
+      if (!memberDoc || String(memberDoc.client) !== String(req.clientId)) {
         return res.status(403).json({
           success: false,
           message: 'Member does not belong to this client'
@@ -348,31 +347,7 @@ const rsvpEvent = async (req, res) => {
       }
     }
 
-    // Check and deduct credits if required
-    if (event.creditsRequired > 0) {
-      const member = await Member.findById(memberId).populate('clientId');
-      if (!member || !member.clientId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Member or client not found'
-        });
-      }
-
-      try {
-        await WalletService.consumeCreditsWithOverdraft(
-          member.clientId._id,
-          event.creditsRequired,
-          `Event RSVP: ${event.title}`,
-          'event_rsvp',
-          { eventId: event._id, memberId }
-        );
-      } catch (creditError) {
-        return res.status(400).json({
-          success: false,
-          message: creditError.message
-        });
-      }
-    }
+    // Credit consumption disabled for RSVP flow
 
     // Add to RSVP list
     event.rsvps.push(memberId);
@@ -386,8 +361,7 @@ const rsvpEvent = async (req, res) => {
       success: true,
       message: 'RSVP confirmed',
       data: {
-        eventId: event._id,
-        creditsDeducted: event.creditsRequired
+        eventId: event._id
       }
     });
 
@@ -405,7 +379,7 @@ const rsvpEvent = async (req, res) => {
 const cancelRsvp = async (req, res) => {
   try {
     const { id } = req.params;
-    let memberId = req.memberId || req.body?.memberId;
+    let memberId = req.user?.memberId || req.memberId || req.body?.memberId || req.query?.memberId;
 
     if (!memberId) {
       return res.status(400).json({
@@ -425,7 +399,7 @@ const cancelRsvp = async (req, res) => {
     // If requester is a client token, validate that provided member belongs to this client
     if (req.authType === 'client' && req.clientId) {
       const memberDoc = await Member.findById(memberId);
-      if (!memberDoc || String(memberDoc.clientId) !== String(req.clientId)) {
+      if (!memberDoc || String(memberDoc.client) !== String(req.clientId)) {
         return res.status(403).json({
           success: false,
           message: 'Member does not belong to this client'
@@ -441,24 +415,7 @@ const cancelRsvp = async (req, res) => {
       });
     }
 
-    // Refund credits if event hasn't started
-    if (event.creditsRequired > 0 && new Date() < event.startDate) {
-      const member = await Member.findById(memberId).populate('clientId');
-      if (member && member.clientId) {
-        try {
-          await WalletService.addCredits(
-            member.clientId._id,
-            event.creditsRequired,
-            `Event RSVP Refund: ${event.title}`,
-            'event_rsvp_refund',
-            { eventId: event._id, memberId }
-          );
-        } catch (refundError) {
-          console.error('Credit refund error:', refundError);
-          // Continue with RSVP cancellation even if refund fails
-        }
-      }
-    }
+    // Credit refund disabled for RSVP cancellation
 
     // Remove from RSVP list
     event.rsvps = event.rsvps.filter(rsvp => !rsvp.equals(memberId));
@@ -472,8 +429,7 @@ const cancelRsvp = async (req, res) => {
       success: true,
       message: 'RSVP cancelled successfully',
       data: {
-        eventId: event._id,
-        creditsRefunded: event.creditsRequired > 0 && new Date() < event.startDate ? event.creditsRequired : 0
+        eventId: event._id
       }
     });
 
@@ -609,7 +565,7 @@ const cancelEvent = async (req, res) => {
 
     const event = await Event.findById(id).populate({
       path: 'rsvps',
-      populate: { path: 'clientId' }
+      populate: { path: 'client' }
     });
 
     if (!event) {
@@ -633,24 +589,7 @@ const cancelEvent = async (req, res) => {
       });
     }
 
-    // Refund credits to all RSVP'd members if event required credits
-    if (event.creditsRequired > 0 && event.rsvps.length > 0) {
-      for (const member of event.rsvps) {
-        if (member.clientId) {
-          try {
-            await WalletService.addCredits(
-              member.clientId._id,
-              event.creditsRequired,
-              `Event Cancelled Refund: ${event.title}`,
-              'event_cancelled_refund',
-              { eventId: event._id, memberId: member._id, reason }
-            );
-          } catch (refundError) {
-            console.error(`Credit refund error for member ${member._id}:`, refundError);
-          }
-        }
-      }
-    }
+    // Credit refund disabled for event cancellation
 
     const oldStatus = event.status;
     event.status = 'cancelled';
@@ -664,9 +603,7 @@ const cancelEvent = async (req, res) => {
       success: true,
       message: 'Event cancelled successfully',
       data: {
-        eventId: event._id,
-        refundedMembers: event.rsvps.length,
-        totalCreditsRefunded: event.creditsRequired * event.rsvps.length
+        eventId: event._id
       }
     });
 

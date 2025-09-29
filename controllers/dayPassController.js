@@ -78,6 +78,29 @@ export const createSingleDayPass = async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
 
+    // If attempting credit payment, enforce member credit usage permission
+    const requestedPaymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+    if (requestedPaymentMethod === 'credits') {
+      // Determine the relevant member to check: prefer provided memberId, else if customer is a member
+      let memberLookupId = memberId || (customerType === 'member' ? customerId : null);
+      if (memberLookupId) {
+        try {
+          const m = await Member.findById(memberLookupId).select('allowedUsingCredits status');
+          if (!m) {
+            return res.status(404).json({ error: 'Member not found for credit payment' });
+          }
+          if (m.status !== 'active') {
+            return res.status(403).json({ error: 'Member is inactive', code: 'MEMBER_INACTIVE' });
+          }
+          if (m.allowedUsingCredits === false) {
+            return res.status(403).json({ error: 'This member is not allowed to use credits', code: 'CREDITS_NOT_ALLOWED' });
+          }
+        } catch (_) {
+          return res.status(500).json({ error: 'Failed to validate member credit permission' });
+        }
+      }
+    }
+
     // Verify building exists and get pricing
     const building = await Building.findById(buildingId);
     if (!building) {
@@ -123,45 +146,59 @@ export const createSingleDayPass = async (req, res) => {
       });
 
       await dayPass.save({ session });
+      
+      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+      let invoice = null;
+      if (paymentMethod !== 'credits') {
+        let clientIdForInvoice = req.clientId || null;
+        if (!clientIdForInvoice) {
+          const memberLookupId = customerType === 'member' ? customerId : (memberId || null);
+          if (memberLookupId) {
+            try {
+              const memberDoc = await Member.findById(memberLookupId).select('client');
+              if (memberDoc?.client) clientIdForInvoice = memberDoc.client;
+            } catch (_) {}
+          }
+        }
+        if (!clientIdForInvoice && customerType === 'client') {
+          clientIdForInvoice = customerId;
+        }
 
-      // Create invoice (schema: invoiceModel.js)
-      const invoice = new Invoice({
-        client: customerType === 'client' ? customerId : null,
-        guest: customerType !== 'client' ? customerId : null,
-        building: buildingId,
-        type: "regular",
-        category: "day_pass",
-        invoice_number: `DP-${Date.now()}`,
-        line_items: [{
-          description: `Day Pass - ${building.name}`,
-          quantity: 1,
-          unitPrice: price,
-          amount: price,
-          rate: price
-        }],
-        sub_total: price,
-        tax_total: taxAmount,
-        total: totalAmount,
-        status: "draft",
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-      });
+        invoice = new Invoice({
+          client: clientIdForInvoice,
+          guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
+          building: buildingId,
+          type: "regular",
+          category: "day_pass",
+          invoice_number: `DP-${Date.now()}`,
+          line_items: [{
+            description: `Day Pass - ${building.name}`,
+            quantity: 1,
+            unitPrice: price,
+            amount: price,
+            rate: price
+          }],
+          sub_total: price,
+          tax_total: taxAmount,
+          total: totalAmount,
+          status: "draft",
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        });
 
-      await invoice.save({ session });
+        await invoice.save({ session });
 
-      // Link invoice to day pass
-      dayPass.invoice = invoice._id;
-      await dayPass.save({ session });
+        dayPass.invoice = invoice._id;
+        await dayPass.save({ session });
+      }
 
       await session.commitTransaction();
 
-      // Populate response data
       await dayPass.populate([
         { path: 'customer', select: 'name email phone' },
         { path: 'building', select: 'name address openSpacePricing' },
         { path: 'invoice', select: 'invoice_number total status' }
       ]);
 
-      // Log activity
       await logBookingActivity(req, 'CREATE', 'DayPass', dayPass._id, {
         customerId,
         memberId,
@@ -170,29 +207,33 @@ export const createSingleDayPass = async (req, res) => {
         totalAmount
       });
 
+      const responseData = {
+        dayPass,
+      };
+      if (invoice) {
+        responseData.invoice = invoice;
+      }
+      if (paymentMethod !== 'credits') {
+        responseData.razorpayConfig = {
+          key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
+          amount: totalAmount * 100, // Razorpay expects amount in paise
+          currency: 'INR',
+          name: 'Ofis Square',
+          description: `Day Pass - ${building.name}`,
+          order_id: `daypass_${dayPass._id}`,
+          prefill: {
+            name: customer.companyName,
+            email: customer.email,
+            contact: customer.phone
+          },
+          theme: { color: '#3399cc' }
+        };
+      }
+
       res.status(201).json({
         success: true,
         message: 'Day pass created successfully',
-        data: {
-          dayPass,
-          invoice,
-          razorpayConfig: {
-            key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
-            amount: totalAmount * 100, // Razorpay expects amount in paise
-            currency: 'INR',
-            name: 'Ofis Square',
-            description: `Day Pass - ${building.name}`,
-            order_id: `daypass_${dayPass._id}`,
-            prefill: {
-              name: customer.companyName,
-              email: customer.email,
-              contact: customer.phone
-            },
-            theme: {
-              color: '#3399cc'
-            }
-          }
-        }
+        data: responseData
       });
 
     } catch (error) {

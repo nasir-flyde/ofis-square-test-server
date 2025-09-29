@@ -3,6 +3,8 @@ import MeetingRoom from "../models/meetingRoomModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import MeetingRoomPricing from "../models/meetingRoomPricingModel.js";
 import Member from "../models/memberModel.js";
+import Invoice from "../models/invoiceModel.js";
+import Client from "../models/clientModel.js";
 import WalletService from "../services/walletService.js";
 
 // Convert date to IST time string (HH:MM)
@@ -87,7 +89,7 @@ export const createBooking = async (req, res) => {
     const { 
       room: roomId, 
       member, 
-      clientId, 
+      memberId, 
       paymentMethod, 
       idempotencyKey, 
       visitors,
@@ -102,13 +104,18 @@ export const createBooking = async (req, res) => {
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
 
-    // Validate member belongs to client if both provided
-    if (clientId && member) {
-      const memberRecord = await Member.findOne({ _id: member, client: clientId });
-      if (!memberRecord) {
-        return res.status(400).json({ success: false, message: "Member not found in specified client" });
-      }
+    // Get memberId from middleware or request body
+    const currentMemberId = req.memberId || memberId;
+    if (!currentMemberId) {
+      return res.status(400).json({ success: false, message: "memberId is required" });
     }
+
+    // Get member and client info
+    const memberDoc = await Member.findById(currentMemberId).populate('client');
+    if (!memberDoc) {
+      return res.status(404).json({ success: false, message: "Member not found" });
+    }
+    const clientId = memberDoc.client._id;
 
     const room = await MeetingRoom.findById(roomId);
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
@@ -116,25 +123,42 @@ export const createBooking = async (req, res) => {
     const avail = await checkAvailability(room, new Date(start), new Date(end));
     if (!avail.ok) return res.status(400).json({ success: false, message: avail.reason });
 
+    // Calculate duration and pricing for all payment methods
+    const durationHours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
+    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
+    const hourlyRate = pricing?.hourlyRate || room.pricing?.dailyRate || 500; // Default rate
+    // Use floor for non-integer totals (e.g., 2033.33 -> 2033) per requirement
+    const totalAmount = Math.floor(Number(hourlyRate) * Number(durationHours));
+    // No GST for meeting room cash invoices per requirement
+    const taxAmount = 0;
+    const finalAmount = totalAmount;
+
     // Handle credit payment
     let paymentDetails = {};
-    if (paymentMethod === "credits" && clientId) {
+    let invoice = null;
+    let bookingStatus = "booked";
+
+    if (paymentMethod === "credits") {
       if (!idempotencyKey) {
         return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
       }
 
-      // Calculate duration in hours
-      const durationHours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
-      
+      // Check if current member is allowed to use credits
+      if (memberDoc.status !== "active") {
+        return res.status(403).json({ success: false, code: "MEMBER_INACTIVE", message: "Member is inactive" });
+      }
+      if (memberDoc.allowedUsingCredits === false) {
+        return res.status(403).json({ success: false, code: "CREDITS_NOT_ALLOWED", message: "This member is not allowed to use credits" });
+      }
+
       // Get pricing for this room (default to 1 credit per hour if not set)
-      const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
       const creditsPerHour = pricing?.creditsPerHour || 1;
       const requiredCredits = Math.ceil(creditsPerHour * durationHours);
 
       // Consume credits with overdraft support
       const result = await WalletService.consumeCreditsWithOverdraft({
         clientId,
-        memberId: member,
+        memberId: currentMemberId,
         requiredCredits,
         idempotencyKey,
         refType: "meeting_booking",
@@ -155,29 +179,78 @@ export const createBooking = async (req, res) => {
         valuePerCredit: result.valuePerCredit,
         idempotencyKey
       };
+    } else if (paymentMethod === "cash") {
+      // Cash payment - create invoice and set payment_pending status
+      bookingStatus = "payment_pending";
+      
+      if (clientId) {
+        invoice = new Invoice({
+          client: clientId,
+          type: "regular",
+          category: "meeting_room",
+          invoice_number: `MR-${Date.now()}`,
+          line_items: [{
+            description: `Meeting Room - ${room.name} (${durationHours}h)`,
+            quantity: durationHours,
+            unitPrice: hourlyRate,
+            amount: totalAmount,
+            rate: hourlyRate
+          }],
+          sub_total: totalAmount,
+          tax_total: 0,
+          total: totalAmount,
+          status: "draft",
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        });
+
+        await invoice.save();
+      }
+
+      paymentDetails = { 
+        method: "cash", 
+        amount: finalAmount 
+      };
     } else {
-      // Cash/card payment
+      // Other payment methods
       paymentDetails = { 
         method: paymentMethod || "cash", 
-        amount: amount || 0 
+        amount: amount || finalAmount 
       };
     }
 
     const booking = await MeetingBooking.create({
       room: roomId,
-      member: member || undefined,
+      member: currentMemberId,
       client: clientId || undefined,
       visitors: Array.isArray(visitors) ? visitors : undefined,
       start: new Date(start),
       end: new Date(end),
       amenitiesRequested: Array.isArray(amenitiesRequested) ? amenitiesRequested : undefined,
-      status: "booked",
+      status: bookingStatus,
       payment: paymentDetails,
       currency: currency || undefined,
       notes: notes || undefined,
+      invoice: invoice?._id || undefined,
     });
 
-    return res.status(201).json({ success: true, data: booking });
+    const responseData = {
+      booking,
+    };
+    if (invoice) {
+      responseData.invoice = invoice;
+    }
+    if (paymentMethod === 'cash') {
+      responseData.razorpayConfig = {
+        key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
+        amount: totalAmount * 100, // Convert to paise (no GST)
+        currency: "INR",
+        name: "Ofis Square",
+        description: `Meeting Room - ${room.name}`,
+        meetingBookingId: booking._id
+      };
+    }
+
+    return res.status(201).json({ success: true, data: responseData });
   } catch (error) {
     console.error("Create booking error:", error);
     return res.status(500).json({ success: false, message: error.message });

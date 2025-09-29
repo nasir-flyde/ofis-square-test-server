@@ -8,7 +8,7 @@ import mongoose from "mongoose";
 // GET /api/users - Get all users with optional filters
 export const getUsers = async (req, res) => {
   try {
-    const { role, page = 1, limit = 20, search } = req.query;
+    const { role, page = 1, limit = 20, search, excludeMember } = req.query;
     
     const filter = {};
     if (role) filter.role = role;
@@ -18,6 +18,18 @@ export const getUsers = async (req, res) => {
         { email: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } }
       ];
+    }
+
+    // Optionally exclude users with the 'member' role when requested and when no explicit role filter is applied
+    if (excludeMember === 'true' && !role) {
+      try {
+        const memberRole = await Role.findOne({ roleName: 'member' }).select('_id');
+        if (memberRole?._id) {
+          filter.role = { $ne: memberRole._id };
+        }
+      } catch (e) {
+        // If role lookup fails, proceed without excluding to avoid breaking the endpoint
+      }
     }
 
     const skip = (page - 1) * limit;

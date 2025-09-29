@@ -289,6 +289,8 @@ export const getClientCreditTransactions = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
+        .populate('createdBy', 'name email')
+        .populate('itemId', 'name code')
         .lean(),
       CreditTransaction.countDocuments(query)
     ]);
