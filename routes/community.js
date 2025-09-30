@@ -8,6 +8,15 @@ import {
   getCommunityTickets,
   getCommunityBuildingClients,
   getCommunityInventory,
+  getCommunityEvents,
+  getCommunityEventCategories,
+  getCommunityEventById,
+  rsvpToEvent,
+  cancelRsvp,
+  createCommunityEvent,
+  updateCommunityEvent,
+  deleteCommunityEvent,
+  publishCommunityEvent,
 } from "../controllers/communityController.js";
 import communityMiddleware from "../middlewares/communityMiddleware.js";
 
@@ -30,5 +39,16 @@ router.get("/tickets", communityMiddleware, getCommunityTickets);
 
 // Building-specific inventory for community users
 router.get("/inventory", communityMiddleware, getCommunityInventory);
+
+// Building-specific events for community users
+router.get("/events", communityMiddleware, getCommunityEvents);
+router.get("/events/:id", communityMiddleware, getCommunityEventById);
+router.post("/events/:id/rsvp", communityMiddleware, rsvpToEvent);
+router.delete("/events/:id/rsvp", communityMiddleware, cancelRsvp);
+router.post("/events", communityMiddleware, createCommunityEvent);
+router.put("/events/:id", communityMiddleware, updateCommunityEvent);
+router.delete("/events/:id", communityMiddleware, deleteCommunityEvent);
+router.patch("/events/:id/publish", communityMiddleware, publishCommunityEvent);
+router.get("/event-categories", communityMiddleware, getCommunityEventCategories);
 
 export default router;

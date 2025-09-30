@@ -29,6 +29,8 @@ import activityLogsRoutes from "./activityLogs.js";
 import apiLogsRoutes from "./apiLogs.js";
 import eventsRoutes from "./events.js";
 import eventCategoriesRoutes from "./eventCategories.js";
+import leadsRoutes from "./leads.js";
+import notificationsRoutes from "./notifications.js";
 
 
 const router = express.Router();
@@ -63,4 +65,6 @@ router.use("/activity-logs", activityLogsRoutes);
 router.use("/api-logs", apiLogsRoutes);
 router.use("/events", eventsRoutes);
 router.use("/event-categories", eventCategoriesRoutes);
+router.use("/leads", leadsRoutes);
+router.use("/notifications", notificationsRoutes);
 export default router;

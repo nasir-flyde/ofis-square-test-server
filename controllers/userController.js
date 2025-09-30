@@ -330,9 +330,9 @@ export const getStaffUsers = async (req, res) => {
     const { page = 1, limit = 20, search } = req.query;
 
     // Find the Role document for 'community' (staff users are now community users)
-    const communityRole = await Role.findOne({ roleName: 'community' }).select('_id');
+    const communityRole = await Role.findOne({ roleName: 'staff' }).select('_id');
     if (!communityRole) {
-      return res.status(404).json({ success: false, message: "Role 'community' not found" });
+      return res.status(404).json({ success: false, message: "Role 'staff' not found" });
     }
 
     const filter = { role: communityRole._id };
@@ -352,9 +352,6 @@ export const getStaffUsers = async (req, res) => {
       .populate('role', 'roleName description')
       .select('-password')
       .sort({ createdAt: -1 });
-
-    // Manual logging removed - handled by middleware for non-GET requests only
-
     const total = await User.countDocuments(filter);
 
     return res.json({

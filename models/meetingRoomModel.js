@@ -28,6 +28,7 @@ const meetingRoomSchema = new Schema(
     name: { type: String, required: true, trim: true },
     capacity: { type: Number, required: true },
     amenities: { type: [String], default: [] },
+    images: { type: [String], default: [] },
     pricing: { type: pricingSchema, default: () => ({}) },
     availability: { type: availabilitySchema, default: () => ({}) },
     blackoutDates: { type: [Date], default: [] },

@@ -123,15 +123,13 @@ export const createBooking = async (req, res) => {
     const avail = await checkAvailability(room, new Date(start), new Date(end));
     if (!avail.ok) return res.status(400).json({ success: false, message: avail.reason });
 
-    // Calculate duration and pricing for all payment methods
+    // Calculate duration and pricing
     const durationHours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
     const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
-    const hourlyRate = pricing?.hourlyRate || room.pricing?.dailyRate || 500; // Default rate
-    // Use floor for non-integer totals (e.g., 2033.33 -> 2033) per requirement
-    const totalAmount = Math.floor(Number(hourlyRate) * Number(durationHours));
+    // For cash/card payments we use daily pricing (quantity should be 1)
+    const dailyRate = room.pricing?.dailyRate || pricing?.dailyRate || 500; // Default daily rate fallback
     // No GST for meeting room cash invoices per requirement
     const taxAmount = 0;
-    const finalAmount = totalAmount;
 
     // Handle credit payment
     let paymentDetails = {};
@@ -190,15 +188,15 @@ export const createBooking = async (req, res) => {
           category: "meeting_room",
           invoice_number: `MR-${Date.now()}`,
           line_items: [{
-            description: `Meeting Room - ${room.name} (${durationHours}h)`,
-            quantity: durationHours,
-            unitPrice: hourlyRate,
-            amount: totalAmount,
-            rate: hourlyRate
+            description: `Meeting Room - ${room.name} (Daily)`,
+            quantity: 1,
+            unitPrice: dailyRate,
+            amount: dailyRate,
+            rate: dailyRate
           }],
-          sub_total: totalAmount,
+          sub_total: dailyRate,
           tax_total: 0,
-          total: totalAmount,
+          total: dailyRate,
           status: "draft",
           due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
         });
@@ -208,13 +206,13 @@ export const createBooking = async (req, res) => {
 
       paymentDetails = { 
         method: "cash", 
-        amount: finalAmount 
+        amount: dailyRate 
       };
     } else {
       // Other payment methods
       paymentDetails = { 
         method: paymentMethod || "cash", 
-        amount: amount || finalAmount 
+        amount: amount || undefined 
       };
     }
 
@@ -242,7 +240,7 @@ export const createBooking = async (req, res) => {
     if (paymentMethod === 'cash') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
-        amount: totalAmount * 100, // Convert to paise (no GST)
+        amount: dailyRate * 100, // Convert to paise (no GST)
         currency: "INR",
         name: "Ofis Square",
         description: `Meeting Room - ${room.name}`,
@@ -292,6 +290,27 @@ export const cancelBooking = async (req, res) => {
 
     booking.status = "cancelled";
     await booking.save();
+    return res.json({ success: true, data: booking });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get single booking by ID
+export const getBookingById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: "id is required" });
+
+    const booking = await MeetingBooking.findById(id)
+      .populate("room", "name capacity amenities")
+      .populate("member", "firstName lastName email phone companyName user")
+      .populate("client", "companyName name email phone")
+      .populate("visitors", "name email phone company")
+      .populate({ path: "invoice", select: "invoiceNumber status total" });
+
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found" });
+
     return res.json({ success: true, data: booking });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });

@@ -4,12 +4,13 @@ import clientMiddleware from "../middlewares/clientMiddleware.js";
 import universalMiddleware from "../middlewares/universalAuthVerify.js";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
 import communityMiddleware from "../middlewares/communityMiddleware.js";
-import { createBooking, listBookings, cancelBooking, utilizationReport } from "../controllers/meetingBookingController.js";
+import { createBooking, listBookings, cancelBooking, utilizationReport, getBookingById } from "../controllers/meetingBookingController.js";
 
 const router = express.Router();
 
 // Booking CRUD
 router.get("/",listBookings);
+router.get("/:id", getBookingById);
 router.post("/", authMiddleware,createBooking);
 // Client access to create bookings
 router.post("/client", universalMiddleware, createBooking);

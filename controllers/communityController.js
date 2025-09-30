@@ -5,6 +5,8 @@ import Ticket from "../models/ticketModel.js";
 import Invoice from "../models/invoiceModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import Visitor from "../models/visitorModel.js";
+import Event from "../models/eventModel.js";
+import EventCategory from "../models/eventCategoryModel.js";
 import mongoose from "mongoose";
 import { logActivity } from "../utils/activityLogger.js";
 
@@ -163,8 +165,44 @@ export const getCommunityDashboard = async (req, res) => {
   }
 };
 
+// Publish an event (community - only if event belongs to member's building)
+export const publishCommunityEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const event = await Event.findById(id);
+    if (!event) return res.status(404).json({ success: false, error: 'Event not found' });
+    if (!event.location?.building || event.location.building.toString() !== buildingId.toString()) {
+      return res.status(403).json({ success: false, error: 'Not allowed to publish this event' });
+    }
+
+    event.status = 'published';
+    await event.save();
+
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'publish',
+      resource: 'community_event',
+      resourceId: id,
+      details: { title: event.title },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({ success: true, data: event });
+  } catch (err) {
+    console.error('publishCommunityEvent error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to publish event' });
+  }
+};
+
 // List clients for community users with lightweight aggregates
-export const getCommunityClients = async (_req, res) => {
+export const getCommunityClients = async (req, res) => {
   try {
     const clients = await Client.aggregate([
       {
@@ -193,7 +231,6 @@ export const getCommunityClients = async (_req, res) => {
       { $sort: { createdAt: -1 } }
     ]);
 
-    // Log clients list access
     await logActivity({
       userId: req.userId,
       userType: req.userType,
@@ -212,7 +249,6 @@ export const getCommunityClients = async (_req, res) => {
   }
 };
 
-// Get a single client's details for community users
 export const getCommunityClientById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -529,8 +565,31 @@ export const getCommunityInventory = async (req, res) => {
       return res.status(400).json({ success: false, error: "Building ID not found in token" });
     }
 
-    // Since there's no inventory model yet, return a placeholder response
-    // This can be updated when inventory model is created
+    // Import Building model
+    const Building = mongoose.model('Building');
+    
+    // Get building details
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(404).json({ success: false, error: "Building not found" });
+    }
+
+    // Get all cabins for this building with populated data
+    const cabins = await Cabin.find({ building: buildingId })
+      .populate('allocatedTo', 'companyName contactPerson')
+      .populate('contract', 'status startDate endDate')
+      .populate('desks', 'number status')
+      .sort({ floor: 1, number: 1 });
+
+    // Calculate stats
+    const stats = {
+      totalCabins: cabins.length,
+      available: cabins.filter(c => c.status === 'available').length,
+      occupied: cabins.filter(c => c.status === 'occupied').length,
+      maintenance: cabins.filter(c => c.status === 'maintenance').length,
+      totalDesks: cabins.reduce((sum, cabin) => sum + (cabin.desks?.length || 0), 0)
+    };
+
     // Log inventory access
     await logActivity({
       userId: req.userId,
@@ -538,7 +597,7 @@ export const getCommunityInventory = async (req, res) => {
       action: 'view',
       resource: 'community_inventory',
       resourceId: buildingId,
-      details: { buildingId, status: 'not_implemented' },
+      details: { buildingId, stats },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -546,12 +605,396 @@ export const getCommunityInventory = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        items: [],
-        message: "Inventory system not yet implemented for this building"
+        building,
+        cabins,
+        stats
       }
     });
   } catch (err) {
     console.error("getCommunityInventory error:", err);
     return res.status(500).json({ success: false, error: "Failed to fetch inventory" });
+  }
+};
+
+// Get building-specific events for community members
+export const getCommunityEvents = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const { page = 1, limit = 20, status, category, search } = req.query;
+    
+    // Filter events by building and status
+    const filter = { 
+      'location.building': buildingId,
+    };
+    
+    if (status && status !== 'all') filter.status = status;
+    if (category && category !== 'all') filter.category = category;
+    if (search) {
+      filter.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const events = await Event.find(filter)
+      .populate('category', 'name')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name')
+      .populate('createdBy', 'name email')
+      .sort({ startDate: 1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Event.countDocuments(filter);
+
+    // Log events access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'community_events',
+      resourceId: buildingId,
+      details: { eventCount: events.length, buildingId, filters: { status, category, search } },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({
+      success: true,
+      data: events
+    });
+  } catch (err) {
+    console.error("getCommunityEvents error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch events" });
+  }
+};
+
+// Get event categories for community members
+export const getCommunityEventCategories = async (req, res) => {
+  try {
+    const categories = await EventCategory.find({ status: 'active' })
+      .sort({ name: 1 });
+
+    // Log categories access
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'list',
+      resource: 'event_categories',
+      resourceId: null,
+      details: { categoryCount: categories.length },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({
+      success: true,
+      data: categories
+    });
+  } catch (err) {
+    console.error("getCommunityEventCategories error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch event categories" });
+  }
+};
+
+// Get single event details with RSVP information
+export const getCommunityEventById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const memberId = req.memberId;
+
+    const event = await Event.findById(id)
+      .populate('category', 'name')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name')
+      .populate('createdBy', 'name email')
+      .populate('rsvps', 'firstName lastName email phone companyName')
+      .populate('attendance', 'firstName lastName email phone companyName');
+
+    if (!event) {
+      return res.status(404).json({ success: false, error: "Event not found" });
+    }
+
+    // Check if user has RSVPed
+    const hasRsvped = event.rsvps.some(rsvp => rsvp._id.toString() === memberId);
+
+    // Log event view
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'view',
+      resource: 'community_event',
+      resourceId: id,
+      details: { eventTitle: event.title, hasRsvped },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({
+      success: true,
+      data: { ...event.toObject(), hasRsvped }
+    });
+  } catch (err) {
+    console.error("getCommunityEventById error:", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch event details" });
+  }
+};
+
+// RSVP to an event
+export const rsvpToEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const memberId = req.memberId;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ success: false, error: "Event not found" });
+    }
+
+    // Check if event is published
+    if (event.status !== 'published') {
+      return res.status(400).json({ success: false, error: "Cannot RSVP to unpublished event" });
+    }
+
+    // Check if already RSVPed
+    if (event.rsvps.includes(memberId)) {
+      return res.status(400).json({ success: false, error: "Already RSVPed to this event" });
+    }
+
+    // Check capacity
+    if (event.capacity > 0 && event.rsvps.length >= event.capacity) {
+      return res.status(400).json({ success: false, error: "Event is at full capacity" });
+    }
+
+    // Add RSVP
+    event.rsvps.push(memberId);
+    await event.save();
+
+    // Log RSVP
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'rsvp',
+      resource: 'community_event',
+      resourceId: id,
+      details: { eventTitle: event.title, action: 'join' },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({
+      success: true,
+      message: "Successfully RSVPed to event",
+      data: { rsvpCount: event.rsvps.length }
+    });
+  } catch (err) {
+    console.error("rsvpToEvent error:", err);
+    return res.status(500).json({ success: false, error: "Failed to RSVP to event" });
+  }
+};
+
+// Cancel RSVP to an event
+export const cancelRsvp = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const memberId = req.memberId;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ success: false, error: "Event not found" });
+    }
+
+    // Check if RSVPed
+    if (!event.rsvps.includes(memberId)) {
+      return res.status(400).json({ success: false, error: "Not RSVPed to this event" });
+    }
+
+    // Remove RSVP
+    event.rsvps = event.rsvps.filter(rsvpId => rsvpId.toString() !== memberId);
+    await event.save();
+
+    // Log RSVP cancellation
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'rsvp',
+      resource: 'community_event',
+      resourceId: id,
+      details: { eventTitle: event.title, action: 'cancel' },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({
+      success: true,
+      message: "Successfully cancelled RSVP",
+      data: { rsvpCount: event.rsvps.length }
+    });
+  } catch (err) {
+    console.error("cancelRsvp error:", err);
+    return res.status(500).json({ success: false, error: "Failed to cancel RSVP" });
+  }
+};
+
+// Create event (community - scoped to member's building)
+export const createCommunityEvent = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const {
+      title,
+      description,
+      category,
+      startDate,
+      endDate,
+      location = {},
+      capacity = 0,
+      creditsRequired = 0,
+      status = 'draft'
+    } = req.body || {};
+
+    if (!title || !startDate || !endDate) {
+      return res.status(400).json({ success: false, error: "title, startDate and endDate are required" });
+    }
+
+    const event = await Event.create({
+      title,
+      description,
+      category: category || undefined,
+      startDate,
+      endDate,
+      location: {
+        building: buildingId,
+        room: location.room || undefined,
+        address: location.address || undefined,
+      },
+      capacity: Number.isFinite(+capacity) ? +capacity : 0,
+      creditsRequired: Number.isFinite(+creditsRequired) ? +creditsRequired : 0,
+      status,
+      createdBy: req.userId,
+    });
+
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'create',
+      resource: 'community_event',
+      resourceId: event._id,
+      details: { title: event.title, buildingId },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({ success: true, data: event });
+  } catch (err) {
+    console.error('createCommunityEvent error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to create event' });
+  }
+};
+
+// Update event (community - only if event belongs to member's building)
+export const updateCommunityEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const event = await Event.findById(id);
+    if (!event) return res.status(404).json({ success: false, error: 'Event not found' });
+    if (!event.location?.building || event.location.building.toString() !== buildingId.toString()) {
+      return res.status(403).json({ success: false, error: 'Not allowed to modify this event' });
+    }
+
+    const {
+      title,
+      description,
+      category,
+      startDate,
+      endDate,
+      location = {},
+      capacity,
+      creditsRequired,
+      status
+    } = req.body || {};
+
+    if (title !== undefined) event.title = title;
+    if (description !== undefined) event.description = description;
+    if (category !== undefined) event.category = category || undefined;
+    if (startDate !== undefined) event.startDate = startDate;
+    if (endDate !== undefined) event.endDate = endDate;
+    if (location) {
+      event.location = {
+        building: buildingId, // enforce current building
+        room: location.room || undefined,
+        address: location.address || undefined,
+      };
+    }
+    if (capacity !== undefined) event.capacity = Number.isFinite(+capacity) ? +capacity : 0;
+    if (creditsRequired !== undefined) event.creditsRequired = Number.isFinite(+creditsRequired) ? +creditsRequired : 0;
+    if (status !== undefined) event.status = status;
+
+    await event.save();
+
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'update',
+      resource: 'community_event',
+      resourceId: id,
+      details: { title: event.title },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({ success: true, data: event });
+  } catch (err) {
+    console.error('updateCommunityEvent error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to update event' });
+  }
+};
+
+// Delete event (community - only if event belongs to member's building)
+export const deleteCommunityEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, error: "Building ID not found in token" });
+    }
+
+    const event = await Event.findById(id);
+    if (!event) return res.status(404).json({ success: false, error: 'Event not found' });
+    if (!event.location?.building || event.location.building.toString() !== buildingId.toString()) {
+      return res.status(403).json({ success: false, error: 'Not allowed to delete this event' });
+    }
+
+    await Event.deleteOne({ _id: id });
+
+    await logActivity({
+      userId: req.userId,
+      userType: req.userType,
+      action: 'delete',
+      resource: 'community_event',
+      resourceId: id,
+      details: { title: event.title },
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    return res.json({ success: true, message: 'Event deleted' });
+  } catch (err) {
+    console.error('deleteCommunityEvent error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to delete event' });
   }
 };

@@ -130,12 +130,15 @@ export const verifyOtpAndLogin = async (req, res) => {
       roleName: user.role?.roleName || 'client'
     };
 
-    // Add role-specific data to token
+    let memberAllowedUsingCredits;
     if (user.role?.roleName === 'member') {
       const member = await Member.findOne({ user: user._id }).populate('client');
       if (member) {
         tokenPayload.memberId = member._id;
         tokenPayload.clientId = member.client?._id;
+        memberAllowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' 
+          ? member.allowedUsingCredits 
+          : true;
       }
     } else if (user.role?.roleName === 'client') {
       const client = await Client.findOne({ ownerUser: user._id });
@@ -152,33 +155,48 @@ export const verifyOtpAndLogin = async (req, res) => {
       if (guest) {
         tokenPayload.guestId = guest._id;
       }
+    } else if (user.role?.roleName === 'community') {
+      // include buildingId in token
+      if (user.buildingId) tokenPayload.buildingId = user.buildingId;
     }
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET || "ofis-square-secret-key", {
       expiresIn: "7d"
     });
 
-    // Build response object similar to onDemandUserLogin
+    // Build safeUser object aligned with other auth endpoints
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role?._id || user.role,
+      roleName: user.role?.roleName,
+      ...(user.role?.roleName === 'community' ? { buildingId: user.buildingId } : {}),
+      ...(user.role?.roleName === 'member' && typeof memberAllowedUsingCredits !== 'undefined' 
+        ? { allowedUsingCredits: memberAllowedUsingCredits } 
+        : {}),
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    // Build response object similar to specific role logins while keeping success for compatibility
     const responseData = {
       success: true,
       message: "Login successful",
       token,
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role?.roleName,
-        roleName: user.role?.roleName,
-        isPhoneVerified: true
-      },
+      user: safeUser,
       loginType: user.role?.roleName || 'client'
     };
 
-    // Add role-specific IDs to match onDemandUserLogin format
+    // Add role-specific IDs to match respective login formats
     if (tokenPayload.memberId) responseData.memberId = tokenPayload.memberId;
     if (tokenPayload.clientId) responseData.clientId = tokenPayload.clientId;
     if (tokenPayload.guestId) responseData.guestId = tokenPayload.guestId;
+    if (user.role?.roleName === 'community' && user.buildingId) responseData.buildingId = user.buildingId;
+    if (user.role?.roleName === 'member' && typeof memberAllowedUsingCredits !== 'undefined') {
+      responseData.allowedUsingCredits = memberAllowedUsingCredits;
+    }
 
     return res.status(200).json(responseData);
 

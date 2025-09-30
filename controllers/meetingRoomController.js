@@ -1,16 +1,40 @@
 import MeetingRoom from "../models/meetingRoomModel.js";
 import Building from "../models/buildingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
+import path from "path";
 
 // Create a meeting room
 export const createRoom = async (req, res) => {
   try {
-    const room = await MeetingRoom.create(req.body);
+    const roomData = { ...req.body };
+    
+    // Handle uploaded images with ImageKit
+    if (req.files && req.files.length > 0) {
+      const imageUploadPromises = req.files.map(async (file) => {
+        try {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `meeting-room-${Date.now()}-${Math.random().toString(36).substring(7)}${path.extname(file.originalname)}`,
+            folder: '/meeting-rooms'
+          });
+          return result.url;
+        } catch (uploadError) {
+          console.error('ImageKit upload error:', uploadError);
+          throw uploadError;
+        }
+      });
+      
+      roomData.images = await Promise.all(imageUploadPromises);
+    }
+    
+    const room = await MeetingRoom.create(roomData);
     await logCRUDActivity(req, 'CREATE', 'MeetingRoom', room._id, null, {
       roomName: room.name,
       buildingId: room.building,
       capacity: room.capacity,
-      dailyRate: room.pricing?.dailyRate
+      dailyRate: room.pricing?.dailyRate,
+      imagesCount: room.images?.length || 0
     });
     return res.status(201).json({ success: true, data: room });
   } catch (error) {
@@ -88,8 +112,55 @@ export const getRoomById = async (req, res) => {
 // Update room
 export const updateRoom = async (req, res) => {
   try {
-    const room = await MeetingRoom.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const updateData = { ...req.body };
+    
+    // Handle uploaded images with ImageKit
+    if (req.files && req.files.length > 0) {
+      const imageUploadPromises = req.files.map(async (file) => {
+        try {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `meeting-room-${Date.now()}-${Math.random().toString(36).substring(7)}${path.extname(file.originalname)}`,
+            folder: '/meeting-rooms'
+          });
+          return result.url;
+        } catch (uploadError) {
+          console.error('ImageKit upload error:', uploadError);
+          throw uploadError;
+        }
+      });
+      
+      const newImageUrls = await Promise.all(imageUploadPromises);
+      
+      // Get existing room to preserve existing images if needed
+      const existingRoom = await MeetingRoom.findById(req.params.id);
+      if (existingRoom) {
+        // Handle existing images from request body
+        const existingImages = req.body.existingImages ? JSON.parse(req.body.existingImages) : [];
+        updateData.images = [...existingImages, ...newImageUrls];
+      } else {
+        updateData.images = newImageUrls;
+      }
+    }
+    
+    // If no new files uploaded, still honor existingImages (including empty array to clear all)
+    if ((!req.files || req.files.length === 0) && typeof req.body.existingImages !== 'undefined') {
+      try {
+        const existingImagesOnly = JSON.parse(req.body.existingImages);
+        updateData.images = Array.isArray(existingImagesOnly) ? existingImagesOnly : [];
+      } catch (e) {
+        // If parsing fails, ignore and let it proceed without changing images
+      }
+    }
+    
+    const room = await MeetingRoom.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+    
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      imagesCount: room.images?.length || 0
+    });
+    
     return res.json({ success: true, data: room });
   } catch (error) {
     await logErrorActivity(req, error);

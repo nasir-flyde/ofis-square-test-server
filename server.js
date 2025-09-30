@@ -31,6 +31,7 @@ const corsOptions = {
     'https://ofis-square-client-git-backup-nasir-flydes-projects.vercel.app',
     'https://ofis-square-community.vercel.app',
     'http://localhost:5173',
+    'http://localhost:5175',
     'https://ofis-square-admin.vercel.app',
     'https://ofis-square-frontend.vercel.app'
   ],
