@@ -14,7 +14,7 @@ import Role from "../models/roleModel.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
 import { createContact } from "../utils/zohoBooks.js";
-import { sendWelcomeEmail } from "../utils/emailService.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logBusinessEvent } from "../utils/activityLogger.js";
 
 export const createClient = async (req, res) => {
@@ -185,7 +185,7 @@ export const createClient = async (req, res) => {
     try {
       if (!client.zohoBooksContactId) {
         const zohoPayload = {
-          contact_name: client.companyName || client.contactPerson || "Unknown",
+          contact_name: client.contactPerson || "Unknown",
           company_name: client.companyName,
           email: client.email,
           phone: client.phone,
@@ -214,7 +214,6 @@ export const createClient = async (req, res) => {
             : []
         };
 
-        // Remove undefined/empty fields
         Object.keys(zohoPayload).forEach(key => {
           if (zohoPayload[key] === undefined || zohoPayload[key] === null || zohoPayload[key] === '') {
             delete zohoPayload[key];
@@ -241,25 +240,29 @@ export const createClient = async (req, res) => {
         "response:", JSON.stringify(zohoErr?.response || {}, null, 2)
       );
     }
-
-    // Send welcome email after successful client creation
     try {
       if (client.email) {
-        const emailResult = await sendWelcomeEmail({
-          companyName: client.companyName,
-          contactPerson: client.contactPerson,
-          email: client.email
+        const name = (client.contactPerson || client.companyName || "there").trim();
+        const result = await sendNotification({
+          to: { email: client.email, clientId: client._id },
+          channels: { sms: false, email: true },
+          templateKey: 'welcome_email',
+          templateVariables: {
+            name,
+            companyName: process.env.BRAND_NAME || 'Ofis Square'
+          },
+          title: 'Welcome to Ofis Square',
+          metadata: { category: 'onboarding', tags: ['welcome', 'new_client'] },
+          source: 'system',
+          type: 'transactional'
         });
-        
-        if (emailResult.success) {
-          console.log(`Welcome email sent successfully to ${client.email}`);
-        } else {
-          console.error(`Failed to send welcome email to ${client.email}:`, emailResult.error);
+
+        if (result?._id) {
+          console.log(`Welcome notification queued (email) for ${client.email}`);
         }
       }
-    } catch (emailErr) {
-      console.error("createClient: Welcome email sending failed:", emailErr?.message || emailErr);
-      // Don't fail client creation if email fails
+    } catch (notifErr) {
+      console.error("createClient: Welcome notification failed:", notifErr?.message || notifErr);
     }
 
     // Activity log: Client created

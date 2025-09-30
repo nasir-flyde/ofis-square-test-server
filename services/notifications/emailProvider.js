@@ -5,14 +5,14 @@ class EmailProvider {
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
       port: process.env.SMTP_PORT || 587,
-      secure: false, // true for 465, false for other ports
+      secure: false,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
       }
     });
   }
-
+  
   async send({ toEmail, subject, html, text }) {
     try {
       if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
@@ -69,9 +69,7 @@ class MockEmailProvider {
   async send({ toEmail, subject, html, text }) {
     console.log(`[MOCK EMAIL] To: ${toEmail}, Subject: ${subject}`);
     console.log(`[MOCK EMAIL] Content: ${text || html}`);
-    
-    // Simulate random success/failure for testing
-    const success = Math.random() > 0.05; // 95% success rate
+    const success = Math.random() > 0.05;
     
     if (success) {
       return {
