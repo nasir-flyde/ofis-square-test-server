@@ -79,8 +79,6 @@ const universalAuthMiddleware = async (req, res, next) => {
         req.authType = 'ondemand';
         return next();
       }
-
-      // Default: admin/staff/client roleName
       req.authType = 'user';
       return next();
     }
@@ -89,13 +87,13 @@ const universalAuthMiddleware = async (req, res, next) => {
     const client = await Client.findById(decoded.clientId || decoded.id);
     if (client) {
       // Attach client info to request
+      req.memberId = client.memberId;
       req.client = client;
       req.clientId = client._id;
       req.authType = 'client';
       return next();
     }
 
-    // If neither user nor client found
     return res.status(401).json({ message: "Invalid token: user/client not found" });
 
   } catch (err) {

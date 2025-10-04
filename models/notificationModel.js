@@ -72,7 +72,6 @@ const notificationSchema = new Schema({
     routeParams: { type: Schema.Types.Mixed }
   },
   
-  // Targeting
   to: {
     phone: { type: String },
     email: { type: String },

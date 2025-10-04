@@ -26,6 +26,10 @@ export const createClient = async (req, res) => {
       companyName: body.companyName ?? body.company_name ?? undefined,
       legalName: body.legalName ?? body.legal_name ?? undefined,
       contactPerson: body.contactPerson ?? body.contact_person ?? undefined,
+      // Structured primary contact fields
+      primarySalutation: body.primarySalutation ?? body.primary_salutation ?? undefined,
+      primaryFirstName: body.primaryFirstName ?? body.primary_first_name ?? body.primary_firstName ?? undefined,
+      primaryLastName: body.primaryLastName ?? body.primary_last_name ?? body.primary_lastName ?? undefined,
       email: body.email ? String(body.email).toLowerCase().trim() : undefined,
       phone: body.phone ? String(body.phone).trim() : undefined,
       website: body.website ?? undefined,
@@ -184,8 +188,80 @@ export const createClient = async (req, res) => {
     }
     try {
       if (!client.zohoBooksContactId) {
+        // Build Zoho contact_persons: include primary from top-level fields, then additional contacts
+        const splitName = (nameStr) => {
+          if (!nameStr || typeof nameStr !== 'string') return { first: undefined, last: undefined };
+          const parts = nameStr.trim().split(/\s+/);
+          if (parts.length === 1) return { first: parts[0], last: undefined };
+          return { first: parts[0], last: parts.slice(1).join(' ') };
+        };
+
+        const hasPrimaryInAdditional = Array.isArray(client.contactPersons) && client.contactPersons.some(cp => cp?.is_primary_contact);
+        const inferred = splitName(client.contactPerson);
+        const primaryContact = {
+          salutation: client.primarySalutation || undefined,
+          first_name: client.primaryFirstName || inferred.first || undefined,
+          last_name: client.primaryLastName || inferred.last || undefined,
+          email: client.email || undefined,
+          phone: client.phone || undefined,
+          mobile: client.phone || undefined,
+          is_primary_contact: hasPrimaryInAdditional ? false : true,
+          enable_portal: client.isPortalEnabled ?? false,
+        };
+
+        const additionalContacts = Array.isArray(client.contactPersons)
+          ? client.contactPersons.map((cp) => ({
+              salutation: cp?.salutation || undefined,
+              first_name: cp?.first_name || cp?.firstName || undefined,
+              last_name: cp?.last_name || cp?.lastName || undefined,
+              email: cp?.email || undefined,
+              phone: cp?.phone || undefined,
+              mobile: cp?.mobile || cp?.phone || undefined,
+              designation: cp?.designation || undefined,
+              department: cp?.department || undefined,
+              is_primary_contact: cp?.is_primary_contact ?? cp?.isPrimaryContact ?? false,
+              enable_portal: cp?.enable_portal ?? cp?.enablePortal ?? false,
+            }))
+          : [];
+
+        // Ensure only one primary contact (prefer an explicitly marked one in additionalContacts)
+        let contactPersonsForZoho = [];
+        if (hasPrimaryInAdditional) {
+          contactPersonsForZoho = additionalContacts;
+        } else {
+          // Include primary first, then others
+          contactPersonsForZoho = [primaryContact, ...additionalContacts];
+        }
+        contactPersonsForZoho = contactPersonsForZoho.filter(c => c.first_name || c.email || c.phone);
+        let primaryContactSet = false;
+        contactPersonsForZoho = contactPersonsForZoho.map((contact, index) => {
+          const cleanContact = {};
+          Object.keys(contact).forEach(key => {
+            if (contact[key] !== undefined && contact[key] !== null && contact[key] !== '') {
+              if (key === 'is_primary_contact') {
+                // Only include is_primary_contact field if it's true, omit for false
+                if (!primaryContactSet && contact[key]) {
+                  cleanContact[key] = true;
+                  primaryContactSet = true;
+                }
+                // Don't include is_primary_contact: false - omit the field entirely
+              } else if (key === 'enable_portal') {
+                cleanContact[key] = Boolean(contact[key]);
+              } else {
+                cleanContact[key] = contact[key];
+              }
+            }
+          });
+          return cleanContact;
+        });
+
+        const primaryNameForZoho = [
+          (client.primaryFirstName || '').trim(),
+          (client.primaryLastName || '').trim()
+        ].filter(Boolean).join(' ').trim();
+
         const zohoPayload = {
-          contact_name: client.contactPerson || "Unknown",
+          contact_name: client.companyName || primaryNameForZoho || "Unknown",
           company_name: client.companyName,
           email: client.email,
           phone: client.phone,
@@ -198,20 +274,7 @@ export const createClient = async (req, res) => {
           notes: client.notes,
           billing_address: client.billingAddress,
           shipping_address: client.shippingAddress,
-          contact_persons: Array.isArray(client.contactPersons)
-            ? client.contactPersons.map((cp) => ({
-                salutation: cp?.salutation || undefined,
-                first_name: cp?.first_name || cp?.firstName || undefined,
-                last_name: cp?.last_name || cp?.lastName || undefined,
-                email: cp?.email || undefined,
-                phone: cp?.phone || undefined,
-                mobile: cp?.mobile || cp?.phone || undefined,
-                designation: cp?.designation || undefined,
-                department: cp?.department || undefined,
-                is_primary_contact: cp?.is_primary_contact ?? cp?.isPrimaryContact ?? false,
-                enable_portal: cp?.enable_portal ?? cp?.enablePortal ?? false,
-              }))
-            : []
+          contact_persons: contactPersonsForZoho
         };
 
         Object.keys(zohoPayload).forEach(key => {

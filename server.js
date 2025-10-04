@@ -12,6 +12,7 @@ import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
 import { scheduleNoShowUpdates, scheduleMonthlyInvoices } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
+import notificationScheduler from "./services/notifications/scheduler.js";
 import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -70,6 +71,8 @@ app.get("/", (req, res) => {
 scheduleNoShowUpdates();
 scheduleMonthlyInvoices();
 initializeScheduler();
+// Start notifications scheduler (checks every minute)
+notificationScheduler.start();
 
 const PORT = process.env.PORT || 5001;
 httpServer.listen(PORT, () => {

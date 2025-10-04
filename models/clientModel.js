@@ -6,6 +6,10 @@ const clientSchema = new mongoose.Schema(
     companyName: { type: String, required:false, trim: true },
     legalName: { type: String, trim: true, default: undefined },
     contactPerson: { type: String, trim: true },
+    // Structured primary contact details (for Zoho mapping)
+    primarySalutation: { type: String, trim: true, default: undefined },
+    primaryFirstName: { type: String, trim: true, default: undefined },
+    primaryLastName: { type: String, trim: true, default: undefined },
     email: { type: String, trim: true, lowercase: true },
     phone: { type: String, trim: true },
     website: { type: String, trim: true, default: undefined },
@@ -48,7 +52,6 @@ const clientSchema = new mongoose.Schema(
       phone: { type: String, trim: true, default: undefined },
     },
 
-    // Contacts
     contactPersons: [
       {
         salutation: { type: String, trim: true, default: undefined },
@@ -68,12 +71,11 @@ const clientSchema = new mongoose.Schema(
       },
     ],
 
-    gstNumber: { type: String, trim: true, default: undefined }, // legacy field kept for backward compatibility
+    gstNumber: { type: String, trim: true, default: undefined },
     gstNo: { type: String, trim: true, default: undefined },
     gstTreatment: { type: String, trim: true, default: undefined },
     isTaxable: { type: Boolean, default: true },
     taxRegNo: { type: String, trim: true, default: undefined },
-    // Zoho linkage (optional)
     zohoBooksContactId: { type: String, trim: true, index: true },
     pricebookId: { type: String, trim: true, default: undefined },
     currencyId: { type: String, trim: true, default: undefined },

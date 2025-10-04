@@ -1,4 +1,6 @@
 import Notification from "../models/notificationModel.js";
+import mongoose from "mongoose";
+
 import { getSMSProvider } from "../services/notifications/smsProvider.js";
 import { getEmailProvider } from "../services/notifications/emailProvider.js";
 import renderer from "../services/notifications/renderer.js";
@@ -89,6 +91,15 @@ export const createNotification = async (req, res) => {
       });
     }
 
+    // Sanitize recipient object 'to'
+    const toPayload = to || {};
+    const cleanTo = {};
+    if (toPayload.email && String(toPayload.email).trim()) cleanTo.email = String(toPayload.email).trim();
+    if (toPayload.phone && String(toPayload.phone).trim()) cleanTo.phone = String(toPayload.phone).trim();
+    if (toPayload.userId && mongoose.Types.ObjectId.isValid(toPayload.userId)) cleanTo.userId = toPayload.userId;
+    if (toPayload.memberId && mongoose.Types.ObjectId.isValid(toPayload.memberId)) cleanTo.memberId = toPayload.memberId;
+    if (toPayload.clientId && mongoose.Types.ObjectId.isValid(toPayload.clientId)) cleanTo.clientId = toPayload.clientId;
+
     // Create notification
     const notification = new Notification({
       type: type || 'system',
@@ -98,7 +109,7 @@ export const createNotification = async (req, res) => {
       templateVariables,
       content: renderedContent,
       metadata: metadata || {},
-      to,
+      to: cleanTo,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
       expiresAt: expiresAt ? new Date(expiresAt) : null,
       maxRetries: maxRetries || 3,
@@ -230,7 +241,7 @@ export const getNotifications = async (req, res) => {
       Notification.countDocuments(query)
     ]);
 
-    res.json({
+    const baseResponse = {
       success: true,
       data: notifications,
       pagination: {
@@ -239,7 +250,20 @@ export const getNotifications = async (req, res) => {
         totalRecords: total,
         hasMore: skip + notifications.length < total
       }
-    });
+    };
+
+    // Optional debug info when debug=1 is passed
+    if (String(req.query.debug || '') === '1') {
+      baseResponse.debug = {
+        authType: req.authType,
+        memberId: memberId || null,
+        clientIdFromAuth: clientIdFromAuth || null,
+        resolvedClientId: resolvedClientId ? String(resolvedClientId) : null,
+        contextUsed
+      };
+    }
+
+    res.json(baseResponse);
 
   } catch (error) {
     console.error("Get notifications error:", error);
@@ -452,6 +476,236 @@ export const cancelNotification = async (req, res) => {
   }
 };
 
+// Get notifications for a specific member
+export const getMemberNotifications = async (req, res) => {
+  try {
+    const memberId = req.memberId; // From auth middleware (universal/member)
+    const clientIdFromAuth = req.clientId; // From universal auth (member or client tokens)
+    const user = req.user; // From universal auth (admin/staff/member)
+    const {
+      page = 1,
+      limit = 20,
+      q,
+      type,
+      status,
+      dateFrom,
+      dateTo,
+      sort = '-createdAt'
+    } = req.query;
+    // Determine clientId: Prefer value provided by universal auth, otherwise derive from member
+    let resolvedClientId = clientIdFromAuth || null;
+
+    if (!resolvedClientId && memberId) {
+      try {
+        const Member = (await import('../models/memberModel.js')).default;
+        const member = await Member.findById(memberId).select('client');
+        if (member?.client) {
+          resolvedClientId = member.client;
+        }
+      } catch (e) {
+      }
+    }
+
+    if (!resolvedClientId && user?._id) {
+      try {
+        const Member = (await import('../models/memberModel.js')).default;
+        const memberByUser = await Member.findOne({ user: user._id }).select('client');
+        if (memberByUser?.client) {
+          resolvedClientId = memberByUser.client;
+        }
+      } catch (e) {
+      }
+    }
+
+    let query;
+    let contextUsed = 'client';
+    if (resolvedClientId) {
+      query = { 'to.clientId': resolvedClientId };
+    } else if (memberId) {
+      query = { 'to.memberId': memberId };
+      contextUsed = 'member';
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: 'No client or member context found for this user',
+      });
+    }
+
+    // Text search
+    if (q) {
+      query.$or = [
+        { title: { $regex: q, $options: 'i' } },
+        { 'content.smsText': { $regex: q, $options: 'i' } },
+        { 'content.emailSubject': { $regex: q, $options: 'i' } }
+      ];
+    }
+
+    if (type) query.type = type;
+    if (status) {
+      query.$or = [
+        { 'smsDelivery.status': status },
+        { 'emailDelivery.status': status }
+      ];
+    }
+
+    // Date filters
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) query.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
+        .populate('to.clientId', 'companyName email')
+        .populate('createdBy', 'name email')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      data: notifications,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + notifications.length < total
+      }
+    });
+
+  } catch (error) {
+    console.error("Get member notifications error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch member notifications",
+      error: error.message
+    });
+  }
+};
+
+// Get notifications strictly for the authenticated memberId (no client association)
+export const getMemberOnlyNotifications = async (req, res) => {
+  try {
+    const memberId = req.memberId; // Injected by universalAuthMiddleware for roleName === 'member'
+    const {
+      page = 1,
+      limit = 20,
+      q,
+      type,
+      status,
+      dateFrom,
+      dateTo,
+      sort = '-createdAt',
+      debug = '0'
+    } = req.query;
+
+    if (!memberId) {
+      return res.status(403).json({
+        success: false,
+        message: 'No member context found on the token',
+      });
+    }
+
+    let memberObjectId = memberId;
+    try {
+      memberObjectId = new mongoose.Types.ObjectId(String(memberId));
+    } catch (_) {
+    }
+    const query = { 'to.memberId': memberObjectId };
+    if (debug === '1') {
+      console.log('getMemberOnlyNotifications Debug:', {
+        memberId: String(memberId),
+        memberIdType: typeof memberId,
+        memberObjectId: String(memberObjectId),
+        query: JSON.stringify(query, null, 2)
+      });
+      
+      // Also check if there are any notifications with this memberId at all
+      const allNotificationsWithMemberId = await Notification.find({ 'to.memberId': { $exists: true } })
+        .select('to.memberId title')
+        .limit(10);
+      console.log('Sample notifications with memberId:', allNotificationsWithMemberId.map(n => ({
+        id: n._id,
+        title: n.title,
+        memberId: String(n.to?.memberId),
+        memberIdType: typeof n.to?.memberId
+      })));
+    }
+
+    // Text search
+    if (q) {
+      query.$or = [
+        { title: { $regex: q, $options: 'i' } },
+        { 'content.smsText': { $regex: q, $options: 'i' } },
+        { 'content.emailSubject': { $regex: q, $options: 'i' } }
+      ];
+    }
+
+    if (type) query.type = type;
+    if (status) {
+      query.$or = [
+        { 'smsDelivery.status': status },
+        { 'emailDelivery.status': status }
+      ];
+    }
+
+    // Date filters
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) query.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
+        .populate('to.memberId', 'firstName lastName email')
+        .populate('createdBy', 'name email')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments(query)
+    ]);
+
+    const response = {
+      success: true,
+      data: notifications,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + notifications.length < total
+      }
+    };
+
+    // Add debug info if requested
+    if (debug === '1') {
+      response.debug = {
+        memberId: String(memberId),
+        memberIdType: typeof memberId,
+        query: query,
+        totalFound: total
+      };
+    }
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Get member-only notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch member-only notifications',
+      error: error.message
+    });
+  }
+};
+
 // Get notification statistics
 export const getNotificationStats = async (req, res) => {
   try {
@@ -626,3 +880,130 @@ async function sendEmail(notification) {
     });
   }
 }
+// Get notifications for community users by building context
+export const getCommunityNotifications = async (req, res) => {
+  try {
+    const buildingId = req.buildingId || req.building?._id;
+    const {
+      page = 1,
+      limit = 20,
+      q,
+      channel,
+      status,
+      type,
+      dateFrom,
+      dateTo,
+      sort = '-createdAt'
+    } = req.query;
+
+    if (!buildingId) {
+      return res.status(403).json({ success: false, message: 'No building context found for this user' });
+    }
+
+    // Find clients in this building
+    const Client = (await import('../models/clientModel.js')).default;
+    const Member = (await import('../models/memberModel.js')).default;
+    const clients = await Client.find({ building: buildingId }).select('_id');
+    const clientIds = clients.map(c => c._id);
+
+    // Find members whose client is in those clients
+    const members = clientIds.length
+      ? await Member.find({ client: { $in: clientIds } }).select('_id')
+      : [];
+    const memberIds = members.map(m => m._id);
+
+    // If no clients and no members found, return empty set early
+    if (clientIds.length === 0 && memberIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: { currentPage: parseInt(page), totalPages: 0, totalRecords: 0, hasMore: false },
+        ...(String(req.query.debug || '') === '1' ? { debug: { buildingId: String(buildingId), clientCount: 0, memberCount: 0 } } : {})
+      });
+    }
+
+    // Build base query: notifications to these clients or these members
+    const query = {
+      $or: [
+        clientIds.length ? { 'to.clientId': { $in: clientIds } } : null,
+        memberIds.length ? { 'to.memberId': { $in: memberIds } } : null
+      ].filter(Boolean)
+    };
+
+    // Text search
+    if (q) {
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [
+          { title: { $regex: q, $options: 'i' } },
+          { 'content.smsText': { $regex: q, $options: 'i' } },
+          { 'content.emailSubject': { $regex: q, $options: 'i' } }
+        ]
+      });
+    }
+
+    // Channel filter
+    if (channel) {
+      if (channel === 'sms') query['channels.sms'] = true;
+      if (channel === 'email') query['channels.email'] = true;
+    }
+
+    // Status filter (any channel with this status)
+    if (status) {
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [
+          { 'smsDelivery.status': status },
+          { 'emailDelivery.status': status }
+        ]
+      });
+    }
+
+    if (type) query.type = type;
+
+    // Date filters
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) query.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
+        .populate('to.userId', 'name email')
+        .populate('to.memberId', 'firstName lastName email')
+        .populate('to.clientId', 'companyName email')
+        .populate('createdBy', 'name email')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments(query)
+    ]);
+
+    const resp = {
+      success: true,
+      data: notifications,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + notifications.length < total
+      }
+    };
+
+    if (String(req.query.debug || '') === '1') {
+      resp.debug = {
+        buildingId: String(buildingId),
+        clientCount: clientIds.length,
+        memberCount: memberIds.length
+      };
+    }
+
+    res.json(resp);
+  } catch (error) {
+    console.error('Get community notifications error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch community notifications', error: error.message });
+  }
+};

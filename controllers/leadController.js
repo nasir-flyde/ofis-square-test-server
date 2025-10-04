@@ -4,7 +4,7 @@ import { logActivity } from "../utils/activityLogger.js";
 // Create a new lead from signup form
 export const createLead = async (req, res) => {
   try {
-    const { firstName, lastName, companyName, address, pincode, email, phone } = req.body;
+    const { firstName, lastName, companyName, address, pincode, email, phone, numberOfEmployees, purpose } = req.body;
 
     // Check if lead already exists with same email or phone
     const existingLead = await Lead.findOne({
@@ -30,6 +30,8 @@ export const createLead = async (req, res) => {
       pincode: pincode.trim(),
       email: email.toLowerCase().trim(),
       phone: phone.replace(/\D/g, ''),
+      numberOfEmployees: parseInt(numberOfEmployees),
+      purpose: purpose.trim(),
       status: 'new',
       source: 'website_signup'
     };

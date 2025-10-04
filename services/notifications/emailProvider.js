@@ -92,7 +92,6 @@ class MockEmailProvider {
   }
 }
 
-// Factory function to get the appropriate provider
 export const getEmailProvider = () => {
   const useMock = process.env.NODE_ENV === 'test' || process.env.USE_MOCK_EMAIL === 'true';
   return useMock ? new MockEmailProvider() : new EmailProvider();

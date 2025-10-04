@@ -15,8 +15,7 @@ class NotificationScheduler {
       console.log('Notification scheduler is already running');
       return;
     }
-
-    // Run every minute to check for pending notifications
+    
     this.cronJob = cron.schedule('* * * * *', async () => {
       await this.processPendingNotifications();
     }, {
@@ -69,7 +68,18 @@ class NotificationScheduler {
           notification.updateDeliveryStatus('email', 'canceled', { details: 'Notification expired' });
         }
         
-        await notification.save();
+        // Atomic update to avoid VersionError
+        await Notification.updateOne(
+          { _id: notification._id },
+          {
+            $set: {
+              canceled: notification.canceled,
+              cancelReason: notification.cancelReason,
+              smsDelivery: notification.smsDelivery,
+              emailDelivery: notification.emailDelivery
+            }
+          }
+        );
         return;
       }
 
@@ -86,7 +96,16 @@ class NotificationScheduler {
       }
 
       await Promise.allSettled(promises);
-      await notification.save();
+      // Persist delivery updates atomically to avoid VersionError if the document was updated elsewhere
+      await Notification.updateOne(
+        { _id: notification._id },
+        {
+          $set: {
+            smsDelivery: notification.smsDelivery,
+            emailDelivery: notification.emailDelivery
+          }
+        }
+      );
 
     } catch (error) {
       console.error(`Error processing notification ${notification._id}:`, error);

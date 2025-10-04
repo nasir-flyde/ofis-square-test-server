@@ -55,6 +55,17 @@ const leadSchema = new mongoose.Schema({
       message: 'Please enter a valid 10-digit phone number'
     }
   },
+  numberOfEmployees: {
+    type: Number,
+    required: true,
+    min: [1, 'Number of employees must be at least 1']
+  },
+  purpose: {
+    type: String,
+    required: true,
+    enum: ['coworking_space', 'day_pass', 'meeting_room', 'private_office', 'virtual_office', 'event_space'],
+    trim: true
+  },
   status: {
     type: String,
     enum: ['new', 'contacted', 'qualified', 'converted', 'lost'],

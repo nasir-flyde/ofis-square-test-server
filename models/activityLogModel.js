@@ -28,6 +28,7 @@ const activityLogSchema = new mongoose.Schema(
       enum: [
         "CREATE",
         "READ",
+        "LIST",
         "UPDATE",
         "DELETE",
         "LOGIN",
