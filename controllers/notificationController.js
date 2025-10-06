@@ -479,9 +479,10 @@ export const cancelNotification = async (req, res) => {
 // Get notifications for a specific member
 export const getMemberNotifications = async (req, res) => {
   try {
-    const memberId = req.memberId; // From auth middleware (universal/member)
-    const clientIdFromAuth = req.clientId; // From universal auth (member or client tokens)
+    let memberId = req.memberId || req.query.memberId; // From auth middleware or query params
+    let clientIdFromAuth = req.clientId; // From universal auth (member or client tokens)
     const user = req.user; // From universal auth (admin/staff/member)
+    const client = req.client; // From universal auth (client tokens)
     const {
       page = 1,
       limit = 20,
@@ -492,6 +493,12 @@ export const getMemberNotifications = async (req, res) => {
       dateTo,
       sort = '-createdAt'
     } = req.query;
+    
+    // If we have a client object directly, use its ID
+    if (client && client._id && !clientIdFromAuth) {
+      clientIdFromAuth = client._id;
+    }
+    
     // Determine clientId: Prefer value provided by universal auth, otherwise derive from member
     let resolvedClientId = clientIdFromAuth || null;
 
@@ -509,9 +516,13 @@ export const getMemberNotifications = async (req, res) => {
     if (!resolvedClientId && user?._id) {
       try {
         const Member = (await import('../models/memberModel.js')).default;
-        const memberByUser = await Member.findOne({ user: user._id }).select('client');
+        const memberByUser = await Member.findOne({ user: user._id }).select('client _id');
         if (memberByUser?.client) {
           resolvedClientId = memberByUser.client;
+          // Also set memberId if not already set
+          if (!memberId && memberByUser._id) {
+            memberId = memberByUser._id;
+          }
         }
       } catch (e) {
       }
@@ -525,6 +536,15 @@ export const getMemberNotifications = async (req, res) => {
       query = { 'to.memberId': memberId };
       contextUsed = 'member';
     } else {
+      console.log('getMemberNotifications Debug - No context found:', {
+        memberId,
+        clientIdFromAuth,
+        resolvedClientId,
+        hasUser: !!user,
+        hasClient: !!client,
+        userId: user?._id,
+        clientId: client?._id
+      });
       return res.status(403).json({
         success: false,
         message: 'No client or member context found for this user',
