@@ -239,12 +239,13 @@ export const createClient = async (req, res) => {
           Object.keys(contact).forEach(key => {
             if (contact[key] !== undefined && contact[key] !== null && contact[key] !== '') {
               if (key === 'is_primary_contact') {
-                // Only include is_primary_contact field if it's true, omit for false
-                if (!primaryContactSet && contact[key]) {
+                // Only include is_primary_contact: true for the primary contact
+                // Completely omit the field for all other contacts
+                if (contact[key] === true && !primaryContactSet) {
                   cleanContact[key] = true;
                   primaryContactSet = true;
                 }
-                // Don't include is_primary_contact: false - omit the field entirely
+                // Skip this field entirely if false or already set primary
               } else if (key === 'enable_portal') {
                 cleanContact[key] = Boolean(contact[key]);
               } else {
@@ -254,6 +255,11 @@ export const createClient = async (req, res) => {
           });
           return cleanContact;
         });
+        
+        // Ensure at least one contact has is_primary_contact: true
+        if (!primaryContactSet && contactPersonsForZoho.length > 0) {
+          contactPersonsForZoho[0].is_primary_contact = true;
+        }
 
         const primaryNameForZoho = [
           (client.primaryFirstName || '').trim(),
