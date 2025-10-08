@@ -1,270 +1,233 @@
 # User Onboarding Journey - Complete UML Documentation
+## Admin-Driven Client Onboarding Flow
 
 ## Complete User Onboarding Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-    participant User as New User
-    participant Portal as Client Portal
-    participant Auth as Auth System
+    participant Admin as Admin User
+    participant Portal as Admin Portal
     participant Backend as Backend API
     participant DB as MongoDB
     participant Zoho as Zoho Books
+    participant ZohoSign as Zoho Sign
     participant Email as Email Service
     participant SMS as SMS Service
+    participant Client as Client User
 
-    Note over User,SMS: Phase 1: Initial Registration
-    User->>Portal: Access signup page
-    Portal->>User: Display registration form
-    User->>Portal: Enter details (name, email, phone, company)
-    Portal->>Backend: POST /auth/register
+    Note over Admin,Client: Phase 1: Admin Creates Client Account
+    Admin->>Portal: Login to admin portal
+    Admin->>Portal: Navigate to "Create Client"
+    Portal->>Admin: Display client onboarding form
+    Admin->>Portal: Enter client details (Step 1: Basic Info)
+    Note right of Admin: Company name, legal name<br/>Contact person, email, phone<br/>Website, industry, address
+    
+    Admin->>Portal: Enter commercial details (Step 2)
+    Note right of Admin: Contact type, customer sub-type<br/>Credit limit, payment terms<br/>Portal access, notes
+    
+    Admin->>Portal: Enter address details (Step 3)
+    Note right of Admin: Billing address<br/>Shipping address<br/>"Same as billing" option
+    
+    Admin->>Portal: Enter contact persons (Step 4)
+    Note right of Admin: Multiple contacts with<br/>Primary contact selection<br/>Portal access flags
+    
+    Admin->>Portal: Submit client creation form
+    Portal->>Backend: POST /clients (with all details)
     
     Backend->>DB: Check if email/phone exists
-    alt User already exists
-        DB-->>Backend: User found
-        Backend-->>Portal: 400 Error: User exists
-        Portal->>User: Show error message
-    else New user
-        DB-->>Backend: No existing user
-        Backend->>DB: Create User document
-        Backend->>DB: Create Role (default: client)
-        Backend->>DB: Create Client document
+    alt Client already exists
+        DB-->>Backend: Client found
+        Backend-->>Portal: 400 Error: Client exists
+        Portal->>Admin: Show error message
+    else New client
+        DB-->>Backend: No existing client
+        Backend->>DB: Create User document (for client login)
+        Backend->>DB: Create Client document (with all details)
         Backend->>DB: Create Member document (linked to client)
         DB-->>Backend: Documents created
         
-        Note over Backend,Zoho: Sync to Zoho Books
+        Note over Backend,Zoho: Auto-sync to Zoho Books
         Backend->>Zoho: POST /contacts (create contact)
-        Zoho-->>Backend: Contact created with zoho_contact_id
-        Backend->>DB: Update Client with zohoBooksContactId
+        Note right of Backend: Maps all client fields:<br/>- Company name → contact name<br/>- Primary contact → contact person<br/>- Addresses → billing/shipping<br/>- GST, payment terms, etc.
+        Zoho-->>Backend: Contact created with contact_id
+        Backend->>DB: Update Client.zohoBooksContactId
         
         Note over Backend,Email: Send Welcome Communications
-        Backend->>Email: Send welcome email
-        Email-->>User: Welcome email received
+        Backend->>Email: Send welcome email to client
+        Email-->>Client: Welcome email with login credentials
         Backend->>SMS: Send welcome SMS
-        SMS-->>User: Welcome SMS received
+        SMS-->>Client: Welcome SMS notification
         
-        Backend->>Auth: Generate JWT token
-        Auth-->>Backend: JWT token with user, client, member IDs
-        Backend-->>Portal: 201 Created + JWT token + user object
-        Portal->>Portal: Store token in localStorage
-        Portal->>Portal: Store user object in localStorage
-        Portal->>User: Redirect to dashboard
+        Backend-->>Portal: 201 Created + client details
+        Portal->>Admin: Show success + client ID
     end
 
-    Note over User,SMS: Phase 2: Profile Completion
-    User->>Portal: Navigate to profile page
-    Portal->>Backend: GET /clients/me (with JWT)
-    Backend->>DB: Find client by clientId from token
-    DB-->>Backend: Return client data
-    Backend-->>Portal: Client profile data
-    Portal->>User: Display profile form (pre-filled)
-    
-    User->>Portal: Update profile (company details, address, GST)
-    Portal->>Backend: PUT /clients/:id
-    Backend->>DB: Update Client document
-    Backend->>Zoho: PUT /contacts/:id (sync updates)
-    Zoho-->>Backend: Contact updated
-    Backend-->>Portal: 200 OK + updated client
-    Portal->>User: Show success message
-
-    Note over User,SMS: Phase 3: KYC Verification
-    User->>Portal: Navigate to KYC section
-    Portal->>User: Display KYC form
-    User->>Portal: Upload documents (PAN, GST, Address proof)
+    Note over Admin,Client: Phase 2: KYC Document Upload
+    Admin->>Portal: Navigate to client details page
+    Admin->>Portal: Click "Upload KYC Documents"
+    Portal->>Admin: Display KYC upload form
+    Admin->>Portal: Upload documents (PAN, GST, Address proof, etc.)
     Portal->>Backend: POST /clients/:id/kyc-documents
     Backend->>DB: Store document URLs in Client.kycDocuments
-    Backend->>DB: Set kycStatus = 'pending'
+    Backend->>DB: Set kycStatus = 'submitted'
     DB-->>Backend: Documents saved
     Backend-->>Portal: 200 OK
-    Portal->>User: Show "KYC submitted, pending review"
+    Portal->>Admin: Show "KYC documents uploaded"
     
-    Note over Backend,Email: Admin Review Process
-    Backend->>Email: Notify admin of new KYC submission
-    
-    Note over User,SMS: Admin Reviews KYC
+    Note over Admin,Client: Phase 3: KYC Verification
     Admin->>Portal: Review KYC documents
+    Admin->>Portal: Verify documents (approve/reject)
     Admin->>Backend: PUT /clients/:id/kyc-status
     Backend->>DB: Update kycStatus = 'verified'
     Backend->>DB: Set kycVerifiedAt = now()
     
     alt KYC Approved
         Backend->>Email: Send KYC approval email
-        Email-->>User: KYC approved notification
+        Email-->>Client: KYC approved notification
         Backend->>SMS: Send KYC approval SMS
-        SMS-->>User: KYC approved SMS
-        
-        Note over Backend,DB: Auto-create draft contract
-        Backend->>DB: Create Contract document (status: draft)
-        DB-->>Backend: Contract created
+        SMS-->>Client: KYC approved SMS
+        Backend-->>Portal: 200 OK
+        Portal->>Admin: Show "KYC verified successfully"
     else KYC Rejected
         Backend->>Email: Send KYC rejection email with reason
-        Email-->>User: KYC rejected notification
+        Email-->>Client: KYC rejected notification
         Backend-->>Portal: KYC rejected
-        Portal->>User: Show rejection reason
+        Portal->>Admin: Show rejection confirmation
     end
 
-    Note over User,SMS: Phase 4: Contract Setup
-    User->>Portal: View contracts section
-    Portal->>Backend: GET /contracts?clientId=xxx
-    Backend->>DB: Find contracts for client
-    DB-->>Backend: Return contracts (including draft)
-    Backend-->>Portal: Contracts list
-    Portal->>User: Display draft contract
+    Note over Admin,Client: Phase 4: Contract Creation & Configuration
+    Admin->>Portal: Navigate to "Create Contract"
+    Portal->>Admin: Display contract form
+    Admin->>Portal: Enter contract details
+    Note right of Admin: - Workspace allocation<br/>- Pricing (monthly/annual)<br/>- Credit allocation<br/>- Contract terms & duration<br/>- Start/end dates
     
-    Admin->>Portal: Configure contract details
-    Admin->>Backend: PUT /contracts/:id
-    Backend->>DB: Update contract (workspace, pricing, credits)
-    Backend->>DB: Create ClientCreditWallet if credit_enabled
-    DB-->>Backend: Contract and wallet created
-    Backend-->>Portal: 200 OK
+    Admin->>Portal: Submit contract form
+    Portal->>Backend: POST /contracts
+    Backend->>DB: Create Contract document
+    Backend->>DB: Link contract to client
     
-    Note over Backend,Zoho: Send for Digital Signature
-    Admin->>Backend: POST /contracts/:id/send-for-signature
-    Backend->>Zoho: POST /sign/documents (Zoho Sign API)
-    Zoho-->>Backend: Document ID + signature request ID
-    Backend->>DB: Update contract (zohoSignRequestId, status: pending_signature)
+    alt Credit-enabled contract
+        Backend->>DB: Create ClientCreditWallet
+        Backend->>DB: Set allocated_credits
+        DB-->>Backend: Wallet created
+    end
+    
+    Backend->>DB: Set contract status = 'draft'
+    DB-->>Backend: Contract created
+    Backend-->>Portal: 201 Created + contract details
+    Portal->>Admin: Show "Contract created successfully"
+
+    Note over Admin,Client: Phase 5: Send Contract for E-Signature
+    Admin->>Portal: Click "Send for Signature" on contract
+    Portal->>Backend: POST /contracts/:id/send-for-signature
+    Backend->>Backend: Generate contract PDF
+    Backend->>ZohoSign: POST /documents (upload contract)
+    ZohoSign-->>Backend: Document ID
+    Backend->>ZohoSign: POST /recipients (add client as signer)
+    ZohoSign-->>Backend: Request ID
+    Backend->>ZohoSign: POST /submit (send for signature)
+    ZohoSign-->>Backend: Signature request sent
+    
+    Backend->>DB: Update contract
+    Note right of Backend: - zohoSignRequestId<br/>- status = 'pending_signature'<br/>- sentForSignatureAt = now()
+    
     Backend->>Email: Send signature request email
-    Email-->>User: Contract signature link
+    Email-->>Client: Contract signature link
+    Backend->>SMS: Send signature notification SMS
+    SMS-->>Client: "Contract ready for signature"
+    Backend-->>Portal: 200 OK
+    Portal->>Admin: Show "Signature request sent"
     
-    User->>Email: Click signature link
-    User->>Zoho: Sign contract digitally
-    Zoho->>Backend: Webhook: signature_completed
-    Backend->>DB: Update contract (status: active, signedAt)
+    Note over Client,ZohoSign: Client Signs Contract
+    Client->>Email: Click signature link
+    Client->>ZohoSign: Open contract in Zoho Sign
+    ZohoSign->>Client: Display contract for review
+    Client->>ZohoSign: Sign contract digitally
+    ZohoSign->>Backend: Webhook: document.signed
+    Backend->>DB: Update contract
+    Note right of Backend: - status = 'active'<br/>- signedAt = now()
     Backend->>Email: Send contract activation email
-    Email-->>User: Contract activated notification
+    Email-->>Client: "Contract activated" notification
+    Email-->>Admin: "Contract signed" notification
+    Backend->>SMS: Send activation SMS
+    SMS-->>Client: "Contract active" SMS
 
-    Note over User,SMS: Phase 5: Payment & Activation
-    User->>Portal: View invoices section
-    Portal->>Backend: GET /invoices?clientId=xxx
-    Backend->>DB: Find invoices for client
-    DB-->>Backend: Return invoices (including contract invoice)
-    Backend-->>Portal: Invoices list
-    Portal->>User: Display pending invoice
+    Note over Admin,Client: Phase 6: Cabin/Workspace Allocation
+    Admin->>Portal: Navigate to "Allocations"
+    Admin->>Portal: Select client and contract
+    Portal->>Admin: Display allocation form
+    Admin->>Portal: Select workspace details
+    Note right of Admin: - Building<br/>- Floor<br/>- Cabin/Desk number<br/>- Allocation date<br/>- Access permissions
     
-    User->>Portal: Click "Pay Now"
-    Portal->>Backend: POST /payments/razorpay/create-order
-    Backend->>Backend: Calculate amount (invoice total + GST)
-    Backend->>Razorpay: Create payment order
-    Razorpay-->>Backend: Order ID + payment details
-    Backend-->>Portal: Razorpay config
+    Admin->>Portal: Submit allocation
+    Portal->>Backend: POST /allocations
+    Backend->>DB: Create Allocation document
+    Backend->>DB: Link allocation to member
+    Backend->>DB: Update member.workspace details
+    Backend->>DB: Generate access QR code
+    DB-->>Backend: Allocation created
     
-    Portal->>User: Open Razorpay payment gateway
-    User->>Razorpay: Complete payment (card/UPI/netbanking)
-    Razorpay->>Portal: Payment success callback
-    Portal->>Backend: POST /payments/razorpay/success
-    
-    Backend->>Razorpay: Verify payment signature
-    Razorpay-->>Backend: Signature valid
-    Backend->>DB: Create Payment document
-    Backend->>DB: Update Invoice (status: paid, amount_paid)
-    Backend->>DB: Update Contract (status: active if not already)
-    
-    Note over Backend,Zoho: Sync payment to Zoho Books
-    Backend->>Zoho: POST /invoices (create invoice)
-    Zoho-->>Backend: Invoice created with zoho_invoice_id
-    Backend->>Zoho: POST /customerpayments (record payment)
-    Zoho-->>Backend: Payment recorded
-    Backend->>DB: Update Invoice with zohoInvoiceId
-    
-    Backend->>Email: Send payment receipt
-    Email-->>User: Payment confirmation email
-    Backend->>SMS: Send payment confirmation SMS
-    SMS-->>User: Payment confirmation SMS
-    Backend-->>Portal: 200 OK + payment details
-    Portal->>User: Show payment success
+    Backend->>Email: Send workspace details email
+    Email-->>Client: Workspace allocation with QR code
+    Backend->>SMS: Send allocation SMS
+    SMS-->>Client: "Workspace allocated" notification
+    Backend-->>Portal: 201 Created
+    Portal->>Admin: Show "Allocation successful"
 
-    Note over User,SMS: Phase 6: Workspace Access
-    User->>Portal: Navigate to dashboard
-    Portal->>Backend: GET /member-portal/me
-    Backend->>DB: Find Member by memberId from token
-    DB-->>Backend: Return member with workspace details
-    Backend-->>Portal: Member profile + workspace info
-    Portal->>User: Display workspace details (desk, cabin, building)
+    Note over Admin,Client: Phase 7: Onboarding Complete
+    Admin->>Portal: Mark onboarding as complete
+    Portal->>Backend: PUT /clients/:id/onboarding-status
+    Backend->>DB: Update client.onboardingStatus = 'completed'
+    Backend->>DB: Set client.onboardedAt = now()
+    Backend->>Email: Send onboarding completion email
+    Email-->>Client: "Welcome to workspace" email
+    Note right of Email: - Login credentials<br/>- Workspace details<br/>- Access instructions<br/>- Portal guide
+    Backend-->>Portal: 200 OK
+    Portal->>Admin: Show "Onboarding completed"
     
-    User->>Portal: View bookings section
-    Portal->>Backend: GET /member-portal/me/bookings
-    Backend->>DB: Find bookings for member
-    DB-->>Backend: Return bookings (meeting rooms, day passes)
-    Backend-->>Portal: Bookings list
-    Portal->>User: Display active bookings
-    
-    User->>Portal: Create new booking (meeting room)
-    Portal->>Backend: POST /bookings/meeting-rooms
-    Backend->>DB: Check availability
-    Backend->>DB: Create Booking document
-    Backend->>DB: Generate QR code for check-in
-    DB-->>Backend: Booking created
-    Backend->>Email: Send booking confirmation
-    Email-->>User: Booking confirmation with QR
-    Backend-->>Portal: 200 OK + booking details
-    Portal->>User: Show booking success
-
-    Note over User,SMS: Phase 7: Ongoing Usage
-    User->>Portal: Use services (day pass, meeting rooms, credits)
-    Portal->>Backend: Various API calls for services
-    Backend->>DB: Track usage, consume credits
-    Backend->>DB: Create invoices for exceeded usage
-    
-    Note over Backend,Email: Month-end Billing
-    Backend->>Backend: Cron job: consolidate monthly usage
-    Backend->>DB: Calculate exceeded credits
-    Backend->>DB: Create consolidated invoice
-    Backend->>Zoho: Sync invoice to Zoho Books
-    Backend->>Email: Send invoice to client
-    Email-->>User: Monthly invoice email
-    
-    User->>Portal: View and pay invoice
-    Note right of User: Payment flow repeats from Phase 5
+    Note over Client: Client Can Now Access Portal
+    Client->>Portal: Login to client portal
+    Client->>Portal: View workspace, bookings, invoices
+    Client->>Portal: Use services (meeting rooms, day pass, etc.)
 ```
 
-## User Onboarding State Machine
+## Admin-Driven Onboarding State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Unregistered
+    [*] --> NotOnboarded
     
-    Unregistered --> Registering: User submits signup form
-    Registering --> RegistrationFailed: Validation error
-    Registering --> Registered: User created successfully
-    RegistrationFailed --> Unregistered: Retry
+    NotOnboarded --> ClientCreated: Admin creates client
+    ClientCreated --> ZohoSynced: Auto-sync to Zoho Books
+    ZohoSynced --> WelcomeSent: Welcome email/SMS sent
     
-    Registered --> ProfileIncomplete: Initial state
-    ProfileIncomplete --> ProfileCompleting: User updates profile
-    ProfileCompleting --> ProfileComplete: Profile saved
-    ProfileCompleting --> ProfileIncomplete: Validation error
-    
-    ProfileComplete --> KYCPending: User submits KYC documents
-    KYCPending --> KYCUnderReview: Admin notified
+    WelcomeSent --> KYCPending: Admin uploads KYC docs
+    KYCPending --> KYCUnderReview: Admin reviews documents
     KYCUnderReview --> KYCVerified: Admin approves
     KYCUnderReview --> KYCRejected: Admin rejects
-    KYCRejected --> KYCPending: User resubmits
+    KYCRejected --> KYCPending: Admin re-uploads docs
     
-    KYCVerified --> ContractDraft: Auto-create draft contract
-    ContractDraft --> ContractConfigured: Admin configures terms
-    ContractConfigured --> PendingSignature: Sent for signature
-    PendingSignature --> ContractSigned: User signs digitally
-    PendingSignature --> ContractExpired: Signature timeout
-    ContractExpired --> PendingSignature: Resend signature request
+    KYCVerified --> ContractDraft: Admin creates contract
+    ContractDraft --> ContractConfigured: Admin sets terms
+    ContractConfigured --> PendingSignature: Admin sends for e-sign
+    PendingSignature --> ContractSigned: Client signs via Zoho Sign
+    PendingSignature --> SignatureExpired: Timeout
+    SignatureExpired --> PendingSignature: Admin resends
     
-    ContractSigned --> PendingPayment: Invoice generated
-    PendingPayment --> PaymentProcessing: User initiates payment
-    PaymentProcessing --> PaymentFailed: Payment declined
-    PaymentProcessing --> PaymentSuccess: Payment completed
-    PaymentFailed --> PendingPayment: Retry payment
+    ContractSigned --> WorkspaceAllocation: Admin allocates cabin/desk
+    WorkspaceAllocation --> OnboardingComplete: Admin marks complete
     
-    PaymentSuccess --> Active: Full access granted
+    OnboardingComplete --> ClientActive: Client can access portal
     
-    Active --> UsingServices: User books/uses services
-    UsingServices --> Active: Service completed
-    Active --> MonthlyBilling: Month-end consolidation
-    MonthlyBilling --> PendingPayment: Invoice generated
-    MonthlyBilling --> Active: No payment due
+    ClientActive --> UsingServices: Client uses services
+    UsingServices --> ClientActive: Service completed
+    ClientActive --> MonthlyBilling: Month-end consolidation
+    MonthlyBilling --> ClientActive: Auto-billing processed
     
-    Active --> Suspended: Non-payment
-    Suspended --> Active: Payment received
-    Suspended --> Terminated: Extended non-payment
+    ClientActive --> Suspended: Non-payment/violation
+    Suspended --> ClientActive: Issue resolved
+    Suspended --> Terminated: Contract ended
     
-    Active --> Terminated: Contract ended
     Terminated --> [*]
 ```
 
@@ -272,39 +235,37 @@ stateDiagram-v2
 
 ```mermaid
 graph TB
-    subgraph "Frontend - Client Portal"
-        A1[Signup Page]
-        A2[Profile Page]
-        A3[KYC Upload Page]
-        A4[Contracts Page]
-        A5[Invoices Page]
-        A6[Dashboard]
-        A7[Bookings Page]
+    subgraph "Admin Portal"
+        A1[Create Client Page]
+        A2[Client Details Page]
+        A3[KYC Management]
+        A4[Contract Creation]
+        A5[Allocation Management]
+        A6[Onboarding Dashboard]
     end
     
-    subgraph "Authentication Layer"
-        B1[Auth Controller]
-        B2[JWT Service]
-        B3[OTP Service]
-        B4[Universal Auth Middleware]
+    subgraph "Client Portal"
+        B1[Login Page]
+        B2[Dashboard]
+        B3[Bookings Page]
+        B4[Invoices Page]
+        B5[Profile Page]
     end
     
     subgraph "Core Business Logic"
         C1[Client Controller]
         C2[Member Controller]
         C3[Contract Controller]
-        C4[Invoice Controller]
-        C5[Payment Controller]
+        C4[Allocation Controller]
+        C5[Invoice Controller]
         C6[Booking Controller]
-        C7[Credit Controller]
     end
     
     subgraph "External Integrations"
         D1[Zoho Books API]
         D2[Zoho Sign API]
-        D3[Razorpay Gateway]
-        D4[Email Service]
-        D5[SMS Service]
+        D3[Email Service]
+        D4[SMS Service]
     end
     
     subgraph "Database Models"
@@ -312,227 +273,276 @@ graph TB
         E2[(Client Model)]
         E3[(Member Model)]
         E4[(Contract Model)]
-        E5[(Invoice Model)]
-        E6[(Payment Model)]
-        E7[(Booking Model)]
-        E8[(CreditWallet Model)]
+        E5[(Allocation Model)]
+        E6[(CreditWallet Model)]
     end
     
-    subgraph "Background Jobs"
-        F1[Credit Consolidation Cron]
-        F2[Invoice Generation Cron]
-        F3[Contract Expiry Check]
-        F4[Payment Reminder Cron]
-    end
-    
-    A1 --> B1
+    A1 --> C1
     A2 --> C1
     A3 --> C1
     A4 --> C3
     A5 --> C4
-    A6 --> C2
-    A7 --> C6
     
-    B1 --> B2
-    B1 --> B3
-    B4 --> E1
-    B4 --> E2
-    B4 --> E3
+    B1 --> C2
+    B2 --> C2
+    B3 --> C6
+    B4 --> C5
+    B5 --> C1
     
     C1 --> E2
     C1 --> D1
+    C1 --> D3
     C1 --> D4
     C2 --> E3
     C3 --> E4
     C3 --> D2
     C4 --> E5
-    C4 --> D1
-    C5 --> E6
-    C5 --> D3
-    C5 --> D1
-    C6 --> E7
-    C7 --> E8
+    C4 --> D3
     
-    F1 --> C7
-    F2 --> C4
-    F3 --> C3
-    F4 --> D4
-    F4 --> D5
+    E2 --> E1
+    E3 --> E2
+    E4 --> E2
+    E4 --> E6
+    E5 --> E3
 ```
 
-## Data Flow - Complete Onboarding
+## Admin-Driven Data Flow
 
 ```mermaid
 flowchart TD
-    Start([User Visits Portal]) --> A{Registered?}
+    Start([Admin Logs In]) --> A[Navigate to Create Client]
     
-    A -->|No| B[Signup Form]
-    B --> C[Submit Registration]
-    C --> D[Create User + Client + Member]
-    D --> E[Sync to Zoho Books]
-    E --> F[Send Welcome Email/SMS]
-    F --> G[Login with JWT]
+    A --> B[Fill Client Form - Step 1]
+    B --> C[Basic Info: Company, Contact, Email, Phone]
+    C --> D[Fill Step 2: Commercial Details]
+    D --> E[Credit Limit, Payment Terms, Notes]
+    E --> F[Fill Step 3: Addresses]
+    F --> G[Billing & Shipping Address]
+    G --> H[Fill Step 4: Contact Persons]
+    H --> I[Primary + Additional Contacts]
     
-    A -->|Yes| G
+    I --> J[Submit Client Creation]
+    J --> K[Create User + Client + Member]
+    K --> L[Auto-sync to Zoho Books]
+    L --> M[Send Welcome Email/SMS to Client]
     
-    G --> H[Complete Profile]
-    H --> I[Update Client Details]
-    I --> J[Sync Profile to Zoho]
+    M --> N[Admin Uploads KYC Documents]
+    N --> O[Store KYC in Client Record]
+    O --> P[Admin Reviews KYC]
     
-    J --> K[Submit KYC Documents]
-    K --> L{Admin Review}
+    P --> Q{KYC Approved?}
+    Q -->|No| R[Reject with Reason]
+    R --> N
     
-    L -->|Rejected| M[Resubmit KYC]
-    M --> K
+    Q -->|Yes| S[Mark KYC Verified]
+    S --> T[Send KYC Approval Notification]
     
-    L -->|Approved| N[Auto-create Draft Contract]
-    N --> O[Admin Configures Contract]
-    O --> P[Create Credit Wallet if enabled]
-    P --> Q[Send for Digital Signature]
+    T --> U[Admin Creates Contract]
+    U --> V[Set Workspace, Pricing, Credits]
+    V --> W[Create Contract Record]
     
-    Q --> R{User Signs?}
-    R -->|No| S[Signature Reminder]
-    S --> Q
+    W --> X{Credit Enabled?}
+    X -->|Yes| Y[Create Credit Wallet]
+    X -->|No| Z[Skip Wallet]
     
-    R -->|Yes| T[Contract Activated]
-    T --> U[Generate Initial Invoice]
-    U --> V[User Initiates Payment]
+    Y --> AA[Admin Sends for E-Signature]
+    Z --> AA
     
-    V --> W[Razorpay Gateway]
-    W --> X{Payment Success?}
+    AA --> AB[Upload to Zoho Sign]
+    AB --> AC[Send Signature Request to Client]
+    AC --> AD{Client Signs?}
     
-    X -->|No| Y[Payment Failed]
-    Y --> V
+    AD -->|No| AE[Wait/Resend]
+    AE --> AD
     
-    X -->|Yes| Z[Record Payment]
-    Z --> AA[Update Invoice Status]
-    AA --> AB[Sync to Zoho Books]
-    AB --> AC[Send Receipt]
+    AD -->|Yes| AF[Zoho Sign Webhook]
+    AF --> AG[Update Contract Status: Active]
+    AG --> AH[Send Activation Notification]
     
-    AC --> AD[Grant Workspace Access]
-    AD --> AE[User Active]
+    AH --> AI[Admin Allocates Workspace]
+    AI --> AJ[Select Building, Cabin, Desk]
+    AJ --> AK[Create Allocation Record]
+    AK --> AL[Generate Access QR Code]
+    AL --> AM[Send Workspace Details to Client]
     
-    AE --> AF[Use Services]
-    AF --> AG[Track Usage/Credits]
-    AG --> AH{Month End?}
+    AM --> AN[Admin Marks Onboarding Complete]
+    AN --> AO[Update Client Status: Active]
+    AO --> AP[Send Completion Email]
     
-    AH -->|No| AF
-    AH -->|Yes| AI[Consolidate Usage]
-    AI --> AJ[Generate Invoice]
-    AJ --> AK{Payment Due?}
+    AP --> AQ[Client Can Access Portal]
+    AQ --> AR[Client Uses Services]
+    AR --> AS[Track Usage & Credits]
+    AS --> AT{Month End?}
     
-    AK -->|Yes| V
-    AK -->|No| AF
+    AT -->|Yes| AU[Auto-consolidate Usage]
+    AU --> AV[Generate Invoice]
+    AV --> AW[Sync to Zoho Books]
+    AW --> AX[Send Invoice to Client]
+    
+    AT -->|No| AR
 ```
 
-## Key Milestones & Touchpoints
+## Admin-Driven Onboarding Timeline
 
 ```mermaid
 gantt
-    title User Onboarding Timeline
+    title Admin-Driven Client Onboarding Timeline
     dateFormat X
     axisFormat %s
     
-    section Registration
-    Signup Form Submission           :0, 1
-    Account Creation                 :1, 2
-    Zoho Sync                       :2, 3
-    Welcome Email/SMS               :3, 4
+    section Phase 1: Client Creation
+    Admin fills 4-step form          :0, 2
+    Create User/Client/Member        :2, 3
+    Auto-sync to Zoho Books         :3, 4
+    Send Welcome Email/SMS          :4, 5
     
-    section Profile Setup
-    Login & Profile Access          :4, 5
-    Complete Profile Details        :5, 7
-    Profile Sync to Zoho           :7, 8
+    section Phase 2: KYC
+    Admin uploads KYC docs          :5, 7
+    Admin reviews documents         :7, 9
+    KYC Approval/Rejection          :9, 10
+    Send KYC notification           :10, 11
     
-    section KYC Process
-    Submit KYC Documents            :8, 10
-    Admin Review (1-2 days)         :10, 12
-    KYC Approval Notification       :12, 13
+    section Phase 3: Contract
+    Admin creates contract          :11, 13
+    Configure pricing & credits     :13, 14
+    Create credit wallet            :14, 15
     
-    section Contract
-    Draft Contract Creation         :13, 14
-    Admin Configuration             :14, 16
-    Send for Signature              :16, 17
-    User Signs Contract             :17, 19
-    Contract Activation             :19, 20
+    section Phase 4: E-Signature
+    Admin sends for signature       :15, 16
+    Upload to Zoho Sign             :16, 17
+    Client receives email           :17, 18
+    Client signs contract           :18, 20
+    Zoho Sign webhook               :20, 21
+    Contract activated              :21, 22
     
-    section Payment
-    Invoice Generation              :20, 21
-    Payment Initiation              :21, 22
-    Payment Processing              :22, 23
-    Payment Confirmation            :23, 24
-    Zoho Books Sync                 :24, 25
+    section Phase 5: Allocation
+    Admin allocates workspace       :22, 24
+    Generate QR code                :24, 25
+    Send workspace details          :25, 26
     
-    section Activation
-    Workspace Access Granted        :25, 26
-    User Fully Active               :26, 30
+    section Phase 6: Completion
+    Admin marks complete            :26, 27
+    Send completion email           :27, 28
+    Client portal access            :28, 30
 ```
 
-## Critical Decision Points
+## Admin Decision Points
 
 ```mermaid
 flowchart LR
-    A[Registration] --> B{Email/Phone<br/>Exists?}
+    A[Admin Creates Client] --> B{Client<br/>Exists?}
     B -->|Yes| C[Show Error]
-    B -->|No| D[Create Account]
+    B -->|No| D[Create & Sync to Zoho]
     
-    D --> E{Profile<br/>Complete?}
-    E -->|No| F[Prompt Completion]
-    E -->|Yes| G[Enable KYC]
+    D --> E[Admin Uploads KYC]
+    E --> F{KYC<br/>Valid?}
+    F -->|No| G[Reject & Notify]
+    F -->|Yes| H[Approve KYC]
     
-    G --> H{KYC<br/>Submitted?}
-    H -->|No| I[Prompt KYC]
-    H -->|Yes| J{Admin<br/>Approved?}
+    H --> I[Admin Creates Contract]
+    I --> J{Credit<br/>Enabled?}
+    J -->|Yes| K[Create Wallet]
+    J -->|No| L[Skip Wallet]
     
-    J -->|Rejected| K[Show Reason]
-    J -->|Approved| L[Create Contract]
+    K --> M[Send for E-Sign]
+    L --> M
     
-    L --> M{Contract<br/>Signed?}
-    M -->|No| N[Send Reminder]
-    M -->|Yes| O[Generate Invoice]
+    M --> N{Client<br/>Signs?}
+    N -->|No| O[Wait/Resend]
+    N -->|Yes| P[Contract Active]
     
-    O --> P{Payment<br/>Received?}
-    P -->|No| Q[Payment Pending]
-    P -->|Yes| R[Activate User]
+    P --> Q[Admin Allocates Workspace]
+    Q --> R[Generate QR Code]
+    R --> S[Admin Marks Complete]
     
-    R --> S{Using<br/>Services?}
-    S -->|Yes| T[Track Usage]
-    S -->|No| U[Idle State]
+    S --> T[Client Active]
+    T --> U{Using<br/>Services?}
+    U -->|Yes| V[Track Usage]
+    U -->|No| W[Idle]
     
-    T --> V{Credits<br/>Exceeded?}
-    V -->|Yes| W[Generate Invoice]
-    V -->|No| X[Continue]
+    V --> X{Month<br/>End?}
+    X -->|Yes| Y[Auto-bill]
+    X -->|No| V
 ```
 
 ## Integration Points Summary
 
-| Phase | System | Action | Trigger |
-|-------|--------|--------|---------|
-| Registration | Zoho Books | Create Contact | User signup |
-| Registration | Email | Welcome Email | Account created |
-| Registration | SMS | Welcome SMS | Account created |
-| Profile | Zoho Books | Update Contact | Profile updated |
-| KYC | Email | Admin Notification | KYC submitted |
-| KYC | Email/SMS | Approval/Rejection | Admin decision |
-| Contract | Zoho Sign | Send for Signature | Admin action |
-| Contract | Email | Signature Request | Zoho Sign API |
-| Contract | Webhook | Signature Status | User signs |
-| Payment | Razorpay | Payment Gateway | User initiates |
-| Payment | Zoho Books | Create Invoice | Payment success |
-| Payment | Zoho Books | Record Payment | Payment success |
-| Payment | Email | Receipt | Payment confirmed |
-| Billing | Zoho Books | Monthly Invoice | Cron job |
-| Billing | Email | Invoice Notification | Invoice created |
+| Phase | System | Action | Trigger | Actor |
+|-------|--------|--------|---------|-------|
+| Client Creation | Zoho Books | Create Contact | Admin submits form | Admin |
+| Client Creation | Email | Welcome Email | Account created | System |
+| Client Creation | SMS | Welcome SMS | Account created | System |
+| KYC Upload | Database | Store Documents | Admin uploads | Admin |
+| KYC Verification | Email/SMS | Approval Notification | Admin approves | Admin |
+| Contract Creation | Database | Create Contract | Admin submits | Admin |
+| Contract Creation | Database | Create Credit Wallet | Credit enabled | System |
+| E-Signature | Zoho Sign | Upload Document | Admin sends | Admin |
+| E-Signature | Zoho Sign | Add Recipient | Document uploaded | System |
+| E-Signature | Email | Signature Request | Zoho Sign | System |
+| E-Signature | Webhook | Signature Complete | Client signs | Client |
+| E-Signature | Email/SMS | Activation Notice | Contract signed | System |
+| Allocation | Database | Create Allocation | Admin allocates | Admin |
+| Allocation | Database | Generate QR Code | Allocation created | System |
+| Allocation | Email | Workspace Details | QR generated | System |
+| Completion | Database | Update Status | Admin marks complete | Admin |
+| Completion | Email | Welcome Package | Status updated | System |
 
-## User States & Permissions
+## Client States & Access Permissions
 
-| State | Can Login | Can View Profile | Can Book Services | Can Make Payments | Notes |
-|-------|-----------|------------------|-------------------|-------------------|-------|
-| Registered | ✅ | ✅ | ❌ | ❌ | Basic access only |
-| Profile Complete | ✅ | ✅ | ❌ | ❌ | Can submit KYC |
-| KYC Pending | ✅ | ✅ | ❌ | ❌ | Waiting for review |
-| KYC Verified | ✅ | ✅ | ❌ | ❌ | Contract pending |
-| Contract Signed | ✅ | ✅ | ❌ | ✅ | Payment pending |
-| Active | ✅ | ✅ | ✅ | ✅ | Full access |
-| Suspended | ✅ | ✅ | ❌ | ✅ | Payment overdue |
-| Terminated | ❌ | ❌ | ❌ | ❌ | Contract ended |
+| State | Admin Actions | Client Portal Access | Can Book Services | Notes |
+|-------|---------------|---------------------|-------------------|-------|
+| Created | Upload KYC, Create Contract | ❌ | ❌ | Just created, no access yet |
+| KYC Submitted | Review & Approve/Reject | ❌ | ❌ | Awaiting admin review |
+| KYC Verified | Create Contract | ❌ | ❌ | Ready for contract |
+| Contract Draft | Configure & Send for Sign | ❌ | ❌ | Contract being prepared |
+| Pending Signature | Resend signature request | ✅ (View only) | ❌ | Client can view, must sign |
+| Contract Signed | Allocate Workspace | ✅ (View only) | ❌ | Awaiting workspace |
+| Workspace Allocated | Mark onboarding complete | ✅ (Limited) | ❌ | Almost ready |
+| Onboarding Complete | Manage client | ✅ (Full) | ✅ | Fully active client |
+| Suspended | Reactivate | ✅ (View only) | ❌ | Payment/violation issue |
+| Terminated | Archive/Delete | ❌ | ❌ | Contract ended |
+
+## Onboarding Checklist
+
+### Admin Tasks (Sequential)
+
+1. **Client Creation** ✓
+   - Fill 4-step form (Basic, Commercial, Address, Contacts)
+   - Auto-sync to Zoho Books
+   - Welcome email/SMS sent
+
+2. **KYC Management** ✓
+   - Upload KYC documents (PAN, GST, Address proof)
+   - Review documents
+   - Approve/Reject with reason
+
+3. **Contract Setup** ✓
+   - Create contract with pricing
+   - Configure workspace allocation
+   - Set credit allocation (if applicable)
+   - Create credit wallet (if enabled)
+
+4. **E-Signature** ✓
+   - Send contract for digital signature
+   - Upload to Zoho Sign
+   - Client receives email
+   - Wait for client signature
+   - Webhook confirms signing
+
+5. **Workspace Allocation** ✓
+   - Select building, floor, cabin/desk
+   - Create allocation record
+   - Generate access QR code
+   - Send workspace details
+
+6. **Onboarding Completion** ✓
+   - Mark client as onboarded
+   - Send welcome package email
+   - Grant full portal access
+
+### Client Actions (Minimal)
+
+1. **Receive Welcome Email** - Check credentials
+2. **Sign Contract** - Via Zoho Sign email link
+3. **Access Portal** - After onboarding complete
+4. **Use Services** - Book meetings, day passes, etc.

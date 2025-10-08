@@ -4,6 +4,9 @@ import {
   adminLogin, 
   clientLogin, 
   memberLogin, 
+  memberClientLogin,
+  sendMemberClientOtp,
+  verifyMemberClientOtp,
   communityLogin,
   communitySignup,
   onDemandUserSignup,
@@ -20,6 +23,9 @@ router.post("/client/register", clientSignup);
 router.post("/client/login", clientLogin);
 router.post("/admin/login", adminLogin);
 router.post("/member/login", memberLogin);
+router.post("/member-client/login", memberClientLogin); // Unified member/client login
+router.post("/member-client/send-otp", sendMemberClientOtp); // Send OTP for member/client
+router.post("/member-client/verify-otp", verifyMemberClientOtp); // Verify OTP for member/client
 router.post("/community/register", communitySignup);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);

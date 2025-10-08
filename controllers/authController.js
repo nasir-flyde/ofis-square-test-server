@@ -630,6 +630,420 @@ export const onDemandUserLogin = async (req, res) => {
   }
 };
 
+export const sendMemberClientOtp = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    
+    if (!phone) {
+      return res.status(400).json({ error: "Phone number is required" });
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, '');
+    if (normalizedPhone.length !== 10) {
+      return res.status(400).json({ error: "Please enter a valid 10-digit phone number" });
+    }
+
+    // Find user by phone
+    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found for this phone number" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    // Import OTP model and SMS service dynamically
+    const OTP = (await import("../models/otpModel.js")).default;
+    const { SendSMS, generateOtp } = await import("../services/smsService.js");
+
+    // Generate OTP
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Clear existing OTPs for this phone
+    await OTP.deleteMany({ phone: normalizedPhone });
+    await OTP.create({ 
+      email: user.email, 
+      phone: normalizedPhone, 
+      otp, 
+      expiresAt 
+    });
+
+    // Send SMS
+    const smsText = `Your OTP to log in is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
+    console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
+    
+    try {
+      await SendSMS({ phone: normalizedPhone, message: smsText });
+      console.log('SMS sent successfully');
+    } catch (err) {
+      console.error('SMS sending failed:', err);
+      console.log('SMS delivery failed, but OTP is logged above for testing');
+    }
+
+    await logAuthActivity(req, 'OTP_SENT', 'SUCCESS', null, {
+      userRole: roleName,
+      phone: normalizedPhone
+    });
+
+    return res.status(200).json({
+      message: "OTP sent successfully",
+      phone: normalizedPhone,
+      userId: user._id,
+      roleName: role.roleName
+    });
+
+  } catch (error) {
+    console.error('Send Member/Client OTP error:', error);
+    
+    await logAuthActivity(req, 'OTP_SENT', 'FAILED', error.message, {
+      loginType: 'member_client_otp'
+    });
+    
+    return res.status(500).json({ 
+      error: "Failed to send OTP", 
+      message: error.message 
+    });
+  }
+};
+
+export const verifyMemberClientOtp = async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+
+    if (!phone || !otp) {
+      return res.status(400).json({ error: "Phone and OTP are required" });
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, '');
+
+    // Import OTP model dynamically
+    const OTP = (await import("../models/otpModel.js")).default;
+
+    const otpRecord = await OTP.findOne({ 
+      phone: normalizedPhone,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ error: "OTP expired or not found" });
+    }
+
+    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+      await OTP.deleteOne({ _id: otpRecord._id });
+      return res.status(400).json({ error: "Too many failed attempts. Please request a new OTP" });
+    }
+
+    // Verify OTP
+    if (otpRecord.otp !== otp) {
+      await OTP.updateOne({ _id: otpRecord._id }, { $inc: { attempts: 1 } });
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    // Find user and populate role
+    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    // Mark phone as verified
+    await Users.updateOne({ _id: user._id }, { isPhoneVerified: true });
+
+    // Delete used OTP
+    await OTP.deleteOne({ _id: otpRecord._id });
+
+    let clientId = null;
+    let memberId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      // Handle client login
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      
+      if (!client) {
+        return res.status(404).json({ error: "Client record not found. Please sign up first." });
+      }
+
+      clientId = client._id.toString();
+
+      // Find the corresponding member record for this client
+      const member = await Member.findOne({ 
+        $or: [
+          { user: user._id, client: client._id },
+          { email: user.email, client: client._id },
+          { phone: user.phone, client: client._id }
+        ]
+      });
+
+      if (member) {
+        memberId = member._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+      }
+
+    } else if (roleName === "member") {
+      // Handle member login
+      let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
+      
+      if (!member) {
+        const fallbackQuery = user.email 
+          ? { email: user.email } 
+          : { phone: user.phone };
+        const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
+        
+        if (!fallbackMember) {
+          return res.status(404).json({ error: "Member record not found. Please contact admin." });
+        }
+        fallbackMember.user = user._id;
+        await fallbackMember.save();
+        member = fallbackMember;
+      }
+
+      if (!member.client) {
+        return res.status(404).json({ error: "Member is not associated with a client. Please contact admin." });
+      }
+
+      memberId = member._id.toString();
+      clientId = member.client._id.toString();
+      allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId,
+      memberId,
+      undefined,
+      allowedUsingCredits
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    // Log successful authentication
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: roleName,
+      loginType: 'member_client_otp'
+    });
+
+    // Return unified response structure
+    const response = { 
+      token, 
+      user: safeUser
+    };
+
+    if (clientId) response.clientId = clientId;
+    if (memberId) response.memberId = memberId;
+    if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Verify Member/Client OTP error:', error);
+    
+    await logAuthActivity(req, 'LOGIN', 'FAILED', error.message, {
+      loginType: 'member_client_otp'
+    });
+    
+    return res.status(500).json({ 
+      error: "Failed to verify OTP", 
+      message: error.message 
+    });
+  }
+};
+
+export const memberClientLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    // If only phone is provided (no password), redirect to OTP flow
+    if (phone && !password && !email) {
+      return res.status(400).json({ 
+        error: "Password is required for password-based login. Use /api/auth/member-client/send-otp for OTP login",
+        useOtpEndpoint: true 
+      });
+    }
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    let clientId = null;
+    let memberId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      // Handle client login
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      
+      if (!client) {
+        return res.status(404).json({ error: "Client record not found. Please sign up first." });
+      }
+
+      clientId = client._id.toString();
+
+      // Find the corresponding member record for this client
+      const member = await Member.findOne({ 
+        $or: [
+          { user: user._id, client: client._id },
+          { email: user.email, client: client._id },
+          { phone: user.phone, client: client._id }
+        ]
+      });
+
+      if (member) {
+        memberId = member._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+      }
+
+    } else if (roleName === "member") {
+      // Handle member login
+      let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
+      
+      if (!member) {
+        const fallbackQuery = user.email 
+          ? { email: user.email } 
+          : { phone: user.phone };
+        const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
+        
+        if (!fallbackMember) {
+          return res.status(404).json({ error: "Member record not found. Please contact admin." });
+        }
+        fallbackMember.user = user._id;
+        await fallbackMember.save();
+        member = fallbackMember;
+      }
+
+      if (!member.client) {
+        return res.status(404).json({ error: "Member is not associated with a client. Please contact admin." });
+      }
+
+      memberId = member._id.toString();
+      clientId = member.client._id.toString();
+      allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId,
+      memberId,
+      undefined,
+      allowedUsingCredits
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    // Log successful authentication
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: roleName,
+      loginType: 'member_client_unified'
+    });
+
+    // Return unified response structure
+    const response = { 
+      token, 
+      user: safeUser
+    };
+
+    if (clientId) response.clientId = clientId;
+    if (memberId) response.memberId = memberId;
+    if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+
+    res.json(response);
+
+  } catch (err) {
+    console.error("memberClientLogin error:", err);
+    
+    await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
+      loginType: 'member_client_unified'
+    });
+    
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
 export const getMe = async (req, res) => {
   try {
     const user = req.user; 

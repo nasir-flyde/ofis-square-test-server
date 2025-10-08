@@ -264,3 +264,146 @@ export const getStaffTickets = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// Get tickets by member ID with detailed information
+export const getTicketsByMember = async (req, res) => {
+  try {
+    // Get memberId from middleware or params
+    const memberId = req.memberId || req.member?._id || req.params.memberId;
+
+    if (!memberId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Member ID is required" 
+      });
+    }
+
+    const { status, priority, category, from, to, limit = 50, page = 1 } = req.query || {};
+    
+    // Build filter
+    const filter = { createdBy: memberId };
+    if (status) filter.status = status;
+    if (priority) filter.priority = priority;
+    if (category) filter["category.categoryId"] = category;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to) filter.createdAt.$lte = new Date(to);
+    }
+
+    const skip = (page - 1) * limit;
+
+    // Get tickets with full details
+    const tickets = await Ticket.find(filter)
+      .populate({
+        path: 'category.categoryId',
+        select: 'name description color icon subCategories'
+      })
+      .populate({
+        path: 'assignedTo',
+        select: 'name email phone role'
+      })
+      .populate({
+        path: 'building',
+        select: 'name address city'
+      })
+      .populate({
+        path: 'cabin',
+        select: 'number floor building'
+      })
+      .populate({
+        path: 'createdBy',
+        select: 'firstName lastName email phone companyName',
+        populate: {
+          path: 'user',
+          select: 'name email phone'
+        }
+      })
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone'
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    const totalCount = await Ticket.countDocuments(filter);
+
+    // Format response with detailed ticket information
+    const formattedTickets = tickets.map(ticket => ({
+      id: ticket._id,
+      ticketId: ticket.ticketId,
+      subject: ticket.subject,
+      description: ticket.description,
+      status: ticket.status,
+      priority: ticket.priority,
+      category: ticket.category?.categoryId ? {
+        id: ticket.category.categoryId._id,
+        name: ticket.category.categoryId.name,
+        description: ticket.category.categoryId.description,
+        color: ticket.category.categoryId.color,
+        icon: ticket.category.categoryId.icon,
+        subCategory: ticket.category.subCategory
+      } : null,
+      assignedTo: ticket.assignedTo ? {
+        id: ticket.assignedTo._id,
+        name: ticket.assignedTo.name,
+        email: ticket.assignedTo.email,
+        phone: ticket.assignedTo.phone,
+        role: ticket.assignedTo.role
+      } : null,
+      building: ticket.building ? {
+        id: ticket.building._id,
+        name: ticket.building.name,
+        address: ticket.building.address,
+        city: ticket.building.city
+      } : null,
+      cabin: ticket.cabin ? {
+        id: ticket.cabin._id,
+        number: ticket.cabin.number,
+        floor: ticket.cabin.floor
+      } : null,
+      createdBy: {
+        id: ticket.createdBy?._id,
+        firstName: ticket.createdBy?.firstName,
+        lastName: ticket.createdBy?.lastName,
+        name: `${ticket.createdBy?.firstName || ''} ${ticket.createdBy?.lastName || ''}`.trim(),
+        email: ticket.createdBy?.email,
+        phone: ticket.createdBy?.phone,
+        companyName: ticket.createdBy?.companyName
+      },
+      client: ticket.client ? {
+        id: ticket.client._id,
+        companyName: ticket.client.companyName,
+        contactPerson: ticket.client.contactPerson,
+        email: ticket.client.email,
+        phone: ticket.client.phone
+      } : null,
+      images: ticket.images || [],
+      latestUpdate: ticket.latestUpdate,
+      createdAt: ticket.createdAt,
+      updatedAt: ticket.updatedAt
+    }));
+
+    return res.json({ 
+      success: true, 
+      data: {
+        tickets: formattedTickets,
+        pagination: {
+          total: totalCount,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: Math.ceil(totalCount / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get tickets by member error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};

@@ -317,6 +317,145 @@ export const getBookingById = async (req, res) => {
   }
 };
 
+// Get bookings by member ID with detailed information
+export const getBookingsByMember = async (req, res) => {
+  try {
+    // Get memberId from middleware or params
+    const memberId = req.memberId || req.member?._id || req.params.memberId;
+
+    if (!memberId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Member ID is required" 
+      });
+    }
+
+    const { status, from, to, limit = 50, page = 1 } = req.query || {};
+    
+    // Build filter
+    const filter = { member: memberId };
+    if (status) filter.status = status;
+    if (from || to) {
+      filter.start = {};
+      if (from) filter.start.$gte = new Date(from);
+      if (to) filter.start.$lte = new Date(to);
+    }
+
+    const skip = (page - 1) * limit;
+
+    // Get bookings with full details
+    const bookings = await MeetingBooking.find(filter)
+      .populate({
+        path: 'room',
+        select: 'name capacity amenities images pricing building',
+        populate: {
+          path: 'building',
+          select: 'name address'
+        }
+      })
+      .populate({
+        path: 'member',
+        select: 'firstName lastName email phone companyName',
+        populate: {
+          path: 'user',
+          select: 'name email phone'
+        }
+      })
+      .populate({
+        path: 'visitors',
+        select: 'name email phone company'
+      })
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone'
+      })
+      .populate({
+        path: 'invoice',
+        select: 'invoice_number status total due_date'
+      })
+      .sort({ start: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    const totalCount = await MeetingBooking.countDocuments(filter);
+
+    // Format response with detailed booking information
+    const formattedBookings = bookings.map(booking => ({
+      id: booking._id,
+      room: {
+        id: booking.room?._id,
+        name: booking.room?.name,
+        capacity: booking.room?.capacity,
+        amenities: booking.room?.amenities || [],
+        photos: booking.room?.images || [],
+        pricing: booking.room?.pricing,
+        building: booking.room?.building ? {
+          name: booking.room.building.name,
+          address: booking.room.building.address
+        } : null
+      },
+      bookedBy: {
+        id: booking.member?._id,
+        firstName: booking.member?.firstName,
+        lastName: booking.member?.lastName,
+        name: `${booking.member?.firstName || ''} ${booking.member?.lastName || ''}`.trim(),
+        email: booking.member?.email,
+        phone: booking.member?.phone,
+        companyName: booking.member?.companyName
+      },
+      visitors: (booking.visitors || []).map(visitor => ({
+        id: visitor._id,
+        name: visitor.name,
+        email: visitor.email,
+        phone: visitor.phone,
+        company: visitor.company
+      })),
+      timing: {
+        start: booking.start,
+        end: booking.end,
+        duration: booking.end && booking.start 
+          ? Math.round((new Date(booking.end) - new Date(booking.start)) / (1000 * 60)) 
+          : null,
+        durationUnit: 'minutes'
+      },
+      status: booking.status,
+      payment: booking.payment,
+      amenitiesRequested: booking.amenitiesRequested || [],
+      notes: booking.notes,
+      invoice: booking.invoice ? {
+        id: booking.invoice._id,
+        invoiceNumber: booking.invoice.invoice_number,
+        status: booking.invoice.status,
+        total: booking.invoice.total,
+        dueDate: booking.invoice.due_date
+      } : null,
+      createdAt: booking.createdAt,
+      updatedAt: booking.updatedAt
+    }));
+
+    return res.json({ 
+      success: true, 
+      data: {
+        bookings: formattedBookings,
+        pagination: {
+          total: totalCount,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: Math.ceil(totalCount / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get bookings by member error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
 // Reports: utilization per day (bookings/day) and peak usage hours
 export const utilizationReport = async (req, res) => {
   try {

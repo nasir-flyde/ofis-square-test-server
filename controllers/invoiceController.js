@@ -239,7 +239,18 @@ export const pushInvoiceToZoho = async (req, res) => {
     }
 
     // Ensure invoice has a client and Zoho contact
-    const client = invoice.client ? invoice.client : await Client.findById(invoice.client);
+    let client = invoice.client ? invoice.client : await Client.findById(invoice.client);
+    
+    // If no client found and clientId provided in request body, use that
+    if (!client && req.body.clientId) {
+      client = await Client.findById(req.body.clientId);
+      if (client) {
+        // Update invoice with the client
+        invoice.client = client._id;
+        await invoice.save();
+      }
+    }
+    
     if (!client) {
       return res.status(400).json({ success: false, message: "Invoice has no linked client or client not found" });
     }

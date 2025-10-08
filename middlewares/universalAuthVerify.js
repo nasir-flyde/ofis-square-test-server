@@ -31,6 +31,27 @@ const universalAuthMiddleware = async (req, res, next) => {
       req.userRole = role;
       const roleName = String(role.roleName || '').toLowerCase();
 
+      // Client user: attach client and member context
+      if (roleName === 'client') {
+        if (decoded.clientId) {
+          const client = await Client.findById(decoded.clientId);
+          if (client) {
+            req.client = client;
+            req.clientId = client._id;
+          }
+        }
+        // Client can also have memberId in JWT
+        if (decoded.memberId) {
+          const member = await Member.findById(decoded.memberId);
+          if (member) {
+            req.member = member;
+            req.memberId = member._id;
+          }
+        }
+        req.authType = 'client';
+        return next();
+      }
+
       // Member user: attach member context
       if (roleName === 'member') {
         let member = null;

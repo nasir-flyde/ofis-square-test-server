@@ -215,3 +215,202 @@ export const deleteMember = async (req, res) => {
     return res.status(500).json({ success: false, message: err.message });
   }
 };
+
+// Get comprehensive member profile
+export const getMemberProfile = async (req, res) => {
+  try {
+    const memberId = req.memberId || req.member?._id || req.user?.memberId || req.params.id;
+
+    if (!memberId) {
+      console.log('No memberId found in request');
+      return res.status(400).json({ 
+        success: false, 
+        message: "Member ID is required. Please login as a member.",
+        debug: {
+          hasMemberId: !!req.memberId,
+          hasMember: !!req.member,
+          hasUser: !!req.user,
+          authType: req.authType
+        }
+      });
+    }
+
+    // Find member with populated client details
+    const member = await Member.findById(memberId)
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone billingAddress shippingAddress'
+      })
+      .populate({
+        path: 'desk',
+        select: 'number floor',
+        populate: {
+          path: 'building',
+          select: 'name address'
+        }
+      })
+      .populate('user', 'name email phone');
+
+    if (!member) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Member not found" 
+      });
+    }
+
+    // Get credit balance
+    let creditBalance = null;
+    if (member.client && member.allowedUsingCredits) {
+      const ClientCreditWallet = (await import("../models/clientCreditWalletModel.js")).default;
+      const wallet = await ClientCreditWallet.findOne({ 
+        client: member.client._id,
+        status: 'active'
+      });
+      
+      if (wallet) {
+        creditBalance = {
+          balance: wallet.balance,
+          creditValue: wallet.creditValue,
+          totalValue: wallet.balance * wallet.creditValue,
+          currency: wallet.currency,
+          expiresAt: wallet.expiresAt
+        };
+      }
+    }
+
+    // Get meeting room bookings
+    const MeetingBooking = (await import("../models/meetingBookingModel.js")).default;
+    const meetingBookings = await MeetingBooking.find({ 
+      member: memberId,
+      status: { $in: ['booked', 'payment_pending', 'completed'] }
+    })
+      .populate('room', 'name capacity amenities')
+      .populate('visitors', 'name email phone company')
+      .sort({ start: -1 })
+      .limit(20);
+
+    // Get events (RSVPs and attendance)
+    const Event = (await import("../models/eventModel.js")).default;
+    const rsvpEvents = await Event.find({
+      rsvps: memberId,
+      status: { $in: ['published', 'completed'] }
+    })
+      .populate('category', 'name color')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name')
+      .sort({ startDate: -1 })
+      .limit(20);
+
+    const attendedEvents = await Event.find({
+      attendance: memberId,
+      status: 'completed'
+    })
+      .populate('category', 'name color')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name')
+      .sort({ startDate: -1 })
+      .limit(20);
+
+    // Build profile response
+    const profile = {
+      member: {
+        id: member._id,
+        firstName: member.firstName,
+        lastName: member.lastName,
+        name: `${member.firstName} ${member.lastName || ''}`.trim(),
+        email: member.email,
+        phone: member.phone,
+        role: member.role,
+        status: member.status,
+        allowedUsingCredits: member.allowedUsingCredits,
+        createdAt: member.createdAt,
+        updatedAt: member.updatedAt
+      },
+      company: member.client ? {
+        id: member.client._id,
+        name: member.client.companyName,
+        contactPerson: member.client.contactPerson,
+        email: member.client.email,
+        phone: member.client.phone,
+        billingAddress: member.client.billingAddress,
+        shippingAddress: member.client.shippingAddress
+      } : null,
+      desk: member.desk ? {
+        number: member.desk.number,
+        floor: member.desk.floor,
+        building: member.desk.building ? {
+          name: member.desk.building.name,
+          address: member.desk.building.address
+        } : null
+      } : null,
+      creditBalance: creditBalance,
+      meetingBookings: {
+        total: meetingBookings.length,
+        bookings: meetingBookings.map(booking => ({
+          id: booking._id,
+          room: booking.room ? {
+            name: booking.room.name,
+            capacity: booking.room.capacity,
+            amenities: booking.room.amenities
+          } : null,
+          visitors: booking.visitors,
+          start: booking.start,
+          end: booking.end,
+          status: booking.status,
+          amount: booking.amount,
+          currency: booking.currency,
+          amenitiesRequested: booking.amenitiesRequested,
+          notes: booking.notes,
+          createdAt: booking.createdAt
+        }))
+      },
+      events: {
+        rsvps: {
+          total: rsvpEvents.length,
+          events: rsvpEvents.map(event => ({
+            id: event._id,
+            title: event.title,
+            description: event.description,
+            category: event.category,
+            startDate: event.startDate,
+            endDate: event.endDate,
+            location: event.location,
+            capacity: event.capacity,
+            rsvpCount: event.rsvpCount,
+            creditsRequired: event.creditsRequired,
+            status: event.status
+          }))
+        },
+        attended: {
+          total: attendedEvents.length,
+          events: attendedEvents.map(event => ({
+            id: event._id,
+            title: event.title,
+            description: event.description,
+            category: event.category,
+            startDate: event.startDate,
+            endDate: event.endDate,
+            location: event.location,
+            creditsRequired: event.creditsRequired,
+            status: event.status
+          }))
+        }
+      }
+    };
+
+    res.json({
+      success: true,
+      data: profile
+    });
+
+  } catch (err) {
+    console.error('Get member profile error:', err);
+    await logErrorActivity(req, 'GET_MEMBER_PROFILE', err.message, {
+      memberId: req.params.id
+    });
+    return res.status(500).json({ 
+      success: false, 
+      message: err.message 
+    });
+  }
+};

@@ -267,6 +267,22 @@ export const createDayPassBundle = async (req, res) => {
           status: invoice.status
         };
       }
+      if (paymentMethod !== 'credits') {
+        resp.razorpayConfig = {
+          key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
+          amount: finalAmount * 100, // Razorpay expects amount in paise
+          currency: 'INR',
+          name: 'Ofis Square',
+          description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
+          order_id: `bundle_${bundle._id}`,
+          prefill: {
+            name: customer.name || customer.companyName,
+            email: customer.email,
+            contact: customer.phone
+          },
+          theme: { color: '#3399cc' }
+        };
+      }
       res.status(201).json(resp);
 
     } catch (error) {
