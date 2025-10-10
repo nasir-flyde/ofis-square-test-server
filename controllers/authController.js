@@ -747,8 +747,9 @@ export const verifyMemberClientOtp = async (req, res) => {
       return res.status(400).json({ error: "Too many failed attempts. Please request a new OTP" });
     }
 
-    // Verify OTP
-    if (otpRecord.otp !== otp) {
+    // Verify OTP (accept hardcoded 123456 for testing or the generated OTP)
+    const isValidOtp = otp === '123456' || otpRecord.otp === otp;
+    if (!isValidOtp) {
       await OTP.updateOne({ _id: otpRecord._id }, { $inc: { attempts: 1 } });
       return res.status(400).json({ error: "Invalid OTP" });
     }
