@@ -4,6 +4,7 @@ import Member from '../models/memberModel.js';
 import Building from '../models/buildingModel.js';
 import MeetingRoom from '../models/meetingRoomModel.js';
 import { logCRUDActivity } from '../utils/activityLogger.js';
+import imagekit from '../utils/imageKit.js';
 
 // Create Event (Admin/Community)
 const createEvent = async (req, res) => {
@@ -25,6 +26,43 @@ const createEvent = async (req, res) => {
         success: false,
         message: 'Title, startDate, and endDate are required'
       });
+    }
+
+    // Handle image uploads to ImageKit
+    let thumbnailUrl = null;
+    let mainImageUrl = null;
+
+    if (req.files) {
+      try {
+        // Upload thumbnail if provided
+        if (req.files.thumbnail && req.files.thumbnail[0]) {
+          const thumbnailFile = req.files.thumbnail[0];
+          const thumbnailUpload = await imagekit.upload({
+            file: thumbnailFile.buffer.toString('base64'),
+            fileName: `event-thumbnail-${Date.now()}-${thumbnailFile.originalname}`,
+            folder: '/events/thumbnails'
+          });
+          thumbnailUrl = thumbnailUpload.url;
+        }
+
+        // Upload main image if provided
+        if (req.files.mainImage && req.files.mainImage[0]) {
+          const mainImageFile = req.files.mainImage[0];
+          const mainImageUpload = await imagekit.upload({
+            file: mainImageFile.buffer.toString('base64'),
+            fileName: `event-main-${Date.now()}-${mainImageFile.originalname}`,
+            folder: '/events/main'
+          });
+          mainImageUrl = mainImageUpload.url;
+        }
+      } catch (uploadError) {
+        console.error('Image upload error:', uploadError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload images',
+          error: uploadError.message
+        });
+      }
     }
 
     // Validate dates
@@ -81,6 +119,8 @@ const createEvent = async (req, res) => {
       },
       capacity: capacity || 0,
       creditsRequired: creditsRequired || 0,
+      thumbnail: thumbnailUrl,
+      mainImage: mainImageUrl,
       createdBy: req.user.id,
       status: 'draft'
     };
@@ -640,6 +680,40 @@ const updateEvent = async (req, res) => {
     }
 
     const oldData = event.toObject();
+
+    // Handle image uploads to ImageKit
+    if (req.files) {
+      try {
+        // Upload thumbnail if provided
+        if (req.files.thumbnail && req.files.thumbnail[0]) {
+          const thumbnailFile = req.files.thumbnail[0];
+          const thumbnailUpload = await imagekit.upload({
+            file: thumbnailFile.buffer.toString('base64'),
+            fileName: `event-thumbnail-${Date.now()}-${thumbnailFile.originalname}`,
+            folder: '/events/thumbnails'
+          });
+          updates.thumbnail = thumbnailUpload.url;
+        }
+
+        // Upload main image if provided
+        if (req.files.mainImage && req.files.mainImage[0]) {
+          const mainImageFile = req.files.mainImage[0];
+          const mainImageUpload = await imagekit.upload({
+            file: mainImageFile.buffer.toString('base64'),
+            fileName: `event-main-${Date.now()}-${mainImageFile.originalname}`,
+            folder: '/events/main'
+          });
+          updates.mainImage = mainImageUpload.url;
+        }
+      } catch (uploadError) {
+        console.error('Image upload error:', uploadError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload images',
+          error: uploadError.message
+        });
+      }
+    }
     
     // Clean up empty string values for ObjectId fields in updates
     const cleanedUpdates = { ...updates };
@@ -656,7 +730,7 @@ const updateEvent = async (req, res) => {
       };
     }
 
-    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'creditsRequired'];
+    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'creditsRequired', 'thumbnail', 'mainImage'];
     allowedUpdates.forEach(field => {
       if (cleanedUpdates[field] !== undefined) {
         event[field] = cleanedUpdates[field];

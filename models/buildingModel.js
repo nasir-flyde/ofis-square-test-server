@@ -10,6 +10,17 @@ const BuildingSchema = new Schema(
     state: { type: String },
     country: { type: String, default: "India" },
     pincode: { type: String },
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        index: '2dsphere'
+      }
+    },
 
     totalFloors: { type: Number },
     amenities: [{ type: String }],

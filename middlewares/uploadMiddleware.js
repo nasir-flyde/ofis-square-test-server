@@ -5,6 +5,7 @@ import fs from 'fs';
 const uploadsDir = 'uploads/screenshots';
 const buildingPhotosDir = 'uploads/buildings';
 const meetingRoomImagesDir = 'uploads/meeting-rooms';
+const eventImagesDir = 'uploads/events';
 
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -16,6 +17,10 @@ if (!fs.existsSync(buildingPhotosDir)) {
 
 if (!fs.existsSync(meetingRoomImagesDir)) {
   fs.mkdirSync(meetingRoomImagesDir, { recursive: true });
+}
+
+if (!fs.existsSync(eventImagesDir)) {
+  fs.mkdirSync(eventImagesDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
@@ -75,9 +80,23 @@ const meetingRoomImagesUpload = multer({
   fileFilter: fileFilter
 });
 
+// Event images storage configuration (using memory storage for ImageKit)
+const eventImagesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file for event images
+    files: 2 // Allow thumbnail and main image
+  },
+  fileFilter: fileFilter
+});
+
 export const uploadScreenshots = upload.array('screenshots', 5);
 export const uploadBuildingPhotos = buildingPhotosUpload.array('photos', 10);
 export const uploadMeetingRoomImages = meetingRoomImagesUpload.array('images', 10);
+export const uploadEventImages = eventImagesUpload.fields([
+  { name: 'thumbnail', maxCount: 1 },
+  { name: 'mainImage', maxCount: 1 }
+]);
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {

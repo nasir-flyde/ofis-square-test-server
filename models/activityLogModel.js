@@ -37,6 +37,8 @@ const activityLogSchema = new mongoose.Schema(
         "IMPORT",
         "SEND_EMAIL",
         "SEND_SMS",
+        "OTP_SENT",
+        "OTP_VERIFIED",
         "PAYMENT_CREATED",
         "PAYMENT_PROCESSED",
         "CONTRACT_SIGNED",

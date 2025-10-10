@@ -4,7 +4,7 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, latitude, longitude } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -42,7 +42,7 @@ export const createBuilding = async (req, res) => {
       }
     }
 
-    const building = await Building.create({
+    const buildingData = {
       name,
       address,
       city,
@@ -55,7 +55,17 @@ export const createBuilding = async (req, res) => {
       pricing: pricing || {},
       photos: processedPhotos,
       openSpacePricing: req.body.openSpacePricing || 500
-    });
+    };
+
+    // Add location coordinates if provided
+    if (longitude !== undefined && latitude !== undefined) {
+      buildingData.location = {
+        type: 'Point',
+        coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
+      };
+    }
+
+    const building = await Building.create(buildingData);
 
     // Log activity
     await logCRUDActivity(req, 'CREATE', 'Building', building._id, null, {
@@ -104,7 +114,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, openSpacePricing } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, openSpacePricing, latitude, longitude } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -148,6 +158,14 @@ export const updateBuilding = async (req, res) => {
     };
     if (processedPhotos) {
       updatePayload.photos = processedPhotos;
+    }
+
+    // Update location coordinates if provided
+    if (longitude !== undefined && latitude !== undefined) {
+      updatePayload.location = {
+        type: 'Point',
+        coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
+      };
     }
 
     const building = await Building.findByIdAndUpdate(

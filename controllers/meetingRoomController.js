@@ -171,18 +171,224 @@ export const updateRoom = async (req, res) => {
 // Update availability only
 export const updateAvailability = async (req, res) => {
   try {
-    const { availability, blackoutDates } = req.body || {};
+    const { availability, blackoutDates, availableTimeSlots, isBookingClosed } = req.body || {};
     const room = await MeetingRoom.findById(req.params.id);
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
     if (availability) room.availability = { ...room.availability, ...availability };
     if (Array.isArray(blackoutDates)) room.blackoutDates = blackoutDates;
+    if (Array.isArray(availableTimeSlots)) room.availableTimeSlots = availableTimeSlots;
+    if (typeof isBookingClosed === 'boolean') room.isBookingClosed = isBookingClosed;
 
     await room.save();
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      updatedFields: ['availability', 'blackoutDates', 'availableTimeSlots', 'isBookingClosed']
+    });
     return res.json({ success: true, data: room });
   } catch (error) {
     await logErrorActivity(req, error);
     return res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get available time slots for a specific date
+export const getAvailableSlots = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date } = req.query;
+    
+    if (!date) {
+      return res.status(400).json({ success: false, message: "Date is required" });
+    }
+
+    const room = await MeetingRoom.findById(id);
+    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+
+    if (room.isBookingClosed) {
+      return res.json({ 
+        success: true, 
+        data: [], 
+        message: "Booking is currently closed for this room" 
+      });
+    }
+
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    // Filter reserved slots for the specific date
+    const reservedForDate = room.reservedSlots.filter(slot => {
+      const slotDate = new Date(slot.date);
+      slotDate.setHours(0, 0, 0, 0);
+      return slotDate.getTime() === targetDate.getTime();
+    });
+
+    // Get reserved time ranges
+    const reservedTimes = reservedForDate.map(slot => ({
+      startTime: slot.startTime,
+      endTime: slot.endTime
+    }));
+
+    // Filter available slots by removing reserved ones
+    const availableSlots = room.availableTimeSlots.filter(slot => {
+      return !reservedTimes.some(reserved => 
+        reserved.startTime === slot.startTime && reserved.endTime === slot.endTime
+      );
+    });
+
+    return res.json({ 
+      success: true, 
+      data: availableSlots,
+      reservedSlots: reservedTimes,
+      totalSlots: room.availableTimeSlots.length,
+      availableCount: availableSlots.length
+    });
+  } catch (error) {
+    await logErrorActivity(req, error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Add reserved slot
+export const addReservedSlot = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date, startTime, endTime, bookingId } = req.body;
+
+    if (!date || !startTime || !endTime) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Date, startTime, and endTime are required" 
+      });
+    }
+
+    const room = await MeetingRoom.findById(id);
+    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+
+    if (room.isBookingClosed) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Booking is currently closed for this room" 
+      });
+    }
+
+    // Check if slot is already reserved
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    const isAlreadyReserved = room.reservedSlots.some(slot => {
+      const slotDate = new Date(slot.date);
+      slotDate.setHours(0, 0, 0, 0);
+      return slotDate.getTime() === targetDate.getTime() && 
+             slot.startTime === startTime && 
+             slot.endTime === endTime;
+    });
+
+    if (isAlreadyReserved) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "This time slot is already reserved" 
+      });
+    }
+
+    room.reservedSlots.push({ date: targetDate, startTime, endTime, bookingId });
+    await room.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      action: 'Added reserved slot',
+      slotDetails: { date, startTime, endTime }
+    });
+
+    return res.json({ 
+      success: true, 
+      message: "Time slot reserved successfully",
+      data: room 
+    });
+  } catch (error) {
+    await logErrorActivity(req, error);
+    return res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Remove reserved slot
+export const removeReservedSlot = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date, startTime, endTime } = req.body;
+
+    if (!date || !startTime || !endTime) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Date, startTime, and endTime are required" 
+      });
+    }
+
+    const room = await MeetingRoom.findById(id);
+    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    const initialLength = room.reservedSlots.length;
+    room.reservedSlots = room.reservedSlots.filter(slot => {
+      const slotDate = new Date(slot.date);
+      slotDate.setHours(0, 0, 0, 0);
+      return !(slotDate.getTime() === targetDate.getTime() && 
+               slot.startTime === startTime && 
+               slot.endTime === endTime);
+    });
+
+    if (room.reservedSlots.length === initialLength) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Reserved slot not found" 
+      });
+    }
+
+    await room.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      action: 'Removed reserved slot',
+      slotDetails: { date, startTime, endTime }
+    });
+
+    return res.json({ 
+      success: true, 
+      message: "Reserved slot removed successfully",
+      data: room 
+    });
+  } catch (error) {
+    await logErrorActivity(req, error);
+    return res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Toggle booking status
+export const toggleBookingStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const room = await MeetingRoom.findById(id);
+    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+
+    room.isBookingClosed = !room.isBookingClosed;
+    await room.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      action: 'Toggled booking status',
+      isBookingClosed: room.isBookingClosed
+    });
+
+    return res.json({ 
+      success: true, 
+      message: `Booking ${room.isBookingClosed ? 'closed' : 'opened'} successfully`,
+      data: room 
+    });
+  } catch (error) {
+    await logErrorActivity(req, error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 

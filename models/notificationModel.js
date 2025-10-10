@@ -58,6 +58,9 @@ const notificationSchema = new Schema({
     emailText: { type: String }
   },
   
+  // Image attachment
+  image: { type: String },
+  
   // Metadata
   metadata: {
     tags: [{ type: String }],

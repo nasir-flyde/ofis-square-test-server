@@ -24,6 +24,10 @@ const EventSchema = new Schema({
   creditsRequired: { type: Number, default: 0 }, 
   status: { type: String, enum: ["draft", "published", "completed", "cancelled"], default: "draft" },
 
+  // Image fields
+  thumbnail: { type: String }, // ImageKit URL for thumbnail image
+  mainImage: { type: String }, // ImageKit URL for main/banner image
+
   createdBy: { type: Schema.Types.ObjectId, ref: "User" }, 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

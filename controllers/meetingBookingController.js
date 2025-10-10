@@ -232,6 +232,35 @@ export const createBooking = async (req, res) => {
       invoice: invoice?._id || undefined,
     });
 
+    // Add reserved slot to meeting room
+    const bookingStart = new Date(start);
+    const bookingEnd = new Date(end);
+    
+    // Convert booking times to 12-hour format with AM/PM
+    const startTimeStr = bookingStart.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+    const endTimeStr = bookingEnd.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
+    // Add to reserved slots
+    const reservedSlot = {
+      date: new Date(bookingStart.setHours(0, 0, 0, 0)),
+      startTime: startTimeStr,
+      endTime: endTimeStr,
+      bookingId: booking._id
+    };
+
+    room.reservedSlots.push(reservedSlot);
+    await room.save();
+
     const responseData = {
       booking,
     };
@@ -285,12 +314,31 @@ export const listBookings = async (req, res) => {
 // Cancel booking
 export const cancelBooking = async (req, res) => {
   try {
-    const booking = await MeetingBooking.findById(req.params.id);
+    const booking = await MeetingBooking.findById(req.params.id).populate('room');
     if (!booking) return res.status(404).json({ success: false, message: "Booking not found" });
-    if (booking.status !== "booked") return res.status(400).json({ success: false, message: "Only booked reservations can be cancelled" });
+    if (booking.status !== "booked" && booking.status !== "payment_pending") {
+      return res.status(400).json({ success: false, message: "Only booked or payment pending reservations can be cancelled" });
+    }
 
     booking.status = "cancelled";
     await booking.save();
+
+    // Remove reserved slot from meeting room
+    if (booking.room) {
+      const room = await MeetingRoom.findById(booking.room._id);
+      if (room) {
+        const bookingDate = new Date(booking.start);
+        bookingDate.setHours(0, 0, 0, 0);
+
+        // Filter out the reserved slot for this booking
+        room.reservedSlots = room.reservedSlots.filter(slot => {
+          return String(slot.bookingId) !== String(booking._id);
+        });
+
+        await room.save();
+      }
+    }
+
     return res.json({ success: true, data: booking });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });

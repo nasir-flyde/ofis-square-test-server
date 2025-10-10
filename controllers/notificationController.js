@@ -25,7 +25,8 @@ export const createNotification = async (req, res) => {
       scheduledAt,
       expiresAt,
       maxRetries,
-      source
+      source,
+      image
     } = req.body;
 
     // Validation
@@ -108,6 +109,7 @@ export const createNotification = async (req, res) => {
       templateKey,
       templateVariables,
       content: renderedContent,
+      image: image || undefined,
       metadata: metadata || {},
       to: cleanTo,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),

@@ -3,6 +3,7 @@ import eventController from '../controllers/eventController.js';
 import authMiddleware from '../middlewares/authVerify.js';
 import memberMiddleware from '../middlewares/memberMiddleware.js';
 import universalMiddleware from '../middlewares/universalAuthVerify.js';
+import { uploadEventImages, handleUploadError } from '../middlewares/uploadMiddleware.js';
 
 const router = express.Router();
 
@@ -22,12 +23,12 @@ const {
 
 // Admin/Community routes (require admin auth)
 // NOTE: Role/permission middleware can be added later. For now, protect with auth only.
-router.post('/', authMiddleware, createEvent);
+router.post('/', authMiddleware, uploadEventImages, handleUploadError, createEvent);
 router.patch('/:id/publish', authMiddleware, publishEvent);
 router.patch('/:id/complete', authMiddleware, completeEvent);
 router.patch('/:id/cancel', authMiddleware, cancelEvent);
 router.patch('/:id/attendance', authMiddleware, markAttendance);
-router.put('/:id', authMiddleware, updateEvent);
+router.put('/:id', authMiddleware, uploadEventImages, handleUploadError, updateEvent);
 router.delete('/:id', authMiddleware, deleteEvent);
 
 // Public/Member routes
