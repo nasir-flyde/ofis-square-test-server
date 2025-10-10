@@ -6,6 +6,7 @@ import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import WalletService from "../services/walletService.js";
+import Visitor from "../models/visitorModel.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -313,6 +314,79 @@ export const getBookingById = async (req, res) => {
 
     return res.json({ success: true, data: booking });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Add a visitor (existing or new) to a meeting booking
+export const addVisitorToBooking = async (req, res) => {
+  try {
+    const { id } = req.params; // booking id
+    const { visitorId, visitor } = req.body || {};
+
+    if (!id) return res.status(400).json({ success: false, message: "booking id is required" });
+
+    // Find booking with minimal required data
+    const booking = await MeetingBooking.findById(id).populate({ path: "room", select: "building name" });
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found" });
+
+    if (["cancelled", "completed"].includes(booking.status)) {
+      return res.status(400).json({ success: false, message: `Cannot add visitors to a ${booking.status} booking` });
+    }
+
+    let newVisitorId = null;
+
+    if (visitorId) {
+      // Attach existing visitor
+      const existingVisitor = await Visitor.findById(visitorId);
+      if (!existingVisitor) {
+        return res.status(404).json({ success: false, message: "Visitor not found" });
+      }
+      newVisitorId = existingVisitor._id;
+    } else if (visitor && typeof visitor === "object") {
+      // Create a new visitor and attach
+      const { name, email, phone, companyName, notes, purpose } = visitor;
+      if (!name?.trim()) {
+        return res.status(400).json({ success: false, message: "visitor.name is required" });
+      }
+
+      const created = await Visitor.create({
+        name: name.trim(),
+        email: email?.trim(),
+        phone: phone?.trim(),
+        companyName: companyName?.trim(),
+        hostMember: booking.member || undefined,
+        purpose: purpose?.trim(),
+        expectedVisitDate: booking.start,
+        expectedArrivalTime: booking.start,
+        expectedDepartureTime: booking.end,
+        building: booking.room?.building || undefined,
+        notes: notes?.trim(),
+        status: "invited",
+        createdBy: req.user?.id || undefined,
+      });
+
+      newVisitorId = created._id;
+    } else {
+      return res.status(400).json({ success: false, message: "Provide visitorId or visitor object" });
+    }
+
+    // Prevent duplicates
+    const alreadyAdded = (booking.visitors || []).some((v) => String(v) === String(newVisitorId));
+    if (!alreadyAdded) {
+      booking.visitors = [...(booking.visitors || []), newVisitorId];
+      await booking.save();
+    }
+
+    const updated = await MeetingBooking.findById(id)
+      .populate("room", "name capacity amenities")
+      .populate("member", "firstName lastName email phone companyName")
+      .populate("visitors", "name email phone company status expectedVisitDate")
+      .populate({ path: "invoice", select: "invoice_number status total" });
+
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error("Add visitor to booking error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -4,7 +4,7 @@ import clientMiddleware from "../middlewares/clientMiddleware.js";
 import universalMiddleware from "../middlewares/universalAuthVerify.js";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
 import communityMiddleware from "../middlewares/communityMiddleware.js";
-import { createBooking, listBookings, cancelBooking, utilizationReport, getBookingById, getBookingsByMember } from "../controllers/meetingBookingController.js";
+import { createBooking, listBookings, cancelBooking, utilizationReport, getBookingById, getBookingsByMember, addVisitorToBooking } from "../controllers/meetingBookingController.js";
 
 const router = express.Router();
 
@@ -17,6 +17,9 @@ router.post("/", authMiddleware,createBooking);
 // Client access to create bookings
 router.post("/client", universalMiddleware, createBooking);
 router.patch("/:id/cancel", authMiddleware, cancelBooking);
+
+// Add a visitor (existing or new) to a booking
+router.post("/:id/visitors", addVisitorToBooking);
 
 // Reports
 router.get("/reports/utilization", authMiddleware, utilizationReport);
