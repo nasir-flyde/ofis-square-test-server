@@ -294,8 +294,6 @@ export const getMemberProfile = async (req, res) => {
     const ticketFilter = { 
       createdBy: memberId
     };
-    
-    // Add client filter if member has a client
     if (member.client) {
       ticketFilter.client = member.client._id;
     }
