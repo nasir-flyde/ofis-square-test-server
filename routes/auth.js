@@ -11,7 +11,10 @@ import {
   communitySignup,
   onDemandUserSignup,
   onDemandUserLogin,
-  getMe 
+  getMe,
+  refreshAccessToken,
+  logout,
+  logoutAllDevices
 } from "../controllers/authController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 
@@ -30,6 +33,11 @@ router.post("/community/register", communitySignup);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);
+
+// Refresh token routes
+router.post("/refresh", refreshAccessToken); // Refresh access token
+router.post("/logout", logout); // Logout (revoke refresh token)
+router.post("/logout-all", authMiddleware, logoutAllDevices); // Logout from all devices
 
 // Backward-compatible aliases
 router.post("/register", clientSignup);

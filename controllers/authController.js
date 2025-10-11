@@ -2,6 +2,9 @@ import jwt from "jsonwebtoken";
 import Users from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import { createJWT } from "../middlewares/createJwt.js";
+import { createAccessToken, createRefreshToken, generateTokenFamily } from "../middlewares/createJwtRefresh.js";
+import { storeRefreshToken, validateRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllUserTokens, getDeviceInfo } from "../utils/refreshTokenService.js";
+import { generateAuthTokens } from "../utils/authHelpers.js";
 import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
@@ -117,13 +120,9 @@ export const adminLogin = async (req, res) => {
     if ((role.roleName || "").toLowerCase() !== "admin") {
       return res.status(403).json({ error: "Not an admin account" });
     }
-    const token = createJWT(
-      user._id.toString(),
-      user.email,
-      role._id.toString(),
-      role.roleName,
-      user.phone
-    );
+
+    // Generate both access and refresh tokens
+    const { accessToken, refreshToken } = await generateAuthTokens(user, role, req);
 
     const safeUser = {
       _id: user._id,
@@ -140,7 +139,13 @@ export const adminLogin = async (req, res) => {
       loginType: 'admin'
     });
 
-    res.json({ token, user: safeUser });
+    res.json({ 
+      accessToken,
+      refreshToken,
+      user: safeUser,
+      // Legacy support - also send as 'token'
+      token: accessToken
+    });
   } catch (err) {
     console.error("adminLogin error:", err);
     
@@ -838,16 +843,12 @@ export const verifyMemberClientOtp = async (req, res) => {
       allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
     }
 
-    const token = createJWT(
-      user._id.toString(),
-      user.email,
-      role._id.toString(),
-      role.roleName,
-      user.phone,
-      clientId,
-      memberId,
-      undefined,
-      allowedUsingCredits
+    // Generate both access and refresh tokens
+    const { accessToken, refreshToken } = await generateAuthTokens(
+      user, 
+      role, 
+      req, 
+      { clientId, memberId, buildingId: undefined, allowedUsingCredits }
     );
 
     const safeUser = {
@@ -869,8 +870,10 @@ export const verifyMemberClientOtp = async (req, res) => {
 
     // Return unified response structure
     const response = { 
-      token, 
-      user: safeUser
+      accessToken,
+      refreshToken,
+      user: safeUser,
+      token: accessToken // Legacy support
     };
 
     if (clientId) response.clientId = clientId;
@@ -1065,5 +1068,165 @@ export const getMe = async (req, res) => {
   } catch (err) {
     console.error("getMe error:", err);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const refreshAccessToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: "Refresh token is required" });
+    }
+
+    // Validate refresh token
+    const { decoded, tokenDoc } = await validateRefreshToken(refreshToken);
+
+    // Get user details
+    const user = await Users.findById(decoded.userId).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+
+    // Get additional user data based on role
+    let clientId = null;
+    let memberId = null;
+    let buildingId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      if (client) {
+        clientId = client._id.toString();
+        const member = await Member.findOne({ 
+          $or: [
+            { user: user._id, client: client._id },
+            { email: user.email, client: client._id },
+            { phone: user.phone, client: client._id }
+          ]
+        });
+        if (member) {
+          memberId = member._id.toString();
+          allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+        }
+      }
+    } else if (roleName === "member") {
+      const member = await Member.findOne({ user: user._id }).populate('client');
+      if (member && member.client) {
+        memberId = member._id.toString();
+        clientId = member.client._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+      }
+    } else if (roleName === "community") {
+      buildingId = user.buildingId?.toString();
+    } else if (roleName === "ondemanduser") {
+      const guest = await Guest.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      if (guest) {
+        clientId = guest._id.toString();
+      }
+    }
+
+    const accessToken = createAccessToken(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId,
+      memberId,
+      buildingId,
+      allowedUsingCredits
+    );
+
+    const deviceInfo = getDeviceInfo(req);
+    const newRefreshToken = await rotateRefreshToken(refreshToken, user._id, deviceInfo);
+
+    await logAuthActivity(req, 'TOKEN_REFRESH', 'SUCCESS', null, {
+      userRole: roleName,
+      userId: user._id.toString()
+    });
+
+    res.json({ 
+      accessToken,
+      refreshToken: newRefreshToken,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        roleName: role.roleName,
+      }
+    });
+
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    
+    await logAuthActivity(req, 'TOKEN_REFRESH', 'FAILED', error.message);
+    
+    return res.status(401).json({ 
+      error: "Invalid or expired refresh token",
+      message: error.message 
+    });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: "Refresh token is required" });
+    }
+
+    await revokeRefreshToken(refreshToken);
+
+    await logAuthActivity(req, 'LOGOUT', 'SUCCESS', null, {
+      userId: req.user?._id?.toString()
+    });
+
+    res.json({ message: "Logged out successfully" });
+
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: "Failed to logout", message: error.message });
+  }
+};
+
+export const logoutAllDevices = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    await revokeAllUserTokens(userId);
+
+    await logAuthActivity(req, 'LOGOUT_ALL_DEVICES', 'SUCCESS', null, {
+      userId: userId.toString()
+    });
+
+    res.json({ message: "Logged out from all devices successfully" });
+
+  } catch (error) {
+    console.error('Logout all devices error:', error);
+    res.status(500).json({ error: "Failed to logout from all devices", message: error.message });
   }
 };
