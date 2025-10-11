@@ -1,5 +1,6 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
+import universalMiddleware from '../middlewares/universalAuthVerify.js';
 import communityMiddleware from "../middlewares/communityMiddleware.js";
 import { uploadMeetingRoomImages, handleUploadError } from "../middlewares/uploadMiddleware.js";
 import { 
@@ -12,12 +13,14 @@ import {
   getAvailableSlots,
   addReservedSlot,
   removeReservedSlot,
-  toggleBookingStatus
+  toggleBookingStatus,
+  getAvailableRoomsByTime
 } from "../controllers/meetingRoomController.js";
 
 const router = express.Router();
 
 router.get("/", listRooms);
+router.get("/available-by-time",getAvailableRoomsByTime);
 router.post("/", authMiddleware, uploadMeetingRoomImages, handleUploadError, createRoom);
 router.get("/:id", authMiddleware, communityMiddleware, getRoomById);
 router.patch("/:id", authMiddleware, uploadMeetingRoomImages, handleUploadError, updateRoom);
