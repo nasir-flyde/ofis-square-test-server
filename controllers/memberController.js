@@ -289,6 +289,29 @@ export const getMemberProfile = async (req, res) => {
       .sort({ start: -1 })
       .limit(20);
 
+    // Get tickets created by member
+    const Ticket = (await import("../models/ticketModel.js")).default;
+    const ticketFilter = { 
+      createdBy: memberId
+    };
+    
+    // Add client filter if member has a client
+    if (member.client) {
+      ticketFilter.client = member.client._id;
+    }
+    
+    console.log('Ticket filter:', ticketFilter);
+    
+    const tickets = await Ticket.find(ticketFilter)
+      .populate('category.categoryId', 'name description subCategories')
+      .populate('assignedTo', 'name email')
+      .populate('building', 'name')
+      .populate('cabin', 'name')
+      .sort({ createdAt: -1 })
+      .limit(50);
+    
+    console.log('Tickets found:', tickets.length);
+
     // Get events (RSVPs and attendance)
     const Event = (await import("../models/eventModel.js")).default;
     const rsvpEvents = await Event.find({
@@ -344,6 +367,39 @@ export const getMemberProfile = async (req, res) => {
         } : null
       } : null,
       creditBalance: creditBalance,
+      tickets: {
+        total: tickets.length,
+        tickets: tickets.map(ticket => ({
+          id: ticket._id,
+          ticketId: ticket.ticketId,
+          subject: ticket.subject,
+          description: ticket.description,
+          priority: ticket.priority,
+          status: ticket.status,
+          category: ticket.category?.categoryId ? {
+            id: ticket.category.categoryId._id,
+            name: ticket.category.categoryId.name,
+            subCategory: ticket.category.subCategory
+          } : null,
+          assignedTo: ticket.assignedTo ? {
+            id: ticket.assignedTo._id,
+            name: ticket.assignedTo.name,
+            email: ticket.assignedTo.email
+          } : null,
+          building: ticket.building ? {
+            id: ticket.building._id,
+            name: ticket.building.name
+          } : null,
+          cabin: ticket.cabin ? {
+            id: ticket.cabin._id,
+            name: ticket.cabin.name
+          } : null,
+          images: ticket.images,
+          latestUpdate: ticket.latestUpdate,
+          createdAt: ticket.createdAt,
+          updatedAt: ticket.updatedAt
+        }))
+      },
       meetingBookings: {
         total: meetingBookings.length,
         bookings: meetingBookings.map(booking => ({
