@@ -284,7 +284,7 @@ export const getMemberProfile = async (req, res) => {
       member: memberId,
       status: { $in: ['booked', 'payment_pending', 'completed'] }
     })
-      .populate('room', 'name capacity amenities')
+      .populate('room', 'name capacity amenities images')
       .populate('visitors', 'name email phone company')
       .sort({ start: -1 })
       .limit(20);
@@ -407,7 +407,8 @@ export const getMemberProfile = async (req, res) => {
           room: booking.room ? {
             name: booking.room.name,
             capacity: booking.room.capacity,
-            amenities: booking.room.amenities
+            amenities: booking.room.amenities,
+            images: booking.room.images
           } : null,
           visitors: booking.visitors,
           start: booking.start,
@@ -434,7 +435,9 @@ export const getMemberProfile = async (req, res) => {
             capacity: event.capacity,
             rsvpCount: event.rsvpCount,
             creditsRequired: event.creditsRequired,
-            status: event.status
+            status: event.status,
+            thumbnail: event.thumbnail,
+            mainImage: event.mainImage
           }))
         },
         attended: {
@@ -448,7 +451,9 @@ export const getMemberProfile = async (req, res) => {
             endDate: event.endDate,
             location: event.location,
             creditsRequired: event.creditsRequired,
-            status: event.status
+            status: event.status,
+            thumbnail: event.thumbnail,
+            mainImage: event.mainImage
           }))
         }
       }
