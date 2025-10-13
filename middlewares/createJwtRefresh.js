@@ -19,7 +19,7 @@ export const createAccessToken = (id, email, roleId, roleName, phone, clientId, 
     },
     process.env.JWT_SECRET || "ofis-square-secret-key",
     {
-      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m", // Short-lived access token
+      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "1d", // Short-lived access token
     }
   );
 };
