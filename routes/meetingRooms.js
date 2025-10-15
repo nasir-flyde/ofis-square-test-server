@@ -22,7 +22,7 @@ const router = express.Router();
 router.get("/", listRooms);
 router.get("/available-by-time",getAvailableRoomsByTime);
 router.post("/", authMiddleware, uploadMeetingRoomImages, handleUploadError, createRoom);
-router.get("/:id", authMiddleware, communityMiddleware, getRoomById);
+router.get("/:id", getRoomById);
 router.patch("/:id", authMiddleware, uploadMeetingRoomImages, handleUploadError, updateRoom);
 router.patch("/:id/availability", authMiddleware, updateAvailability);
 router.delete("/:id", authMiddleware, deleteRoom);
