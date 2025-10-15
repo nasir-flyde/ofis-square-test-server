@@ -539,6 +539,52 @@ export const getAvailableRoomsByTime = async (req, res) => {
         };
       });
 
+    // Helper function to convert 12-hour format to 24-hour format
+    const convertTo24Hour = (timeStr) => {
+      if (!timeStr) return timeStr;
+      
+      const isPM = timeStr.includes('PM');
+      const isAM = timeStr.includes('AM');
+      
+      // If already in 24-hour format (no AM/PM), return as is
+      if (!isPM && !isAM) return timeStr;
+      
+      const cleanTime = timeStr.replace(/\s*(AM|PM)\s*/i, '').trim();
+      const [hourStr, minuteStr] = cleanTime.split(':');
+      let hour = parseInt(hourStr);
+      const minute = minuteStr || '00';
+      
+      if (isPM && hour !== 12) hour += 12;
+      if (isAM && hour === 12) hour = 0;
+      
+      return `${hour.toString().padStart(2, '0')}:${minute.padStart(2, '0')}`;
+    };
+
+    // Convert reserved slot times to 24-hour format for available rooms
+    const availableRoomsFormatted = availableRooms.map(room => {
+      const roomObj = room.toObject();
+      if (roomObj.reservedSlots && roomObj.reservedSlots.length > 0) {
+        roomObj.reservedSlots = roomObj.reservedSlots.map(slot => ({
+          ...slot,
+          startTime: convertTo24Hour(slot.startTime),
+          endTime: convertTo24Hour(slot.endTime)
+        }));
+      }
+      return roomObj;
+    });
+
+    // Convert reserved slot times to 24-hour format for booked rooms
+    const bookedRoomsFormatted = bookedRooms.map(room => {
+      if (room.reservedSlots && room.reservedSlots.length > 0) {
+        room.reservedSlots = room.reservedSlots.map(slot => ({
+          ...slot,
+          startTime: convertTo24Hour(slot.startTime),
+          endTime: convertTo24Hour(slot.endTime)
+        }));
+      }
+      return room;
+    });
+
     return res.json({
       success: true,
       data: {
@@ -549,8 +595,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           start: requestedStart,
           end: requestedEnd
         },
-        available: availableRooms,
-        booked: bookedRooms,
+        available: availableRoomsFormatted,
+        booked: bookedRoomsFormatted,
         summary: {
           totalRooms: allRooms.length,
           availableCount: availableRooms.length,
