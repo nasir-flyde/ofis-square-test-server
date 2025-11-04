@@ -1,7 +1,6 @@
 import Member from "../models/memberModel.js";
 import Client from "../models/clientModel.js";
 
-// Create a new member
 export const createMember = async (req, res) => {
   try {
     const { firstName, lastName, email, phone, companyName, role, client, status } = req.body || {};
@@ -18,6 +17,46 @@ export const createMember = async (req, res) => {
       }
     }
 
+<<<<<<< Updated upstream
+=======
+    let createdUserId = null;
+    if (email) {
+      try {
+        // Find or create default "member" role
+        let memberRole = await Role.findOne({ roleName: "member" });
+        if (!memberRole) {
+          memberRole = await Role.create({
+            roleName: "member",
+            description: "Default member role with basic access",
+            canLogin: true,
+            permissions: ["member:read", "member:profile"]
+          });
+        }
+        const defaultPassword = "123456";
+
+        const userData = {
+          name: `${firstName} ${lastName || ''}`.trim(),
+          email: email,
+          phone: phone || `temp_${Date.now()}`,
+          password: defaultPassword,
+          role: memberRole._id
+        };
+
+        const createdUser = await User.create(userData);
+        createdUserId = createdUser._id;
+
+        console.log(`Created user for member: ${email} with default password: ${defaultPassword}`);
+      } catch (userErr) {
+        console.warn("Failed to create user for member:", userErr.message);
+      }
+    }
+
+    const name = `${firstName} ${lastName || ''}`.trim();
+    const clientId = client || null;
+    const buildingId = null;
+    const cabinId = null;
+
+>>>>>>> Stashed changes
     const member = await Member.create({
       firstName,
       lastName,
@@ -25,8 +64,15 @@ export const createMember = async (req, res) => {
       phone,
       companyName,
       role,
+<<<<<<< Updated upstream
       client,
       status: status || "active"
+=======
+      client: clientId,
+      desk: null,
+      status: 'active',
+      user: createdUserId
+>>>>>>> Stashed changes
     });
 
     return res.status(201).json({ success: true, data: member });
@@ -72,7 +118,6 @@ export const getMembers = async (req, res) => {
   }
 };
 
-// Get member by ID
 export const getMemberById = async (req, res) => {
   try {
     const member = await Member.findById(req.params.id).populate('client', 'name email');

@@ -34,7 +34,74 @@ const upload = multer({
   fileFilter: fileFilter
 });
 
+<<<<<<< Updated upstream
 export const uploadScreenshots = upload.array('screenshots', 5);
+=======
+// Building photos storage configuration
+const buildingPhotosStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, buildingPhotosDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'building-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const buildingPhotosUpload = multer({
+  storage: buildingPhotosStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file for building photos
+    files: 10 // Allow up to 10 photos per building
+  },
+  fileFilter: fileFilter
+});
+
+// Meeting room images storage configuration (using memory storage for ImageKit)
+const meetingRoomImagesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file for meeting room images
+    files: 10 // Allow up to 10 images per meeting room
+  },
+  fileFilter: fileFilter
+});
+
+// Event images storage configuration (using memory storage for ImageKit)
+const eventImagesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file for event images
+    files: 2 // Allow thumbnail and main image
+  },
+  fileFilter: fileFilter
+});
+
+// Stamp paper upload configuration (using memory storage for ImageKit)
+const stampPaperUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB for PDF files
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF and image files are allowed for stamp paper!'), false);
+    }
+  }
+});
+
+export const uploadScreenshots = upload.array('screenshots', 5);
+export const uploadBuildingPhotos = buildingPhotosUpload.array('photos', 10);
+export const uploadMeetingRoomImages = meetingRoomImagesUpload.array('images', 10);
+export const uploadEventImages = eventImagesUpload.fields([
+  { name: 'thumbnail', maxCount: 1 },
+  { name: 'mainImage', maxCount: 1 }
+]);
+export const uploadStampPaper = stampPaperUpload.single('stampPaper');
+>>>>>>> Stashed changes
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {

@@ -12,7 +12,7 @@ import PdfPrinter from "pdfmake";
 import getContractTemplate from "./contractTemplate.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
 
-// Create a new contract (admin only)
+// Create a new contract
 export const createContract = async (req, res) => {
   try {
     const {
@@ -28,7 +28,8 @@ export const createContract = async (req, res) => {
       terms,
     } = req.body || {};
 
- 
+    // Check if user can auto-approve (has contract:approve permission)
+    const canAutoApprove = req.hasPermission && req.hasPermission('contract:approve');
 
     if (!clientId) return res.status(400).json({ error: "clientId is required" });
     if (!buildingId) return res.status(400).json({ error: "buildingId is required" });
@@ -81,10 +82,72 @@ export const createContract = async (req, res) => {
       ...(terms && { terms }),
       status: "draft",
       fileUrl: "placeholder",
+      requiresApproval: !canAutoApprove, // Admin/Approver doesn't need approval
+      createdBy: req.user?._id || null,
     };
 
     const created = await Contract.create(payload);
 
+<<<<<<< Updated upstream
+=======
+    // All contracts are created as draft, workflow actions happen in ContractDetailPage
+    try {
+      const canAutoApprove = req.hasPermission && req.hasPermission('contract:approve');
+      if (!canAutoApprove) {
+        const draftUpdate = {
+          status: 'draft',
+          submittedBy: req.user?._id || null,
+          submittedAt: new Date(),
+          requiresApproval: true,
+        };
+        await Contract.findByIdAndUpdate(created._id, draftUpdate, { new: true });
+        // Reflect in memory for response context
+        Object.assign(created, draftUpdate);
+        await logContractActivity(req, 'CONTRACT_CREATED', 'Contract', created._id, {
+          createdBy: req.user?._id,
+          requiresApproval: true,
+        });
+      }
+    } catch (markErr) {
+      console.warn('Failed to update contract metadata on create:', markErr?.message);
+    }
+
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Contract', created._id, null, {
+      clientId,
+      buildingId,
+      capacity,
+      monthlyRent,
+      startDate: start,
+      endDate: end
+    });
+
+    // Auto-generate and upload contract PDF
+    try {
+      const populatedContract = await Contract.findById(created._id)
+        .populate("client")
+        .populate("building", "name address pricing");
+      
+      const pdfBuffer = await generateContractPDFBuffer(populatedContract);
+      const fileName = `contract_${created._id}_${Date.now()}.pdf`;
+      
+      const uploadResponse = await imagekit.upload({
+        file: pdfBuffer,
+        fileName: fileName,
+        folder: "/contracts"
+      });
+      
+      // Update contract with the uploaded PDF URL
+      await Contract.findByIdAndUpdate(created._id, { fileUrl: uploadResponse.url });
+      created.fileUrl = uploadResponse.url;
+      
+      console.log(`Contract PDF uploaded: ${uploadResponse.url}`);
+    } catch (pdfError) {
+      console.error("Failed to generate/upload contract PDF:", pdfError);
+      // Don't fail contract creation if PDF upload fails
+    }
+
+>>>>>>> Stashed changes
     // Update client with building ID when contract is created
     try {
       await Client.findByIdAndUpdate(clientId, { building: buildingId });
@@ -269,6 +332,186 @@ export const updateContract = async (req, res) => {
   }
 };
 
+// Submit contract for approval or auto-approve
+export const submitContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id)
+      .populate("client")
+      .populate("building", "name address pricing");
+    
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+    
+    if (contract.status !== "draft") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Only draft contracts can be submitted" 
+      });
+    }
+
+    // Check if contract requires approval
+    if (contract.requiresApproval === false) {
+      // Auto-approve for admin/approver
+      contract.status = "approved";
+      contract.approvedBy = req.user?._id || null;
+      contract.approvedAt = new Date();
+      contract.submittedBy = req.user?._id || null;
+      contract.submittedAt = new Date();
+      
+      await contract.save();
+      
+      // Log activity
+      await logContractActivity(req, 'CONTRACT_AUTO_APPROVED', 'Contract', id, {
+        approvedBy: req.user?._id,
+        autoApproved: true
+      });
+      
+      return res.json({ 
+        success: true,
+        message: "Contract auto-approved and ready to send for signature",
+        contract,
+        autoApproved: true
+      });
+    } else {
+      // Requires approval
+      contract.status = "pending_approval";
+      contract.submittedBy = req.user?._id || null;
+      contract.submittedAt = new Date();
+      
+      await contract.save();
+      
+      // Log activity
+      await logContractActivity(req, 'CONTRACT_SUBMITTED', 'Contract', id, {
+        submittedBy: req.user?._id,
+        requiresApproval: true
+      });
+      
+      // TODO: Send notification to approvers
+      
+      return res.json({ 
+        success: true,
+        message: "Contract submitted for approval",
+        contract,
+        requiresApproval: true
+      });
+    }
+  } catch (err) {
+    console.error("submitContract error:", err);
+    await logErrorActivity(req, err, 'Submit Contract');
+    return res.status(500).json({ success: false, message: "Failed to submit contract" });
+  }
+};
+
+// Approve contract (requires contract:approve permission)
+export const approveContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id);
+    
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+    
+    if (contract.status !== "pending_approval") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Only contracts pending approval can be approved" 
+      });
+    }
+    
+    contract.status = "approved";
+    contract.approvedBy = req.user?._id || null;
+    contract.approvedAt = new Date();
+    
+    await contract.save();
+    
+    // Log activity
+    await logContractActivity(req, 'CONTRACT_APPROVED', 'Contract', id, {
+      approvedBy: req.user?._id,
+      previousStatus: "pending_approval"
+    });
+    
+    // TODO: Send notification to contract creator
+    
+    return res.json({ 
+      success: true,
+      message: "Contract approved. Ready to send for signature.",
+      contract
+    });
+  } catch (err) {
+    console.error("approveContract error:", err);
+    await logErrorActivity(req, err, 'Approve Contract');
+    return res.status(500).json({ success: false, message: "Failed to approve contract" });
+  }
+};
+
+// Reject contract (requires contract:approve permission)
+export const rejectContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    
+    const contract = await Contract.findById(id);
+    
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+    
+    if (contract.status !== "pending_approval") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Only contracts pending approval can be rejected" 
+      });
+    }
+    
+    contract.status = "rejected";
+    contract.rejectedBy = req.user?._id || null;
+    contract.rejectedAt = new Date();
+    contract.rejectionReason = reason || "No reason provided";
+    
+    await contract.save();
+    
+    // Log activity
+    await logContractActivity(req, 'CONTRACT_REJECTED', 'Contract', id, {
+      rejectedBy: req.user?._id,
+      rejectionReason: reason,
+      previousStatus: "pending_approval"
+    });
+    
+    // TODO: Send notification to contract creator
+    
+    return res.json({ 
+      success: true,
+      message: "Contract rejected",
+      contract
+    });
+  } catch (err) {
+    console.error("rejectContract error:", err);
+    await logErrorActivity(req, err, 'Reject Contract');
+    return res.status(500).json({ success: false, message: "Failed to reject contract" });
+  }
+};
+
+// Get contracts pending approval (for approvers)
+export const getPendingApprovalContracts = async (req, res) => {
+  try {
+    const contracts = await Contract.find({ status: "pending_approval" })
+      .populate("client", "companyName email contactPerson phone")
+      .populate("building", "name address pricing")
+      .populate("createdBy", "name email")
+      .populate("submittedBy", "name email")
+      .sort({ submittedAt: -1 });
+    
+    return res.json({ success: true, data: contracts });
+  } catch (err) {
+    console.error("getPendingApprovalContracts error:", err);
+    await logErrorActivity(req, err, 'Get Pending Approval Contracts');
+    return res.status(500).json({ success: false, message: "Failed to fetch pending contracts" });
+  }
+};
+
 // Send contract for digital signature
 export const sendForSignature = async (req, res) => {
   try {
@@ -278,8 +521,8 @@ export const sendForSignature = async (req, res) => {
       .populate("building", "name address pricing");
     
     if (!contract) return res.status(404).json({ error: "Contract not found" });
-    if (contract.status !== "draft") {
-      return res.status(400).json({ error: "Only draft contracts can be sent for signature" });
+    if (contract.status !== "draft" && contract.status !== "approved") {
+      return res.status(400).json({ error: "Only draft or approved contracts can be sent for signature" });
     }
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
 
@@ -368,6 +611,134 @@ export const checkSignatureStatus = async (req, res) => {
   } catch (err) {
     console.error("checkSignatureStatus error:", err);
     return res.status(500).json({ error: "Failed to check signature status" });
+  }
+};
+
+// Upload contract and send for signature via Zoho Sign
+export const uploadAndSendForSignature = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id)
+      .populate("client")
+      .populate("building", "name address pricing");
+    
+    if (!contract) {
+      return res.status(404).json({ error: "Contract not found" });
+    }
+
+    // Check if contract is in approved status
+    if (contract.status !== 'approved' && contract.status !== 'draft') {
+      return res.status(400).json({ 
+        error: `Contract must be approved before sending for signature. Current status: ${contract.status}` 
+      });
+    }
+
+    // Accept uploaded file
+    let uploadedFile = req.file;
+    if (!uploadedFile && Array.isArray(req.files) && req.files.length > 0) {
+      uploadedFile = req.files[0];
+    }
+
+    if (!uploadedFile) {
+      return res.status(400).json({ error: "Contract file is required" });
+    }
+
+    // Validate file type
+    const allowed = ["application/pdf"];
+    if (uploadedFile.mimetype && !allowed.includes(uploadedFile.mimetype)) {
+      return res.status(400).json({ error: "Only PDF files are allowed" });
+    }
+
+    // Upload to ImageKit
+    let fileUrl;
+    try {
+      const fileName = `contract_${id}_${Date.now()}_${uploadedFile.originalname}`;
+      const uploadResponse = await imagekit.upload({
+        file: uploadedFile.buffer,
+        fileName: fileName,
+        folder: "/contracts"
+      });
+      fileUrl = uploadResponse.url;
+    } catch (uploadError) {
+      console.error("ImageKit upload error:", uploadError);
+      return res.status(500).json({ error: "Failed to upload file to ImageKit" });
+    }
+
+    // Update contract with file URL
+    contract.fileUrl = fileUrl;
+    await contract.save();
+
+    // Log file upload
+    await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+      fileUrl,
+      fileName: uploadedFile.originalname,
+      action: 'contract_file_uploaded'
+    });
+
+    // Now send to Zoho Sign using the same multi-step process as sendForSignature
+    try {
+      console.log('Sending uploaded contract for signature:', {
+        contractId: contract._id,
+        clientName: contract.client.companyName,
+        fileUrl: fileUrl
+      });
+
+      // Step 1: Create document in Zoho Sign
+      const requestId = await loggedZohoSign.createDocument(contract);
+      console.log("Document created with request ID:", requestId);
+      
+      // Step 2: Verify document exists and get document ID
+      const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
+      const documentId = documentDetails?.document_ids?.[0]?.document_id;
+      if (!documentId) {
+        throw new Error("Failed to get document ID from Zoho Sign");
+      }
+      console.log("Document verified with ID:", documentId);
+      
+      // Step 3: Add recipient to document
+      await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+      console.log("Recipient added to document");
+      
+      // Step 4: Submit document for signature
+      await loggedZohoSign.submitDocument(requestId);
+      console.log("Document submitted for signature");
+
+      // Update contract with Zoho Sign details
+      const updatedContract = await Contract.findByIdAndUpdate(
+        id,
+        {
+          status: "pending_signature",
+          zohoSignRequestId: requestId,
+          sentForSignatureAt: new Date()
+        },
+        { new: true }
+      ).populate("client").populate("building");
+
+      await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', id, contract.client?._id, {
+        zohoSignRequestId: requestId,
+        clientEmail: contract.client.email,
+        clientName: contract.client.companyName,
+        uploadedFile: uploadedFile.originalname
+      });
+
+      return res.json({
+        success: true,
+        message: "Contract uploaded and sent for digital signature",
+        contract: updatedContract,
+        zohoSignRequestId: requestId
+      });
+    } catch (zohoError) {
+      console.error("Zoho Sign error:", zohoError);
+      return res.status(500).json({ 
+        error: "Contract uploaded but failed to send for signature",
+        details: zohoError.message,
+        fileUrl 
+      });
+    }
+  } catch (err) {
+    console.error("uploadAndSendForSignature error:", err);
+    await logErrorActivity(req, err, 'Upload and Send Contract for Signature');
+    return res.status(500).json({ error: "Failed to process contract" });
   }
 };
 

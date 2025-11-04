@@ -1,0 +1,398 @@
+# COSEC (Matrix) Integration — Implementation Plan for **Ofis Square**
+
+**Version:** 1.0
+
+**Purpose:** This document provides a complete, actionable implementation plan to integrate COSEC (Matrix) access control into the Ofis Square backend and frontend. It covers architecture, DB schemas, environment configuration, low-level API wrapper, business services, controllers & routes, hooks into existing flows (member onboarding, contracts, day-pass, visitors), cron jobs, frontend pages, testing, security, operational runbook, and sample requests.
+
+---
+
+## Executive summary
+
+Ofis Square will use the COSEC Web API (Matrix) to provision users, assign credentials (RFID/cards), grant/revoke access to doors/zones/groups, and fetch access events. Integration will follow a layered approach:
+
+* `utils/matrixApi.js` — low-level HTTP client with Basic Auth.
+* `services/matrixService.js` — business orchestration (provision, assign, revoke, reconciliation).
+* `models/*` — DB mappings for matrix users and building/device metadata.
+* `controllers/matrixController.js` + `routes/matrix.js` — admin endpoints for manual operations.
+* Hooks in existing controllers (`memberController`, `contractController`, `dayPassController`, `visitorController`) for automatic provisioning and revocation.
+* Cron jobs: expiry watcher, reconciliation, event poller.
+* Frontend: admin UI pages for Matrix Users, Building Access Setup, Access Logs.
+
+Key design constraints:
+
+* Use Basic HTTP Authentication with credentials stored in `.env`.
+* Idempotent operations and retry/backoff for reliability.
+* Activity logging for every operation.
+* Admin-only endpoints for manual control.
+
+---
+
+## Prerequisites & assumptions
+
+* You have access to a COSEC (Matrix) server and network reachability from backend. If COSEC is behind a firewall, ensure server IP is whitelisted.
+* Provided staging credentials: `OfisAPI` / `Api@123`. Store securely in `.env` files for each environment.
+* Ofis Square backend uses Node.js/Express and MongoDB; integrate using Mongoose models.
+* Frontend is React-based (ofis-square-frontend) and can call new admin endpoints.
+
+---
+
+## Environment variables
+
+Add these to backend `.env` (do not commit):
+
+```
+COSEC_API_BASE=https://<your-cosec-server>/api.svc/v2
+COSEC_API_USER=OfisAPI
+COSEC_API_PASS=Api@123
+COSEC_API_TIMEOUT_MS=10000
+COSEC_API_MAX_RETRIES=3
+COSEC_API_RETRY_BACKOFF_MS=500
+COSEC_POLL_INTERVAL_SECONDS=30  # event poller
+```
+
+Replace `<your-cosec-server>` with actual host. Use secrets management in production.
+
+---
+
+## Database schemas (Mongoose models)
+
+### 1. `matrixUserModel.js`
+
+Fields:
+
+* `_id` (ObjectId)
+* `userId` — reference to local user/member/onDemandUser/visitor
+* `userType` — enum: `MEMBER | DAY_PASS | VISITOR | ADMIN` (helps policies)
+* `matrixUserId` — id returned/used by COSEC (string)
+* `credentials` — array of objects `{ type: 'card'|'fp'|'face', data: String, facilityCode?: String, issuedAt?: Date }`
+* `assignedDevices` — array `{ deviceId, deviceName, assignedAt, schedule?: { start, end, daysOfWeek, startTime, endTime } }`
+* `provisionedAt`, `lastSyncAt`, `revokeAt` (Date nullable), `status` (`active|revoked|pending`)
+* `meta` — free-form JSON for COSEC response codes
+
+### 2. `buildingMatrixModel.js` (or extend `buildingModel`)
+
+Fields:
+
+* `buildingId` — ref to building
+* `matrixSiteId` — COSEC site or location id
+* `deviceMap` — array of `{ localDoorName, deviceId (COSEC), deviceCode, deviceType, panelId? }`
+* `defaultAccessRoutes` — map role -> device list or group id
+
+### Indexes & considerations
+
+* Index on `userId` and `matrixUserId` for quick lookups.
+* TTL or scheduled jobs will manage `revokeAt` values.
+
+---
+
+## Low-level API wrapper — `utils/matrixApi.js`
+
+Responsibilities:
+
+* Centralize Basic Auth header generation.
+* Provide methods for COSEC endpoints (create user, set-credential, assign/revoke device, fetch events, get devices).
+* Normalize responses to JSON.
+* Implement retries + exponential backoff and circuit-breaker behavior.
+
+### Sample implementation (concept)
+
+```js
+// ofis-square/utils/matrixApi.js
+import axios from 'axios';
+import { Buffer } from 'buffer';
+
+const COSEC_BASE = process.env.COSEC_API_BASE;
+const AUTH_HEADER = 'Basic ' + Buffer.from(`${process.env.COSEC_API_USER}:${process.env.COSEC_API_PASS}`).toString('base64');
+
+const api = axios.create({ baseURL: COSEC_BASE, timeout: parseInt(process.env.COSEC_API_TIMEOUT_MS || 10000), headers: { Authorization: AUTH_HEADER, 'Content-Type': 'application/json' } });
+
+export const matrixApi = {
+  async getDevices() { return api.get('/device?action=get').then(r => r.data); },
+  async createUser(payload) { return api.post('/user?action=set', payload).then(r => r.data); },
+  async deleteUser(id) { return api.post('/user?action=del', { id }).then(r => r.data); },
+  async setCredential({ id, type, data, facilityCode }) { return api.post('/user?action=set-credential', { id, credentialType: type, data, facilityCode }).then(r => r.data); },
+  async delCredential({ id, type }) { return api.post('/user?action=del-credential', { id, credentialType: type }).then(r => r.data); },
+  async assign({ id, devices }) { return api.post('/device?action=assign', { id, device: devices.join(',') }).then(r => r.data); },
+  async revoke({ id, devices }) { return api.post('/device?action=revoke', { id, device: devices.length ? devices.join(',') : 'all' }).then(r => r.data); },
+  async getEvents(params) { return api.get('/event-acs?action=get', { params }).then(r => r.data); }
+};
+```
+
+**Notes:**
+
+* Some COSEC APIs expect query-string parameters and may also accept `format=json`; test and adapt.
+* Keep `requestId` or correlation id in headers for tracing.
+
+---
+
+## Business orchestration — `services/matrixService.js`
+
+Responsibilities:
+
+* High-level actions (provisionMember, assignCard, grantAccessForContract, revokeOnExpiry, grantDayPassAccess, revokeDayPassAccess).
+* Handle idempotency: before creating user, check `matrixUserModel` for existing `matrixUserId`.
+* Persist matrix responses and log to `activityLogModel`.
+* Schedule or set `revokeAt` for temporary access and write to DB.
+
+### Key functions
+
+* `provisionForMember(member, contract)`
+
+  * If `matrixUserModel` exists: update COSEC user (name/email)
+  * Else: call `matrixApi.createUser`, persist `matrixUserId`.
+  * If member has an RFID/card: call `matrixApi.setCredential` and store credential.
+  * Assign access: determine devices from `buildingMatrixModel` and `contract` windows and call `matrixApi.assign`.
+  * Return consolidated status and log it.
+
+* `revokeOnContractExpiry(member)`
+
+  * Call `matrixApi.revoke({ id: matrixUserId, devices: [] })` to revoke all
+  * Optionally call `matrixApi.delCredential` if you issue and want to remove cards
+  * Update `matrixUserModel.status = 'revoked'` and set `revokeAt`.
+
+* `grantDayPassAccess(dayPass)`
+
+  * Create or reuse matrixUser, assign devices with schedule for single date
+  * Set `revokeAt` to end-of-day
+
+* `pollAndIngestEvents(since)`
+
+  * Call `matrixApi.getEvents({ from: since, to: now })` and bulk insert events into `activityLogModel`.
+
+**Implementation tip:** Return detailed error objects so calling controllers can choose to retry or create alerts.
+
+---
+
+## Controllers & routes
+
+Add `controllers/matrixController.js` with admin-protected actions, and register `routes/matrix.js` in `routes/api.js`.
+
+Endpoints suggested (all admin guarded):
+
+* `POST /api/matrix/provision-user` — body: { userId, userType, name, phone, email }
+* `POST /api/matrix/set-credential` — body: { userId, type, data, facilityCode }
+* `POST /api/matrix/assign` — body: { userId, devices: [] }
+* `POST /api/matrix/revoke` — body: { userId, devices: [] }
+* `GET  /api/matrix/devices` — list devices
+* `GET  /api/matrix/events` — query events
+
+**Controller responsibilities:**
+
+* Validate request & permissions
+* Call `matrixService` and log results
+* Return human-friendly responses (not raw COSEC payloads), but include raw response in detailed logs for debugging
+
+---
+
+## Hooks in existing flows
+
+Integrate matrix actions into these places:
+
+1. **Member onboarding (memberController)**
+
+   * On create and when assigned to a building with active contract, call `matrixService.provisionForMember` and `matrixService.grantAccessForContract`.
+   * Set matrix mapping (`matrixUserModel`) and store `matrixUserId` in member profile if helpful.
+
+2. **Contract activation/expiry (contractController)**
+
+   * On activation: ensure members attached to contract get required access.
+   * On expiry: call `matrixService.revokeOnContractExpiry`.
+
+3. **Day pass (dayPassController)**
+
+   * On successful payment/booking: call `matrixService.grantDayPassAccess` and schedule revoke at end-of-day.
+
+4. **Visitors (visitorController)**
+
+   * When invite accepted: create visitor matrix user and grant access for specified window; schedule revoke.
+
+**Important:** Wrap matrix calls in `try/catch` and ensure the main user flow (e.g., onboarding response) never fails completely if matrix is temporarily down — return success to user and enqueue a retry for provisioning, but **log** the failure and alert admins.
+
+---
+
+## Cron jobs & background tasks
+
+1. **Expiry watcher (every 5–15 minutes)**
+
+   * Query `matrixUserModel` for `revokeAt <= now` and status `active`.
+   * Call revoke, update status.
+
+2. **Reconciliation job (nightly)**
+
+   * For each building, fetch COSEC `device?action=get` and compare assignments vs local DB.
+   * Create discrepancy report and optionally auto-fix or alert.
+
+3. **Event poller (every 15–60 seconds depending on load)**
+
+   * Use `event-acs?action=get` or `event-acs-date` to fetch events since last timestamp and persist them.
+
+Implement jobs using your existing cron mechanism or a job queue (Bull/Agenda) if available.
+
+---
+
+## Frontend changes (ofis-square-frontend)
+
+Add admin UI components:
+
+* **Matrix Users Management** — list users with matrix status, provision/unprovision, set credential modal, assign/revoke devices.
+* **Building Access Setup** — map local building doors ↔ COSEC devices; UI to fetch devices from COSEC server and map them to local door names.
+* **Access Logs** — query by date/user/door; show allowed/denied events and link to Activity Log details.
+* **Member profile widget** — show access status, assigned card, last access timestamp and a quick revoke button.
+
+UI should call new admin endpoints; add role guards.
+
+---
+
+## Sample curl / manual tests
+
+```bash
+# Get devices
+curl -u OfisAPI:Api@123 "https://<your-cosec-server>/api.svc/v2/device?action=get"
+
+# Create user (example payload may differ; validate against your COSEC instance)
+curl -u OfisAPI:Api@123 -X POST "https://<your-cosec-server>/api.svc/v2/user?action=set" -H "Content-Type: application/json" -d '{"id":"local_123","name":"John Doe"}'
+
+# Set card credential
+curl -u OfisAPI:Api@123 -X POST "https://<your-cosec-server>/api.svc/v2/user?action=set-credential" -H "Content-Type: application/json" -d '{"id":"local_123","credentialType":"card","data":"0A1B2C3D"}'
+
+# Assign devices (device param format may be comma separated device codes)
+curl -u OfisAPI:Api@123 -X POST "https://<your-cosec-server>/api.svc/v2/device?action=assign" -H "Content-Type: application/json" -d '{"id":"local_123","device":"p_1,d_3"}'
+```
+
+Adjust payload structure depending on COSEC server behaviour (some endpoints expect querystring, others accept POST body). Test with `curl` first.
+
+---
+
+## Error handling & idempotency
+
+* Check existence before creating: if the COSEC returns an error about duplicate user, fetch and store `matrixUserId`.
+* Use local DB `matrixUserModel` as source-of-truth for provisioning status; keep COSEC as the system of action.
+* Retriable failures: transient network errors or 5xx should be retried with exponential backoff up to `COSEC_API_MAX_RETRIES`.
+* Non-retriable: malformed requests or auth errors should fail fast and alert admins.
+
+---
+
+## Security
+
+* Never commit `COSEC_API_USER` / `COSEC_API_PASS` to source control.
+* Store secrets in environment or secrets manager.
+* Limit admin endpoints via existing RBAC middleware.
+* Log COSEC responses but redact sensitive credential material (e.g., card numbers) in logs — store hashed or truncated versions.
+
+---
+
+## Testing
+
+* **Unit tests**: mock `matrixApi` client (sinon/jest) and verify `matrixService` orchestration flows.
+* **Integration tests (staging)**: use provided credentials `OfisAPI` / `Api@123` against staging COSEC; verify responses and side-effects (device assignment, credential set).
+* **E2E tests**: simulate onboarding -> contract activation -> try door access (manual physical test) -> verify events in access logs.
+
+Testing checklist:
+
+* Provisioning a new member
+* Assigning a card and verifying `matrixUserModel` updated
+* Granting day-pass and auto revoke at midnight
+* Revoking on contract expiry
+* Event ingestion and `activityLogModel` entries
+
+---
+
+## Operational runbook (short)
+
+**If COSEC unreachable:**
+
+1. Check backend server network and DNS to COSEC host.
+2. Check `.env` credentials and perform a curl test from backend host.
+3. Check COSEC service status and logs.
+4. Reconcile missed provisioning by running `reconciliation` job.
+
+**If wrong assignments detected:**
+
+1. Run `GET /device?action=get` to fetch live state.
+2. Compare with local DB; either auto-fix or generate alert for manual resolution.
+
+**Audit:** Always include COSEC response codes in Activity Logs for postmortem.
+
+---
+
+## Deliverable checklist (what we will add)
+
+* `models/matrixUserModel.js`
+* `models/buildingMatrixModel.js` (or building model extension)
+* `utils/matrixApi.js` (low-level wrapper)
+* `services/matrixService.js` (business orchestration)
+* `controllers/matrixController.js` and `routes/matrix.js`
+* Hooks in `memberController`, `contractController`, `dayPassController`, `visitorController`
+* Cron tasks: expiry watcher, reconciliation, event poller
+* Frontend admin pages and profile widget
+* README / runbook for ops and testing
+
+---
+
+## Next steps (recommended immediate tasks)
+
+1. Add COSEC env vars to staging `.env` and verify `curl` `device?action=get` using the provided credentials.
+2. Create `utils/matrixApi.js` and write basic unit tests for it.
+3. Create `models/matrixUserModel.js` and run migrations if needed.
+4. Implement `services/matrixService.js` with `provisionForMember` and `revokeOnContractExpiry` functions and wire one hook in `memberController` for onboarding.
+5. Build a simple admin page to list devices and users.
+6. Iterate with physical door testing (or test rig) to confirm assignments produce expected events.
+
+---
+
+## Appendix: Sample code snippets
+
+(Full version of code snippets will be included in the repo when requested; below are minimal working examples.)
+
+### matrixApi helper example
+
+```js
+import axios from 'axios';
+import { Buffer } from 'buffer';
+
+const AUTH = 'Basic ' + Buffer.from(`${process.env.COSEC_API_USER}:${process.env.COSEC_API_PASS}`).toString('base64');
+const client = axios.create({ baseURL: process.env.COSEC_API_BASE, headers: { Authorization: AUTH } });
+
+export async function getDevices() {
+  const r = await client.get('/device?action=get');
+  return r.data;
+}
+```
+
+### matrixService.provisionForMember (simplified)
+
+```js
+import { matrixApi } from '../utils/matrixApi';
+import MatrixUser from '../models/matrixUserModel';
+import BuildingMatrix from '../models/buildingMatrixModel';
+
+export async function provisionForMember(member, contract) {
+  let m = await MatrixUser.findOne({ userId: member._id });
+  if (!m) {
+    const res = await matrixApi.createUser({ id: `m_${member._id}`, name: `${member.firstName} ${member.lastName}` });
+    m = await MatrixUser.create({ userId: member._id, matrixUserId: res.id, provisionedAt: new Date(), status: 'active' });
+  }
+
+  // assign devices based on building mapping
+  const building = await BuildingMatrix.findOne({ buildingId: member.buildingId });
+  const devices = building.defaultAccessRoutes.MEMBER || building.deviceMap.map(d => d.deviceId);
+  await matrixApi.assign({ id: m.matrixUserId, devices });
+  m.assignedDevices = devices.map(d => ({ deviceId: d, assignedAt: new Date() }));
+  await m.save();
+}
+```
+
+---
+
+## Closing / Offer
+
+This document is intended as a full implementation guide that your engineering team can follow step-by-step. If you'd like, I can now:
+
+* Generate the exact Node.js files (`utils/matrixApi.js`, `services/matrixService.js`, `models/matrixUserModel.js`, sample controller and route). Or,
+* Produce a PR-ready patch with these files added to your repository structure.
+
+Tell me which of the above you want next and I will generate the code files ready for copy-paste into your repo.
+
+---
+
+*End of document*
