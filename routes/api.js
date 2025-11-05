@@ -21,8 +21,6 @@ import walletRoutes from "./wallet.js";
 import memberRoutes from "./members.js";
 import memberPortalRoutes from "./memberPortal.js";
 import userRoutes from "./users.js";
-<<<<<<< Updated upstream
-=======
 import communityRoutes from "./community.js";
 import webhookRoutes from "./webhooks.js";
 import creditRoutes from "./credits.js";
@@ -34,7 +32,6 @@ import leadsRoutes from "./leads.js";
 import notificationsRoutes from "./notifications.js";
 import announcementsRoutes from "./announcements.js";
 
->>>>>>> Stashed changes
 
 const router = express.Router();
 
@@ -61,9 +58,6 @@ router.use("/wallet", walletRoutes);
 router.use("/members", memberRoutes);
 router.use("/member-portal", memberPortalRoutes);
 router.use("/users", userRoutes);
-<<<<<<< Updated upstream
-
-=======
 router.use("/community", communityRoutes);
 router.use("/webhooks", webhookRoutes);
 router.use("/credits", creditRoutes);
@@ -74,5 +68,4 @@ router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/announcements", announcementsRoutes);
->>>>>>> Stashed changes
 export default router;
