@@ -11,6 +11,9 @@ import imagekit from "../utils/imageKit.js";
 import PdfPrinter from "pdfmake";
 import getContractTemplate from "./contractTemplate.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
+import loggedZohoSign from "../utils/loggedZohoSign.js";
+import apiLogger from "../utils/apiLogger.js";
 
 // Create a new contract
 export const createContract = async (req, res) => {
@@ -22,7 +25,6 @@ export const createContract = async (req, res) => {
       monthlyRent: monthlyRentOverride,
       initialCredits,
       creditValueAtSignup,
-      securityDeposit,
       contractStartDate,
       contractEndDate,
       terms,
@@ -78,7 +80,6 @@ export const createContract = async (req, res) => {
       monthlyRent: monthlyRent,
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
-      ...(securityDeposit && { securityDeposit: Number(securityDeposit) }),
       ...(terms && { terms }),
       status: "draft",
       fileUrl: "placeholder",
@@ -88,8 +89,6 @@ export const createContract = async (req, res) => {
 
     const created = await Contract.create(payload);
 
-<<<<<<< Updated upstream
-=======
     // All contracts are created as draft, workflow actions happen in ContractDetailPage
     try {
       const canAutoApprove = req.hasPermission && req.hasPermission('contract:approve');
@@ -112,7 +111,7 @@ export const createContract = async (req, res) => {
       console.warn('Failed to update contract metadata on create:', markErr?.message);
     }
 
-    // Log activity
+    // Log activity 
     await logCRUDActivity(req, 'CREATE', 'Contract', created._id, null, {
       clientId,
       buildingId,
@@ -147,7 +146,6 @@ export const createContract = async (req, res) => {
       // Don't fail contract creation if PDF upload fails
     }
 
->>>>>>> Stashed changes
     // Update client with building ID when contract is created
     try {
       await Client.findByIdAndUpdate(clientId, { building: buildingId });
@@ -178,6 +176,7 @@ export const createContract = async (req, res) => {
     return res.status(201).json({ message: "Contract created", contract: created });
   } catch (err) {
     console.error("createContract error:", err);
+    await logErrorActivity(req, err, 'Contract Creation');
     return res.status(500).json({ error: "Failed to create contract" });
   }
 };
@@ -206,6 +205,7 @@ export const getContracts = async (req, res) => {
     return res.json({ success: true, data: contracts });
   } catch (err) {
     console.error("getContracts error:", err);
+    await logErrorActivity(req, err, 'Get Contracts');
     return res.status(500).json({ success: false, message: "Failed to fetch contracts" });
   }
 };
@@ -221,6 +221,7 @@ export const getContractById = async (req, res) => {
     return res.json({ success: true, data: contract });
   } catch (err) {
     console.error("getContractById error:", err);
+    await logErrorActivity(req, err, 'Get Contract by ID');
     return res.status(500).json({ success: false, message: "Failed to fetch contract" });
   }
 };
@@ -239,9 +240,17 @@ export const deleteContract = async (req, res) => {
     }
 
     await Contract.deleteOne({ _id: id });
+    
+    // Log activity
+    await logCRUDActivity(req, 'DELETE', 'Contract', id, null, {
+      clientId: existing.client,
+      buildingId: existing.building
+    });
+    
     return res.json({ success: true, message: "Contract deleted" });
   } catch (err) {
     console.error("deleteContract error:", err);
+    await logErrorActivity(req, err, 'Delete Contract');
     return res.status(500).json({ success: false, message: "Failed to delete contract" });
   }
 };
@@ -320,14 +329,26 @@ export const updateContract = async (req, res) => {
       monthlyRent: monthlyRent,
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
-      ...(securityDeposit && { securityDeposit: Number(securityDeposit) }),
       ...(terms && { terms }),
     };
 
     const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
+    
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Contract', id, {
+      before: existing.toObject(),
+      after: updated.toObject(),
+      fields: Object.keys(updateData)
+    }, {
+      clientId,
+      buildingId,
+      updatedFields: Object.keys(updateData)
+    });
+    
     return res.json({ success: true, message: "Contract updated", contract: updated });
   } catch (err) {
     console.error("updateContract error:", err);
+    await logErrorActivity(req, err, 'Update Contract');
     return res.status(500).json({ success: false, message: "Failed to update contract" });
   }
 };
@@ -525,39 +546,42 @@ export const sendForSignature = async (req, res) => {
       return res.status(400).json({ error: "Only draft or approved contracts can be sent for signature" });
     }
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
+    if (!contract.fileUrl) {
+      return res.status(400).json({ 
+        error: "Contract must have a fileUrl before it can be sent for signature. Please generate the contract PDF first." 
+      });
+    }
 
+    console.log('Sending contract for signature:', {
+      contractId: contract._id,
+      clientName: contract.client.companyName,
+      fileUrl: contract.fileUrl,
+      status: contract.status
+    });
+
+    // Use logged Zoho Sign wrapper for all API calls
+    // loggedZohoSign is already an instance, not a constructor
+    
     // Step 1: Create document in Zoho Sign
-    const requestId = await createZohoSignDocument(contract);
-    if (!requestId || typeof requestId !== "string") {
-      console.error("Zoho Sign: Invalid requestId returned from create", { requestId });
-      return res.status(500).json({ error: "Failed to create Zoho Sign request (no request_id)" });
-    }
+    const requestId = await loggedZohoSign.createDocument(contract);
+    console.log("Document created with request ID:", requestId);
     
-    // Step 2: Verify document exists and add recipient
-    await verifyDocumentExists(requestId);
-    // Fetch request details to obtain document_id for field placement
-    const requestDetails = await getZohoSignDocumentStatus(requestId);
-    // Zoho may return either 'documents' array or 'document_ids' array in request details
-    let firstDocId = null;
-    if (Array.isArray(requestDetails?.documents) && requestDetails.documents.length) {
-      firstDocId = requestDetails.documents[0]?.document_id || requestDetails.documents[0]?.id;
+    // Step 2: Verify document exists and get document ID
+    const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
+    const documentId = documentDetails?.document_ids?.[0]?.document_id;
+    if (!documentId) {
+      throw new Error("Failed to get document ID from Zoho Sign");
     }
-    if (!firstDocId && Array.isArray(requestDetails?.document_ids) && requestDetails.document_ids.length) {
-      // Elements may look like { document_id: '...', document_name: '...' }
-      firstDocId = requestDetails.document_ids[0]?.document_id || requestDetails.document_ids[0]?.id;
-    }
-    if (!firstDocId) {
-      firstDocId = requestDetails?.document_id;
-    }
-    if (!firstDocId) {
-      console.error("Zoho Sign: No document_id found in request details", { requestDetails });
-      return res.status(500).json({ error: "Zoho Sign request has no document attached" });
-    }
-    await addRecipientToDocument(requestId, contract.client, String(firstDocId));
+    console.log("Document verified with ID:", documentId);
     
-    // Step 3: Submit document for signature
-    await submitDocumentForSignature(requestId);
+    // Step 3: Add recipient to document
+    await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+    console.log("Recipient added to document");
     
+    // Step 4: Submit document for signature
+    await loggedZohoSign.submitDocument(requestId);
+    console.log("Document submitted for signature");
+
     // Update contract status and store Zoho Sign request ID
     const updatedContract = await Contract.findByIdAndUpdate(
       id,
@@ -569,6 +593,13 @@ export const sendForSignature = async (req, res) => {
       { new: true }
     );
 
+    // Log contract activity
+    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', 'Contract', contract._id, {
+      zohoSignRequestId: requestId,
+      clientEmail: contract.client.email,
+      clientName: contract.client.companyName
+    });
+
     return res.json({ 
       message: "Contract sent for digital signature", 
       contract: updatedContract,
@@ -576,6 +607,7 @@ export const sendForSignature = async (req, res) => {
     });
   } catch (err) {
     console.error("sendForSignature error:", err);
+    await logErrorActivity(req, err, 'Send Contract for Signature');
     return res.status(500).json({ error: "Failed to send contract for signature" });
   }
 };
@@ -591,7 +623,7 @@ export const checkSignatureStatus = async (req, res) => {
       return res.status(400).json({ error: "Contract not sent for signature yet" });
     }
 
-    const status = await getZohoSignDocumentStatus(contract.zohoSignRequestId);
+    const status = await loggedZohoSign.getDocumentStatus(contract.zohoSignRequestId);
     
     // Update contract status based on Zoho Sign status
     let newStatus = contract.status;
@@ -600,6 +632,12 @@ export const checkSignatureStatus = async (req, res) => {
       await Contract.findByIdAndUpdate(id, { 
         status: "active",
         signedAt: new Date()
+      });
+      
+      // Log contract completion
+      await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', id, {
+        zohoSignRequestId: contract.zohoSignRequestId,
+        signatureStatus: status.request_status
       });
     }
 
@@ -610,6 +648,7 @@ export const checkSignatureStatus = async (req, res) => {
     });
   } catch (err) {
     console.error("checkSignatureStatus error:", err);
+    await logErrorActivity(req, err, 'Check Signature Status');
     return res.status(500).json({ error: "Failed to check signature status" });
   }
 };
@@ -793,13 +832,16 @@ export const uploadSignedContract = async (req, res) => {
     // contract.zohoSignRequestId = undefined;
 
     await contract.save();
-
-    // Auto-create invoice when contract becomes active
+    
+    // Log contract activation
+    await logContractActivity(req, 'CONTRACT_ACTIVATED', 'Contract', id, {
+      fileUrl,
+      activationMethod: 'manual_upload'
+    });
     try {
       const invoice = await createInvoiceFromContract(contract._id, {
         issueOn: "activation",
         prorate: true,
-        includeDeposit: true,
         dueDays: 7
       });
       console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id}`);
@@ -814,6 +856,7 @@ export const uploadSignedContract = async (req, res) => {
     });
   } catch (err) {
     console.error("uploadSignedContract error:", err);
+    await logErrorActivity(req, err, 'Upload Signed Contract');
     return res.status(500).json({ error: "Failed to upload signed contract" });
   }
 };
@@ -821,6 +864,31 @@ export const uploadSignedContract = async (req, res) => {
 // Webhook handler for Zoho Sign events
 export const handleZohoSignWebhook = async (req, res) => {
   try {
+    const requestId = apiLogger.generateRequestId();
+    // Log incoming webhook for API Logs
+    try {
+      const signatureHeader = req.headers['x-zoho-sign-webhook-signature'] || req.headers['x-webhook-signature'] || null;
+      const verified = Boolean(signatureHeader) && Boolean(process.env.ZOHO_SIGN_WEBHOOK_SECRET);
+      await apiLogger.logIncomingWebhook({
+        service: 'zoho_sign',
+        operation: 'webhook',
+        method: req.method || 'POST',
+        url: req.originalUrl || req.url || '/api/webhooks/zoho-sign',
+        headers: req.headers || {},
+        requestBody: req.body,
+        webhookSignature: signatureHeader,
+        webhookVerified: verified,
+        webhookEvent: 'signature_webhook',
+        statusCode: 200,
+        responseBody: { received: true },
+        success: true,
+        userAgent: req.headers['user-agent'] || null,
+        ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+      });
+    } catch (logErr) {
+      console.warn('Failed to log incoming Zoho Sign webhook:', logErr?.message);
+    }
+
     // Verify webhook signature if configured, using raw buffer
     const secret = process.env.ZOHO_SIGN_WEBHOOK_SECRET;
     const sigHeader = req.headers["x-zoho-webhook-signature"] || req.headers["x-zoho-signature"];
@@ -837,10 +905,14 @@ export const handleZohoSignWebhook = async (req, res) => {
       try {
         const hmac = crypto.createHmac("sha256", secret).update(rawBodyStr).digest("hex");
         if (!sigHeader || sigHeader !== hmac) {
-          return res.status(401).json({ error: "Invalid webhook signature" });
+          const errorResponse = { error: "Invalid webhook signature" };
+          await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
+          return res.status(401).json(errorResponse);
         }
       } catch (e) {
-        return res.status(401).json({ error: "Webhook signature verification failed" });
+        const errorResponse = { error: "Webhook signature verification failed" };
+        await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, e.message);
+        return res.status(401).json(errorResponse);
       }
     }
 
@@ -849,7 +921,9 @@ export const handleZohoSignWebhook = async (req, res) => {
     try {
       payload = typeof rawBodyStr === "string" && rawBodyStr.length ? JSON.parse(rawBodyStr) : req.body;
     } catch (e) {
-      return res.status(400).json({ error: "Invalid JSON payload" });
+      const errorResponse = { error: "Invalid JSON payload" };
+      await apiLogger.logWebhookResponse(requestId, 400, errorResponse, false, 'Invalid JSON');
+      return res.status(400).json(errorResponse);
     }
 
     const { request_id, request_status, actions } = payload || {};
@@ -868,8 +942,15 @@ export const handleZohoSignWebhook = async (req, res) => {
     if (request_status === "completed") {
       newStatus = "active";
       updateData.signedAt = new Date();
+      try {
+        const signedDocumentUrl = await loggedZohoSign.downloadSignedDocument(request_id);
+        updateData.fileUrl = signedDocumentUrl;
+        console.log(`Downloaded signed document for contract ${contract._id}: ${signedDocumentUrl}`);
+      } catch (downloadError) {
+        console.error(`Failed to download signed document for contract ${contract._id}:`, downloadError);
+      }
     } else if (request_status === "declined") {
-      newStatus = "draft"; // Reset to draft for re-sending
+      newStatus = "draft"; 
       updateData.declinedAt = new Date();
     }
 
@@ -878,13 +959,21 @@ export const handleZohoSignWebhook = async (req, res) => {
       await Contract.findByIdAndUpdate(contract._id, updateData);
       console.log(`Contract ${contract._id} status updated to: ${newStatus}`);
 
-      // Auto-create invoice when contract becomes active via Zoho Sign
+      // Log contract activity based on status change
       if (newStatus === "active") {
+        // Log contract signing activity
+        await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', contract._id, {
+          zohoSignRequestId: request_id,
+          signedAt: updateData.signedAt,
+          previousStatus: contract.status,
+          newStatus: newStatus
+        });
+
+        // Auto-create invoice when contract becomes active via Zoho Sign
         try {
           const invoice = await createInvoiceFromContract(contract._id, {
             issueOn: "activation",
             prorate: true,
-            includeDeposit: true,
             dueDays: 7
           });
           console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id} via Zoho Sign webhook`);
@@ -892,15 +981,32 @@ export const handleZohoSignWebhook = async (req, res) => {
           console.error("Failed to auto-create invoice from webhook:", invoiceError);
           // Don't fail the webhook processing if invoice creation fails
         }
+      } else if (newStatus === "draft" && request_status === "declined") {
+        // Log contract decline activity
+        await logContractActivity(req, 'UPDATE', 'Contract', contract._id, {
+          zohoSignRequestId: request_id,
+          declinedAt: updateData.declinedAt,
+          previousStatus: contract.status,
+          newStatus: newStatus,
+          action: 'Contract signature declined'
+        });
       }
     }
 
-    return res.status(200).json({ message: "Webhook processed successfully" });
+    const response = { message: "Webhook processed successfully" };
+    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+    
+    return res.status(200).json(response);
   } catch (err) {
     console.error("handleZohoSignWebhook error:", err);
-    return res.status(500).json({ error: "Webhook processing failed" });
+    await logErrorActivity(req, err, 'Zoho Sign Webhook');
+    
+    const errorResponse = { error: "Webhook processing failed" };
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, err.message);
+    
+    return res.status(500).json(errorResponse);
   }
-};
+}
 
 // Helper function: Create document in Zoho Sign
 async function createZohoSignDocument(contract) {
@@ -1054,6 +1160,13 @@ async function verifyDocumentExists(requestId) {
       });
 
       const result = await response.json();
+      // Fail fast on OAuth scope issues instead of retrying
+      const msgStr = (result && (result.message || result.code)) ? String(result.message || result.code) : "";
+      if (result?.code === 9040 || /invalid oauth scope/i.test(msgStr)) {
+        const guidance = "Zoho Sign returned 'Invalid Oauth Scope'. Ensure your refresh token has Zoho Sign scopes and that ZOHO_SIGN_REFRESH_TOKEN is used. Minimum recommended scopes: ZohoSign.documents.ALL, ZohoSign.requests.ALL, ZohoSign.organization.READ.";
+        console.error("Zoho Sign scope error while verifying document:", { result, guidance });
+        throw new Error(guidance);
+      }
       if (result.status === "success" && result.requests) {
         console.log(`Document ${requestId} verified on attempt ${attempt}`);
         return result.requests;
@@ -1093,6 +1206,38 @@ async function getZohoSignDocumentStatus(requestId) {
   return result.requests;
 }
 
+// Helper function: Download signed document from Zoho Sign
+async function downloadSignedDocument(requestId) {
+  try {
+    const accessToken = await getAccessToken();
+    const response = await fetch(`${ZOHO_SIGN_BASE_URL}/requests/${requestId}/pdf`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Zoho-oauthtoken ${accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to download signed document: HTTP ${response.status}`);
+    }
+
+    const pdfBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Upload to ImageKit
+    const fileName = `signed_contract_${requestId}_${Date.now()}.pdf`;
+    const uploadResponse = await imagekit.upload({
+      file: pdfBuffer,
+      fileName: fileName,
+      folder: "/contracts/signed"
+    });
+
+    return uploadResponse.url;
+  } catch (error) {
+    console.error("Failed to download and upload signed document:", error);
+    throw error;
+  }
+}
+
 // Generate contract PDF using template
 export const generateContractPDF = async (req, res) => {
   try {
@@ -1115,7 +1260,6 @@ export const generateContractPDF = async (req, res) => {
       buildingAddress: contract.building?.address || "TBD",
       capacity: contract.capacity || 4,
       monthlyRent: contract.monthlyRent || 15000,
-      securityDeposit: contract.securityDeposit || 30000,
       contractStartDate: contract.startDate ? contract.startDate.toLocaleDateString() : new Date().toLocaleDateString(),
       contractEndDate: contract.endDate ? contract.endDate.toLocaleDateString() : new Date(Date.now() + 365*24*60*60*1000).toLocaleDateString(),
       terms: contract.terms || ""

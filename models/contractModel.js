@@ -26,7 +26,30 @@ const contractSchema = new mongoose.Schema(
       default: null,
       min: 0
     },
-    securityDeposit: { type: Number },
+    // Credit system fields
+    credit_enabled: {
+      type: Boolean,
+      default: true
+    },
+    allocated_credits: {
+      type: Number,
+      default: 0,
+      min: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: "Allocated credits must be an integer"
+      }
+    },
+    credit_value: {
+      type: Number,
+      default: 500, // ₹500 per credit
+      min: 0
+    },
+    credit_terms_days: {
+      type: Number,
+      default: 30, // Payment terms for credit invoices
+      min: 0
+    },
     terms: { type: String, trim: true },
     status: {
       type: String,
@@ -166,3 +189,4 @@ const contractSchema = new mongoose.Schema(
 );
 
 export default mongoose.model("Contract", contractSchema);
+

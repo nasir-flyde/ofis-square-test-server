@@ -14,6 +14,7 @@ const memberSchema = new Schema(
     client: { type: Schema.Types.ObjectId, ref: "Client", index: true },
     desk: { type: Schema.Types.ObjectId, ref: "Desk", default: null, index: true },
     user: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    allowedUsingCredits: { type: Boolean, default: true, index: true },
   },
   { timestamps: true, collection: "members" }
 );
@@ -21,4 +22,3 @@ const memberSchema = new Schema(
 memberSchema.index({ phone: 1 }, { sparse: true });
 
 export default mongoose.model("Member", memberSchema);
- 

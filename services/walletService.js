@@ -27,7 +27,7 @@ class WalletService {
   }
 
   // Grant credits to a client wallet
-  static async grantCredits({ clientId, credits, valuePerCredit, refType, refId, meta = {} }) {
+  static async grantCredits({ clientId, credits, valuePerCredit, refType, refId, meta = {}, createdBy = null }) {
     const session = await mongoose.startSession();
     
     try {
@@ -45,16 +45,35 @@ class WalletService {
           { session }
         );
         
-        // Create transaction record
+        // Create transaction record with all required fields
         await CreditTransaction.create([{
-          client: clientId,
-          member: null, // Grants are typically admin actions
-          type: "grant",
-          credits,
-          valuePerCredit: finalValuePerCredit,
-          refType,
-          refId,
-          meta
+          clientId: clientId,
+          contractId: refType === 'contract' ? refId : null,
+          itemId: null, // No specific item for credit grants
+          itemSnapshot: {
+            name: "Credit Grant",
+            unit: "credits",
+            pricingMode: "credits",
+            unitCredits: 1,
+            taxable: false,
+            gstRate: 0
+          },
+          quantity: credits,
+          transactionType: "grant",
+          pricingSnapshot: {
+            pricingMode: "credits",
+            unitCredits: 1,
+            creditValueINR: finalValuePerCredit
+          },
+          creditsDelta: credits, // Positive for grants
+          amountINRDelta: credits * finalValuePerCredit, // Positive for grants
+          purpose: meta.reason || "Admin credit grant",
+          description: `Granted ${credits} credits to client`,
+          status: "completed",
+          createdBy: createdBy || new mongoose.Types.ObjectId(), // Use provided or generate dummy ID
+          metadata: {
+            customData: meta
+          }
         }], { session });
       });
       
@@ -118,30 +137,54 @@ class WalletService {
         // Create transaction for covered credits
         if (coveredCredits > 0) {
           await CreditTransaction.create([{
-            client: clientId,
-            member: memberId,
-            type: "consume",
-            credits: coveredCredits,
-            valuePerCredit: 500,
-            refType,
-            refId,
+            clientId: clientId,
+            itemSnapshot: {
+              name: meta.title || `${refType} booking`,
+              pricingMode: 'credits',
+              unitCredits: 1
+            },
+            quantity: coveredCredits,
+            transactionType: "usage",
+            pricingSnapshot: {
+              pricingMode: 'credits',
+              creditValueINR: 500
+            },
+            creditsDelta: -coveredCredits,
+            amountINRDelta: -coveredCredits * 500,
+            createdBy: memberId || clientId,
             idempotencyKey,
-            meta: { ...meta, overdraft: false }
+            metadata: { 
+              ...meta, 
+              overdraft: false,
+              bookingId: refId
+            }
           }], { session });
         }
         
         // Create transaction for extra credits (overdraft)
         if (extraCredits > 0) {
           await CreditTransaction.create([{
-            client: clientId,
-            member: memberId,
-            type: "consume",
-            credits: extraCredits,
-            valuePerCredit: 500,
-            refType,
-            refId,
+            clientId: clientId,
+            itemSnapshot: {
+              name: `${meta.title || `${refType} booking`} (Overdraft)`,
+              pricingMode: 'credits',
+              unitCredits: 1
+            },
+            quantity: extraCredits,
+            transactionType: "usage",
+            pricingSnapshot: {
+              pricingMode: 'credits',
+              creditValueINR: 500
+            },
+            creditsDelta: -extraCredits,
+            amountINRDelta: -extraCredits * 500,
+            createdBy: memberId || clientId,
             idempotencyKey: idempotencyKey ? `${idempotencyKey}_overdraft` : null,
-            meta: { ...meta, overdraft: true }
+            metadata: { 
+              ...meta, 
+              overdraft: true,
+              bookingId: refId
+            }
           }], { session });
         }
         

@@ -1,42 +1,23 @@
 import Invoice from "../models/invoiceModel.js";
-import Payment from "../models/paymentModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
-import Building from "../models/buildingModel.js";
-import Cabin from "../models/cabinModel.js";
+import Payment from "../models/paymentModel.js";
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import { getValidAccessToken } from "../utils/zohoTokenManager.js";
+import axios from "axios";
+import { logCRUDActivity, logPaymentActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
 import {
   createZohoInvoiceFromLocal,
   getZohoInvoice,
   getZohoInvoicePdfUrl,
+  getZohoInvoiceLinks,
+  fetchZohoInvoicePdfBinary,
   recordZohoPayment,
   sendZohoInvoiceEmail,
+  findOrCreateContactFromClient,
 } from "../utils/zohoBooks.js";
-
-// Helper: generate invoice number like INV-YYYY-MM-0001 (resets monthly)
-async function generateInvoiceNumber() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const prefix = `INV-${yyyy}-${mm}-`;
-
-  // Find the latest invoice for this month
-  const latest = await Invoice.findOne({ invoiceNumber: { $regex: `^${prefix}` } })
-    .sort({ createdAt: -1 })
-    .lean();
-
-  let nextSeq = 1;
-  if (latest && latest.invoiceNumber) {
-    const parts = latest.invoiceNumber.split("-");
-    const seqStr = parts[3];
-    const seq = Number(seqStr);
-    if (!Number.isNaN(seq)) nextSeq = seq + 1;
-  }
-
-  const suffix = String(nextSeq).padStart(4, "0");
-  return `${prefix}${suffix}`;
-}
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
@@ -51,7 +32,6 @@ function computeTotals(payload) {
   const discount = payload.discount || { type: "flat", value: 0 };
   let discountAmount = 0;
   if (discount.type === "percent") {
-    // percent value: compute (subtotal * percent / 100), rounded to 2 decimals
     discountAmount = Math.round(((subtotal * Number(discount.value || 0)) / 100) * 100) / 100;
   } else {
     discountAmount = Number(discount.value || 0);
@@ -63,7 +43,6 @@ function computeTotals(payload) {
 
   const taxes = (payload.taxes || []).map((t) => {
     const rate = Number(t.rate || 0);
-    // percent rate: compute (taxableBase * rate / 100), rounded to 2 decimals
     const amount = Math.round(((taxableBase * rate) / 100) * 100) / 100;
     return { name: t.name, rate, amount };
   });
@@ -84,212 +63,336 @@ function computeTotals(payload) {
   };
 }
 
-// POST /api/invoices  (manual create)
 export const createInvoice = async (req, res) => {
   try {
     const body = req.body || {};
-    const { client, contract, building, cabin, billingPeriod, issueDate, dueDate, notes, meta } = body;
+    const { client, contract, billingPeriod, issueDate, dueDate, notes, meta } = body;
 
     if (!client) return res.status(400).json({ success: false, message: "client is required" });
     if (!billingPeriod || !billingPeriod.start || !billingPeriod.end) {
       return res.status(400).json({ success: false, message: "billingPeriod.start and billingPeriod.end are required" });
     }
 
-    // Basic refs validation (best-effort; can be relaxed)
-    const [clientDoc, contractDoc, buildingDoc, cabinDoc] = await Promise.all([
+    const [clientDoc, contractDoc] = await Promise.all([
       Client.findById(client),
       contract ? Contract.findById(contract) : Promise.resolve(null),
-      building ? Building.findById(building) : Promise.resolve(null),
-      cabin ? Cabin.findById(cabin) : Promise.resolve(null),
     ]);
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
     if (contract && !contractDoc) return res.status(404).json({ success: false, message: "Contract not found" });
-    if (building && !buildingDoc) return res.status(404).json({ success: false, message: "Building not found" });
-    if (cabin && !cabinDoc) return res.status(404).json({ success: false, message: "Cabin not found" });
 
-    const invoiceNumber = body.invoiceNumber || (await generateInvoiceNumber());
+    const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
 
-    const invoice = await Invoice.create({
-      invoiceNumber,
+    // Create invoice data using same structure as createInvoiceFromContract
+    const invoiceData = {
+      // Updated field names to match new schema
+      invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
-      building: building || undefined,
-      cabin: cabin || undefined,
-      issueDate: issueDate ? new Date(issueDate) : new Date(),
-      dueDate: dueDate ? new Date(dueDate) : undefined,
-      billingPeriod: {
+      date: issueDate ? new Date(issueDate) : new Date(),
+      due_date: dueDate ? new Date(dueDate) : undefined,
+      billing_period: {
         start: new Date(billingPeriod.start),
         end: new Date(billingPeriod.end),
       },
-      items: totals.items,
-      subtotal: totals.subtotal,
-      discount: totals.discount,
-      taxes: totals.taxes,
+
+      line_items: totals.items.map((item) => ({
+        description: item.description,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        amount: item.amount,
+        name: item.description,
+        rate: item.unitPrice,
+        unit: "nos",
+        item_total: item.amount,
+      })),
+
+      sub_total: totals.subtotal,
+      tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
-      amountPaid: totals.amountPaid,
-      balanceDue: totals.balanceDue,
-      status: body.status || "issued",
-      notes: notes || "",
+      amount_paid: totals.amountPaid,
+      balance: totals.balanceDue,
+      status: body.status || "draft",
+      notes: notes || "Manual invoice creation",
+      currency_code: "INR",
+      exchange_rate: 1,
+      gst_treatment: clientDoc.gstTreatment || "business_gst",
+      place_of_supply: "MH",
+      payment_terms: 7,
+      payment_terms_label: "Net 7",
+      ...(clientDoc.billingAddress && {
+        billing_address: {
+          attention: clientDoc.contactPerson,
+          address: clientDoc.billingAddress.address,
+          city: clientDoc.billingAddress.city,
+          state: clientDoc.billingAddress.state,
+          zip: clientDoc.billingAddress.zip,
+          country: clientDoc.billingAddress.country || "IN",
+          phone: clientDoc.phone,
+        },
+      }),
+      customer_id: clientDoc.zohoBooksContactId,
+      gst_no: clientDoc.gstNo,
       ...(meta ? { meta } : {}),
+    };
+
+    const invoice = await Invoice.create(invoiceData);
+
+    // Log activity
+    await logCRUDActivity(req, "CREATE", "Invoice", invoice._id, null, {
+      invoiceNumber: invoice.invoice_number,
+      clientId: invoice.client,
+      totalAmount: invoice.total,
     });
+
+    console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}`);
+    try {
+      if (clientDoc.zohoBooksContactId) {
+        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
+        const invoiceData = zohoResponse.invoice || zohoResponse;
+
+        if (invoiceData && invoiceData.invoice_id) {
+          invoice.zoho_invoice_id = invoiceData.invoice_id;
+          invoice.zoho_invoice_number = invoiceData.invoice_number;
+          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
+          invoice.zoho_pdf_url = invoiceData.pdf_url;
+          invoice.invoice_url = invoiceData.invoice_url;
+          await invoice.save();
+
+          console.log(`Pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
+        } else {
+          console.warn(`Zoho Books did not return invoice_id for invoice ${invoice._id}`);
+        }
+      } else {
+        console.log(`Skipping Zoho push for invoice ${invoice._id} - client has no zohoBooksContactId`);
+      }
+    } catch (zohoError) {
+      console.error(`Failed to push invoice ${invoice._id} to Zoho Books:`, zohoError.message);
+    }
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {
     if (error && error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Duplicate invoiceNumber" });
+      return res.status(409).json({ success: false, message: "Duplicate local invoice number or Zoho invoice ID" });
     }
+    await logErrorActivity(req, error, "Invoice Creation");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// pdfmake fonts (use built-in Helvetica to avoid external font files)
-function getFonts() {
-  return {
-    Helvetica: {
-      normal: 'Helvetica',
-      bold: 'Helvetica-Bold',
-      italics: 'Helvetica-Oblique',
-      bolditalics: 'Helvetica-BoldOblique'
-    }
-  };
-}
-
-// GET /api/invoices/:id/download-pdf - generate and stream an invoice PDF
 export const downloadInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;
-    const invoice = await Invoice.findById(id)
-      .populate('client', 'companyName contactPerson email phone companyAddress')
-      .lean();
+    const invoice = await Invoice.findById(id).populate("client", "companyName email");
 
-    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: "Invoice not found" });
+    }
 
     const data = {
-      invoiceNumber: invoice.invoiceNumber,
-      issueDate: invoice.issueDate,
-      dueDate: invoice.dueDate,
+      invoiceNumber: invoice.invoice_number,
+      issueDate: invoice.date,
+      dueDate: invoice.due_date,
       client: invoice.client || {},
-      billingPeriod: invoice.billingPeriod || {},
-      items: invoice.items || [],
-      subtotal: invoice.subtotal || 0,
-      discount: invoice.discount || { type: 'flat', value: 0, amount: 0 },
+      billingPeriod: invoice.billing_period || {},
+      items: invoice.line_items || [],
+      subtotal: invoice.sub_total || 0,
+      discount: invoice.discount || { type: "flat", value: 0, amount: 0 },
       taxes: invoice.taxes || [],
       total: invoice.total || 0,
-      amountPaid: invoice.amountPaid || 0,
-      balanceDue: invoice.balanceDue || 0,
-      notes: invoice.notes || ''
+      amountPaid: invoice.amount_paid || 0,
+      balanceDue: invoice.balance || 0,
+      notes: invoice.notes || "",
     };
 
     const docDefinition = getInvoiceTemplate(data);
     const printer = new PdfPrinter(getFonts());
-    const pdfDoc = printer.createPdfKitDocument(docDefinition, { defaultStyle: { font: 'Helvetica' } });
+    const pdfDoc = printer.createPdfKitDocument(docDefinition, { defaultStyle: { font: "Helvetica" } });
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="invoice_${invoice.invoiceNumber || id}.pdf"`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="invoice_${invoice.invoice_number || id}.pdf"`
+    );
 
     pdfDoc.pipe(res);
     pdfDoc.end();
   } catch (error) {
-    console.error('downloadInvoicePdf error:', error);
+    console.error("downloadInvoicePdf error:", error);
+    await logErrorActivity(req, error, "Download Invoice PDF");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// POST /api/invoices/:id/push-zoho
 export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
-    const invoice = await Invoice.findById(id);
+    const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-
-    if (!invoice.client) return res.status(400).json({ success: false, message: "Invoice missing client" });
-    const client = await Client.findById(invoice.client);
-    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
-
-    // If already pushed, fetch and return
-    if (invoice.zohoInvoiceId) {
-      const zInv = await getZohoInvoice(invoice.zohoInvoiceId);
-      return res.json({ success: true, data: { invoice, zoho: zInv }, message: "Already synced with Zoho" });
+    if (invoice.zoho_invoice_id) {
+      return res.json({
+        success: true,
+        data: invoice,
+        message: "Invoice already linked to Zoho Books",
+        zoho_invoice_id: invoice.zoho_invoice_id,
+      });
     }
 
-    const zInvoice = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
-    if (!zInvoice || !zInvoice.invoice_id) {
-      return res.status(502).json({ success: false, message: "Failed to create Zoho invoice", details: zInvoice });
+    // Ensure invoice has a client and Zoho contact
+    let client = invoice.client ? invoice.client : await Client.findById(invoice.client);
+    
+    // If no client found and clientId provided in request body, use that
+    if (!client && req.body.clientId) {
+      client = await Client.findById(req.body.clientId);
+      if (client) {
+        // Update invoice with the client
+        invoice.client = client._id;
+        await invoice.save();
+      }
+    }
+    
+    if (!client) {
+      return res.status(400).json({ success: false, message: "Invoice has no linked client or client not found" });
     }
 
-    invoice.zohoInvoiceId = zInvoice.invoice_id;
-    invoice.zohoInvoiceNumber = zInvoice.invoice_number;
-    invoice.zohoStatus = zInvoice.status || zInvoice.status_formatted || undefined;
-    invoice.zohoPdfUrl = zInvoice.pdf_url || undefined;
-    invoice.invoiceUrl = zInvoice.invoice_url || undefined;
-    await invoice.save();
+    try {
+      if (!client.zohoBooksContactId) {
+        const contactId = await findOrCreateContactFromClient(client);
+        if (!contactId) {
+          return res.status(400).json({ success: false, message: "Failed to find or create Zoho contact for client" });
+        }
+        client.zohoBooksContactId = contactId;
+        await client.save();
+      }
 
-    return res.json({ success: true, data: invoice, zoho: zInvoice });
+      // Create Zoho invoice from local invoice
+      const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
+      const zohoId = zohoResp?.invoice?.invoice_id;
+      const zohoNumber = zohoResp?.invoice?.invoice_number;
+      if (!zohoId) {
+        return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
+      }
+
+      invoice.zoho_invoice_id = zohoId;
+      invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
+      invoice.source = invoice.source || "zoho";
+      await invoice.save();
+
+      return res.json({ success: true, data: invoice, zoho: zohoResp });
+    } catch (err) {
+      await logErrorActivity(req, err, "Push Invoice to Zoho");
+      return res.status(400).json({ success: false, message: err.message });
+    }
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message, details: error.response });
+    await logErrorActivity(req, error, "Push Invoice to Zoho");
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// POST /api/invoices/:id/send
 export const sendInvoiceEmail = async (req, res) => {
   try {
     const { id } = req.params;
     const { to, subject, customMessage } = req.body || {};
     const invoice = await Invoice.findById(id).populate("client", "email");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
     const payload = { to: to || invoice?.client?.email, subject, body: customMessage };
-    const resp = await sendZohoInvoiceEmail(invoice.zohoInvoiceId, payload);
-    invoice.sentAt = new Date();
-    invoice.zohoStatus = "sent";
+    const resp = await sendZohoInvoiceEmail(invoice.zoho_invoice_id, payload);
+    invoice.sent_at = new Date();
+    invoice.zoho_status = "sent";
     await invoice.save();
+
+    // Log system activity for Zoho integration
+    await logSystemActivity("INVOICE_SENT", "Invoice", invoice._id, `Invoice ${invoice.invoice_number} sent to Zoho Books`, {
+      zohoInvoiceId: invoice.zoho_invoice_id,
+      totalAmount: invoice.total,
+    });
+
     return res.json({ success: true, data: invoice, zoho: resp });
   } catch (error) {
+    await logErrorActivity(req, error, "Send Invoice Email");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
 
-// POST /api/invoices/:id/sync
 export const syncInvoiceFromZoho = async (req, res) => {
   try {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const zInv = await getZohoInvoice(invoice.zohoInvoiceId);
+    const zInv = await getZohoInvoice(invoice.zoho_invoice_id);
     if (zInv) {
-      invoice.zohoStatus = zInv.status || zInv.status_formatted || invoice.zohoStatus;
-      invoice.zohoPdfUrl = zInv.pdf_url || invoice.zohoPdfUrl;
-      invoice.invoiceUrl = zInv.invoice_url || invoice.invoiceUrl;
-      // Update payments summary if available
+      invoice.zoho_status = zInv.status || zInv.status_formatted || invoice.zoho_status;
+      invoice.zoho_pdf_url = zInv.pdf_url || invoice.zoho_pdf_url;
+      invoice.invoice_url = zInv.invoice_url || invoice.invoice_url;
       if (typeof zInv.balance === "number" && typeof zInv.total === "number") {
-        invoice.amountPaid = Math.max(0, Number(zInv.total) - Number(zInv.balance));
-        invoice.balanceDue = Number(zInv.balance);
-        if (invoice.balanceDue === 0) invoice.paidAt = invoice.paidAt || new Date();
-        invoice.status = invoice.balanceDue === 0 ? "paid" : invoice.status;
+        invoice.amount_paid = Math.max(0, Number(zInv.total) - Number(zInv.balance));
+        invoice.balance = Number(zInv.balance);
+        if (invoice.balance === 0) invoice.paid_at = invoice.paid_at || new Date();
+        invoice.status = invoice.balance === 0 ? "paid" : invoice.status;
       }
       await invoice.save();
     }
     return res.json({ success: true, data: invoice, zoho: zInv });
   } catch (error) {
+    await logErrorActivity(req, error, "Sync Invoice from Zoho");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
 
-// GET /api/invoices/:id/pdf
 export const getInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const url = await getZohoInvoicePdfUrl(invoice.zohoInvoiceId);
+    const url = await getZohoInvoicePdfUrl(invoice.zoho_invoice_id);
     return res.json({ success: true, data: { pdfUrl: url } });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoice PDF");
+    return res.status(500).json({ success: false, message: error.message, details: error.response });
+  }
+};
+
+// GET /api/invoices/:id/zoho-pdf
+// Streams the PDF bytes fetched from Zoho bulk PDF endpoint using the Zoho invoice ID
+export const getInvoiceZohoPdfBinary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id).select("zoho_invoice_id invoice_number");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+
+    const { buffer, contentType, contentDisposition } = await fetchZohoInvoicePdfBinary(invoice.zoho_invoice_id);
+    res.setHeader("Content-Type", contentType || "application/pdf");
+    // Prefer Zoho's disposition; otherwise set a filename using our invoice number/id
+    res.setHeader(
+      "Content-Disposition",
+      contentDisposition || `attachment; filename="invoice_${invoice.invoice_number || id}.pdf"`
+    );
+    return res.status(200).send(buffer);
+  } catch (error) {
+    await logErrorActivity(req, error, "Get Zoho Invoice PDF Binary");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/invoices/:id/zoho-links
+export const getInvoiceZohoLinks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id).select("zoho_invoice_id");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+
+    const links = await getZohoInvoiceLinks(invoice.zoho_invoice_id);
+    return res.json({ success: true, data: links });
+  } catch (error) {
+    await logErrorActivity(req, error, "Get Zoho Invoice Links");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -302,20 +405,29 @@ export const recordInvoicePayment = async (req, res) => {
     if (!amount) return res.status(400).json({ success: false, message: "amount is required" });
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-    if (!invoice.zohoInvoiceId) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
+    if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const payment = await recordZohoPayment(invoice.zohoInvoiceId, { amount, date, payment_mode, reference_number });
-    invoice.amountPaid = Number(invoice.amountPaid || 0) + Number(amount);
-    invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
-    if (invoice.balanceDue === 0) {
+    const payment = await recordZohoPayment(invoice.zoho_invoice_id, { amount, date, payment_mode, reference_number });
+    invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(amount);
+    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+    if (invoice.balance === 0) {
       invoice.status = "paid";
-      invoice.paidAt = new Date();
+      invoice.paid_at = new Date();
     }
     invoice.paymentId = payment?.payment_id || invoice.paymentId;
     await invoice.save();
 
+    // Log payment activity
+    await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {
+      paymentId: payment?.payment_id,
+      amount,
+      paymentMode: payment_mode,
+      referenceNumber: reference_number,
+    });
+
     return res.json({ success: true, data: invoice, zoho: payment });
   } catch (error) {
+    await logErrorActivity(req, error, "Record Invoice Payment");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
   }
 };
@@ -327,18 +439,63 @@ export const zohoWebhook = async (req, res) => {
     const event = payload.event_type || payload.event || payload.action;
     const data = payload.data || payload.payload || {};
 
+    // Handle invoice creation from Zoho Books side
+    if (event === "invoice_created" && data.invoice) {
+      const zohoInvoiceId = data.invoice.invoice_id;
+      const zohoInvoiceNumber = data.invoice.invoice_number;
+
+      if (zohoInvoiceId) {
+        // Check if we already have this invoice
+        const existingInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
+
+        if (!existingInvoice) {
+          // Create new invoice from Zoho data
+          const newInvoice = await Invoice.create({
+            invoice_number: zohoInvoiceNumber,
+            zoho_invoice_id: zohoInvoiceId,
+            zoho_invoice_number: zohoInvoiceNumber,
+            source: "webhook",
+            customer_id: data.invoice.customer_id,
+            date: new Date(data.invoice.date),
+            due_date: data.invoice.due_date ? new Date(data.invoice.due_date) : undefined,
+            sub_total: data.invoice.sub_total || 0,
+            discount: data.invoice.discount || 0,
+            tax_total: data.invoice.tax_total || 0,
+            total: data.invoice.total || 0,
+            balance: data.invoice.balance || data.invoice.total || 0,
+            amount_paid: data.invoice.amount_paid || 0,
+            status: data.invoice.status === "paid" ? "paid" : "issued",
+            currency_code: data.invoice.currency_code || "INR",
+            notes: data.invoice.notes || "",
+            line_items: (data.invoice.line_items || []).map((item) => ({
+              description: item.description || item.name,
+              quantity: item.quantity || 1,
+              unitPrice: item.rate || 0,
+              amount: item.item_total || 0,
+              name: item.name,
+              rate: item.rate,
+              unit: item.unit || "nos",
+              item_total: item.item_total,
+            })),
+          });
+
+          console.log(`✅ Created new invoice from Zoho webhook: ${zohoInvoiceNumber}`);
+        }
+      }
+    }
+
     // Handle payment events
     if (event === "invoice_payment_made" || event === "payment_created") {
       const zohoInvoiceId = data.invoice_id || data.invoice?.invoice_id;
       const amount = Number(data.amount || data.paid_amount || 0);
       if (zohoInvoiceId) {
-        const invoice = await Invoice.findOne({ zohoInvoiceId });
+        const invoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         if (invoice) {
-          invoice.amountPaid = Math.max(0, Number(invoice.amountPaid || 0) + amount);
-          invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
-          if (invoice.balanceDue === 0) {
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + amount);
+          invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+          if (invoice.balance === 0) {
             invoice.status = "paid";
-            invoice.paidAt = new Date();
+            invoice.paid_at = new Date();
           }
           await invoice.save();
         }
@@ -349,10 +506,10 @@ export const zohoWebhook = async (req, res) => {
     if (event === "invoice_status_changed" || event === "invoice_sent") {
       const zohoInvoiceId = data.invoice_id || data.invoice?.invoice_id;
       if (zohoInvoiceId) {
-        const invoice = await Invoice.findOne({ zohoInvoiceId });
+        const invoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         if (invoice) {
-          invoice.zohoStatus = data.status || data.invoice?.status || invoice.zohoStatus;
-          if (event === "invoice_sent") invoice.sentAt = new Date();
+          invoice.zoho_status = data.status || data.invoice?.status || invoice.zoho_status;
+          if (event === "invoice_sent") invoice.sent_at = new Date();
           await invoice.save();
         }
       }
@@ -360,11 +517,12 @@ export const zohoWebhook = async (req, res) => {
 
     return res.json({ success: true });
   } catch (error) {
+    console.error("Zoho webhook error:", error);
+    await logErrorActivity(req, error, "Zoho Webhook");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// GET /api/invoices
 export const getInvoices = async (req, res) => {
   try {
     const { client, contract, status, from, to } = req.query || {};
@@ -387,6 +545,7 @@ export const getInvoices = async (req, res) => {
 
     return res.json({ success: true, data: invoices });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoices");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -403,6 +562,7 @@ export const getInvoiceById = async (req, res) => {
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     return res.json({ success: true, data: invoice });
   } catch (error) {
+    await logErrorActivity(req, error, "Get Invoice by ID");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -423,18 +583,26 @@ export const updateInvoiceStatus = async (req, res) => {
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
     if (typeof amountPaid === "number") {
-      invoice.amountPaid = amountPaid;
-      invoice.balanceDue = Math.max(0, Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
+      invoice.amount_paid = amountPaid;
+      invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
     }
 
     invoice.status = status;
     await invoice.save();
 
+    // Log activity
+    await logCRUDActivity(req, "UPDATE", "Invoice", invoice._id, null, {
+      invoiceNumber: invoice.invoice_number,
+      status,
+    });
+
     return res.json({ success: true, data: invoice });
   } catch (error) {
+    await logErrorActivity(req, error, "Update Invoice Status");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
 // DELETE /api/invoices/:id
 export const deleteInvoice = async (req, res) => {
   try {
@@ -455,10 +623,14 @@ export const deleteInvoice = async (req, res) => {
     }
 
     await Invoice.findByIdAndDelete(id);
+
+    // Log activity
+    await logCRUDActivity(req, "DELETE", "Invoice", id, null, {
+      invoiceNumber: invoice.invoice_number,
+    });
+
     return res.json({ success: true, message: "Invoice deleted successfully", deletedInvoiceId: id });
   } catch (error) {
-<<<<<<< Updated upstream
-=======
     await logErrorActivity(req, error, "Delete Invoice");
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -706,7 +878,6 @@ export const consolidateInvoices = async (req, res) => {
   } catch (error) {
     console.error("Error consolidating invoices:", error);
     await logErrorActivity(req, error, "Consolidate Invoices");
->>>>>>> Stashed changes
     return res.status(500).json({ success: false, message: error.message });
   }
 };

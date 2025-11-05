@@ -1,23 +1,80 @@
 import mongoose from "mongoose";
 
-const dayPassSchema = new mongoose.Schema(
+const { Schema } = mongoose;
+
+const dayPassSchema = new Schema(
   {
-    guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", required: true },
-    building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", required: true },
-    date: { type: Date, required: true },
+    // Core references - customer can be Guest or Member
+    customer: { type: Schema.Types.ObjectId, required: true },
+    member: { type: Schema.Types.ObjectId, ref: "Member", default: null },
+    building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
+    bundle: { type: Schema.Types.ObjectId, ref: "DayPassBundle", default: null }, // null for single passes
+    
+    // Host information (can be Member, Client, or Guest)
+    hostMember: { type: Schema.Types.ObjectId, ref: "Member", default: null },
+    hostClient: { type: Schema.Types.ObjectId, ref: "Client", default: null },
+    hostGuest: { type: Schema.Types.ObjectId, ref: "Guest", default: null },
+    
+    // Pass details
+    date: { type: Date, default: null },
+    visitDate: { type: Date, default: null }, 
+    bookingFor: { type: String, enum: ["self", "other"], default: "self" }, 
     expiresAt: { type: Date, required: true },
+    price: { type: Number, required: true },
+    currency: { type: String },
+    // Status and lifecycle
     status: {
       type: String,
-      enum: ["active", "used", "expired", "cancelled"],
-      default: "active",
+      enum: ["pending", "payment_pending", "issued", "invited", "active", "checked_in", "checked_out", "expired", "cancelled"],
+      default: "pending",
+      index: true
     },
+    invitedAt: { type: Date },
+    qrCode: { type: String, unique: true, sparse: true },
+    visitorName: { type: String },
+    visitorPhone: { type: String },
+    visitorEmail: { type: String },
+    visitorCompany: { type: String },
+    purpose: { type: String },
+    
+    // Draft visitor details for "other" bookings before issuance
+    visitorDetailsDraft: {
+      name: { type: String },
+      phone: { type: String },
+      email: { type: String },
+      company: { type: String },
+      purpose: { type: String }
+    },
+    visitorCreated: { type: Boolean, default: false }, // Track if visitor record was created
+    numberOfGuests: { type: Number, default: 1, min: 1 },
+    expectedArrivalTime: { type: Date },
+    expectedDepartureTime: { type: Date },
+    qrExpiresAt: { type: Date },
+    
+    // Check-in/out tracking
     checkInTime: { type: Date },
     checkOutTime: { type: Date },
-    price: { type: Number, required: true },
-    invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice" },
+    
+    // Financial
+    invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
+    payment: { type: Schema.Types.ObjectId, ref: "Payment" },
+    
+    // Additional info
+    notes: { type: String, trim: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" }
   },
-  { timestamps: true, collection: "daypasses" }
+  { 
+    timestamps: true, 
+    collection: "daypasses" 
+  }
 );
+
+// Indexes for efficient queries
+dayPassSchema.index({ customer: 1, date: 1 });
+dayPassSchema.index({ building: 1, date: 1, status: 1 });
+dayPassSchema.index({ bundle: 1 });
+dayPassSchema.index({ qrCode: 1 }, { sparse: true });
+dayPassSchema.index({ status: 1, date: 1 });
 
 const DayPass = mongoose.model("DayPass", dayPassSchema);
 export default DayPass;

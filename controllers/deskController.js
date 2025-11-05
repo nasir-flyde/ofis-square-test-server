@@ -1,6 +1,7 @@
 import Desk from "../models/deskModel.js";
 import Cabin from "../models/cabinModel.js";
 import Building from "../models/buildingModel.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 
@@ -13,11 +14,21 @@ export const getDesks = async (req, res) => {
     if (status) filter.status = status;
 
     const desks = await Desk.find(filter)
-      .populate("building", "name city")
-      .populate({ path: "cabin", select: "number floor" })
+      .populate('building', 'name address city')
+      .populate('cabin', 'number floor type')
       .sort({ createdAt: -1 });
 
-    return res.json({ success: true, data: desks });
+    // Log activity
+    await logCRUDActivity(req, 'READ', 'Desk', null, null, {
+      recordCount: desks.length,
+      filters: filter
+    });
+
+    res.json({
+      success: true,
+      data: desks,
+      count: desks.length
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -25,7 +36,7 @@ export const getDesks = async (req, res) => {
 
 export const createDesk = async (req, res) => {
   try {
-    const { building, cabin, number } = req.body || {};
+    const { building, cabin, number, status } = req.body || {};
     if (!building || !cabin || !number) {
       return res.status(400).json({ success: false, message: "building, cabin and number are required" });
     }
@@ -42,24 +53,33 @@ export const createDesk = async (req, res) => {
       return res.status(400).json({ success: false, message: "Cabin does not belong to the given building" });
     }
 
-    const desk = await Desk.create({ building, cabin, number });
+    const desk = await Desk.create({
+      number,
+      building: building,
+      cabin: cabin,
+      status: status || 'available'
+    });
 
-    // Attach to cabin.desks if not present
-    if (!cabinDoc.desks) cabinDoc.desks = [];
-    cabinDoc.desks.addToSet(desk._id);
-    await cabinDoc.save();
+    await desk.populate(['building', 'cabin']);
 
-    return res.status(201).json({ success: true, data: desk });
+    // Log activity
+    await logCRUDActivity(req, 'CREATE', 'Desk', desk._id, null, {
+      number,
+      building: building,
+      cabin: cabin,
+      status: status || 'available'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Desk created successfully',
+      data: desk
+    });
   } catch (error) {
-    // Handle duplicate key errors for unique index (cabin, number)
-    if (error && error.code === 11000) {
-      return res.status(409).json({ success: false, message: "Desk number already exists in this cabin" });
-    }
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Allocate a desk to a client using client's active contract (no contractId required)
 export const allocateDesk = async (req, res) => {
   try {
     const { clientId, deskId } = req.body || {};
@@ -99,22 +119,40 @@ export const allocateDesk = async (req, res) => {
   }
 };
 
-// Release a desk
 export const releaseDesk = async (req, res) => {
   try {
     const { id } = req.params;
-    const desk = await Desk.findById(id);
-    if (!desk) return res.status(404).json({ success: false, message: "Desk not found" });
+    const oldDesk = await Desk.findById(id);
+    const desk = await Desk.findByIdAndUpdate(
+      id,
+      { status: "available" },
+      { new: true, runValidators: true }
+    ).populate(['building', 'cabin']);
 
-    if (desk.status !== "occupied") {
-      return res.status(409).json({ success: false, message: "Desk is not currently occupied" });
+    if (!desk) {
+      return res.status(404).json({
+        success: false,
+        message: 'Desk not found'
+      });
     }
 
-    desk.status = "available";
     desk.releasedAt = new Date();
-    await desk.save();
 
-    return res.json({ success: true, message: "Desk released successfully", data: desk });
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Desk', id, {
+      before: oldDesk?.toObject(),
+      after: desk.toObject(),
+      fields: ['status']
+    }, {
+      deskNumber: desk.number,
+      updatedFields: ['status']
+    });
+
+    res.json({
+      success: true,
+      message: 'Desk released successfully',
+      data: desk
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

@@ -2,10 +2,16 @@ import jwt from "jsonwebtoken";
 import Users from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import { createJWT } from "../middlewares/createJwt.js";
+import { createAccessToken, createRefreshToken, generateTokenFamily } from "../middlewares/createJwtRefresh.js";
+import { storeRefreshToken, validateRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllUserTokens, getDeviceInfo } from "../utils/refreshTokenService.js";
+import { generateAuthTokens } from "../utils/authHelpers.js";
 import mongoose from "mongoose";
 import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
+import Guest from "../models/guestModel.js";
+import Building from "../models/buildingModel.js";
 import bcrypt from "bcryptjs";
+import { logAuthActivity, logCRUDActivity } from "../utils/activityLogger.js";
 
 export const clientSignup = async (req, res) => {
   try {
@@ -121,7 +127,6 @@ export const adminLogin = async (req, res) => {
         error: "Access denied. This login is for admin portal only. Please use the appropriate client/member portal." 
       });
     }
-<<<<<<< Updated upstream
     const token = createJWT(
       user._id.toString(),
       user.email,
@@ -129,14 +134,12 @@ export const adminLogin = async (req, res) => {
       role.roleName,
       user.phone
     );
-=======
     
     // Allow admin roles: Contract Creator, Approver, Billing Admin, Operations Admin, System Admin
     // The RBAC system will control what they can do based on permissions
 
     // Generate both access and refresh tokens
     const { accessToken, refreshToken } = await generateAuthTokens(user, role, req);
->>>>>>> Stashed changes
 
     const safeUser = {
       _id: user._id,
@@ -149,10 +152,26 @@ export const adminLogin = async (req, res) => {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: 'admin',
+      loginType: 'admin'
+    });
 
-    res.json({ token, user: safeUser });
+    res.json({ 
+      accessToken,
+      refreshToken,
+      user: safeUser,
+      // Legacy support - also send as 'token'
+      token: accessToken
+    });
   } catch (err) {
     console.error("adminLogin error:", err);
+    
+    await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
+      userRole: 'admin',
+      loginType: 'admin'
+    });
+    
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -191,13 +210,25 @@ export const clientLogin = async (req, res) => {
       return res.status(404).json({ error: "Client record not found. Please sign up first." });
     }
 
+    // Find the corresponding member record for this client
+    const member = await Member.findOne({ 
+      $or: [
+        { user: user._id, client: client._id },
+        { email: user.email, client: client._id },
+        { phone: user.phone, client: client._id }
+      ]
+    });
+
     const token = createJWT(
       user._id.toString(),
       user.email,
       role._id.toString(),
       role.roleName,
       user.phone,
-      client._id.toString()
+      client._id.toString(),
+      member?._id?.toString(),
+      undefined,
+      typeof member?.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined
     );
 
     const safeUser = {
@@ -220,20 +251,24 @@ export const clientLogin = async (req, res) => {
 
 export const memberLogin = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, phone, password, otp } = req.body;
+
+    // Check if this is OTP-based login
+    if (otp && phone) {
+      // Redirect to OTP verification endpoint
+      return res.status(400).json({ 
+        error: "Please use /api/otp/verify endpoint for OTP-based login",
+        useOtpEndpoint: true 
+      });
+    }
 
     if ((!email && !phone) || !password) {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
-      : { phone: phone.trim() };
-
+    const query = email ? { email } : { phone };
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-    // Direct password comparison without decryption (since passwords are stored as plain text for members)
     const isMatch = password === user.password;
     if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
@@ -254,8 +289,6 @@ export const memberLogin = async (req, res) => {
       if (!fallbackMember) {
         return res.status(404).json({ error: "Member record not found. Please contact admin." });
       }
-      
-      // Update member to link to user for future logins
       fallbackMember.user = user._id;
       await fallbackMember.save();
       member = fallbackMember;
@@ -272,7 +305,9 @@ export const memberLogin = async (req, res) => {
       role.roleName,
       user.phone,
       member.client._id.toString(),
-      member._id.toString()
+      member._id.toString(),
+      undefined,
+      typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined
     );
 
     const safeUser = {
@@ -290,10 +325,743 @@ export const memberLogin = async (req, res) => {
       token, 
       user: safeUser, 
       memberId: member._id,
-      clientId: member.client._id 
+      clientId: member.client._id,
+      allowedUsingCredits: typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true
     });
   } catch (err) {
     console.error("memberLogin error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const communitySignup = async (req, res) => {
+  try {
+    const { name, email, phone, password, buildingId } = req.body;
+
+    if (!name || !password) {
+      return res.status(400).json({ error: "Name and password are required" });
+    }
+
+    if (!email && !phone) {
+      return res.status(400).json({ error: "Either email or phone is required" });
+    }
+
+    if (!buildingId) {
+      return res.status(400).json({ error: "Building ID is required for community users" });
+    }
+
+    // Validate building exists
+    if (!mongoose.Types.ObjectId.isValid(buildingId)) {
+      return res.status(400).json({ error: "Invalid building ID" });
+    }
+
+    const building = await Building.findById(buildingId);
+    if (!building) {
+      return res.status(400).json({ error: "Building not found" });
+    }
+
+    const query = {};
+    if (email) query.email = email.toLowerCase().trim();
+    if (phone) query.phone = phone.trim();
+
+    const existingUser = await Users.findOne({
+      $or: Object.keys(query).map(key => ({ [key]: query[key] }))
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists with this email or phone" });
+    }
+
+    // Find or create community role
+    let role = await Role.findOne({ roleName: "community" });
+    if (!role) {
+      role = await Role.create({
+        roleName: "community",
+        description: "Community user with building access",
+        canLogin: true,
+        permissions: ["view_dashboard", "manage_visitors", "view_clients"]
+      });
+    }
+
+    const userPayload = {
+      name: name.trim(),
+      password: password,
+      role: role._id,
+      buildingId: buildingId,
+    };
+
+    if (email) userPayload.email = email.toLowerCase().trim();
+    if (phone) userPayload.phone = phone.trim();
+
+    const user = new Users(userPayload);
+    await user.save();
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      null, // clientId
+      null, // memberId
+      buildingId
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      buildingId: user.buildingId,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.status(201).json({ 
+      message: "Community user created successfully", 
+      user: safeUser, 
+      buildingId: buildingId,
+      token 
+    });
+  } catch (err) {
+    console.error("communitySignup error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const communityLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    if ((role.roleName || "").toLowerCase() !== "community") {
+      return res.status(403).json({ error: "Not a community account" });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      null, // clientId
+      null, // memberId
+      user.buildingId
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      buildingId: user.buildingId,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.json({ token, user: safeUser, buildingId: user.buildingId });
+        await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: 'community',
+      loginType: 'community'
+    });
+  } catch (err) {
+    console.error("communityLogin error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const onDemandUserSignup = async (req, res) => {
+  try {
+    const { name, email, phone, password } = req.body;
+
+    if (!name || !password) {
+      return res.status(400).json({ error: "Name and password are required" });
+    }
+
+    if (!email && !phone) {
+      return res.status(400).json({ error: "Either email or phone is required" });
+    }
+
+    const query = {};
+    if (email) query.email = email.toLowerCase().trim();
+    if (phone) query.phone = phone.trim();
+
+    const existingUser = await Users.findOne({
+      $or: Object.keys(query).map(key => ({ [key]: query[key] }))
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists with this email or phone" });
+    }
+
+    // Find or create ondemanduser role
+    let role = await Role.findOne({ roleName: "ondemanduser" });
+    if (!role) {
+      role = await Role.create({
+        roleName: "ondemanduser",
+        description: "On-demand day pass user",
+        canLogin: true,
+        permissions: ["purchase_daypass", "manage_own_passes", "invite_visitors"]
+      });
+    }
+
+    const userPayload = {
+      name: name.trim(),
+      password: password,
+      role: role._id,
+    };
+
+    if (email) userPayload.email = email.toLowerCase().trim();
+    if (phone) userPayload.phone = phone.trim();
+
+    const user = new Users(userPayload);
+    await user.save();
+
+    // Create guest record for day pass purchases
+    const guest = await Guest.create({
+      name: user.name,
+      email: user.email || undefined,
+      phone: user.phone || undefined,
+    });
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      guest._id.toString()
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.status(201).json({ 
+      message: "OnDemand user created successfully", 
+      user: safeUser, 
+      guestId: guest._id, 
+      token 
+    });
+  } catch (err) {
+    console.error("onDemandUserSignup error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const onDemandUserLogin = async (req, res) => {
+  try {
+    const { email, phone, password, otp } = req.body;
+
+    // Check if this is OTP-based login
+    if (otp && phone) {
+      // Redirect to OTP verification endpoint
+      return res.status(400).json({ 
+        error: "Please use /api/otp/verify endpoint for OTP-based login",
+        useOtpEndpoint: true 
+      });
+    }
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    if ((role.roleName || "").toLowerCase() !== "ondemanduser") {
+      return res.status(403).json({ error: "Not an on-demand user account" });
+    }
+
+    // Find associated guest record
+    const guest = await Guest.findOne({
+      $or: [
+        ...(user.email ? [{ email: user.email }] : []),
+        ...(user.phone ? [{ phone: user.phone }] : []),
+      ],
+    });
+
+    if (!guest) {
+      return res.status(404).json({ error: "Guest record not found. Please sign up again." });
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      guest._id.toString()
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    res.json({ token, user: safeUser, guestId: guest._id });
+  } catch (err) {
+    console.error("onDemandUserLogin error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const sendMemberClientOtp = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    
+    if (!phone) {
+      return res.status(400).json({ error: "Phone number is required" });
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, '');
+    if (normalizedPhone.length !== 10) {
+      return res.status(400).json({ error: "Please enter a valid 10-digit phone number" });
+    }
+
+    // Find user by phone
+    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found for this phone number" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    // Import OTP model and SMS service dynamically
+    const OTP = (await import("../models/otpModel.js")).default;
+    const { SendSMS, generateOtp } = await import("../services/smsService.js");
+
+    // Generate OTP
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Clear existing OTPs for this phone
+    await OTP.deleteMany({ phone: normalizedPhone });
+    await OTP.create({ 
+      email: user.email, 
+      phone: normalizedPhone, 
+      otp, 
+      expiresAt 
+    });
+
+    // Send SMS
+    const smsText = `Your OTP to log in is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
+    console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
+    
+    try {
+      await SendSMS({ phone: normalizedPhone, message: smsText });
+      console.log('SMS sent successfully');
+    } catch (err) {
+      console.error('SMS sending failed:', err);
+      console.log('SMS delivery failed, but OTP is logged above for testing');
+    }
+
+    await logAuthActivity(req, 'OTP_SENT', 'SUCCESS', null, {
+      userRole: roleName,
+      phone: normalizedPhone
+    });
+
+    return res.status(200).json({
+      message: "OTP sent successfully",
+      phone: normalizedPhone,
+      userId: user._id,
+      roleName: role.roleName
+    });
+
+  } catch (error) {
+    console.error('Send Member/Client OTP error:', error);
+    
+    await logAuthActivity(req, 'OTP_SENT', 'FAILED', error.message, {
+      loginType: 'member_client_otp'
+    });
+    
+    return res.status(500).json({ 
+      error: "Failed to send OTP", 
+      message: error.message 
+    });
+  }
+};
+
+export const verifyMemberClientOtp = async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+
+    if (!phone || !otp) {
+      return res.status(400).json({ error: "Phone and OTP are required" });
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, '');
+
+    // Import OTP model dynamically
+    const OTP = (await import("../models/otpModel.js")).default;
+
+    const otpRecord = await OTP.findOne({ 
+      phone: normalizedPhone,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ error: "OTP expired or not found" });
+    }
+
+    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+      await OTP.deleteOne({ _id: otpRecord._id });
+      return res.status(400).json({ error: "Too many failed attempts. Please request a new OTP" });
+    }
+
+    // Verify OTP (accept hardcoded 123456 for testing or the generated OTP)
+    const isValidOtp = otp === '123456' || otpRecord.otp === otp;
+    if (!isValidOtp) {
+      await OTP.updateOne({ _id: otpRecord._id }, { $inc: { attempts: 1 } });
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    // Find user and populate role
+    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    // Mark phone as verified
+    await Users.updateOne({ _id: user._id }, { isPhoneVerified: true });
+
+    // Delete used OTP
+    await OTP.deleteOne({ _id: otpRecord._id });
+
+    let clientId = null;
+    let memberId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      // Handle client login
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      
+      if (!client) {
+        return res.status(404).json({ error: "Client record not found. Please sign up first." });
+      }
+
+      clientId = client._id.toString();
+
+      // Find the corresponding member record for this client
+      const member = await Member.findOne({ 
+        $or: [
+          { user: user._id, client: client._id },
+          { email: user.email, client: client._id },
+          { phone: user.phone, client: client._id }
+        ]
+      });
+
+      if (member) {
+        memberId = member._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+      }
+
+    } else if (roleName === "member") {
+      // Handle member login
+      let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
+      
+      if (!member) {
+        const fallbackQuery = user.email 
+          ? { email: user.email } 
+          : { phone: user.phone };
+        const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
+        
+        if (!fallbackMember) {
+          return res.status(404).json({ error: "Member record not found. Please contact admin." });
+        }
+        fallbackMember.user = user._id;
+        await fallbackMember.save();
+        member = fallbackMember;
+      }
+
+      if (!member.client) {
+        return res.status(404).json({ error: "Member is not associated with a client. Please contact admin." });
+      }
+
+      memberId = member._id.toString();
+      clientId = member.client._id.toString();
+      allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+    }
+
+    // Generate both access and refresh tokens
+    const { accessToken, refreshToken } = await generateAuthTokens(
+      user, 
+      role, 
+      req, 
+      { clientId, memberId, buildingId: undefined, allowedUsingCredits }
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    // Log successful authentication
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: roleName,
+      loginType: 'member_client_otp'
+    });
+
+    // Return unified response structure
+    const response = { 
+      accessToken,
+      refreshToken,
+      user: safeUser,
+      token: accessToken // Legacy support
+    };
+
+    if (clientId) response.clientId = clientId;
+    if (memberId) response.memberId = memberId;
+    if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Verify Member/Client OTP error:', error);
+    
+    await logAuthActivity(req, 'LOGIN', 'FAILED', error.message, {
+      loginType: 'member_client_otp'
+    });
+    
+    return res.status(500).json({ 
+      error: "Failed to verify OTP", 
+      message: error.message 
+    });
+  }
+};
+
+export const memberClientLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    // If only phone is provided (no password), redirect to OTP flow
+    if (phone && !password && !email) {
+      return res.status(400).json({ 
+        error: "Password is required for password-based login. Use /api/auth/member-client/send-otp for OTP login",
+        useOtpEndpoint: true 
+      });
+    }
+
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email 
+      ? { email: email.toLowerCase().trim() } 
+      : { phone: phone.trim() };
+
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    const roleName = (role.roleName || "").toLowerCase();
+    
+    // Check if role is member or client
+    if (roleName !== "member" && roleName !== "client") {
+      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    let clientId = null;
+    let memberId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      // Handle client login
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      
+      if (!client) {
+        return res.status(404).json({ error: "Client record not found. Please sign up first." });
+      }
+
+      clientId = client._id.toString();
+
+      // Find the corresponding member record for this client
+      const member = await Member.findOne({ 
+        $or: [
+          { user: user._id, client: client._id },
+          { email: user.email, client: client._id },
+          { phone: user.phone, client: client._id }
+        ]
+      });
+
+      if (member) {
+        memberId = member._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+      }
+
+    } else if (roleName === "member") {
+      // Handle member login
+      let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
+      
+      if (!member) {
+        const fallbackQuery = user.email 
+          ? { email: user.email } 
+          : { phone: user.phone };
+        const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
+        
+        if (!fallbackMember) {
+          return res.status(404).json({ error: "Member record not found. Please contact admin." });
+        }
+        fallbackMember.user = user._id;
+        await fallbackMember.save();
+        member = fallbackMember;
+      }
+
+      if (!member.client) {
+        return res.status(404).json({ error: "Member is not associated with a client. Please contact admin." });
+      }
+
+      memberId = member._id.toString();
+      clientId = member.client._id.toString();
+      allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId,
+      memberId,
+      undefined,
+      allowedUsingCredits
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    // Log successful authentication
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+      userRole: roleName,
+      loginType: 'member_client_unified'
+    });
+
+    // Return unified response structure
+    const response = { 
+      token, 
+      user: safeUser
+    };
+
+    if (clientId) response.clientId = clientId;
+    if (memberId) response.memberId = memberId;
+    if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+
+    res.json(response);
+
+  } catch (err) {
+    console.error("memberClientLogin error:", err);
+    
+    await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
+      loginType: 'member_client_unified'
+    });
+    
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -322,5 +1090,165 @@ export const getMe = async (req, res) => {
   } catch (err) {
     console.error("getMe error:", err);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const refreshAccessToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: "Refresh token is required" });
+    }
+
+    // Validate refresh token
+    const { decoded, tokenDoc } = await validateRefreshToken(refreshToken);
+
+    // Get user details
+    const user = await Users.findById(decoded.userId).populate('role');
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const role = user.role;
+    if (!role) {
+      return res.status(404).json({ error: "User role not found" });
+    }
+
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    const roleName = (role.roleName || "").toLowerCase();
+
+    // Get additional user data based on role
+    let clientId = null;
+    let memberId = null;
+    let buildingId = null;
+    let allowedUsingCredits = undefined;
+
+    if (roleName === "client") {
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      if (client) {
+        clientId = client._id.toString();
+        const member = await Member.findOne({ 
+          $or: [
+            { user: user._id, client: client._id },
+            { email: user.email, client: client._id },
+            { phone: user.phone, client: client._id }
+          ]
+        });
+        if (member) {
+          memberId = member._id.toString();
+          allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+        }
+      }
+    } else if (roleName === "member") {
+      const member = await Member.findOne({ user: user._id }).populate('client');
+      if (member && member.client) {
+        memberId = member._id.toString();
+        clientId = member.client._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+      }
+    } else if (roleName === "community") {
+      buildingId = user.buildingId?.toString();
+    } else if (roleName === "ondemanduser") {
+      const guest = await Guest.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+      if (guest) {
+        clientId = guest._id.toString();
+      }
+    }
+
+    const accessToken = createAccessToken(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId,
+      memberId,
+      buildingId,
+      allowedUsingCredits
+    );
+
+    const deviceInfo = getDeviceInfo(req);
+    const newRefreshToken = await rotateRefreshToken(refreshToken, user._id, deviceInfo);
+
+    await logAuthActivity(req, 'TOKEN_REFRESH', 'SUCCESS', null, {
+      userRole: roleName,
+      userId: user._id.toString()
+    });
+
+    res.json({ 
+      accessToken,
+      refreshToken: newRefreshToken,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        roleName: role.roleName,
+      }
+    });
+
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    
+    await logAuthActivity(req, 'TOKEN_REFRESH', 'FAILED', error.message);
+    
+    return res.status(401).json({ 
+      error: "Invalid or expired refresh token",
+      message: error.message 
+    });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({ error: "Refresh token is required" });
+    }
+
+    await revokeRefreshToken(refreshToken);
+
+    await logAuthActivity(req, 'LOGOUT', 'SUCCESS', null, {
+      userId: req.user?._id?.toString()
+    });
+
+    res.json({ message: "Logged out successfully" });
+
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: "Failed to logout", message: error.message });
+  }
+};
+
+export const logoutAllDevices = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    await revokeAllUserTokens(userId);
+
+    await logAuthActivity(req, 'LOGOUT_ALL_DEVICES', 'SUCCESS', null, {
+      userId: userId.toString()
+    });
+
+    res.json({ message: "Logged out from all devices successfully" });
+
+  } catch (error) {
+    console.error('Logout all devices error:', error);
+    res.status(500).json({ error: "Failed to logout from all devices", message: error.message });
   }
 };

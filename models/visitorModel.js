@@ -12,7 +12,9 @@ const visitorSchema = new Schema(
     companyName: { type: String, trim: true },
     
     // Host and purpose information
-    hostMember: { type: Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+    hostMember: { type: Schema.Types.ObjectId, ref: "Member", required: false, index: true },
+    hostClient: { type: Schema.Types.ObjectId, ref: "Client", required: false, index: true },
+    hostGuest: { type: Schema.Types.ObjectId, ref: "Guest", required: false, index: true },
     purpose: { type: String, trim: true }, // e.g., Meeting, Interview, Delivery
     numberOfGuests: { type: Number, default: 1, min: 1 },
     
@@ -57,6 +59,7 @@ const visitorSchema = new Schema(
     // Audit and metadata
     createdBy: { type: Schema.Types.ObjectId, ref: "User" }, // Community manager/admin who created
     building: { type: Schema.Types.ObjectId, ref: "Building" }, // Which building they're visiting
+    dayPass: { type: Schema.Types.ObjectId, ref: "DayPass", index: true },
     
     // Soft delete
     deletedAt: { type: Date, index: true },
@@ -71,6 +74,9 @@ const visitorSchema = new Schema(
 // Indexes for performance
 visitorSchema.index({ status: 1, expectedVisitDate: 1 });
 visitorSchema.index({ hostMember: 1, createdAt: -1 });
+visitorSchema.index({ hostClient: 1, createdAt: -1 });
+visitorSchema.index({ hostGuest: 1, createdAt: -1 });
+visitorSchema.index({ dayPass: 1 });
 visitorSchema.index({ phone: 1 }, { sparse: true });
 visitorSchema.index({ email: 1 }, { sparse: true });
 visitorSchema.index({ qrToken: 1 }, { sparse: true, unique: true });

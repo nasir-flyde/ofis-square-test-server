@@ -1,5 +1,6 @@
 import express from "express";
 import authRoutes from "./auth.js";
+import otpRoutes from "./otp.js";
 import roleRoutes from "./roles.js";
 import healthRoutes from "./health.js";
 import clientRoutes from "./clients.js";
@@ -30,14 +31,17 @@ import eventsRoutes from "./events.js";
 import eventCategoriesRoutes from "./eventCategories.js";
 import leadsRoutes from "./leads.js";
 import notificationsRoutes from "./notifications.js";
+<<<<<<< HEAD
 import announcementsRoutes from "./announcements.js";
+=======
+>>>>>>> b460c2af22107855de6c5970f4eaf988fc7a953a
 
 
 const router = express.Router();
 
-// Modular routes (mirroring ezstays-backend style)
 router.use("/health", healthRoutes);
 router.use("/auth", authRoutes);
+router.use("/otp", otpRoutes);
 router.use("/me", meRoutes);
 router.use("/roles", roleRoutes);
 router.use("/clients", clientRoutes);
@@ -67,5 +71,8 @@ router.use("/events", eventsRoutes);
 router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
+<<<<<<< HEAD
 router.use("/announcements", announcementsRoutes);
+=======
+>>>>>>> b460c2af22107855de6c5970f4eaf988fc7a953a
 export default router;

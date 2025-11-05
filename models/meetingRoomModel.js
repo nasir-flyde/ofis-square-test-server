@@ -5,8 +5,25 @@ const { Schema } = mongoose;
 const pricingSchema = new Schema(
   {
     currency: { type: String, default: "INR" },
-    hourlyRate: { type: Number, default: 0 },
     dailyRate: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const timeSlotSchema = new Schema(
+  {
+    startTime: { type: String, required: true }, // e.g., "09:00 AM"
+    endTime: { type: String, required: true },   // e.g., "10:00 AM"
+  },
+  { _id: false }
+);
+
+const reservedSlotSchema = new Schema(
+  {
+    date: { type: Date, required: true },
+    startTime: { type: String, required: true },
+    endTime: { type: String, required: true },
+    bookingId: { type: Schema.Types.ObjectId, ref: "MeetingBooking" },
   },
   { _id: false }
 );
@@ -17,7 +34,6 @@ const availabilitySchema = new Schema(
     daysOfWeek: { type: [Number], default: [1, 2, 3, 4, 5] },
     openTime: { type: String, default: "09:00" }, // HH:mm (24h)
     closeTime: { type: String, default: "19:00" },
-    bufferMinutes: { type: Number, default: 15 },
     minBookingMinutes: { type: Number, default: 30 },
     maxBookingMinutes: { type: Number, default: 480 }
   },
@@ -30,9 +46,25 @@ const meetingRoomSchema = new Schema(
     name: { type: String, required: true, trim: true },
     capacity: { type: Number, required: true },
     amenities: { type: [String], default: [] },
+    images: { type: [String], default: [] },
     pricing: { type: pricingSchema, default: () => ({}) },
     availability: { type: availabilitySchema, default: () => ({}) },
     blackoutDates: { type: [Date], default: [] },
+    availableTimeSlots: {
+      type: [timeSlotSchema],
+      default: () => [
+        { startTime: "09:00 AM", endTime: "10:00 AM" },
+        { startTime: "10:00 AM", endTime: "11:00 AM" },
+        { startTime: "11:00 AM", endTime: "12:00 PM" },
+        { startTime: "12:00 PM", endTime: "01:00 PM" },
+        { startTime: "01:00 PM", endTime: "02:00 PM" },
+        { startTime: "02:00 PM", endTime: "03:00 PM" },
+        { startTime: "03:00 PM", endTime: "04:00 PM" },
+        { startTime: "04:00 PM", endTime: "05:00 PM" },
+      ],
+    },
+    reservedSlots: { type: [reservedSlotSchema], default: [] },
+    isBookingClosed: { type: Boolean, default: false },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
   },
   { timestamps: true, collection: "meeting_rooms" }

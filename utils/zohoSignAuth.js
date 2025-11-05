@@ -16,13 +16,15 @@ export async function getAccessToken() {
     return cached.accessToken;
   }
 
-  const refresh_token = process.env.ZOHO_SIGN_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN || process.env.ZOHO_BOOKS_REFRESH_TOKEN || "1000.f9e7e976827f25100732384af8b322b1.650da0df5959e56bd59e0375b9081d76";
+  // IMPORTANT: Use a dedicated Zoho Sign refresh token generated with Zoho Sign scopes.
+  // Do NOT fallback to Books/Generic tokens as scopes won't include Zoho Sign and will cause 9040 Invalid Oauth Scope.
+  const refresh_token = process.env.ZOHO_SIGN_REFRESH_TOKEN;
   const client_id = process.env.ZOHO_CLIENT_ID;
   const client_secret = process.env.ZOHO_CLIENT_SECRET;
 
   if (!refresh_token || !client_id || !client_secret) {
     throw new Error(
-      "Zoho OAuth env vars missing. Ensure ZOHO_BOOKS_REFRESH_TOKEN (or ZOHO_REFRESH_TOKEN), ZOHO_CLIENT_ID, and ZOHO_CLIENT_SECRET are set."
+      "Zoho OAuth env vars missing. Ensure ZOHO_SIGN_REFRESH_TOKEN, ZOHO_CLIENT_ID, and ZOHO_CLIENT_SECRET are set. ZOHO_SIGN_REFRESH_TOKEN must be generated with scopes: ZohoSign.documents.ALL and ZohoSign.organization.READ (and any other required Zoho Sign scopes)."
     );
   }
 

@@ -1,6 +1,20 @@
 import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
+import DayPass from "../models/dayPassModel.js";
+import DayPassBundle from "../models/dayPassBundleModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
+import Guest from "../models/guestModel.js";
+import Member from "../models/memberModel.js";
+import Contract from "../models/contractModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import CreditTransaction from "../models/creditTransactionModel.js";
+import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceService.js";
+import { getValidAccessToken } from '../utils/zohoTokenManager.js';
+import crypto from 'crypto';
+import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import LoggedRazorpay from "../utils/loggedRazorpay.js";
+import apiLogger from "../utils/apiLogger.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -63,8 +77,17 @@ export const createPayment = async (req, res) => {
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
 
+    // Log payment activity
+    await logPaymentActivity(req, 'PAYMENT_MADE', 'Payment', payment._id, {
+      invoiceId,
+      amount: Number(amount),
+      paymentType: type,
+      referenceNumber
+    });
+
     return res.status(201).json({ success: true, data: { payment, invoice: updatedInvoice } });
   } catch (error) {
+    await logErrorActivity(req, error, 'Create Payment');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -88,8 +111,16 @@ export const deletePayment = async (req, res) => {
 
     await Payment.findByIdAndDelete(id);
 
+    // Log payment deletion
+    await logCRUDActivity(req, 'DELETE', 'Payment', id, null, {
+      invoiceId: payment.invoice,
+      amount: payment.amount,
+      paymentType: payment.type
+    });
+
     return res.json({ success: true, message: "Payment deleted successfully", deletedPaymentId: id });
   } catch (error) {
+    await logErrorActivity(req, error, 'Delete Payment');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -109,12 +140,13 @@ export const getPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(filter)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
       .populate("client", "companyName contactPerson phone email")
       .sort({ paymentDate: -1, createdAt: -1 });
 
     return res.json({ success: true, data: payments });
   } catch (error) {
+    await logErrorActivity(req, error, 'Get Payments');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -124,11 +156,12 @@ export const getPaymentById = async (req, res) => {
   try {
     const { id } = req.params;
     const payment = await Payment.findById(id)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
       .populate("client", "companyName contactPerson phone email");
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     return res.json({ success: true, data: payment });
   } catch (error) {
+    await logErrorActivity(req, error, 'Get Payment by ID');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -152,7 +185,7 @@ export const getClientPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(query)
-      .populate("invoice", "invoiceNumber total amountPaid balanceDue status dueDate building cabin")
+      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate building cabin")
       .sort({ paymentDate: -1, createdAt: -1 })
       .limit(Number(limit))
       .skip((Number(page) - 1) * Number(limit));
@@ -173,11 +206,11 @@ export const getClientPayments = async (req, res) => {
     });
   } catch (err) {
     console.error("getClientPayments error:", err);
+    await logErrorActivity(req, err, 'Get Client Payments');
     return res.status(500).json({ error: "Failed to fetch client payments" });
   }
 };
-<<<<<<< Updated upstream
-=======
+
 const getBooksBaseUrl = () => {
   return "https://www.zohoapis.in/books/v3";
 };
@@ -713,6 +746,7 @@ export const createRazorpayOrder = async (req, res) => {
       description = `Meeting Room - ${roomName} (${startTime}-${endTime})`;
       item = { type: 'meeting', id: meetingBookingId };
     }
+    
     const response = {
       success: true,
       razorpayKey: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
@@ -1492,4 +1526,3 @@ export const getClientCreditBalance = async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
->>>>>>> Stashed changes

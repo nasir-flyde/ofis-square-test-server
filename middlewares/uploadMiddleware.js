@@ -3,8 +3,24 @@ import path from 'path';
 import fs from 'fs';
 
 const uploadsDir = 'uploads/screenshots';
+const buildingPhotosDir = 'uploads/buildings';
+const meetingRoomImagesDir = 'uploads/meeting-rooms';
+const eventImagesDir = 'uploads/events';
+
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+if (!fs.existsSync(buildingPhotosDir)) {
+  fs.mkdirSync(buildingPhotosDir, { recursive: true });
+}
+
+if (!fs.existsSync(meetingRoomImagesDir)) {
+  fs.mkdirSync(meetingRoomImagesDir, { recursive: true });
+}
+
+if (!fs.existsSync(eventImagesDir)) {
+  fs.mkdirSync(eventImagesDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
@@ -34,9 +50,6 @@ const upload = multer({
   fileFilter: fileFilter
 });
 
-<<<<<<< Updated upstream
-export const uploadScreenshots = upload.array('screenshots', 5);
-=======
 // Building photos storage configuration
 const buildingPhotosStorage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -101,7 +114,6 @@ export const uploadEventImages = eventImagesUpload.fields([
   { name: 'mainImage', maxCount: 1 }
 ]);
 export const uploadStampPaper = stampPaperUpload.single('stampPaper');
->>>>>>> Stashed changes
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {

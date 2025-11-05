@@ -1,11 +1,45 @@
 import MeetingRoom from "../models/meetingRoomModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
+import Building from "../models/buildingModel.js";
+import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
+import path from "path";
 
 // Create a meeting room
 export const createRoom = async (req, res) => {
   try {
-    const room = await MeetingRoom.create(req.body);
+    const roomData = { ...req.body };
+    
+    // Handle uploaded images with ImageKit
+    if (req.files && req.files.length > 0) {
+      const imageUploadPromises = req.files.map(async (file) => {
+        try {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `meeting-room-${Date.now()}-${Math.random().toString(36).substring(7)}${path.extname(file.originalname)}`,
+            folder: '/meeting-rooms'
+          });
+          return result.url;
+        } catch (uploadError) {
+          console.error('ImageKit upload error:', uploadError);
+          throw uploadError;
+        }
+      });
+      
+      roomData.images = await Promise.all(imageUploadPromises);
+    }
+    
+    const room = await MeetingRoom.create(roomData);
+    await logCRUDActivity(req, 'CREATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      buildingId: room.building,
+      capacity: room.capacity,
+      dailyRate: room.pricing?.dailyRate,
+      imagesCount: room.images?.length || 0
+    });
     return res.status(201).json({ success: true, data: room });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(400).json({ success: false, message: error.message });
   }
 };
@@ -21,9 +55,19 @@ export const listRooms = async (req, res) => {
     if (amenity) filter.amenities = { $in: [amenity] };
     if (q) filter.name = { $regex: q, $options: "i" };
 
-    const rooms = await MeetingRoom.find(filter).populate('building', 'name address city').sort({ name: 1 });
-    return res.json({ success: true, data: rooms });
+    const meetingRooms = await MeetingRoom.find(filter)
+      .populate('building', 'name address city')
+      .sort({ createdAt: -1 });
+
+    // Manual logging removed - handled by middleware for non-GET requests only
+
+    return res.json({
+      success: true,
+      data: meetingRooms,
+      count: meetingRooms.length
+    });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -31,10 +75,37 @@ export const listRooms = async (req, res) => {
 // Get a room by ID
 export const getRoomById = async (req, res) => {
   try {
-    const room = await MeetingRoom.findById(req.params.id).populate('building', 'name address city');
-    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
-    return res.json({ success: true, data: room });
+    const id = req.params.id;
+    const oldMeetingRoom = await MeetingRoom.findById(id);
+    const meetingRoom = await MeetingRoom.findByIdAndUpdate(
+      id,
+      req.body,
+      { new: true, runValidators: true }
+    ).populate('building', 'name address city');
+
+    if (!meetingRoom) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meeting room not found'
+      });
+    }
+
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', id, {
+      before: oldMeetingRoom?.toObject(),
+      after: meetingRoom.toObject(),
+      fields: ['name', 'building', 'capacity', 'amenities', 'pricing', 'status']
+    }, {
+      roomName: meetingRoom.name,
+      updatedFields: ['name', 'building', 'capacity', 'amenities', 'pricing', 'status']
+    });
+
+    return res.json({
+      success: true,
+      message: 'Meeting room updated successfully',
+      data: meetingRoom
+    });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -42,10 +113,58 @@ export const getRoomById = async (req, res) => {
 // Update room
 export const updateRoom = async (req, res) => {
   try {
-    const room = await MeetingRoom.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const updateData = { ...req.body };
+    
+    // Handle uploaded images with ImageKit
+    if (req.files && req.files.length > 0) {
+      const imageUploadPromises = req.files.map(async (file) => {
+        try {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `meeting-room-${Date.now()}-${Math.random().toString(36).substring(7)}${path.extname(file.originalname)}`,
+            folder: '/meeting-rooms'
+          });
+          return result.url;
+        } catch (uploadError) {
+          console.error('ImageKit upload error:', uploadError);
+          throw uploadError;
+        }
+      });
+      
+      const newImageUrls = await Promise.all(imageUploadPromises);
+      
+      // Get existing room to preserve existing images if needed
+      const existingRoom = await MeetingRoom.findById(req.params.id);
+      if (existingRoom) {
+        // Handle existing images from request body
+        const existingImages = req.body.existingImages ? JSON.parse(req.body.existingImages) : [];
+        updateData.images = [...existingImages, ...newImageUrls];
+      } else {
+        updateData.images = newImageUrls;
+      }
+    }
+    
+    // If no new files uploaded, still honor existingImages (including empty array to clear all)
+    if ((!req.files || req.files.length === 0) && typeof req.body.existingImages !== 'undefined') {
+      try {
+        const existingImagesOnly = JSON.parse(req.body.existingImages);
+        updateData.images = Array.isArray(existingImagesOnly) ? existingImagesOnly : [];
+      } catch (e) {
+        // If parsing fails, ignore and let it proceed without changing images
+      }
+    }
+    
+    const room = await MeetingRoom.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+    
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      imagesCount: room.images?.length || 0
+    });
+    
     return res.json({ success: true, data: room });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(400).json({ success: false, message: error.message });
   }
 };
@@ -53,22 +172,27 @@ export const updateRoom = async (req, res) => {
 // Update availability only
 export const updateAvailability = async (req, res) => {
   try {
-    const { availability, blackoutDates } = req.body || {};
+    const { availability, blackoutDates, availableTimeSlots, isBookingClosed } = req.body || {};
     const room = await MeetingRoom.findById(req.params.id);
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
     if (availability) room.availability = { ...room.availability, ...availability };
     if (Array.isArray(blackoutDates)) room.blackoutDates = blackoutDates;
+    if (Array.isArray(availableTimeSlots)) room.availableTimeSlots = availableTimeSlots;
+    if (typeof isBookingClosed === 'boolean') room.isBookingClosed = isBookingClosed;
 
     await room.save();
+    await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
+      roomName: room.name,
+      updatedFields: ['availability', 'blackoutDates', 'availableTimeSlots', 'isBookingClosed']
+    });
     return res.json({ success: true, data: room });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(400).json({ success: false, message: error.message });
   }
 };
 
-<<<<<<< Updated upstream
-=======
 // Get available time slots for a specific date
 export const getAvailableSlots = async (req, res) => {
   try {
@@ -501,16 +625,20 @@ export const getAvailableRoomsByTime = async (req, res) => {
   }
 };
 
->>>>>>> Stashed changes
+
 // Delete (hard delete)
 export const deleteRoom = async (req, res) => {
   try {
-    const room = await MeetingRoom.findById(req.params.id);
-    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+    const meetingRoom = await MeetingRoom.findById(req.params.id);
+    if (!meetingRoom) return res.status(404).json({ success: false, message: "Room not found" });
     
     await MeetingRoom.deleteOne({ _id: req.params.id });
+    await logCRUDActivity(req, 'DELETE', 'MeetingRoom', meetingRoom._id, null, {
+      roomName: meetingRoom.name
+    });
     return res.json({ success: true, message: "Meeting room deleted" });
   } catch (error) {
+    await logErrorActivity(req, error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -4,6 +4,10 @@ import { kycUploads } from "../middlewares/multer.js";
 import {
   createClient,
   upsertBasicDetails,
+  updateCommercialDetails,
+  updateAddressDetails,
+  updateContactPersons,
+  updateTaxDetails,
   getClients,
   getClientById,
   updateClient,
@@ -37,6 +41,12 @@ const router = express.Router();
 router.post("/", authMiddleware, createClient);
 
 router.post("/basic-details", authMiddleware, upsertBasicDetails);
+
+// New section-specific update routes
+router.put("/:id/commercial", authMiddleware, updateCommercialDetails);
+router.put("/:id/addresses", authMiddleware, updateAddressDetails);
+router.put("/:id/contacts", authMiddleware, updateContactPersons);
+router.put("/:id/tax", authMiddleware, updateTaxDetails);
 
 router.get("/dashboard", clientMiddleware, getClientDashboard);
 router.get("/profile", clientMiddleware, getClientProfile);

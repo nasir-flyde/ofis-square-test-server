@@ -21,7 +21,7 @@ const clientCreditWalletSchema = new mongoose.Schema({
   creditValue: {
     type: Number,
     required: true,
-    default: 200, // INR per credit
+    default: 500, // INR per credit
     min: 0
   },
   currency: {
@@ -42,7 +42,6 @@ const clientCreditWalletSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes
 clientCreditWalletSchema.index({ client: 1 }, { unique: true });
 clientCreditWalletSchema.index({ status: 1 });
 
