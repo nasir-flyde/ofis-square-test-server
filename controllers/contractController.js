@@ -546,16 +546,20 @@ export const sendForSignature = async (req, res) => {
       return res.status(400).json({ error: "Only draft or approved contracts can be sent for signature" });
     }
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
-    if (!contract.fileUrl) {
+    
+    // Use stampPaperUrl if available, otherwise fallback to fileUrl
+    const documentUrl = contract.stampPaperUrl || contract.fileUrl;
+    if (!documentUrl) {
       return res.status(400).json({ 
-        error: "Contract must have a fileUrl before it can be sent for signature. Please generate the contract PDF first." 
+        error: "Contract must have a stampPaperUrl or fileUrl before it can be sent for signature. Please generate the contract PDF first." 
       });
     }
 
     console.log('Sending contract for signature:', {
       contractId: contract._id,
       clientName: contract.client.companyName,
-      fileUrl: contract.fileUrl,
+      fileUrl: documentUrl,
+      usingStampPaper: !!contract.stampPaperUrl,
       status: contract.status
     });
 

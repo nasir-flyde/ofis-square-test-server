@@ -1,6 +1,15 @@
 import Contract from "../models/contractModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
+import {
+  sendAdminApprovalRequestEmail,
+  sendAdminApprovalConfirmationEmail,
+  sendClientReviewRequestEmail,
+  sendLegalReviewRequestEmail,
+  sendContractCommentEmail,
+  sendContractSentForSignatureEmail,
+  sendContractSignedEmail
+} from "../utils/contractEmailService.js";
 
 // Submit contract to Legal (Sales → Legal)
 export const submitToLegal = async (req, res) => {
@@ -28,12 +37,17 @@ export const submitToLegal = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_SUBMITTED_TO_LEGAL', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       submittedBy: req.user?._id,
-      previousStatus: "draft"
+      previousStatus: "draft",
+      action: 'submitted_to_legal'
     });
     
-    // TODO: Send notification to Legal team
+    // Send email notification to Legal team
+    const populatedContract = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendLegalReviewRequestEmail(populatedContract);
     
     return res.json({ 
       success: true,
@@ -74,12 +88,17 @@ export const submitToAdmin = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_SUBMITTED_TO_ADMIN', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       submittedBy: req.user?._id,
-      previousStatus: contract.status
+      previousStatus: contract.status,
+      action: 'submitted_to_admin'
     });
     
-    // TODO: Send notification to Admin (Senior Management)
+    // Send email notification to Admin (Senior Management)
+    const populatedContract = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendAdminApprovalRequestEmail(populatedContract);
     
     return res.json({ 
       success: true,
@@ -125,14 +144,19 @@ export const adminApprove = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_ADMIN_APPROVED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       approvedBy: req.user?._id,
       approvalType: contract.approvalType,
       conditions: conditions,
-      previousStatus: "pending_admin_approval"
+      previousStatus: "pending_admin_approval",
+      action: 'admin_approved'
     });
     
-    // TODO: Send notification to Legal team to proceed
+    // Send email notification to Sales, Legal team, and Admins
+    const populatedContract = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendAdminApprovalConfirmationEmail(populatedContract);
     
     return res.json({ 
       success: true,
@@ -189,10 +213,11 @@ export const adminReject = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_ADMIN_REJECTED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       rejectedBy: req.user?._id,
       rejectionReason: reason,
-      previousStatus: "pending_admin_approval"
+      previousStatus: "pending_admin_approval",
+      action: 'admin_rejected'
     });
     
     // TODO: Send notification to Sales and Legal
@@ -221,10 +246,12 @@ export const sendToClient = async (req, res) => {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
     
-    if (contract.status !== "admin_approved") {
+    // Allow sending to client from admin_approved or client_feedback_pending (re-send after addressing feedback)
+    const validStatuses = ["admin_approved", "client_feedback_pending"];
+    if (!validStatuses.includes(contract.status)) {
       return res.status(400).json({ 
         success: false, 
-        message: `Only admin-approved contracts can be sent to client. Current status: ${contract.status}` 
+        message: `Only admin-approved contracts or contracts with pending feedback can be sent to client. Current status: ${contract.status}` 
       });
     }
     
@@ -245,13 +272,19 @@ export const sendToClient = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_SENT_TO_CLIENT', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client._id, {
       sentBy: req.user?._id,
       clientEmail: emailToUse,
-      previousStatus: "admin_approved"
+      previousStatus: contract.status === "client_feedback_pending" ? "client_feedback_pending" : "admin_approved",
+      isResend: contract.status === "client_feedback_pending",
+      action: 'sent_to_client'
     });
     
-    // TODO: Send email to client with agreement for review
+    // Send email to client with agreement for review
+    const populatedContract = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendClientReviewRequestEmail(populatedContract, emailToUse);
     
     return res.json({ 
       success: true,
@@ -289,9 +322,10 @@ export const markClientApproved = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_CLIENT_APPROVED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       markedBy: req.user?._id,
-      previousStatus: "sent_to_client"
+      previousStatus: "sent_to_client",
+      action: 'client_approved'
     });
     
     // TODO: Notify Legal to proceed with stamp paper
@@ -350,9 +384,10 @@ export const recordClientFeedback = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_CLIENT_FEEDBACK', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       feedback: feedback,
-      previousStatus: "sent_to_client"
+      previousStatus: "sent_to_client",
+      action: 'client_feedback'
     });
     
     // TODO: Notify Sales and Legal about client feedback
@@ -422,10 +457,11 @@ export const generateStampPaper = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_STAMP_PAPER_GENERATED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       generatedBy: req.user?._id,
       stampPaperUrl: stampPaperUrl,
-      previousStatus: "client_approved"
+      previousStatus: "client_approved",
+      action: 'stamp_paper_generated'
     });
     
     return res.json({ 
@@ -466,33 +502,62 @@ export const sendForESignature = async (req, res) => {
       });
     }
     
-    // TODO: Integrate with Zoho Sign API
-    // For now, just update status
-    const envelopeId = `ZOHO_${Date.now()}_${contract._id}`;
+    console.log('Sending contract for signature via Zoho Sign:', {
+      contractId: contract._id,
+      clientName: contract.client.companyName,
+      stampPaperUrl: contract.stampPaperUrl,
+      status: contract.status
+    });
+    const { default: loggedZohoSign } = await import('../utils/loggedZohoSign.js');
     
+    // Step 1: Create document in Zoho Sign
+    const requestId = await loggedZohoSign.createDocument(contract);
+    console.log("Document created with request ID:", requestId);
+    
+    // Step 2: Verify document exists and get document ID
+    const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
+    const documentId = documentDetails?.document_ids?.[0]?.document_id;
+    if (!documentId) {
+      throw new Error("Failed to get document ID from Zoho Sign");
+    }
+    console.log("Document verified with ID:", documentId);
+    
+    // Step 3: Add recipient to document
+    await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+    console.log("Recipient added to document");
+    
+    // Step 4: Submit document for signature
+    await loggedZohoSign.submitDocument(requestId);
+    console.log("Document submitted for signature");
     contract.status = "sent_for_signature";
     contract.signatureProvider = "zoho_sign";
-    contract.signatureEnvelopeId = envelopeId;
+    contract.signatureEnvelopeId = requestId;
+    contract.zohoSignRequestId = requestId;
     contract.sentForSignatureAt = new Date();
     contract.lastActionBy = req.user?._id || null;
     contract.lastActionAt = new Date();
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', 'Contract', id, {
+    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', id, contract.client, {
       sentBy: req.user?._id,
       signatureProvider: "zoho_sign",
-      envelopeId: envelopeId,
+      envelopeId: requestId,
+      zohoSignRequestId: requestId,
       previousStatus: "stamp_paper_ready"
     });
     
-    // TODO: Send notification to client and sales
+    // Send email notification to stakeholders (Sales + Legal + Admins)
+    const populatedContractForEmail = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendContractSentForSignatureEmail(populatedContractForEmail);
     
     return res.json({ 
       success: true,
       message: "Contract sent for e-signature via Zoho Sign",
       contract,
-      envelopeId
+      zohoSignRequestId: requestId
     });
   } catch (err) {
     console.error("sendForESignature error:", err);
@@ -528,12 +593,16 @@ export const markSigned = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', id, {
+    await logContractActivity(req, 'CONTRACT_SIGNED', id, contract.client, {
       signedBy: signedBy,
       previousStatus: "sent_for_signature"
     });
     
-    // TODO: Notify Finance and Operations for next steps
+    // Send email notification to stakeholders (Sales + Legal + Admins)
+    const populatedContractForEmail = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendContractSignedEmail(populatedContractForEmail);
     
     return res.json({ 
       success: true,
@@ -582,11 +651,19 @@ export const addComment = async (req, res) => {
     
     await contract.save();
     
-    await logContractActivity(req, 'CONTRACT_COMMENT_ADDED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
       commentBy: req.user?._id,
       commentType: commentType,
-      message: message.trim()
+      message: message.trim(),
+      action: 'comment_added'
     });
+    
+    // Send email notification to stakeholders (Sales user + Legal team + Admins)
+    const populatedContract = await Contract.findById(id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    const addedByName = req.user?.name || 'Unknown User';
+    await sendContractCommentEmail(populatedContract, message.trim(), addedByName);
     
     return res.json({ 
       success: true,

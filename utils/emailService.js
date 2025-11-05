@@ -1,13 +1,16 @@
 import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
+dotenv.config();
 
-// Create transporter using the same Mailtrap configuration as visitorController
+// Create transporter using Gmail SMTP from .env
 const createTransporter = () => {
   return nodemailer.createTransport({
-    host: 'bulk.smtp.mailtrap.io',
-    port: 587,
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: false, // true for 465, false for other ports
     auth: {
-      user: 'smtp@mailtrap.io',
-      pass: '7d6550b3447fc10051a947eb7d5046cb',
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
     },
   });
 };

@@ -3,18 +3,12 @@ import { getAccessToken } from '../utils/zohoSignAuth.js';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 
-/**
- * Logged wrapper for Zoho Sign API calls
- */
 class LoggedZohoSign {
   constructor() {
     this.service = 'zoho_sign';
     this.baseUrl = this._getZohoSignBaseUrl();
   }
 
-  /**
-   * Create document in Zoho Sign with logging
-   */
   async createDocument(contract, { userId = null, clientId = null } = {}) {
     const loggedFetch = apiLogger.createLoggedFetch({
       service: this.service,
@@ -38,27 +32,28 @@ class LoggedZohoSign {
       let fileBuffer = null;
       let fileName = `contract_${contract._id || 'doc'}.pdf`;
       
+      // Use stampPaperUrl if available, otherwise fallback to fileUrl
+      const documentUrl = contract.stampPaperUrl || contract.fileUrl;
+      
+      console.log('Contract stampPaperUrl:', contract.stampPaperUrl);
       console.log('Contract fileUrl:', contract.fileUrl);
+      console.log('Using documentUrl:', documentUrl);
       console.log('Contract ID:', contract._id);
       console.log('Contract client:', contract.client?.companyName);
       
-      if (contract.fileUrl) {
-        console.log('Downloading file from URL:', contract.fileUrl);
-        const fileResp = await fetch(contract.fileUrl);
+      if (documentUrl) {
+        console.log('Downloading file from URL:', documentUrl);
+        const fileResp = await fetch(documentUrl);
         if (!fileResp.ok) {
           throw new Error(`Failed to download fileUrl: HTTP ${fileResp.status} - ${fileResp.statusText}`);
         }
         fileBuffer = Buffer.from(await fileResp.arrayBuffer());
         console.log('File buffer size:', fileBuffer.length, 'bytes');
-        const urlName = (contract.fileUrl.split('?')[0] || '').split('/').pop();
+        const urlName = (documentUrl.split('?')[0] || '').split('/').pop();
         if (urlName) fileName = urlName;
-
-        // Ensure filename has .pdf extension
         if (!/\.pdf$/i.test(fileName)) {
           fileName = `${fileName}.pdf`;
         }
-
-        // Basic PDF validation: check magic bytes
         const isPdf = fileBuffer && fileBuffer.length > 4 && fileBuffer.slice(0, 4).toString() === '%PDF';
         console.log('PDF validation - First 20 bytes:', fileBuffer.slice(0, 20).toString());
         console.log('PDF validation - Last 20 bytes:', fileBuffer.slice(-20).toString());
@@ -99,13 +94,10 @@ class LoggedZohoSign {
       
       console.log('Request data being sent:', JSON.stringify(requestData, null, 2));
       formData.append('data', JSON.stringify(requestData));
-
       const accessToken = await getAccessToken();
       console.log('Access token length:', accessToken ? accessToken.length : 'null');
       console.log('Zoho Sign base URL:', this.baseUrl);
       console.log('Form data keys:', Object.keys(formData));
-      
-      // Perform fetch with explicit API logging so it appears in API Call Logs
       const url = `${this.baseUrl}/requests`;
       const headers = {
         ...(typeof formData.getHeaders === 'function' ? formData.getHeaders() : {}),
@@ -187,9 +179,6 @@ class LoggedZohoSign {
     }
   }
 
-  /**
-   * Add recipient to document with logging
-   */
   async addRecipient(requestId, client, documentId, { userId = null, clientId = null } = {}) {
     const loggedFetch = apiLogger.createLoggedFetch({
       service: this.service,
@@ -241,7 +230,6 @@ class LoggedZohoSign {
         },
         body: JSON.stringify(actionData)
       });
-
       const result = await response.json();
       if (result.status !== "success") {
         const msg = result.message || "Failed to add recipient";
@@ -255,9 +243,6 @@ class LoggedZohoSign {
     }
   }
 
-  /**
-   * Submit document for signature with logging
-   */
   async submitDocument(requestId, { userId = null, clientId = null } = {}) {
     const loggedFetch = apiLogger.createLoggedFetch({
       service: this.service,

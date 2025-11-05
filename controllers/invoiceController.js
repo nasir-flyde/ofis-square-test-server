@@ -80,6 +80,17 @@ export const createInvoice = async (req, res) => {
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
     if (contract && !contractDoc) return res.status(404).json({ success: false, message: "Contract not found" });
 
+    // Role-based restrictions: Finance Junior can only create draft invoices
+    const userRole = req.userRole?.roleName || "";
+    let invoiceStatus = body.status || "draft";
+    
+    if (userRole === "finance_junior" && invoiceStatus !== "draft") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Finance Junior users can only create draft invoices. Please contact Finance Senior to send invoices." 
+      });
+    }
+
     const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
 
@@ -112,7 +123,7 @@ export const createInvoice = async (req, res) => {
       total: totals.total,
       amount_paid: totals.amountPaid,
       balance: totals.balanceDue,
-      status: body.status || "draft",
+      status: invoiceStatus,
       notes: notes || "Manual invoice creation",
       currency_code: "INR",
       exchange_rate: 1,
@@ -146,29 +157,7 @@ export const createInvoice = async (req, res) => {
     });
 
     console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}`);
-    try {
-      if (clientDoc.zohoBooksContactId) {
-        const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
-        const invoiceData = zohoResponse.invoice || zohoResponse;
-
-        if (invoiceData && invoiceData.invoice_id) {
-          invoice.zoho_invoice_id = invoiceData.invoice_id;
-          invoice.zoho_invoice_number = invoiceData.invoice_number;
-          invoice.zoho_status = invoiceData.status || invoiceData.status_formatted;
-          invoice.zoho_pdf_url = invoiceData.pdf_url;
-          invoice.invoice_url = invoiceData.invoice_url;
-          await invoice.save();
-
-          console.log(`Pushed invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
-        } else {
-          console.warn(`Zoho Books did not return invoice_id for invoice ${invoice._id}`);
-        }
-      } else {
-        console.log(`Skipping Zoho push for invoice ${invoice._id} - client has no zohoBooksContactId`);
-      }
-    } catch (zohoError) {
-      console.error(`Failed to push invoice ${invoice._id} to Zoho Books:`, zohoError.message);
-    }
+    // Note: Invoices are now created locally only. Use "Push to Zoho" button to sync with Zoho Books.
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {
@@ -227,6 +216,17 @@ export const downloadInvoicePdf = async (req, res) => {
 export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
+    const { sendStatus } = req.body; // 'draft' or 'sent'
+    
+    // Role-based restriction: Only Finance Senior can push to Zoho
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only Finance Senior users can push invoices to Zoho Books. Please contact your Finance Senior." 
+      });
+    }
+    
     const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (invoice.zoho_invoice_id) {
@@ -276,9 +276,66 @@ export const pushInvoiceToZoho = async (req, res) => {
       invoice.zoho_invoice_id = zohoId;
       invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
       invoice.source = invoice.source || "zoho";
-      await invoice.save();
+      
+      // If user chose to send, update status and send email
+      if (sendStatus === 'sent') {
+        console.log(`Attempting to send invoice ${invoice._id} to client email: ${client.email}`);
+        
+        if (!client.email) {
+          console.error(`Cannot send invoice - client has no email address`);
+          invoice.status = 'draft';
+          await invoice.save();
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Cannot send invoice: Client has no email address. Invoice pushed as draft.' 
+          });
+        }
+        
+        try {
+          // Send the invoice via Zoho
+          console.log(`Sending invoice email via Zoho to ${client.email}`);
+          await sendZohoInvoiceEmail(zohoId, {
+            to_mail_ids: [client.email],
+            subject: `Invoice ${invoice.invoice_number || zohoNumber}`,
+            body: 'Please find attached your invoice.'
+          });
+          
+          invoice.status = 'sent';
+          invoice.sent_at = new Date();
+          invoice.zoho_status = 'sent';
+          await invoice.save();
+          console.log(`✅ Invoice ${invoice._id} pushed to Zoho and sent to client ${client.email}`);
+          
+          return res.json({ 
+            success: true, 
+            data: invoice, 
+            zoho: zohoResp,
+            sent: true
+          });
+        } catch (emailError) {
+          console.error(`❌ Failed to send invoice email:`, emailError.message);
+          console.error('Email error details:', emailError);
+          // Still save the invoice but keep as draft
+          invoice.status = 'draft';
+          await invoice.save();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Invoice pushed to Zoho but failed to send email: ${emailError.message}` 
+          });
+        }
+      } else {
+        // Push as draft
+        console.log(`Pushing invoice ${invoice._id} as draft (no email sent)`);
+        invoice.status = 'draft';
+        await invoice.save();
+      }
 
-      return res.json({ success: true, data: invoice, zoho: zohoResp });
+      return res.json({ 
+        success: true, 
+        data: invoice, 
+        zoho: zohoResp,
+        sent: sendStatus === 'sent' && invoice.status === 'sent'
+      });
     } catch (err) {
       await logErrorActivity(req, err, "Push Invoice to Zoho");
       return res.status(400).json({ success: false, message: err.message });
@@ -293,6 +350,16 @@ export const sendInvoiceEmail = async (req, res) => {
   try {
     const { id } = req.params;
     const { to, subject, customMessage } = req.body || {};
+    
+    // Role-based restriction: Only Finance Senior can send invoices
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior." 
+      });
+    }
+    
     const invoice = await Invoice.findById(id).populate("client", "email");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
@@ -301,6 +368,7 @@ export const sendInvoiceEmail = async (req, res) => {
     const resp = await sendZohoInvoiceEmail(invoice.zoho_invoice_id, payload);
     invoice.sent_at = new Date();
     invoice.zoho_status = "sent";
+    invoice.status = "sent";
     await invoice.save();
 
     // Log system activity for Zoho integration

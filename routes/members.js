@@ -14,22 +14,12 @@ import {
 
 const router = express.Router();
 
-// Create member (admin only)
-router.post("/", authVerify, checkPermission("admin"), createMember);
 
-// Get all members with filters
-router.get("/", authVerify, getMembers);
-
-// Get member by ID
+router.post("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_CREATE), createMember);
+router.get("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_READ), getMembers);
 router.get("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_READ), getMemberById);
-
-// Update member (admin only)
 router.put("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_UPDATE), updateMember);
-
-// Delete member (admin only)
 router.delete("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_DELETE), deleteMember);
-
-// Create member - requires member:create permission
 router.post("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.MEMBER_CREATE), createMember);
 
 // Get all members - requires member:read permission

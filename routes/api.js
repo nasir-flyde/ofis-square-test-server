@@ -31,10 +31,7 @@ import eventsRoutes from "./events.js";
 import eventCategoriesRoutes from "./eventCategories.js";
 import leadsRoutes from "./leads.js";
 import notificationsRoutes from "./notifications.js";
-<<<<<<< HEAD
 import announcementsRoutes from "./announcements.js";
-=======
->>>>>>> b460c2af22107855de6c5970f4eaf988fc7a953a
 
 
 const router = express.Router();
@@ -71,8 +68,5 @@ router.use("/events", eventsRoutes);
 router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
-<<<<<<< HEAD
 router.use("/announcements", announcementsRoutes);
-=======
->>>>>>> b460c2af22107855de6c5970f4eaf988fc7a953a
 export default router;

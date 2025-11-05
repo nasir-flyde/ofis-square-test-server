@@ -5,8 +5,10 @@ import Client from "../models/clientModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
+import Invoice from "../models/invoiceModel.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
 import { getAccessToken } from "../utils/zohoSignAuth.js";
+import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import fetch from "node-fetch";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 
@@ -323,10 +325,62 @@ async function updateContractStatus(contract, eventData) {
           includeDeposit: true,
           dueDays: 7
         });
-        console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id} via webhook`);
+        console.log(`✅ Auto-created invoice ${invoice._id} for contract ${contract._id} via webhook`);
         actionTaken += "_with_invoice";
+
+        // Automatically push invoice to Zoho Books
+        try {
+          const populatedInvoice = await Invoice.findById(invoice._id).populate('client');
+          const client = populatedInvoice.client;
+
+          if (!client) {
+            console.warn(`⚠️ Cannot push invoice to Zoho: Client not found for invoice ${invoice._id}`);
+          } else {
+            // Ensure client has Zoho Books contact
+            if (!client.zohoBooksContactId) {
+              console.log(`Creating Zoho Books contact for client ${client._id}`);
+              const contactId = await findOrCreateContactFromClient(client);
+              if (contactId) {
+                client.zohoBooksContactId = contactId;
+                await client.save();
+                console.log(`✅ Created Zoho Books contact ${contactId} for client ${client._id}`);
+              } else {
+                console.error(`❌ Failed to create Zoho Books contact for client ${client._id}`);
+              }
+            }
+
+            if (client.zohoBooksContactId) {
+              // Push invoice to Zoho Books
+              console.log(`Pushing invoice ${invoice._id} to Zoho Books...`);
+              const zohoResp = await createZohoInvoiceFromLocal(
+                populatedInvoice.toObject(), 
+                client.toObject ? client.toObject() : client
+              );
+              
+              const zohoId = zohoResp?.invoice?.invoice_id;
+              const zohoNumber = zohoResp?.invoice?.invoice_number;
+              
+              if (zohoId) {
+                populatedInvoice.zoho_invoice_id = zohoId;
+                populatedInvoice.zoho_invoice_number = zohoNumber || populatedInvoice.zoho_invoice_number;
+                populatedInvoice.source = populatedInvoice.source || "zoho";
+                populatedInvoice.status = 'sent'; // Mark as sent since contract is signed
+                populatedInvoice.sent_at = new Date();
+                await populatedInvoice.save();
+                
+                console.log(`✅ Invoice ${invoice._id} pushed to Zoho Books (ID: ${zohoId}, Number: ${zohoNumber})`);
+                actionTaken += "_pushed_to_zoho";
+              } else {
+                console.error(`❌ Zoho Books did not return invoice_id for invoice ${invoice._id}`);
+              }
+            }
+          }
+        } catch (zohoError) {
+          console.error(`❌ Failed to push invoice to Zoho Books:`, zohoError.message);
+          // Don't fail the webhook processing if Zoho push fails
+        }
       } catch (invoiceError) {
-        console.error("Failed to auto-create invoice from webhook:", invoiceError);
+        console.error("❌ Failed to auto-create invoice from webhook:", invoiceError);
         // Don't fail the webhook processing if invoice creation fails
       }
     }
