@@ -15,7 +15,8 @@ import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
 import { createContact } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
-import { logCRUDActivity, logBusinessEvent } from "../utils/activityLogger.js";
+import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
+import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
 
 export const createClient = async (req, res) => {
   try {
@@ -1068,6 +1069,145 @@ export const getClientContracts = async (req, res) => {
   } catch (err) {
     console.error("getClientContracts error:", err);
     return res.status(500).json({ error: "Failed to fetch client contracts" });
+  }
+};
+
+// Approve client contract
+export const approveClientContract = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientId = req.clientId;
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ error: "Contract not found" });
+    }
+
+    // Verify contract belongs to this client
+    if (contract.client.toString() !== clientId) {
+      return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
+    }
+
+    // Only allow approval if contract is sent_to_client
+    if (contract.status !== 'sent_to_client') {
+      return res.status(400).json({ error: `Cannot approve contract with status: ${contract.status}` });
+    }
+
+    // Update contract status to client_approved
+    contract.status = 'client_approved';
+    contract.clientApprovedAt = new Date();
+    await contract.save();
+
+    await logActivity({
+      req,
+      action: 'CONTRACT_APPROVED',
+      entity: 'Contract',
+      entityId: contract._id,
+      description: `Client approved contract ${contract._id}`,
+      metadata: {
+        clientId,
+        contractId: contract._id,
+        approvedBy: 'client'
+      }
+    });
+
+    return res.json({ 
+      success: true, 
+      message: "Contract approved successfully",
+      data: contract 
+    });
+  } catch (err) {
+    console.error("approveClientContract error:", err);
+    return res.status(500).json({ error: "Failed to approve contract" });
+  }
+};
+
+// Submit client contract feedback
+export const submitClientContractFeedback = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { feedback } = req.body;
+    const clientId = req.clientId;
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    if (!feedback || !feedback.trim()) {
+      return res.status(400).json({ error: "Feedback is required" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ error: "Contract not found" });
+    }
+
+    // Verify contract belongs to this client
+    if (contract.client.toString() !== clientId) {
+      return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
+    }
+
+    // Allow feedback if contract is sent_to_client or client_feedback_pending (to update feedback)
+    if (contract.status !== 'sent_to_client' && contract.status !== 'client_feedback_pending') {
+      return res.status(400).json({ error: `Cannot provide feedback for contract with status: ${contract.status}` });
+    }
+
+    // Update contract with feedback
+    contract.status = 'client_feedback_pending';
+    contract.clientFeedback = feedback;
+    contract.clientFeedbackAt = new Date();
+    
+    // Add to comments array
+    if (!contract.comments) contract.comments = [];
+    contract.comments.push({
+      user: 'Client',
+      text: feedback,
+      timestamp: new Date()
+    });
+    
+    await contract.save();
+
+    await logActivity({
+      req,
+      action: 'CONTRACT_UPDATED',
+      entity: 'Contract',
+      entityId: contract._id,
+      description: `Client provided feedback on contract ${contract._id}`,
+      metadata: {
+        clientId,
+        contractId: contract._id,
+        feedback,
+        feedbackType: 'client_feedback'
+      }
+    });
+
+    // Send notification to legal team
+    await sendNotification({
+      type: 'contract_feedback',
+      title: 'Client Contract Feedback',
+      message: `Client has provided feedback on contract ${contract._id}`,
+      contractId: contract._id,
+      clientId
+    });
+
+    // Send email to Sales, Legal team, and Admins
+    const populatedContract = await Contract.findById(contract._id)
+      .populate('client', 'companyName')
+      .populate('building', 'name');
+    await sendClientFeedbackAlertEmail(populatedContract, feedback);
+
+    return res.json({ 
+      success: true, 
+      message: "Feedback submitted successfully",
+      data: contract 
+    });
+  } catch (err) {
+    console.error("submitClientContractFeedback error:", err);
+    return res.status(500).json({ error: "Failed to submit feedback" });
   }
 };
 

@@ -570,6 +570,12 @@ export const getAvailableRoomsByTime = async (req, res) => {
           endTime: convertTo24Hour(slot.endTime)
         }));
       }
+      if (roomObj.availableTimeSlots && roomObj.availableTimeSlots.length > 0) {
+        roomObj.availableTimeSlots = roomObj.availableTimeSlots.map(slot => ({
+          startTime: convertTo24Hour(slot.startTime),
+          endTime: convertTo24Hour(slot.endTime)
+        }));
+      }
       return roomObj;
     });
 
@@ -582,27 +588,32 @@ export const getAvailableRoomsByTime = async (req, res) => {
           endTime: convertTo24Hour(slot.endTime)
         }));
       }
+      if (room.availableTimeSlots && room.availableTimeSlots.length > 0) {
+        room.availableTimeSlots = room.availableTimeSlots.map(slot => ({
+          startTime: convertTo24Hour(slot.startTime),
+          endTime: convertTo24Hour(slot.endTime)
+        }));
+      }
       return room;
     });
 
     return res.json({
       success: true,
-      data: {
-        requestedTime: {
-          date: targetDateIST,
-          startTime,
-          endTime,
-          start: requestedStart,
-          end: requestedEnd
-        },
-        available: availableRoomsFormatted,
-        booked: bookedRoomsFormatted,
-        summary: {
-          totalRooms: allRooms.length,
-          availableCount: availableRooms.length,
-          bookedCount: bookedRooms.length,
-          closedCount: allRooms.filter(r => r.isBookingClosed).length
-        }
+      available: {
+        date: targetDateIST,
+        startTime: convertTo24Hour(startTime),
+        endTime: convertTo24Hour(endTime),
+        start: requestedStart,
+        end: requestedEnd,
+        rooms: availableRoomsFormatted,
+        count: availableRoomsFormatted.length
+      },
+      booked: bookedRoomsFormatted,
+      summary: {
+        totalRooms: allRooms.length,
+        availableCount: availableRooms.length,
+        bookedCount: bookedRooms.length,
+        closedCount: allRooms.filter(r => r.isBookingClosed).length
       }
     });
   } catch (error) {
@@ -613,6 +624,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     });
   }
 };
+
 
 // Delete (hard delete)
 export const deleteRoom = async (req, res) => {

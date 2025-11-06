@@ -110,16 +110,33 @@ export const adminLogin = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
-    const role = await Role.findById(user.role);
+    const role = await Role.findById(user.role).lean();
     if (!role) {
       return res.status(401).json({ error: "User role not found" });
     }
     if (role.canLogin === false) {
       return res.status(403).json({ error: "Role is not allowed to login" });
     }
-    if ((role.roleName || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ error: "Not an admin account" });
+    
+    // Block client, member, community, and staff roles from admin portal
+    const blockedRoles = ['client', 'member', 'community', 'staff'];
+    const normalizedRoleName = (role.roleName || '').toLowerCase().trim();
+    
+    if (blockedRoles.includes(normalizedRoleName)) {
+      return res.status(403).json({ 
+        error: "Access denied. This login is for admin portal only. Please use the appropriate client/member portal." 
+      });
     }
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone
+    );
+    
+    // Allow admin roles: Contract Creator, Approver, Billing Admin, Operations Admin, System Admin
+    // The RBAC system will control what they can do based on permissions
 
     // Generate both access and refresh tokens
     const { accessToken, refreshToken } = await generateAuthTokens(user, role, req);
@@ -129,7 +146,8 @@ export const adminLogin = async (req, res) => {
       name: user.name,
       email: user.email,
       phone: user.phone,
-      role: user.role,
+      buildingId: user.buildingId,
+      role: role, // Full role object with permissions
       roleName: role.roleName,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
@@ -1050,16 +1068,20 @@ export const memberClientLogin = async (req, res) => {
 
 export const getMe = async (req, res) => {
   try {
-    const user = req.user; 
-    const role = await Role.findById(user.role);
+    const user = await Users.findById(req.user._id).populate('role').lean();
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
     const safeUser = {
       _id: user._id,
       name: user.name,
       email: user.email,
       phone: user.phone,
-      role: user.role,
-      roleName: role?.roleName,
+      buildingId: user.buildingId,
+      role: user.role, // Full role object with permissions
+      roleName: user.role?.roleName,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

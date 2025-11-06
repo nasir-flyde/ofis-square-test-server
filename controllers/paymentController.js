@@ -749,7 +749,7 @@ export const createRazorpayOrder = async (req, res) => {
     const response = {
       success: true,
       razorpayKey: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
-      amount: amount * 100, // Convert to paise
+      amount: amount * 100,
       currency: "INR",
       item,
       buildingName,

@@ -6,12 +6,34 @@ import {
   checkSignatureStatus,
   handleZohoSignWebhook,
   uploadSignedContract,
+  uploadAndSendForSignature,
   generateContractPDF,
   createContract,
   deleteContract,
-  updateContract
+  updateContract,
+  submitContract,
+  approveContract,
+  rejectContract,
+  getPendingApprovalContracts
 } from "../controllers/contractController.js";
+import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
+import {
+  submitToLegal,
+  submitToAdmin,
+  adminApprove,
+  adminReject,
+  sendToClient,
+  markClientApproved,
+  recordClientFeedback,
+  generateStampPaper,
+  sendForESignature,
+  markSigned,
+  addComment,
+  getContractsByStatus
+} from "../controllers/contractWorkflowController.js";
 import authMiddleware from "../middlewares/authVerify.js";
+import { populateUserRole, requirePermission } from "../middlewares/rbacMiddleware.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import multer from "multer";
 
 const router = express.Router();
@@ -23,23 +45,35 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Get all contracts (admin only)
-router.get("/", authMiddleware, getContracts);
+// Get all contracts
+router.get("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContracts);
 
-// Create a contract (admin only)
-router.post("/", authMiddleware, createContract);
+// Get contracts pending approval (for approvers)
+router.get("/pending-approval", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), getPendingApprovalContracts);
 
-// Get contract by ID (admin only)
-router.get("/:id", authMiddleware, getContractById);
+// Create a contract - allow all authenticated users (backend will handle approval logic)
+router.post("/", authMiddleware, populateUserRole, createContract);
 
-// Update a contract (admin only)
-router.put("/:id", authMiddleware, updateContract);
+// Get contract by ID
+router.get("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContractById);
 
-// Delete a contract (admin only)
-router.delete("/:id", authMiddleware, deleteContract);
+// Update a contract
+router.put("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), updateContract);
 
-// Send contract for digital signature (admin only)
-router.post("/:id/send-for-signature", authMiddleware, sendForSignature);
+// Delete a contract
+router.delete("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_DELETE), deleteContract);
+
+// Submit contract for approval (or auto-approve if user has permission)
+router.post("/:id/submit", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitContract);
+
+// Approve contract (requires contract:approve permission)
+router.post("/:id/approve", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), approveContract);
+
+// Reject contract (requires contract:approve permission)
+router.post("/:id/reject", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), rejectContract);
+
+// Send contract for digital signature (requires contract:approve or contract:send_signature permission)
+router.post("/:id/send-for-signature", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_SIGNATURE), sendForSignature);
 
 // Check signature status (admin only)
 router.get("/:id/signature-status", authMiddleware, checkSignatureStatus);
@@ -47,7 +81,8 @@ router.get("/:id/signature-status", authMiddleware, checkSignatureStatus);
 // Generate and download contract PDF
 router.get("/:id/download-pdf", generateContractPDF);
 
-// Upload a manually signed contract (frontdesk alternative)
+// Upload contract PDF and send for signature via Zoho Sign
+router.post("/:id/upload-and-send", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_SIGNATURE), upload.any(), uploadAndSendForSignature);
 // Accepts multipart/form-data with any file field (e.g., 'file', 'document') or a form field 'fileUrl'
 router.post("/:id/upload-signed", authMiddleware, upload.any(), uploadSignedContract);
 
@@ -77,5 +112,43 @@ router.post(
   express.raw({ type: "application/json" }),
   handleZohoSignWebhook
 );
+
+// ===== NEW WORKFLOW ROUTES =====
+
+// Get contracts by status (for dashboard filtering)
+router.get("/status/:status", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContractsByStatus);
+
+// Submit to Legal (Sales → Legal)
+router.post("/:id/submit-to-legal", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToLegal);
+
+// Submit to Admin (Legal → Admin)
+router.post("/:id/submit-to-admin", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToAdmin);
+
+// Admin approve contract
+router.post("/:id/admin-approve", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), adminApprove);
+
+// Admin reject contract
+router.post("/:id/admin-reject", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_REJECT), adminReject);
+
+// Send to client for review (Legal → Client)
+router.post("/:id/send-to-client", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_TO_CLIENT), sendToClient);
+
+// Mark client as approved
+router.post("/:id/mark-client-approved", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_MARK_CLIENT_APPROVED), markClientApproved);
+
+// Record client feedback
+router.post("/:id/client-feedback", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), recordClientFeedback);
+
+// Generate stamp paper version
+router.post("/:id/generate-stamp-paper", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_GENERATE_STAMP_PAPER), uploadStampPaper, generateStampPaper);
+
+// Send for e-signature (Zoho Sign)
+router.post("/:id/send-for-esignature", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_SIGNATURE), sendForESignature);
+
+// Mark contract as signed
+router.post("/:id/mark-signed", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), markSigned);
+
+// Add comment to contract
+router.post("/:id/comments", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), addComment);
 
 export default router;

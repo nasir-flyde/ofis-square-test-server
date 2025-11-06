@@ -1,5 +1,6 @@
 import express from "express";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
+import universalMiddleware from '../middlewares/universalAuthVerify.js';
 import {
   getMemberDashboard,
   getMyProfile,
@@ -17,7 +18,7 @@ const router = express.Router();
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 router.get("/me", getMyProfile);
-router.get("/me/tickets", getMyTickets);
+router.get("/me/tickets",universalMiddleware, getMyTickets);
 router.post("/me/tickets", createMyTicket);
 router.get("/me/bookings", getMyBookings);
 router.get("/me/notifications", getMyNotifications);

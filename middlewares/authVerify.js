@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import Users from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import dotenv from "dotenv";
-dotenv.config(); // Make sure this is at the top before any env use
+dotenv.config();
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -14,7 +14,6 @@ const authMiddleware = async (req, res, next) => {
 
     if (!user) return res.status(401).json({ message: "User not found" });
 
-    // Get role and check login permission
     const role = await Role.findById(user.role);
     if (!role) return res.status(401).json({ message: "User role not found" });
 
@@ -22,14 +21,16 @@ const authMiddleware = async (req, res, next) => {
       return res.status(403).json({ message: "Role is not allowed to login" });
     }
 
-    // Enforce admin-only access for routes using this middleware
-    if ((role.roleName || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Forbidden: admin access required" });
-    }
-
-    // Attach user and role info to request
-    req.user = user;
-    req.user.roleName = role.roleName;
+    req.user = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      buildingId: user.buildingId,
+      role: user.role,
+      roleName: role.roleName
+    };
+    
     req.userRole = role;
 
     next();

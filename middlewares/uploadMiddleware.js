@@ -90,6 +90,22 @@ const eventImagesUpload = multer({
   fileFilter: fileFilter
 });
 
+// Stamp paper upload configuration (using memory storage for ImageKit)
+const stampPaperUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20MB for PDF files
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF and image files are allowed for stamp paper!'), false);
+    }
+  }
+});
+
 export const uploadScreenshots = upload.array('screenshots', 5);
 export const uploadBuildingPhotos = buildingPhotosUpload.array('photos', 10);
 export const uploadMeetingRoomImages = meetingRoomImagesUpload.array('images', 10);
@@ -97,6 +113,7 @@ export const uploadEventImages = eventImagesUpload.fields([
   { name: 'thumbnail', maxCount: 1 },
   { name: 'mainImage', maxCount: 1 }
 ]);
+export const uploadStampPaper = stampPaperUpload.single('stampPaper');
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {

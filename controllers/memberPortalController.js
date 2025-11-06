@@ -2,6 +2,8 @@ import Member from "../models/memberModel.js";
 import Ticket from "../models/ticketModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import Notification from "../models/notificationModel.js";
+import Event from "../models/eventModel.js";
+import Announcement from "../models/announcementModel.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -165,6 +167,38 @@ export const getMyProfile = async (req, res) => {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
+    // Fetch upcoming/active events (show all published events)
+    const eventsQuery = {
+      status: 'published',
+      startDate: { $gte: new Date() }
+    };
+
+    const events = await Event.find(eventsQuery)
+      .populate('category', 'name')
+      .populate('location.building', 'name')
+      .populate('location.room', 'name')
+      .sort({ startDate: 1 })
+      .limit(10)
+      .select('title description startDate endDate location category thumbnail mainImage creditsRequired capacity rsvps');
+
+    // Fetch active announcements (show all published announcements)
+    const announcementsQuery = {
+      status: 'published',
+      publishDate: { $lte: new Date() },
+      $or: [
+        { expiryDate: { $exists: false } },
+        { expiryDate: null },
+        { expiryDate: { $gt: new Date() } }
+      ]
+    };
+
+    const announcements = await Announcement.find(announcementsQuery)
+      .populate('author', 'name')
+      .populate('location.building', 'name')
+      .sort({ isPinned: -1, publishDate: -1 })
+      .limit(10)
+      .select('title subtitle description publishDate expiryDate location category priority thumbnail mainImage isPinned tags views likes');
+
     const profileData = {
       _id: member._id,
       firstName: member.firstName,
@@ -183,6 +217,8 @@ export const getMyProfile = async (req, res) => {
         building: member.desk.building,
         allocatedAt: member.desk.allocatedAt
       } : null,
+      events: events,
+      announcements: announcements,
       createdAt: member.createdAt,
       updatedAt: member.updatedAt
     };

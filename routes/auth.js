@@ -17,6 +17,7 @@ import {
   logoutAllDevices
 } from "../controllers/authController.js";
 import authMiddleware from "../middlewares/authVerify.js";
+import { populateUserRole } from "../middlewares/rbacMiddleware.js";
 
 const router = express.Router();
 
@@ -42,6 +43,6 @@ router.post("/logout-all", authMiddleware, logoutAllDevices); // Logout from all
 // Backward-compatible aliases
 router.post("/register", clientSignup);
 router.post("/login", adminLogin);
-router.get("/me", authMiddleware, getMe);
+router.get("/me", authMiddleware, populateUserRole, getMe);
 
 export default router;

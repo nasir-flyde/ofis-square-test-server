@@ -52,6 +52,12 @@ export const createDraftPayment = async (req, res) => {
   try {
     const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, currency, notes, screenshots } = req.body || {};
 
+    // Role-based restriction: Finance Junior can only create draft payments
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      console.log(`Finance Junior ${req.user?.name || 'user'} creating draft payment (approval required)`);
+    }
+
     if (!invoiceId) return res.status(400).json({ success: false, message: "invoice is required" });
     if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: "amount must be > 0" });
     if (!paymentDate) return res.status(400).json({ success: false, message: "paymentDate is required" });
@@ -110,6 +116,17 @@ export const approveDraftPayment = async (req, res) => {
   try {
     const { id } = req.params;
     const { reviewNote } = req.body || {};
+
+    // Role-based restriction: Only Finance Senior can approve draft payments
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only Finance Senior users can approve draft payments. Please contact your Finance Senior." 
+      });
+    }
 
     const draft = await DraftPayment.findById(id).session(session);
     if (!draft) {
@@ -228,6 +245,15 @@ export const rejectDraftPayment = async (req, res) => {
   try {
     const { id } = req.params;
     const { reviewNote } = req.body || {};
+
+    // Role-based restriction: Only Finance Senior can reject draft payments
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only Finance Senior users can reject draft payments. Please contact your Finance Senior." 
+      });
+    }
 
     const draft = await DraftPayment.findById(id);
     if (!draft) return res.status(404).json({ success: false, message: "Draft payment not found" });

@@ -6,7 +6,6 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
-// Create a new member
 export const createMember = async (req, res) => {
   try {
     const { firstName, lastName, email, phone, companyName, role, client, status } = req.body || {};
@@ -22,9 +21,7 @@ export const createMember = async (req, res) => {
         return res.status(404).json({ success: false, message: "Client not found" });
       }
     }
-
     let createdUserId = null;
-
     // Create User record if email is provided
     if (email) {
       try {
@@ -54,7 +51,6 @@ export const createMember = async (req, res) => {
         console.log(`Created user for member: ${email} with default password: ${defaultPassword}`);
       } catch (userErr) {
         console.warn("Failed to create user for member:", userErr.message);
-        // Continue with member creation even if user creation fails
       }
     }
 
@@ -62,7 +58,6 @@ export const createMember = async (req, res) => {
     const clientId = client || null;
     const buildingId = null;
     const cabinId = null;
-
     const member = await Member.create({
       firstName,
       lastName,
@@ -70,8 +65,10 @@ export const createMember = async (req, res) => {
       phone,
       companyName,
       role,
+      // client,
+      status: status || "active",
       client: clientId,
-      desk: null, // Will be assigned later when desk is allocated
+      desk: null,
       status: 'active',
       user: createdUserId
     });
@@ -124,7 +121,6 @@ export const getMembers = async (req, res) => {
   }
 };
 
-// Get member by ID
 export const getMemberById = async (req, res) => {
   try {
     const member = await Member.findById(req.params.id)
