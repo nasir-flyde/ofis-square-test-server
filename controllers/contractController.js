@@ -1371,3 +1371,51 @@ function getFonts() {
     }
   };
 }
+
+// Update security deposit details and mark as paid
+export const updateSecurityDeposit = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, amount, notes } = req.body;
+
+    const contract = await Contract.findById(id).populate("client");
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Update contract security deposit
+    contract.securityDeposit = {
+      type: type || contract.securityDeposit?.type,
+      amount: amount !== undefined ? Number(amount) : contract.securityDeposit?.amount || 0,
+      notes: notes || contract.securityDeposit?.notes,
+    };
+    contract.securityDepositPaidAt = new Date();
+    contract.securityDepositPaidBy = req.user?._id || null;
+
+    await contract.save();
+
+    // Update client security deposit status
+    if (contract.client) {
+      await Client.findByIdAndUpdate(contract.client._id, {
+        securityDeposit: contract.securityDeposit,
+        isSecurityPaid: true,
+      });
+    }
+
+    await logContractActivity(req, "SECURITY_DEPOSIT_PAID", "Contract", contract._id, {
+      type,
+      amount,
+      notes,
+    });
+
+    return res.json({
+      success: true,
+      data: contract,
+      message: "Security deposit updated successfully",
+    });
+  } catch (error) {
+    console.error("Update security deposit error:", error);
+    await logErrorActivity(req, error, "Update Security Deposit");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

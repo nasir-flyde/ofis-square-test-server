@@ -195,7 +195,7 @@ export const createSingleDayPass = async (req, res) => {
 
       await dayPass.populate([
         { path: 'customer', select: 'name email phone' },
-        { path: 'building', select: 'name address openSpacePricing' },
+        { path: 'building', select: 'name address openSpacePricing creditValue' },
         { path: 'invoice', select: 'invoice_number total status' }
       ]);
 
@@ -271,7 +271,7 @@ export const inviteVisitor = async (req, res) => {
 
     const dayPass = await DayPass.findById(dayPassId)
       .populate('customer', 'name email phone')
-      .populate('building', 'name address')
+      .populate('building', 'name address creditValue')
       .populate('hostMember', 'firstName lastName email phone')
       .populate('hostClient', 'name email phone')
       .populate('hostGuest', 'name email phone');
@@ -617,7 +617,7 @@ export const getUserDayPasses = async (req, res) => {
 
     const dayPasses = await DayPass.find(query)
       .populate('customer', 'name email phone')
-      .populate('building', 'name address')
+      .populate('building', 'name address creditValue')
       .populate('bundle', 'no_of_dayPasses remainingPasses')
       .populate('invoice', 'invoiceNumber totalAmount status')
       .sort({ createdAt: -1 })
@@ -649,7 +649,7 @@ export const getDayPassDetails = async (req, res) => {
 
     const dayPass = await DayPass.findById(dayPassId)
       .populate('customer', 'name email phone')
-      .populate('building', 'name address openSpacePricing')
+      .populate('building', 'name address openSpacePricing creditValue')
       .populate('bundle', 'no_of_dayPasses remainingPasses validUntil')
       .populate('invoice', 'invoiceNumber totalAmount status')
       .populate('payment', 'amount method status');
@@ -706,7 +706,7 @@ export const getAllDayPasses = async (req, res) => {
 
     const dayPasses = await DayPass.find(query)
       .populate('customer', 'name email phone')
-      .populate('building', 'name address')
+      .populate('building', 'name address creditValue')
       .populate('bundle', 'no_of_dayPasses')
       .populate('invoice', 'invoiceNumber totalAmount status')
       .sort(sort)

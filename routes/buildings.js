@@ -5,7 +5,8 @@ import {
   getBuildings, 
   getBuildingById, 
   updateBuilding, 
-  deleteBuilding 
+  deleteBuilding,
+  updateBuildingCreditValue
 } from "../controllers/buildingController.js";
 
 const router = express.Router();
@@ -49,6 +50,9 @@ router.put("/:id/daypass-pricing", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+// Update Building Credit Value (auth required)
+router.put("/:id/credit-value", authMiddleware, updateBuildingCreditValue);
 
 // Delete Building (auth required)
 router.delete("/:id", authMiddleware, deleteBuilding);

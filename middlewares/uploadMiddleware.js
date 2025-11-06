@@ -106,6 +106,22 @@ const stampPaperUpload = multer({
   }
 });
 
+// KYC documents storage configuration (using memory storage for ImageKit)
+const kycDocumentsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB per file
+    files: 10 // Allow up to 10 documents
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF and image files are allowed for KYC documents!'), false);
+    }
+  }
+});
+
 export const uploadScreenshots = upload.array('screenshots', 5);
 export const uploadBuildingPhotos = buildingPhotosUpload.array('photos', 10);
 export const uploadMeetingRoomImages = meetingRoomImagesUpload.array('images', 10);
@@ -114,6 +130,7 @@ export const uploadEventImages = eventImagesUpload.fields([
   { name: 'mainImage', maxCount: 1 }
 ]);
 export const uploadStampPaper = stampPaperUpload.single('stampPaper');
+export const uploadKYCDocuments = kycDocumentsUpload.array('kycDocuments', 10);
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {

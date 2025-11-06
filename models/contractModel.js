@@ -50,6 +50,17 @@ const contractSchema = new mongoose.Schema(
       default: 30, // Payment terms for credit invoices
       min: 0
     },
+    // Security deposit details
+    securityDeposit: {
+      type: { type: String, trim: true, default: undefined },
+      amount: { type: Number, default: 0, min: 0 },
+      notes: { type: String, trim: true, default: undefined },
+    },
+    securityDepositPaidAt: { type: Date },
+    securityDepositPaidBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
     terms: { type: String, trim: true },
     status: {
       type: String,

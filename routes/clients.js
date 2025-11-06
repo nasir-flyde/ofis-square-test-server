@@ -33,7 +33,9 @@ import {
   releaseDeskFromMember,
   getClientCreditManagement,
   getCurrentClientProfile,
-  updateCurrentClientProfile
+  updateCurrentClientProfile,
+  getOnboardingStatus,
+  approveOnboarding
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -83,5 +85,9 @@ router.delete("/:id", deleteClient);
 router.post("/:id/kyc",authMiddleware, kycUploads, submitKycDocuments);
 router.post("/:id/kyc/verify",authMiddleware, verifyKyc);
 router.post("/:id/kyc/reject", authMiddleware, rejectKyc);
+
+// Onboarding status and approval
+router.get("/:id/onboarding-status", authMiddleware, getOnboardingStatus);
+router.post("/:id/approve-onboarding", authMiddleware, approveOnboarding);
 
 export default router;

@@ -214,3 +214,54 @@ export const deleteBuilding = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const updateBuildingCreditValue = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { creditValue } = req.body;
+
+    if (creditValue === undefined) {
+      return res.status(400).json({ success: false, message: "creditValue is required" });
+    }
+
+    if (creditValue < 0) {
+      return res.status(400).json({ success: false, message: "creditValue must be non-negative" });
+    }
+
+    const oldBuilding = await Building.findById(id);
+    if (!oldBuilding) {
+      return res.status(404).json({ success: false, message: "Building not found" });
+    }
+
+    const building = await Building.findByIdAndUpdate(
+      id,
+      { creditValue: parseFloat(creditValue) },
+      { new: true, runValidators: true }
+    );
+
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Building', id, {
+      before: { creditValue: oldBuilding.creditValue },
+      after: { creditValue: building.creditValue }
+    }, {
+      buildingName: building.name,
+      updatedFields: ['creditValue'],
+      oldValue: oldBuilding.creditValue,
+      newValue: building.creditValue
+    });
+
+    res.json({ 
+      success: true, 
+      message: "Building credit value updated successfully",
+      data: { 
+        creditValue: building.creditValue,
+        building: {
+          id: building._id,
+          name: building.name
+        }
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

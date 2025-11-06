@@ -10,6 +10,11 @@ const checkPermission = (required) => {
         return next();
       }
 
+      // Ondemanduser bypass - no permission checks
+      if (role.roleName && role.roleName.toLowerCase() === "ondemanduser") {
+        return next();
+      }
+
       const perms = Array.isArray(role.permissions) ? role.permissions : [];
       if (!perms.includes(required) && !perms.includes("*")) {
         return res.status(403).json({ error: "Forbidden: missing permission", required });

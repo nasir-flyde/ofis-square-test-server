@@ -4,6 +4,7 @@ import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Invoice from "../models/invoiceModel.js";
 import CreditCustomItem from "../models/creditCustomItemModel.js";
+import Building from "../models/buildingModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { createZohoInvoiceFromLocal } from "../utils/zohoBooks.js";
 import mongoose from "mongoose";
@@ -59,7 +60,7 @@ export async function generateMonthlyCreditInvoices(year, month) {
         { startDate: { $lte: billingEnd } },
         { endDate: { $gte: billingStart } }
       ]
-    }).populate('client');
+    }).populate('client').populate('building');
 
     console.log(`👥 Found ${creditContracts.length} credit-enabled contracts`);
 
@@ -89,6 +90,8 @@ export async function generateMonthlyCreditInvoices(year, month) {
         for (const [itemKey, itemData] of Object.entries(customItemUsage.breakdown)) {
           combinedBreakdown[itemKey] = itemData;
         }
+        const building = contract.building || await Building.findById(contract.building);
+        const creditValue = building?.creditValue || 500;
 
         // Process each category
         for (const [refType, breakdown] of Object.entries(combinedBreakdown)) {
@@ -147,7 +150,6 @@ export async function generateMonthlyCreditInvoices(year, month) {
 
         // Create separate invoices for each category with extra credits
         for (const categoryData of categoryInvoices) {
-          const creditValue = contract.credit_value || 500;
           const invoiceAmount = categoryData.extraCredits * creditValue;
 
           console.log(`💰 ${categoryData.category} invoice: ${categoryData.extraCredits} credits × ₹${creditValue} = ₹${invoiceAmount}`);
@@ -163,7 +165,8 @@ export async function generateMonthlyCreditInvoices(year, month) {
             creditUsage: {
               breakdown: { [categoryData.refType]: categoryData.breakdown },
               total_credits: categoryData.categoryCredits
-            }
+            },
+            building
           });
 
           console.log(`✅ Created ${categoryData.category} invoice ${invoice.invoice_number} for ${clientName}: ₹${invoiceAmount}`);
@@ -258,7 +261,7 @@ async function calculateMonthlyCreditsUsed(clientId, startDate, endDate) {
 /**
  * Create a credit invoice for extra credits used
  */
-async function createCreditInvoice({ client, contract, billingStart, billingEnd, category = 'general', extraCredits, creditValue, invoiceAmount, creditUsage }) {
+async function createCreditInvoice({ client, contract, billingStart, billingEnd, category = 'general', extraCredits, creditValue, invoiceAmount, creditUsage, building = null }) {
   const invoiceNumber = await generateLocalInvoiceNumber();
   const monthName = billingStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   

@@ -1,5 +1,11 @@
 import Lead from "../models/leadModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
+import Guest from "../models/guestModel.js";
+import bcrypt from "bcryptjs";
 import { logActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
+import { createContact } from "../utils/zohoBooks.js";
 
 // Create a new lead from signup form
 export const createLead = async (req, res) => {
@@ -36,6 +42,33 @@ export const createLead = async (req, res) => {
       source: 'website_signup'
     };
 
+    // Handle KYC documents for day pass users (upload to ImageKit)
+    if (purpose === 'day_pass' && req.files && req.files.length > 0) {
+      try {
+        const uploadedUrls = [];
+        
+        for (const file of req.files) {
+          const uploadResult = await imagekit.upload({
+            file: file.buffer.toString('base64'),
+            fileName: `kyc-${Date.now()}-${file.originalname}`,
+            folder: '/kyc-documents'
+          });
+          uploadedUrls.push(uploadResult.url);
+        }
+        
+        leadData.kycDocuments = {
+          files: uploadedUrls
+        };
+        leadData.kycStatus = 'pending';
+      } catch (uploadError) {
+        console.error('KYC document upload error:', uploadError);
+        return res.status(500).json({
+          message: "Failed to upload KYC documents",
+          error: uploadError.message
+        });
+      }
+    }
+
     const lead = new Lead(leadData);
     await lead.save();
 
@@ -56,13 +89,16 @@ export const createLead = async (req, res) => {
     });
 
     res.status(201).json({
-      message: "Lead created successfully",
+      message: purpose === 'day_pass' 
+        ? "Lead created successfully. KYC documents submitted for review."
+        : "Lead created successfully",
       lead: {
         id: lead._id,
         fullName: lead.fullName,
         email: lead.email,
         companyName: lead.companyName,
-        status: lead.status
+        status: lead.status,
+        kycStatus: lead.kycStatus
       }
     });
   } catch (error) {
@@ -111,6 +147,8 @@ export const getLeads = async (req, res) => {
       Lead.find(filter)
         .populate('assignedTo', 'name email')
         .populate('convertedToClient', 'companyName email')
+        .populate('kycApprovedBy', 'name email')
+        .populate('createdUserId', 'name email role')
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
@@ -262,6 +300,392 @@ export const getLeadStats = async (req, res) => {
     console.error("Error fetching lead stats:", error);
     res.status(500).json({
       message: "Failed to fetch lead statistics",
+      error: error.message
+    });
+  }
+};
+
+// Approve KYC and create user for day pass
+export const approveKYC = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    const lead = await Lead.findById(id);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    if (lead.purpose !== 'day_pass') {
+      return res.status(400).json({ message: "KYC approval is only for day pass leads" });
+    }
+
+    if (lead.kycStatus === 'approved') {
+      return res.status(400).json({ message: "KYC already approved" });
+    }
+
+    // Check if user already exists with this email
+    const existingUser = await User.findOne({ email: lead.email });
+    if (existingUser) {
+      return res.status(400).json({ message: "User with this email already exists" });
+    }
+
+    // Find the ondemand role
+    const ondemandRole = await Role.findOne({ roleName: 'ondemanduser' });
+    if (!ondemandRole) {
+      return res.status(500).json({
+        message: "Ondemand role not found in system",
+        error: "Please create 'ondemanduser' role first"
+      });
+    }
+
+    // Create user with ondemand role
+    const defaultPassword = '123456';
+
+    const newUser = new User({
+      name: `${lead.firstName} ${lead.lastName}`,
+      email: lead.email,
+      phone: lead.phone,
+      password: defaultPassword,
+      role: ondemandRole._id
+    });
+
+    await newUser.save();
+
+    // Create guest record
+    const newGuest = new Guest({
+      name: `${lead.firstName} ${lead.lastName}`,
+      email: lead.email,
+      phone: lead.phone,
+      companyName: lead.companyName,
+      notes: `Auto-created from day pass lead approval`
+    });
+
+    await newGuest.save();
+
+    // Create Zoho Books contact
+    try {
+      const zohoPayload = {
+        contact_name: `${lead.firstName} ${lead.lastName}`,
+        company_name: lead.companyName,
+        email: lead.email,
+        phone: lead.phone,
+        contact_type: 'customer',
+        customer_sub_type: 'individual',
+        notes: `Day pass user - Auto-created from KYC approval`,
+        billing_address: {
+          address: lead.address,
+          zip: lead.pincode
+        }
+      };
+
+      const zohoResponse = await createContact(zohoPayload);
+      
+      if (zohoResponse?.contact?.contact_id) {
+        lead.zohoBooksContactId = zohoResponse.contact.contact_id;
+        console.log(`Zoho contact created for lead ${lead._id}: ${zohoResponse.contact.contact_id}`);
+      }
+    } catch (zohoError) {
+      console.error('Error creating Zoho contact:', zohoError);
+      // Don't fail the approval if Zoho sync fails
+    }
+
+    // Update lead
+    lead.kycStatus = 'approved';
+    lead.kycApprovedBy = userId;
+    lead.kycApprovedAt = new Date();
+    lead.userCreated = true;
+    lead.createdUserId = newUser._id;
+    await lead.save();
+
+    // Log activity
+    await logActivity({
+      action: 'APPROVE',
+      entity: 'lead_kyc',
+      entityId: lead._id,
+      description: `KYC approved for ${lead.fullName}. User created with ondemand role.`,
+      userId: userId,
+      metadata: {
+        leadEmail: lead.email,
+        createdUserId: newUser._id
+      }
+    });
+
+    res.json({
+      message: "KYC approved and user created successfully",
+      lead: {
+        id: lead._id,
+        fullName: lead.fullName,
+        email: lead.email,
+        kycStatus: lead.kycStatus
+      },
+      user: {
+        id: newUser._id,
+        email: newUser.email,
+        role: newUser.role,
+        defaultPassword: defaultPassword
+      }
+    });
+  } catch (error) {
+    console.error("Error approving KYC:", error);
+    res.status(500).json({
+      message: "Failed to approve KYC",
+      error: error.message
+    });
+  }
+};
+
+// Reject KYC
+export const rejectKYC = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const userId = req.user?.id;
+
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ message: "Rejection reason is required" });
+    }
+
+    const lead = await Lead.findById(id);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    if (lead.purpose !== 'day_pass') {
+      return res.status(400).json({ message: "KYC rejection is only for day pass leads" });
+    }
+
+    // Update lead
+    lead.kycStatus = 'rejected';
+    lead.kycRejectionReason = reason.trim();
+    await lead.save();
+
+    // Log activity
+    await logActivity({
+      action: 'REJECT',
+      entity: 'lead_kyc',
+      entityId: lead._id,
+      description: `KYC rejected for ${lead.fullName}. Reason: ${reason}`,
+      userId: userId,
+      metadata: {
+        leadEmail: lead.email,
+        rejectionReason: reason
+      }
+    });
+
+    res.json({
+      message: "KYC rejected successfully",
+      lead: {
+        id: lead._id,
+        fullName: lead.fullName,
+        email: lead.email,
+        kycStatus: lead.kycStatus,
+        kycRejectionReason: lead.kycRejectionReason
+      }
+    });
+  } catch (error) {
+    console.error("Error rejecting KYC:", error);
+    res.status(500).json({
+      message: "Failed to reject KYC",
+      error: error.message
+    });
+  }
+};
+
+// Get leads with pending KYC
+export const getPendingKYCLeads = async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.query;
+    const skip = (page - 1) * limit;
+
+    const filter = {
+      purpose: 'day_pass',
+      kycStatus: 'pending'
+    };
+
+    const [leads, total] = await Promise.all([
+      Lead.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Lead.countDocuments(filter)
+    ]);
+
+    res.json({
+      leads,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalRecords: total,
+        hasMore: skip + leads.length < total
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching pending KYC leads:", error);
+    res.status(500).json({
+      message: "Failed to fetch pending KYC leads",
+      error: error.message
+    });
+  }
+};
+
+// Upload KYC documents by admin/community
+export const uploadKYCByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    const lead = await Lead.findById(id);
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    if (lead.purpose !== 'day_pass') {
+      return res.status(400).json({ message: "KYC upload is only for day pass leads" });
+    }
+
+    // Upload files to ImageKit
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: "Please upload at least one document" });
+    }
+
+    try {
+      const uploadedUrls = [];
+      
+      for (const file of req.files) {
+        const uploadResult = await imagekit.upload({
+          file: file.buffer.toString('base64'),
+          fileName: `kyc-admin-${Date.now()}-${file.originalname}`,
+          folder: '/kyc-documents'
+        });
+        uploadedUrls.push(uploadResult.url);
+      }
+      
+      // Update or create kycDocuments
+      if (!lead.kycDocuments) {
+        lead.kycDocuments = { files: [] };
+      }
+      
+      // Append new files to existing ones
+      lead.kycDocuments.files = [...(lead.kycDocuments.files || []), ...uploadedUrls];
+      
+      // Auto-approve when admin uploads
+      lead.kycStatus = 'approved';
+      lead.kycApprovedBy = userId;
+      lead.kycApprovedAt = new Date();
+      
+      await lead.save();
+
+      // Auto-create user account
+      const existingUser = await User.findOne({ email: lead.email });
+      if (!existingUser) {
+        // Find the ondemand role
+        const ondemandRole = await Role.findOne({ roleName: 'ondemanduser' });
+        if (!ondemandRole) {
+          return res.status(500).json({
+            message: "Ondemand role not found in system",
+            error: "Please create 'ondemanduser' role first"
+          });
+        }
+
+        const defaultPassword = '123456';
+
+        const newUser = new User({
+          name: `${lead.firstName} ${lead.lastName}`,
+          email: lead.email,
+          phone: lead.phone,
+          password: defaultPassword,
+          role: ondemandRole._id
+        });
+
+        await newUser.save();
+
+        // Create guest record
+        const newGuest = new Guest({
+          name: `${lead.firstName} ${lead.lastName}`,
+          email: lead.email,
+          phone: lead.phone,
+          companyName: lead.companyName,
+          notes: `Auto-created from admin KYC upload`
+        });
+
+        await newGuest.save();
+
+        // Create Zoho Books contact
+        try {
+          const zohoPayload = {
+            contact_name: `${lead.firstName} ${lead.lastName}`,
+            company_name: lead.companyName,
+            email: lead.email,
+            phone: lead.phone,
+            contact_type: 'customer',
+            customer_sub_type: 'individual',
+            notes: `Day pass user - Auto-created from admin KYC upload`,
+            billing_address: {
+              address: lead.address,
+              zip: lead.pincode
+            }
+          };
+
+          const zohoResponse = await createContact(zohoPayload);
+          
+          if (zohoResponse?.contact?.contact_id) {
+            lead.zohoBooksContactId = zohoResponse.contact.contact_id;
+            console.log(`Zoho contact created for lead ${lead._id}: ${zohoResponse.contact.contact_id}`);
+          }
+        } catch (zohoError) {
+          console.error('Error creating Zoho contact:', zohoError);
+          // Don't fail the upload if Zoho sync fails
+        }
+        
+        lead.userCreated = true;
+        lead.createdUserId = newUser._id;
+        await lead.save();
+      }
+
+      // Log activity
+      await logActivity({
+        action: 'APPROVE',
+        entity: 'lead_kyc',
+        entityId: lead._id,
+        description: `Admin uploaded and auto-approved KYC documents for ${lead.fullName}. User account created.`,
+        userId: userId,
+        metadata: {
+          leadEmail: lead.email,
+          filesCount: uploadedUrls.length,
+          userCreated: lead.userCreated,
+          createdUserId: lead.createdUserId
+        }
+      });
+
+      res.json({
+        message: "KYC documents uploaded and approved successfully. User account created.",
+        lead: {
+          id: lead._id,
+          fullName: lead.fullName,
+          email: lead.email,
+          kycStatus: lead.kycStatus,
+          kycDocuments: lead.kycDocuments,
+          userCreated: lead.userCreated
+        },
+        user: lead.userCreated ? {
+          id: lead.createdUserId,
+          email: lead.email,
+          role: 'ondemand',
+          defaultPassword: '123456'
+        } : null
+      });
+    } catch (uploadError) {
+      console.error('KYC document upload error:', uploadError);
+      return res.status(500).json({
+        message: "Failed to upload KYC documents",
+        error: uploadError.message
+      });
+    }
+  } catch (error) {
+    console.error("Error uploading KYC by admin:", error);
+    res.status(500).json({
+      message: "Failed to upload KYC documents",
       error: error.message
     });
   }

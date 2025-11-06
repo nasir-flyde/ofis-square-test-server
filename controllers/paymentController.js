@@ -1440,7 +1440,7 @@ export const getMemberCreditBalance = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    });
+    }).populate('building');
 
     if (!contract) {
       return res.json({
@@ -1455,7 +1455,10 @@ export const getMemberCreditBalance = async (req, res) => {
     // Get credit wallet
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-    const creditValue = contract.credit_value || 500;
+    
+    // Get creditValue from building instead of contract
+    const building = contract.building;
+    const creditValue = building?.creditValue || 500;
 
     res.json({
       success: true,
@@ -1491,7 +1494,7 @@ export const getClientCreditBalance = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    });
+    }).populate('building');
 
     if (!contract) {
       return res.json({
@@ -1506,7 +1509,10 @@ export const getClientCreditBalance = async (req, res) => {
     // Get credit wallet
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-    const creditValue = contract.credit_value || 500;
+    
+    // Get creditValue from building instead of contract
+    const building = contract.building;
+    const creditValue = building?.creditValue || 500;
 
     res.json({
       success: true,

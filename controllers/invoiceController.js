@@ -949,3 +949,120 @@ export const consolidateInvoices = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// GET /api/invoices/:id/payments - Get all payments for an invoice
+export const getInvoicePayments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoice = await Invoice.findById(id);
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    const payments = await Payment.find({ invoice: id })
+      .populate("client", "companyName contactPerson")
+      .sort({ paymentDate: -1 });
+
+    return res.json({ success: true, data: payments });
+  } catch (error) {
+    await logErrorActivity(req, error, "Get Invoice Payments");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/invoices/:id/send-email - Send invoice via email
+export const sendInvoiceViaEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.body;
+    
+    // Role-based restriction: Only Finance Senior can send invoices
+    const userRole = req.userRole?.roleName || "";
+    if (userRole === "finance_junior") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior." 
+      });
+    }
+    
+    const invoice = await Invoice.findById(id).populate("client");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    const recipientEmail = email || invoice.client?.email;
+    if (!recipientEmail) {
+      return res.status(400).json({ success: false, message: "No email address provided" });
+    }
+
+    // If invoice is in Zoho, send via Zoho
+    if (invoice.zoho_invoice_id) {
+      await sendZohoInvoiceEmail(invoice.zoho_invoice_id, {
+        to_mail_ids: [recipientEmail],
+        subject: `Invoice ${invoice.invoice_number || invoice.zoho_invoice_number}`,
+        body: 'Please find attached your invoice.'
+      });
+    }
+
+    // Update invoice status
+    invoice.status = 'sent';
+    invoice.sent_at = new Date();
+    await invoice.save();
+
+    await logCRUDActivity(req, "UPDATE", "Invoice", invoice._id, null, {
+      action: "sent_email",
+      email: recipientEmail,
+    });
+
+    return res.json({ success: true, data: invoice, message: "Invoice sent successfully" });
+  } catch (error) {
+    await logErrorActivity(req, error, "Send Invoice Email");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/invoices/:id/mark-paid - Mark invoice as paid
+export const markInvoiceAsPaid = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentDate, paymentMode, referenceNumber, amount } = req.body;
+
+    const invoice = await Invoice.findById(id);
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    const paymentAmount = amount || invoice.balance || invoice.total;
+
+    // Create payment record
+    const payment = await Payment.create({
+      invoice: id,
+      client: invoice.client,
+      amount: paymentAmount,
+      type: paymentMode || "Bank Transfer",
+      referenceNumber: referenceNumber || `PAY-${Date.now()}`,
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      notes: "Payment recorded from invoice details",
+      source: "manual"
+    });
+
+    // Update invoice
+    invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(paymentAmount);
+    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+    
+    if (invoice.balance === 0) {
+      invoice.status = "paid";
+      invoice.paid_at = new Date();
+    } else if (invoice.amount_paid > 0) {
+      invoice.status = "partially_paid";
+    }
+
+    await invoice.save();
+
+    await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {
+      paymentId: payment._id,
+      amount: paymentAmount,
+      paymentMode,
+      referenceNumber,
+    });
+
+    return res.json({ success: true, data: invoice, payment, message: "Payment recorded successfully" });
+  } catch (error) {
+    await logErrorActivity(req, error, "Mark Invoice as Paid");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

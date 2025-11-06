@@ -19,10 +19,12 @@ import {
   deleteInvoice,
   consolidateInvoices,
   getConsolidationPreview,
+  getInvoicePayments,
+  sendInvoiceViaEmail,
+  markInvoiceAsPaid,
 } from "../controllers/invoiceController.js";
 
 const router = express.Router();
-
 
 router.get("/", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoices);
 router.get("/consolidation-preview", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getConsolidationPreview);
@@ -40,6 +42,9 @@ router.get("/:id/zoho-links", authMiddleware, checkPermission(PERMISSIONS.INVOIC
 router.get("/:id/zoho-pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoiceZohoPdfBinary);
 router.get("/:id/download-pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), downloadInvoicePdf);
 router.post("/:id/payments", authMiddleware, checkPermission(PERMISSIONS.PAYMENT_CREATE), recordInvoicePayment);
+router.get("/:id/payments", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoicePayments);
+router.post("/:id/send-email", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), sendInvoiceViaEmail);
+router.post("/:id/mark-paid", authMiddleware, checkPermission(PERMISSIONS.PAYMENT_CREATE), markInvoiceAsPaid);
 router.delete("/:id", authMiddleware, checkPermission(PERMISSIONS.INVOICE_DELETE), deleteInvoice);
 
 // Webhook (no auth)

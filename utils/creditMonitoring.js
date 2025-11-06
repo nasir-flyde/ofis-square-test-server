@@ -1,6 +1,7 @@
 import CreditTransaction from "../models/creditTransactionModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import Contract from "../models/contractModel.js";
+import Building from "../models/buildingModel.js";
 
 /**
  * Get credit summary for a client
@@ -17,7 +18,7 @@ export async function getClientCreditSummary(clientId) {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    });
+    }).populate('building');
 
     if (!contracts.length) {
       return {
@@ -35,7 +36,10 @@ export async function getClientCreditSummary(clientId) {
     
     // Get total allocated credits across all contracts
     const totalAllocatedCredits = contracts.reduce((sum, contract) => sum + (contract.allocated_credits || 0), 0);
-    const creditValue = contracts[0]?.credit_value || 500; // Use first contract's credit value
+    
+    // Get creditValue from building (use first contract's building)
+    const building = contracts[0]?.building || await Building.findById(contracts[0]?.building);
+    const creditValue = building?.creditValue || 500;
     
     // Calculate exposure and available credits
     const usedCredits = monthlyUsage.total_credits;
@@ -77,11 +81,16 @@ export async function getClientCreditSummary(clientId) {
       },
       contracts: contracts.map(c => ({
         id: c._id,
-        building: c.building,
+        building: c.building?._id || c.building,
+        building_name: c.building?.name,
         allocated_credits: c.allocated_credits,
-        credit_value: c.credit_value,
         terms_days: c.credit_terms_days
-      }))
+      })),
+      building: {
+        id: building?._id,
+        name: building?.name,
+        credit_value: creditValue
+      }
     };
     
   } catch (error) {
@@ -204,6 +213,12 @@ export async function getClientsWithCreditAlerts() {
     
     for (const contract of contracts) {
       try {
+        // Skip if client is null
+        if (!contract.client || !contract.client._id) {
+          console.warn(`Contract ${contract._id} has no associated client`);
+          continue;
+        }
+        
         const summary = await getClientCreditSummary(contract.client._id);
         
         if (summary.credit_enabled && summary.usage.percentage >= 80) {
@@ -220,7 +235,7 @@ export async function getClientsWithCreditAlerts() {
           });
         }
       } catch (clientError) {
-        console.error(`Error checking alerts for client ${contract.client._id}:`, clientError);
+        console.error(`Error checking alerts for client ${contract.client?._id}:`, clientError);
       }
     }
     

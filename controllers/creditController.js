@@ -5,6 +5,7 @@ import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import Contract from "../models/contractModel.js";
 import CreditCustomItem from "../models/creditCustomItemModel.js";
 import Invoice from "../models/invoiceModel.js";
+import Building from "../models/buildingModel.js";
 import { previewCreditPurchaseInvoice } from "../services/invoiceService.js";
 import { logActivity } from "../utils/activityLogger.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
@@ -59,12 +60,21 @@ export const consumeCreditsForItem = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    }).populate('client');
+    }).populate('client').populate('building');
     
     if (!contract) {
       return res.status(404).json({
         success: false,
         message: "No active credit-enabled contract found for this client"
+      });
+    }
+    
+    // Get building to fetch creditValue
+    const building = contract.building || await Building.findById(contract.building);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found for this contract"
       });
     }
     
@@ -84,13 +94,26 @@ export const consumeCreditsForItem = async (req, res) => {
     }
     
     const creditsToConsume = quantity * item.unitCredits;
-    const creditValue = contract.credit_value || 500;
+    const creditValue = building.creditValue || 500;
     
     // Get current wallet balance
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const currentBalance = wallet?.balance || 0;
     
-    // Create usage transaction (always create, regardless of balance)
+    // ENFORCE NO NEGATIVE BALANCE: Block consumption if insufficient credits
+    if (currentBalance < creditsToConsume) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient credit balance",
+        data: {
+          required_credits: creditsToConsume,
+          available_credits: currentBalance,
+          shortage: creditsToConsume - currentBalance
+        }
+      });
+    }
+    
+    // Create usage transaction
     const transaction = await CreditTransaction.create({
       clientId,
       contractId: contract._id,
@@ -124,12 +147,14 @@ export const consumeCreditsForItem = async (req, res) => {
       metadata: {
         customData: {
           consumedAt: new Date(),
-          balanceAfter: Math.max(0, currentBalance - creditsToConsume)
+          buildingId: building._id,
+          buildingName: building.name,
+          creditValue: creditValue
         }
       }
     });
     
-    // Update wallet balance (can go negative for tracking exceeded usage)
+    // Update wallet balance (will not go negative due to check above)
     await ClientCreditWallet.findOneAndUpdate(
       { client: clientId },
       { 
@@ -139,7 +164,7 @@ export const consumeCreditsForItem = async (req, res) => {
           status: "active"
         }
       },
-      { upsert: true }
+      { upsert: true, runValidators: true }
     );
     
     const newBalance = currentBalance - creditsToConsume;
@@ -158,7 +183,9 @@ export const consumeCreditsForItem = async (req, res) => {
         quantity,
         creditsToConsume,
         balanceBefore: currentBalance,
-        balanceAfter: newBalance
+        balanceAfter: newBalance,
+        buildingId: building._id,
+        creditValue: creditValue
       }
     });
 
@@ -176,8 +203,11 @@ export const consumeCreditsForItem = async (req, res) => {
         credits_consumed: creditsToConsume,
         balance_before: currentBalance,
         balance_after: newBalance,
-        exceeded: newBalance < 0 ? Math.abs(newBalance) : 0,
-        note: newBalance < 0 ? "Usage exceeded available balance. Invoice will be generated at month-end." : "Credits consumed from available balance."
+        credit_value: creditValue,
+        building: {
+          id: building._id,
+          name: building.name
+        }
       }
     });
     
@@ -329,12 +359,12 @@ export const grantCredits = async (req, res) => {
       });
     }
     
-    // Get contract for credit value
+    // Get contract and building for credit value
     const contract = await Contract.findOne({
       client: clientId,
       credit_enabled: true,
       status: "active"
-    }).sort({ createdAt: -1 });
+    }).populate('building').sort({ createdAt: -1 });
     
     if (!contract) {
       return res.status(404).json({
@@ -343,7 +373,15 @@ export const grantCredits = async (req, res) => {
       });
     }
 
-    const creditValue = contract.credit_value || 500;
+    const building = contract.building || await Building.findById(contract.building);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found for this contract"
+      });
+    }
+
+    const creditValue = building.creditValue || 500;
     let transaction = null;
     
     // Create credit transaction
@@ -483,7 +521,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    }).populate('client');
+    }).populate('client').populate('building');
     
     if (!contract) {
       return res.status(404).json({
@@ -492,11 +530,20 @@ export const generateExceededCreditsInvoice = async (req, res) => {
       });
     }
     
+    // Get building for creditValue
+    const building = contract.building || await Building.findById(contract.building);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found for this contract"
+      });
+    }
+    
     const billingStart = new Date(year, month - 1, 1);
     const billingEnd = new Date(year, month, 0);
     
     // Calculate exceeded credits by item
-    const exceededData = await calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract);
+    const exceededData = await calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract, building);
     
     if (preview) {
       return res.json({
@@ -555,7 +602,8 @@ export const generateExceededCreditsInvoice = async (req, res) => {
       billingStart,
       billingEnd,
       exceededData,
-      singleInvoice
+      singleInvoice,
+      building
     });
     
     return res.json({
@@ -611,12 +659,12 @@ export const recordCreditTransaction = async (req, res) => {
       });
     }
 
-    // Get contract for credit value
+    // Get contract and building for credit value
     const contract = await Contract.findOne({
       client: clientId,
       credit_enabled: true,
       status: "active"
-    }).sort({ createdAt: -1 });
+    }).populate('building').sort({ createdAt: -1 });
 
     if (!contract) {
       return res.status(404).json({
@@ -625,7 +673,15 @@ export const recordCreditTransaction = async (req, res) => {
       });
     }
 
-    const creditValue = contract.credit_value || 500;
+    const building = contract.building || await Building.findById(contract.building);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found for this contract"
+      });
+    }
+
+    const creditValue = building.creditValue || 500;
     let finalItemSnapshot = itemSnapshot;
 
     // If using itemId, fetch the item details
@@ -817,9 +873,9 @@ export const updateContractCredits = async (req, res) => {
 };
 
 // Helper function to calculate exceeded credits by item for a client/period
-async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract) {
+async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract, building) {
   const allocatedCredits = contract.allocated_credits || 0;
-  const creditValue = contract.credit_value || 500;
+  const creditValue = building?.creditValue || 500;
   
   // Get all credit transactions for the period
   const transactions = await CreditTransaction.find({
@@ -903,7 +959,7 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
 }
 
 // Helper function to create exceeded credits invoice with item breakdown
-async function createExceededCreditsInvoice({ client, contract, billingStart, billingEnd, exceededData, singleInvoice = true }) {
+async function createExceededCreditsInvoice({ client, contract, billingStart, billingEnd, exceededData, singleInvoice = true, building }) {
   let invoiceNumber = await generateLocalInvoiceNumber();
   // If allowing multiple invoices for same period, append a random 4-digit suffix for clarity
   if (!singleInvoice) {

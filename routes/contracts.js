@@ -14,7 +14,8 @@ import {
   submitContract,
   approveContract,
   rejectContract,
-  getPendingApprovalContracts
+  getPendingApprovalContracts,
+  updateSecurityDeposit
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -150,5 +151,8 @@ router.post("/:id/mark-signed", authMiddleware, populateUserRole, requirePermiss
 
 // Add comment to contract
 router.post("/:id/comments", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), addComment);
+
+// Update security deposit
+router.post("/:id/security-deposit", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), updateSecurityDeposit);
 
 export default router;

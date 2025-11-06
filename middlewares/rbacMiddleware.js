@@ -55,6 +55,11 @@ export const requirePermission = (permission) => {
         });
       }
 
+      // Skip permission check for client role
+      if (req.user.role.roleName === 'client') {
+        return next();
+      }
+
       const userPermissions = req.user.role.permissions;
       
       if (!hasPermission(userPermissions, permission)) {

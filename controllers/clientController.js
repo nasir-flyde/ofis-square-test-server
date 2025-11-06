@@ -1848,3 +1848,155 @@ export const updateCurrentClientProfile = async (req, res) => {
     return res.status(500).json({ error: "Failed to update client profile" });
   }
 };
+
+// Get onboarding status for a client
+export const getOnboardingStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const client = await Client.findById(id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Find the latest contract for this client
+    const contract = await Contract.findOne({ client: id })
+      .sort({ createdAt: -1 })
+      .select("status fileUrl securityDeposit securityDepositPaidAt");
+
+    const status = {
+      clientId: client._id,
+      clientName: client.companyName,
+      isClientApproved: client.isClientApproved || false,
+      
+      // Contract check
+      hasContract: !!contract,
+      contractId: contract?._id || null,
+      contractStatus: contract?.status || null,
+      contractFileUrl: contract?.fileUrl || null,
+      
+      // Security deposit check
+      securityDepositPaid: client.isSecurityPaid || false,
+      securityDepositAmount: client.securityDeposit?.amount || contract?.securityDeposit?.amount || 0,
+      securityDepositPaidAt: contract?.securityDepositPaidAt || null,
+      
+      // KYC check
+      kycStatus: client.kycStatus || "none",
+      kycDocuments: client.kycDocuments || null,
+      hasKycDocuments: !!client.kycDocuments,
+      
+      // Overall readiness checks
+      checks: {
+        hasActiveContract: contract?.status === "active",
+        hasContractFile: !!contract?.fileUrl,
+        securityDepositPaid: client.isSecurityPaid || false,
+        kycVerified: client.kycStatus === "verified",
+      }
+    };
+
+    // Calculate if all checks pass
+    const allChecksPassed = 
+      status.checks.hasActiveContract &&
+      status.checks.hasContractFile &&
+      status.checks.securityDepositPaid &&
+      status.checks.kycVerified;
+
+    status.readyForAllocation = allChecksPassed;
+    status.canApprove = allChecksPassed && !client.isClientApproved;
+
+    return res.json({ success: true, data: status });
+  } catch (error) {
+    console.error("getOnboardingStatus error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Approve client for onboarding (system admin only)
+export const approveOnboarding = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user has System Admin role
+    const userRole = req.user?.role?.name;
+    if (userRole !== "System Admin") {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Access denied. Only System Admin can approve onboarding." 
+      });
+    }
+
+    const client = await Client.findById(id);
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Check if already approved
+    if (client.isClientApproved) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Client is already approved for onboarding" 
+      });
+    }
+
+    // Find the latest contract
+    const contract = await Contract.findOne({ client: id }).sort({ createdAt: -1 });
+
+    // Validate all preconditions
+    const errors = [];
+    
+    if (!contract) {
+      errors.push("No contract found for this client");
+    } else {
+      if (contract.status !== "active") {
+        errors.push(`Contract status must be 'active' (current: ${contract.status})`);
+      }
+      if (!contract.fileUrl) {
+        errors.push("Contract file URL is missing");
+      }
+    }
+
+    if (!client.isSecurityPaid) {
+      errors.push("Security deposit has not been paid");
+    }
+
+    if (client.kycStatus !== "verified") {
+      errors.push(`KYC must be verified (current: ${client.kycStatus})`);
+    }
+
+    if (!client.kycDocuments) {
+      errors.push("KYC documents are missing");
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot approve onboarding. Please complete all requirements.",
+        errors
+      });
+    }
+
+    // All checks passed - approve the client
+    client.isClientApproved = true;
+    await client.save();
+
+    // Log activity
+    await logActivity(req, "ONBOARDING_APPROVED", "Client", client._id, {
+      clientName: client.companyName,
+      contractId: contract._id,
+      approvedBy: req.user?._id
+    });
+
+    return res.json({
+      success: true,
+      message: "Client approved for onboarding successfully",
+      data: {
+        clientId: client._id,
+        isClientApproved: true,
+        contractId: contract._id
+      }
+    });
+  } catch (error) {
+    console.error("approveOnboarding error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

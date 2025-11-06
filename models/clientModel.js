@@ -80,6 +80,14 @@ const clientSchema = new mongoose.Schema(
     pricebookId: { type: String, trim: true, default: undefined },
     currencyId: { type: String, trim: true, default: undefined },
 
+    // Security deposit details
+    securityDeposit: {
+      type: { type: String, trim: true, default: undefined },
+      amount: { type: Number, default: 0, min: 0 },
+      notes: { type: String, trim: true, default: undefined },
+    },
+    isSecurityPaid: { type: Boolean, default: false },
+
     // Status & ownership
     companyDetailsComplete: { type: Boolean, default: false },
     kycStatus: {
@@ -89,6 +97,7 @@ const clientSchema = new mongoose.Schema(
     },
     kycDocuments: { type: mongoose.Schema.Types.Mixed, default: null },
     kycRejectionReason: { type: String, default: undefined },
+    isClientApproved: { type: Boolean, default: false, index: true },
     ownerUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", index: true, default: null },
   },

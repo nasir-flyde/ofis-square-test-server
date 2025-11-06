@@ -32,6 +32,11 @@ const authMiddleware = async (req, res, next) => {
     };
     
     req.userRole = role;
+    
+    // Attach clientId from JWT token if present
+    if (decoded.clientId) {
+      req.clientId = decoded.clientId;
+    }
 
     next();
   } catch (err) {

@@ -34,6 +34,12 @@ const BuildingSchema = new Schema(
       min: 0,
       default: null
     },
+    // Credit system: value per credit (INR) for this building
+    creditValue: {
+      type: Number,
+      min: 0,
+      default: 500
+    },
     photos: [{
       category: { type: String, required: true, trim: true },
       imageUrl: { type: String, required: true },

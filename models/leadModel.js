@@ -71,6 +71,37 @@ const leadSchema = new mongoose.Schema({
     enum: ['new', 'contacted', 'qualified', 'converted', 'lost'],
     default: 'new'
   },
+  // KYC fields for day pass users
+  kycDocuments: {
+    files: [{
+      type: String, // Array of URLs to uploaded documents
+      trim: true
+    }]
+  },
+  kycStatus: {
+    type: String,
+    enum: ['not_submitted', 'pending', 'approved', 'rejected'],
+    default: 'not_submitted'
+  },
+  kycRejectionReason: {
+    type: String,
+    trim: true
+  },
+  kycApprovedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  kycApprovedAt: {
+    type: Date
+  },
+  userCreated: {
+    type: Boolean,
+    default: false
+  },
+  createdUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
   source: {
     type: String,
     default: 'website_signup'
