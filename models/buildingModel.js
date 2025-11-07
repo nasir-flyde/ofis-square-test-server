@@ -21,10 +21,15 @@ const BuildingSchema = new Schema(
         index: '2dsphere'
       }
     },
+    coordinates: {
+      longitude: { type: Number },
+      latitude: { type: Number }
+    },
+    businessMapLink: { type: String },
 
     totalFloors: { type: Number },
-    amenities: [{ type: String }],
-    pricing: { 
+    amenities: [{ type: Schema.Types.ObjectId, ref: "BuildingAmenity" }],
+    perSeatPricing: { 
       type: Number, 
       min: 0,
       default: null 
@@ -46,7 +51,7 @@ const BuildingSchema = new Schema(
       uploadedAt: { type: Date, default: Date.now }
     }],
 
-    status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
+    status: { type: String, enum: ["draft", "active", "inactive"], default: "draft", index: true },
   },
   {
     timestamps: true,

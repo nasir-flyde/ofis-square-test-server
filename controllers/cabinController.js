@@ -3,6 +3,7 @@ import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Desk from "../models/deskModel.js";
+import imagekit from "../utils/imageKit.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const getCabins = async (req, res) => {
@@ -19,6 +20,7 @@ export const getCabins = async (req, res) => {
       .populate("allocatedTo", "companyName contactPerson phone email")
       .populate("contract", "startDate endDate status")
       .populate("desks", "number status allocatedAt releasedAt")
+      .populate("amenities", "name icon iconUrl description")
       .sort({ createdAt: -1 });
 
     return res.json({ success: true, data: cabins });
@@ -29,7 +31,18 @@ export const getCabins = async (req, res) => {
 
 export const createCabin = async (req, res) => {
   try {
-    const { building, floor, number, type, capacity } = req.body || {};
+    const { 
+      building, 
+      floor, 
+      number, 
+      type, 
+      capacity,
+      category,
+      sizeSqFt,
+      amenities,
+      images,
+      pricing
+    } = req.body || {};
 
     if (!building || !number || !type) {
       return res.status(400).json({ success: false, message: "building, number and type are required" });
@@ -45,7 +58,50 @@ export const createCabin = async (req, res) => {
       return res.status(409).json({ success: false, message: "Cabin number already exists in this building" });
     }
 
-    const cabin = await Cabin.create({ building, floor, number, type, capacity });
+    // Process images: support either base64 uploads (image.file) or direct URLs (image.url)
+    const processedImages = [];
+    if (images && Array.isArray(images)) {
+      for (const image of images) {
+        try {
+          const caption = (image.caption || '').trim();
+          if (image?.file) {
+            const uploadResult = await imagekit.upload({
+              file: image.file, // base64 string
+              fileName: image.name || `${number.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/cabins",
+              useUniqueFileName: true,
+              tags: ["cabin", number.replace(/\s+/g, '-').toLowerCase(), buildingDoc.name.replace(/\s+/g, '-').toLowerCase()]
+            });
+            processedImages.push({
+              url: uploadResult.url,
+              caption,
+              isPrimary: image.isPrimary || false
+            });
+          } else if (image?.url) {
+            processedImages.push({
+              url: image.url,
+              caption,
+              isPrimary: image.isPrimary || false
+            });
+          }
+        } catch (uploadError) {
+          console.warn("Failed to process image:", uploadError);
+        }
+      }
+    }
+
+    const cabin = await Cabin.create({ 
+      building, 
+      floor, 
+      number, 
+      type, 
+      capacity,
+      category,
+      sizeSqFt,
+      amenities,
+      images: processedImages,
+      pricing
+    });
     const deskCount = Math.max(1, Number(capacity || 1));
     const deskDocs = [];
     for (let i = 1; i <= deskCount; i++) {
@@ -71,7 +127,12 @@ export const createCabin = async (req, res) => {
       floor,
       number,
       type,
-      capacity
+      capacity,
+      category,
+      sizeSqFt,
+      amenities: amenities?.length || 0,
+      images: processedImages?.length || 0,
+      pricing
     });
 
     return res.status(201).json({ success: true, data: cabin });
@@ -137,7 +198,8 @@ export const getCabinById = async (req, res) => {
       .populate("building", "name address city")
       .populate("allocatedTo", "companyName contactPerson phone email")
       .populate("contract", "startDate endDate status")
-      .populate("desks", "number status allocatedAt releasedAt");
+      .populate("desks", "number status allocatedAt releasedAt")
+      .populate("amenities", "name icon iconUrl description");
     
     if (!cabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });
@@ -152,18 +214,34 @@ export const getCabinById = async (req, res) => {
 export const updateCabin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { building, floor, number, type, capacity, status } = req.body || {};
+    const { 
+      building, 
+      floor, 
+      number, 
+      type, 
+      capacity, 
+      status,
+      category,
+      sizeSqFt,
+      amenities,
+      images,
+      pricing
+    } = req.body || {};
     const existingCabin = await Cabin.findById(id);
     if (!existingCabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });
     }
 
+    let buildingDoc;
     if (building && building !== existingCabin.building.toString()) {
-      const buildingDoc = await Building.findById(building);
+      buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
         return res.status(404).json({ success: false, message: "Building not found" });
       }
+    } else {
+      buildingDoc = await Building.findById(existingCabin.building);
     }
+
     if (number && number !== existingCabin.number) {
       const buildingId = building || existingCabin.building;
       const duplicate = await Cabin.findOne({ 
@@ -176,29 +254,54 @@ export const updateCabin = async (req, res) => {
       }
     }
 
+    // Process images if provided, similar to create
+    let processedImages;
+    if (images && Array.isArray(images)) {
+      processedImages = [];
+      for (const image of images) {
+        try {
+          const caption = (image.caption || '').trim();
+          if (image?.file) {
+            const uploadResult = await imagekit.upload({
+              file: image.file,
+              fileName: image.name || `${(number || existingCabin.number).replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/cabins",
+              useUniqueFileName: true,
+              tags: ["cabin", (number || existingCabin.number).replace(/\s+/g, '-').toLowerCase(), buildingDoc.name.replace(/\s+/g, '-').toLowerCase()]
+            });
+            processedImages.push({ url: uploadResult.url, caption, isPrimary: image.isPrimary || false });
+          } else if (image?.url) {
+            processedImages.push({ url: image.url, caption, isPrimary: image.isPrimary || false });
+          }
+        } catch (uploadError) {
+          console.warn("Failed to process image:", uploadError);
+        }
+      }
+    }
+
+    const updateData = {};
+    if (building !== undefined) updateData.building = building;
+    if (floor !== undefined) updateData.floor = floor;
+    if (number !== undefined) updateData.number = number;
+    if (type !== undefined) updateData.type = type;
+    if (capacity !== undefined) updateData.capacity = capacity;
+    if (status !== undefined) updateData.status = status;
+    if (category !== undefined) updateData.category = category;
+    if (sizeSqFt !== undefined) updateData.sizeSqFt = sizeSqFt;
+    if (amenities !== undefined) updateData.amenities = amenities;
+    if (processedImages) updateData.images = processedImages;
+    if (pricing !== undefined) updateData.pricing = pricing;
+
     const cabin = await Cabin.findByIdAndUpdate(
       id,
-      {
-        building,
-        floor,
-        number,
-        type,
-        capacity,
-        status
-      },
+      updateData,
       { new: true, runValidators: true }
     ).populate("building", "name address city")
      .populate("allocatedTo", "companyName contactPerson phone email")
-     .populate("contract", "startDate endDate status");
+     .populate("contract", "startDate endDate status")
+     .populate("amenities", "name icon iconUrl description");
 
-    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, {
-      building,
-      floor,
-      number,
-      type,
-      capacity,
-      status
-    });
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, updateData);
 
     return res.json({ success: true, data: cabin });
   } catch (error) {

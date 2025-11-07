@@ -6,7 +6,8 @@ import {
   getBuildingById, 
   updateBuilding, 
   deleteBuilding,
-  updateBuildingCreditValue
+  updateBuildingCreditValue,
+  activateBuilding
 } from "../controllers/buildingController.js";
 
 const router = express.Router();
@@ -53,6 +54,9 @@ router.put("/:id/daypass-pricing", authMiddleware, async (req, res) => {
 
 // Update Building Credit Value (auth required)
 router.put("/:id/credit-value", authMiddleware, updateBuildingCreditValue);
+
+// Activate Building (auth required)
+router.put("/:id/activate", authMiddleware, activateBuilding);
 
 // Delete Building (auth required)
 router.delete("/:id", authMiddleware, deleteBuilding);

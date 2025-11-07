@@ -39,7 +39,7 @@ router.post("/:id/send", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEN
 router.post("/:id/sync", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), syncInvoiceFromZoho);
 router.get("/:id/pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoicePdf);
 router.get("/:id/zoho-links", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoiceZohoLinks);
-router.get("/:id/zoho-pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoiceZohoPdfBinary);
+router.get("/:id/zoho-pdf",getInvoiceZohoPdfBinary);
 router.get("/:id/download-pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), downloadInvoicePdf);
 router.post("/:id/payments", authMiddleware, checkPermission(PERMISSIONS.PAYMENT_CREATE), recordInvoicePayment);
 router.get("/:id/payments", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoicePayments);

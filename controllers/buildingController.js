@@ -4,13 +4,11 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, latitude, longitude } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
     }
-
-    // Process photos: support either base64 uploads (photo.file) or direct URLs (photo.imageUrl)
     const processedPhotos = [];
     if (photos && Array.isArray(photos)) {
       for (const photo of photos) {
@@ -18,7 +16,7 @@ export const createBuilding = async (req, res) => {
           const category = (photo.category || 'General').trim();
           if (photo?.file) {
             const uploadResult = await imagekit.upload({
-              file: photo.file, // base64 string
+              file: photo.file,
               fileName: photo.name || `${name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
               folder: "/buildings",
               useUniqueFileName: true,
@@ -52,13 +50,19 @@ export const createBuilding = async (req, res) => {
       totalFloors,
       amenities,
       status,
-      pricing: pricing || {},
+      perSeatPricing,
       photos: processedPhotos,
-      openSpacePricing: req.body.openSpacePricing || 500
+      openSpacePricing: req.body.openSpacePricing || 500,
+      businessMapLink
     };
 
-    // Add location coordinates if provided
+    // Add coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
+      buildingData.coordinates = {
+        longitude: parseFloat(longitude),
+        latitude: parseFloat(latitude)
+      };
+      // Also add to location for geospatial queries
       buildingData.location = {
         type: 'Point',
         coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
@@ -88,7 +92,9 @@ export const getBuildings = async (req, res) => {
     if (status) filter.status = status;
     if (city) filter.city = city;
 
-    const buildings = await Building.find().sort({ createdAt: -1 });
+    const buildings = await Building.find(filter)
+      .populate('amenities', 'name icon iconUrl description')
+      .sort({ createdAt: -1 });
     
     res.json({ success: true, data: buildings });
   } catch (error) {
@@ -99,7 +105,8 @@ export const getBuildings = async (req, res) => {
 export const getBuildingById = async (req, res) => {
   try {
     const { id } = req.params;
-    const building = await Building.findById(id);
+    const building = await Building.findById(id)
+      .populate('amenities', 'name icon iconUrl description');
     
     if (!building) {
       return res.status(404).json({ success: false, message: "Building not found" });
@@ -114,7 +121,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos, openSpacePricing, latitude, longitude } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -153,15 +160,21 @@ export const updateBuilding = async (req, res) => {
       totalFloors,
       amenities,
       status,
-      pricing,
-      openSpacePricing
+      perSeatPricing,
+      openSpacePricing,
+      businessMapLink
     };
     if (processedPhotos) {
       updatePayload.photos = processedPhotos;
     }
 
-    // Update location coordinates if provided
+    // Update coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
+      updatePayload.coordinates = {
+        longitude: parseFloat(longitude),
+        latitude: parseFloat(latitude)
+      };
+      // Also update location for geospatial queries
       updatePayload.location = {
         type: 'Point',
         coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
@@ -182,10 +195,10 @@ export const updateBuilding = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos: processedPhotos ? 'updated' : undefined })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, pricing, photos: processedPhotos ? 'updated' : undefined })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });
@@ -262,6 +275,53 @@ export const updateBuildingCreditValue = async (req, res) => {
       }
     });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Activate a draft building
+export const activateBuilding = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const building = await Building.findById(id);
+    if (!building) {
+      return res.status(404).json({ success: false, message: "Building not found" });
+    }
+
+    if (building.status !== "draft") {
+      return res.status(400).json({ success: false, message: "Only draft buildings can be activated" });
+    }
+
+    // Validate required fields for activation
+    if (!building.perSeatPricing || building.perSeatPricing <= 0) {
+      return res.status(400).json({ success: false, message: "Per seat pricing must be set before activation" });
+    }
+
+    const updatedBuilding = await Building.findByIdAndUpdate(
+      id,
+      { status: "active" },
+      { new: true, runValidators: true }
+    );
+
+    // Log activity
+    await logCRUDActivity(req, 'UPDATE', 'Building', id, {
+      before: { status: building.status },
+      after: { status: updatedBuilding.status }
+    }, {
+      buildingName: updatedBuilding.name,
+      action: 'Activated building from draft',
+      updatedFields: ['status']
+    });
+
+    res.json({ 
+      success: true, 
+      message: "Building activated successfully",
+      data: updatedBuilding
+    });
+  } catch (error) {
+    console.error("Error activating building:", error);
+    await logErrorActivity(req, error, 'Activate Building');
     return res.status(500).json({ success: false, message: error.message });
   }
 };

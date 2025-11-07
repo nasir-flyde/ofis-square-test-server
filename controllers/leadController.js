@@ -368,15 +368,23 @@ export const approveKYC = async (req, res) => {
       const zohoPayload = {
         contact_name: `${lead.firstName} ${lead.lastName}`,
         company_name: lead.companyName,
-        email: lead.email,
-        phone: lead.phone,
         contact_type: 'customer',
         customer_sub_type: 'individual',
         notes: `Day pass user - Auto-created from KYC approval`,
         billing_address: {
           address: lead.address,
           zip: lead.pincode
-        }
+        },
+        contact_persons: [
+          {
+            first_name: lead.firstName,
+            last_name: lead.lastName,
+            email: lead.email,
+            phone: lead.phone,
+            mobile: lead.phone,
+            is_primary_contact: true
+          }
+        ]
       };
 
       const zohoResponse = await createContact(zohoPayload);
@@ -400,7 +408,7 @@ export const approveKYC = async (req, res) => {
 
     // Log activity
     await logActivity({
-      action: 'APPROVE',
+      action: 'UPDATE',
       entity: 'lead_kyc',
       entityId: lead._id,
       description: `KYC approved for ${lead.fullName}. User created with ondemand role.`,
@@ -616,15 +624,23 @@ export const uploadKYCByAdmin = async (req, res) => {
           const zohoPayload = {
             contact_name: `${lead.firstName} ${lead.lastName}`,
             company_name: lead.companyName,
-            email: lead.email,
-            phone: lead.phone,
             contact_type: 'customer',
             customer_sub_type: 'individual',
             notes: `Day pass user - Auto-created from admin KYC upload`,
             billing_address: {
               address: lead.address,
               zip: lead.pincode
-            }
+            },
+            contact_persons: [
+              {
+                first_name: lead.firstName,
+                last_name: lead.lastName,
+                email: lead.email,
+                phone: lead.phone,
+                mobile: lead.phone,
+                is_primary_contact: true
+              }
+            ]
           };
 
           const zohoResponse = await createContact(zohoPayload);
@@ -645,7 +661,7 @@ export const uploadKYCByAdmin = async (req, res) => {
 
       // Log activity
       await logActivity({
-        action: 'APPROVE',
+        action: 'UPDATE',
         entity: 'lead_kyc',
         entityId: lead._id,
         description: `Admin uploaded and auto-approved KYC documents for ${lead.fullName}. User account created.`,

@@ -44,7 +44,7 @@ export const createContract = async (req, res) => {
       return res.status(400).json({ error: "Invalid buildingId" });
     }
 
-    // Fetch building to get pricing
+    // Fetch building to get per seat pricing
     const building = await Building.findById(buildingId);
     if (!building) {
       return res.status(404).json({ error: "Building not found" });
@@ -52,8 +52,8 @@ export const createContract = async (req, res) => {
     if (building.status !== "active") {
       return res.status(400).json({ error: "Building is not active" });
     }
-    if (building.pricing == null || building.pricing < 0) {
-      return res.status(400).json({ error: "Building pricing is not configured" });
+    if (building.perSeatPricing == null || building.perSeatPricing < 0) {
+      return res.status(400).json({ error: "Building per seat pricing is not configured" });
     }
 
     // Compute monthly rent (allow override if provided)
@@ -65,7 +65,7 @@ export const createContract = async (req, res) => {
       }
       monthlyRent = mr;
     } else {
-      monthlyRent = building.pricing * Number(capacity);
+      monthlyRent = building.perSeatPricing * Number(capacity);
     }
 
     const start = contractStartDate ? new Date(contractStartDate) : new Date();
@@ -125,7 +125,7 @@ export const createContract = async (req, res) => {
     try {
       const populatedContract = await Contract.findById(created._id)
         .populate("client")
-        .populate("building", "name address pricing");
+        .populate("building", "name address perSeatPricing");
       
       const pdfBuffer = await generateContractPDFBuffer(populatedContract);
       const fileName = `contract_${created._id}_${Date.now()}.pdf`;
@@ -200,7 +200,7 @@ export const getContracts = async (req, res) => {
   try {
     const contracts = await Contract.find()
       .populate("client", "companyName email contactPerson phone companyAddress")
-      .populate("building", "name address pricing city state")
+      .populate("building", "name address perSeatPricing city state")
       .sort({ createdAt: -1 });
     return res.json({ success: true, data: contracts });
   } catch (err) {
@@ -216,7 +216,7 @@ export const getContractById = async (req, res) => {
     const { id } = req.params;
     const contract = await Contract.findById(id)
       .populate("client", "companyName email contactPerson phone companyAddress")
-      .populate("building", "name address pricing city state");
+      .populate("building", "name address perSeatPricing city state");
     if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
     return res.json({ success: true, data: contract });
   } catch (err) {
@@ -293,7 +293,7 @@ export const updateContract = async (req, res) => {
       return res.status(400).json({ error: "Invalid buildingId" });
     }
 
-    // Fetch building to get pricing
+    // Fetch building to get per seat pricing
     const building = await Building.findById(buildingId);
     if (!building) {
       return res.status(404).json({ error: "Building not found" });
@@ -301,8 +301,8 @@ export const updateContract = async (req, res) => {
     if (building.status !== "active") {
       return res.status(400).json({ error: "Building is not active" });
     }
-    if (building.pricing == null || building.pricing < 0) {
-      return res.status(400).json({ error: "Building pricing is not configured" });
+    if (building.perSeatPricing == null || building.perSeatPricing < 0) {
+      return res.status(400).json({ error: "Building per seat pricing is not configured" });
     }
 
     // Compute monthly rent (allow override if provided)
@@ -314,7 +314,7 @@ export const updateContract = async (req, res) => {
       }
       monthlyRent = mr;
     } else {
-      monthlyRent = building.pricing * Number(capacity);
+      monthlyRent = building.perSeatPricing * Number(capacity);
     }
 
     const start = contractStartDate ? new Date(contractStartDate) : existing.startDate;
