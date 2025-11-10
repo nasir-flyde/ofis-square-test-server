@@ -394,3 +394,88 @@ export const getAvailableCabinsByBuilding = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const exportMasterFile = async (req, res) => {
+  try {
+    const CabinAmenity = (await import("../models/cabinAmenityModel.js")).default;
+    const [buildings, amenities] = await Promise.all([
+      Building.find().select('name').sort({ name: 1 }),
+      CabinAmenity.find({ isActive: true }).select('name').sort({ name: 1 })
+    ]);
+
+    const cabinTypes = ['cabin', 'private', 'shared'];
+    const cabinCategories = ['Standard', 'Premium', 'Executive', 'Deluxe'];
+    const cabinStatuses = ['available', 'occupied', 'maintenance'];
+    const masterData = {
+      buildings: buildings.map(b => b.name),
+      amenities: amenities.map(a => a.name),
+      types: cabinTypes,
+      categories: cabinCategories,
+      statuses: cabinStatuses
+    };
+
+    const sampleRows = [];
+    
+    if (buildings.length > 0 && amenities.length > 0) {
+      const buildingName = buildings[0].name;
+      const amenityNames = amenities.slice(0, 3).map(a => a.name);
+      
+      sampleRows.push({
+        buildingName: buildingName,
+        cabinNumber: 'C101',
+        floor: '1',
+        capacity: '4',
+        type: 'private',
+        status: 'available',
+        category: 'Standard',
+        sizeSqFt: '100',
+        pricing: '5000',
+        amenity1: amenityNames[0],
+        amenity2: amenityNames[1],
+        amenity3: amenityNames[2]
+      });
+
+      sampleRows.push({
+        buildingName: buildingName,
+        cabinNumber: 'C102',
+        floor: '1',
+        capacity: '6',
+        type: 'shared',
+        status: 'available',
+        category: 'Premium',
+        sizeSqFt: '150',
+        pricing: '7500',
+        amenity1: amenityNames[0],
+        amenity2: amenityNames[1],
+        amenity3: amenityNames[2]
+      });
+    } else {
+      // Fallback sample data
+      sampleRows.push({
+        buildingName: 'Main Building',
+        cabinNumber: 'C101',
+        floor: '1',
+        capacity: '4',
+        type: 'private',
+        status: 'available',
+        category: 'Standard',
+        sizeSqFt: '100',
+        pricing: '5000',
+        amenity1: 'WiFi',
+        amenity2: 'Air Conditioning',
+        amenity3: 'Whiteboard'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        masterData,
+        sampleRows
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting master file:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

@@ -114,8 +114,8 @@ export const createSingleDayPass = async (req, res) => {
     }
 
     const price = building.openSpacePricing;
-    const taxAmount = Math.round(price * 0.18); // 18% GST
-    const totalAmount = price + taxAmount;
+    const taxAmount = 0; // No tax on day pass bookings
+    const totalAmount = price;
 
     // Set booking date (today) and expiry at end of day
     const bookingDate = new Date();

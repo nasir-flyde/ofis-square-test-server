@@ -113,8 +113,8 @@ export const createDayPassBundle = async (req, res) => {
     // Calculate total amount
     const pricePerPass = building.openSpacePricing;
     const totalAmount = pricePerPass * no_of_dayPasses;
-    const taxAmount = Math.round(totalAmount * 0.18); // 18% GST
-    const finalAmount = totalAmount + taxAmount;
+    const taxAmount = 0; // No tax on day pass bookings
+    const finalAmount = totalAmount;
 
     // Set validity dates
     const validFrom = new Date();

@@ -8,10 +8,14 @@ import {
   deleteCabin,
   allocateCabin, 
   releaseCabin,
-  getAvailableCabinsByBuilding
+  getAvailableCabinsByBuilding,
+  exportMasterFile
 } from "../controllers/cabinController.js";
 
 const router = express.Router();
+
+// Export master file (must be before /:id route)
+router.get("/export/master", exportMasterFile);
 
 // List Cabins (filters: building, floor, status, type)
 router.get("/", getCabins);

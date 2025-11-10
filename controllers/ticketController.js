@@ -4,6 +4,7 @@ import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
 import mongoose from "mongoose";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
 
 // GET /api/tickets
 export const getAllTickets = async (req, res) => {
@@ -69,10 +70,34 @@ export const createTicket = async (req, res) => {
       return res.status(400).json({ error: "subject and description are required" });
     }
 
+    // Handle image uploads if files are present
+    const imageUrls = [];
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          const fileName = `ticket_${Date.now()}_${file.originalname}`;
+          const uploadResponse = await imagekit.upload({
+            file: file.buffer,
+            fileName: fileName,
+            folder: "/tickets"
+          });
+          imageUrls.push(uploadResponse.url);
+        }
+      } catch (uploadError) {
+        console.error("ImageKit upload error:", uploadError);
+        return res.status(500).json({ 
+          success: false,
+          error: "Failed to upload images",
+          details: uploadError.message 
+        });
+      }
+    }
+
     let ticketData = {
       ...req.body,
       status: req.body.status || "open",
       latestUpdate: req.body.latestUpdate || `Ticket created`,
+      images: imageUrls.length > 0 ? imageUrls : (req.body.images || [])
     };
 
     // Optional user authentication logic - only apply if req.user exists

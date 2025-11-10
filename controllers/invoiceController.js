@@ -277,6 +277,85 @@ export const pushInvoiceToZoho = async (req, res) => {
       invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
       invoice.source = invoice.source || "zoho";
       
+      await invoice.save();
+
+      // After pushing invoice to Zoho, also push any associated payments
+      try {
+        const payments = await Payment.find({ invoice: id }).populate('client');
+        
+        if (payments && payments.length > 0) {
+          console.log(`Found ${payments.length} payment(s) for invoice ${id}, pushing to Zoho...`);
+          
+          for (const payment of payments) {
+            // Skip if payment already has zoho_payment_id
+            if (payment.zoho_payment_id) {
+              console.log(`Payment ${payment._id} already synced to Zoho, skipping`);
+              continue;
+            }
+
+            // Fetch the Zoho invoice to get the actual balance
+            const zohoInvoiceDetails = await getZohoInvoice(zohoId);
+            const zohoBalance = Number(zohoInvoiceDetails?.balance || zohoInvoiceDetails?.total || 0);
+            const paymentAmount = Number(payment.amount || 0);
+            
+            // Only apply up to the balance due in Zoho
+            const amountToApply = Math.min(paymentAmount, zohoBalance);
+            
+            if (amountToApply <= 0) {
+              console.log(`Payment ${payment._id} amount is 0 or invoice already paid in Zoho, skipping`);
+              continue;
+            }
+
+            // Prepare Zoho payment payload
+            const zohoPaymentPayload = {
+              customer_id: client.zohoBooksContactId,
+              payment_mode: payment.type || 'cash',
+              amount: amountToApply,
+              date: payment.paymentDate ? new Date(payment.paymentDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+              invoices: [{
+                invoice_id: zohoId,
+                amount_applied: amountToApply
+              }],
+              reference_number: payment.referenceNumber || payment.paymentGatewayRef || '',
+              description: payment.notes || `Payment for invoice ${invoice.invoice_number}`
+            };
+
+            // Push payment to Zoho Books
+            const accessToken = await getValidAccessToken();
+            const orgId = process.env.ZOHO_ORG_ID;
+            
+            if (orgId && accessToken) {
+              const zohoUrl = `https://www.zohoapis.in/books/v3/customerpayments?organization_id=${orgId}`;
+              const zohoPaymentResponse = await fetch(zohoUrl, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(zohoPaymentPayload)
+              });
+
+              const zohoPaymentData = await zohoPaymentResponse.json();
+
+              if (zohoPaymentResponse.ok && zohoPaymentData.payment) {
+                // Update local payment with Zoho data
+                payment.zoho_payment_id = zohoPaymentData.payment.payment_id;
+                payment.payment_number = zohoPaymentData.payment.payment_number;
+                payment.zoho_status = zohoPaymentData.payment.status;
+                payment.source = 'zoho_books';
+                await payment.save();
+                console.log(`✅ Payment ${payment._id} pushed to Zoho with ID: ${zohoPaymentData.payment.payment_id}`);
+              } else {
+                console.warn(`⚠️ Failed to push payment ${payment._id} to Zoho:`, zohoPaymentData.message || 'Unknown error');
+              }
+            }
+          }
+        }
+      } catch (paymentPushError) {
+        console.warn('Failed to push payments to Zoho (non-blocking):', paymentPushError.message);
+        // Don't fail the invoice push if payment push fails
+      }
+      
       // If user chose to send, update status and send email
       if (sendStatus === 'sent') {
         console.log(`Attempting to send invoice ${invoice._id} to client email: ${client.email}`);
@@ -324,9 +403,11 @@ export const pushInvoiceToZoho = async (req, res) => {
           });
         }
       } else {
-        // Push as draft
-        console.log(`Pushing invoice ${invoice._id} as draft (no email sent)`);
-        invoice.status = 'draft';
+        // Push as sent (direct) without email
+        console.log(`Pushing invoice ${invoice._id} as sent (direct, no email)`);
+        invoice.status = 'sent';
+        invoice.sent_at = new Date();
+        invoice.zoho_status = 'sent';
         await invoice.save();
       }
 
@@ -334,7 +415,7 @@ export const pushInvoiceToZoho = async (req, res) => {
         success: true, 
         data: invoice, 
         zoho: zohoResp,
-        sent: sendStatus === 'sent' && invoice.status === 'sent'
+        sent: invoice.status === 'sent'
       });
     } catch (err) {
       await logErrorActivity(req, err, "Push Invoice to Zoho");

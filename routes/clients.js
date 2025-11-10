@@ -42,7 +42,7 @@ import authMiddleware from "../middlewares/authVerify.js";
 
 const router = express.Router();
 
-router.post("/", authMiddleware, createClient);
+router.post("/", kycUploads, createClient);
 
 router.post("/basic-details", authMiddleware, upsertBasicDetails);
 
@@ -67,7 +67,7 @@ router.get("/contracts", clientMiddleware, getClientContracts);
 router.post("/contracts/:id/approve", clientMiddleware, approveClientContract);
 router.post("/contracts/:id/feedback", clientMiddleware, submitClientContractFeedback);
 router.get("/tickets", clientMiddleware, getClientTickets);
-router.post("/tickets", clientMiddleware, createClientTicket);
+router.post("/tickets", clientMiddleware, kycUploads, createClientTicket);
 
 router.get("/members", clientMiddleware, getClientMembers);
 router.post("/members", clientMiddleware, createClientMember);

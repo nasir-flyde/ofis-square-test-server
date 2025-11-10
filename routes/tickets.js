@@ -11,11 +11,12 @@ import {
 } from "../controllers/ticketController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import universalAuthMiddleware from "../middlewares/universalAuthVerify.js";
+import upload from "../middlewares/multer.js";
 
 const router = express.Router();
 
 router.get("/", getAllTickets);
-router.post("/", createTicket);
+router.post("/", upload.array('images', 5), createTicket);
 router.get("/stats", getTicketStats);
 router.get("/staff/:userId", getStaffTickets);
 router.get("/member/my-tickets", universalAuthMiddleware, getTicketsByMember); 

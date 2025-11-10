@@ -22,6 +22,35 @@ export const createClient = async (req, res) => {
   try {
     const body = req.body || {};
     
+    // Handle file uploads for KYC documents
+    const files = Array.isArray(req.files) ? req.files : [];
+    const uploadsByField = {};
+    
+    if (files.length > 0) {
+      await Promise.all(
+        files.map(async (f) => {
+          const folder = process.env.IMAGEKIT_KYC_FOLDER || "/ofis-square/kyc";
+          const result = await imagekit.upload({
+            file: f.buffer,
+            fileName: f.originalname || `${Date.now()}_${f.fieldname}`,
+            folder,
+          });
+          const entry = {
+            fieldname: f.fieldname,
+            originalname: f.originalname,
+            mimetype: f.mimetype,
+            size: f.size,
+            url: result?.url,
+            fileId: result?.fileId,
+            name: result.name,
+            filePath: result.filePath,
+          };
+          if (!uploadsByField[f.fieldname]) uploadsByField[f.fieldname] = [];
+          uploadsByField[f.fieldname].push(entry);
+        })
+      );
+    }
+    
     // Basic company info
     const basicInfo = {
       companyName: body.companyName ?? body.company_name ?? undefined,
@@ -51,13 +80,30 @@ export const createClient = async (req, res) => {
     };
 
     // Address details - handle nested objects with proper field mapping
+    let billingAddress = body.billingAddress ?? body.billing_address ?? undefined;
+    let shippingAddress = body.shippingAddress ?? body.shipping_address ?? undefined;
+    
+    // Parse if they come as JSON strings (from FormData)
+    if (typeof billingAddress === 'string') {
+      try { billingAddress = JSON.parse(billingAddress); } catch (e) { billingAddress = undefined; }
+    }
+    if (typeof shippingAddress === 'string') {
+      try { shippingAddress = JSON.parse(shippingAddress); } catch (e) { shippingAddress = undefined; }
+    }
+    
     const addressDetails = {
-      billingAddress: body.billingAddress ?? body.billing_address ?? undefined,
-      shippingAddress: body.shippingAddress ?? body.shipping_address ?? undefined,
+      billingAddress,
+      shippingAddress,
     };
-
-    // Contact persons - handle array with proper field mapping
     let contactPersons = body.contactPersons ?? body.contact_persons ?? [];
+    if (typeof contactPersons === 'string') {
+      try {
+        contactPersons = JSON.parse(contactPersons);
+      } catch (e) {
+        contactPersons = [];
+      }
+    }
+    
     if (Array.isArray(contactPersons)) {
       contactPersons = contactPersons.map(person => ({
         salutation: person.salutation ?? undefined,
@@ -96,9 +142,12 @@ export const createClient = async (req, res) => {
     // Status and ownership fields
     const statusDetails = {
       companyDetailsComplete: body.companyDetailsComplete ?? body.company_details_complete ?? true,
-      kycStatus: body.kycStatus ?? body.kyc_status ?? "pending",
+      kycStatus: body.kycStatus ?? body.kyc_status ?? (files.length > 0 ? "verified" : "pending"),
       building: body.building ?? body.buildingId ?? undefined,
     };
+
+    // KYC Documents
+    const kycDocuments = Object.keys(uploadsByField).length > 0 ? { files: uploadsByField } : undefined;
 
     // Merge all sections into payload
     const payload = {
@@ -109,6 +158,7 @@ export const createClient = async (req, res) => {
       ...taxDetails,
       ...zohoDetails,
       ...statusDetails,
+      ...(kycDocuments ? { kycDocuments } : {}),
     };
     
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -1092,8 +1142,8 @@ export const approveClientContract = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
     }
 
-    // Only allow approval if contract is sent_to_client
-    if (contract.status !== 'sent_to_client') {
+    // Only allow approval if contract is sent_to_client or client_feedback_pending
+    if (contract.status !== 'sent_to_client' && contract.status !== 'client_feedback_pending') {
       return res.status(400).json({ error: `Cannot approve contract with status: ${contract.status}` });
     }
 
@@ -1185,14 +1235,31 @@ export const submitClientContractFeedback = async (req, res) => {
       }
     });
 
-    // Send notification to legal team
-    await sendNotification({
-      type: 'contract_feedback',
-      title: 'Client Contract Feedback',
-      message: `Client has provided feedback on contract ${contract._id}`,
-      contractId: contract._id,
-      clientId
-    });
+    // Send notification to legal team - wrapped in try/catch to prevent blocking
+    try {
+      await sendNotification({
+        to: {
+          clientId: clientId
+        },
+        channels: { email: true, sms: false },
+        content: {
+          smsText: `Client has provided feedback on contract ${contract._id}`,
+          emailSubject: 'Client Contract Feedback',
+          emailHtml: `<p>Client has provided feedback on contract ${contract._id}</p><p>Feedback: ${feedback}</p>`,
+          emailText: `Client has provided feedback on contract ${contract._id}. Feedback: ${feedback}`
+        },
+        title: 'Client Contract Feedback',
+        metadata: {
+          category: 'contract',
+          contractId: contract._id,
+          clientId
+        },
+        source: 'client_portal',
+        type: 'contract_feedback'
+      });
+    } catch (notifError) {
+      console.warn('Failed to send notification:', notifError.message);
+    }
 
     // Send email to Sales, Legal team, and Admins
     const populatedContract = await Contract.findById(contract._id)
@@ -1917,7 +1984,7 @@ export const approveOnboarding = async (req, res) => {
     const { id } = req.params;
 
     // Check if user has System Admin role
-    const userRole = req.user?.role?.name;
+    const userRole = req.user?.role?.roleName || req.user?.role?.name;
     if (userRole !== "System Admin") {
       return res.status(403).json({ 
         success: false, 
@@ -1938,8 +2005,10 @@ export const approveOnboarding = async (req, res) => {
       });
     }
 
-    // Find the latest contract
-    const contract = await Contract.findOne({ client: id }).sort({ createdAt: -1 });
+    // Find the latest contract with building populated
+    const contract = await Contract.findOne({ client: id })
+      .sort({ createdAt: -1 })
+      .populate('building', 'name address city pricing');
 
     // Validate all preconditions
     const errors = [];
@@ -1992,7 +2061,9 @@ export const approveOnboarding = async (req, res) => {
       data: {
         clientId: client._id,
         isClientApproved: true,
-        contractId: contract._id
+        contractId: contract._id,
+        buildingId: contract.building._id,
+        building: contract.building
       }
     });
   } catch (error) {

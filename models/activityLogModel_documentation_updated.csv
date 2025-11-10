@@ -224,6 +224,42 @@ Contract,securityDeposit.notes,String,false,,
 Contract,securityDepositPaidAt,Date,false,,2025-11-06T07:44:55.823Z
 Contract,securityDepositPaidBy,ObjectId,false,,68b9608365b75b9444d474c7
 Contract,terms,String,false,,
+Contract,billingCycle,String,false,"monthly, quarterly, annually",monthly
+Contract,paymentTerms,String,false,"net_15, net_30, net_45, net_60",net_30
+Contract,latePaymentPenalty.type,String,false,"percentage, fixed",percentage
+Contract,latePaymentPenalty.value,Number,false,,2
+Contract,latePaymentPenalty.description,String,false,,2% per month on overdue amount
+Contract,priceEscalationClause.enabled,Boolean,false,,true
+Contract,priceEscalationClause.percentage,Number,false,,5
+Contract,priceEscalationClause.frequency,String,false,"annual, biannual",annual
+Contract,priceEscalationClause.effectiveFrom,Date,false,,2026-11-15T00:00:00.000Z
+Contract,discount.type,String,false,"percentage, fixed",percentage
+Contract,discount.value,Number,false,,10
+Contract,discount.reason,String,false,,Long-term commitment discount
+Contract,discount.validUntil,Date,false,,2026-11-14T00:00:00.000Z
+Contract,onboardingFee,Number,false,,5000
+Contract,noticePeriodDays,Number,false,,60
+Contract,autoRenewal,Boolean,false,,false
+Contract,renewalNoticePeriod,Number,false,,30
+Contract,operatingHours.weekdays,String,false,,09:00 AM - 07:00 PM
+Contract,operatingHours.weekends,String,false,,Closed
+Contract,operatingHours.publicHolidays,String,false,,Closed
+Contract,seatingArrangement,String,false,"dedicated_desk, hot_desk, private_office, mixed",dedicated_desk
+Contract,attachments,Array,false,,[]
+Contract,attachments.name,String,false,,Company_PAN_Card.pdf
+Contract,attachments.url,String,false,,https://cdn.example.com/docs/company_pan.pdf
+Contract,attachments.type,String,false,,pdf
+Contract,attachments.category,String,false,"kyc_document, legal_document, annexure, compliance, authorization, facility, other",compliance
+Contract,attachments.uploadedBy,ObjectId,false,,672a9fe7c12d4a3f91e47b55
+Contract,attachments.uploadedAt,Date,false,,2025-11-10T09:00:00.000Z
+Contract,operational.moveInDate,Date,false,,2025-11-20T00:00:00.000Z
+Contract,operational.handoverDate,Date,false,,2025-11-18T00:00:00.000Z
+Contract,operational.fitoutPeriodDays,Number,false,,3
+Contract,operational.accessCardsIssued,Number,false,,25
+Contract,operational.parkingPassesIssued,Number,false,,3
+Contract,operational.lockerKeysIssued,Number,false,,25
+Contract,operational.onboardingCompleted,Boolean,false,,true
+Contract,operational.onboardingCompletedAt,Date,false,,2025-11-20T10:00:00.000Z
 Contract,status,String,false,"draft, submitted_to_legal, legal_reviewed, pending_admin_approval, admin_approved, admin_rejected, sent_to_client, client_approved, client_feedback_pending, stamp_paper_ready, sent_for_signature, signed, active, cancelled",active
 Contract,requiresApproval,Boolean,false,,true
 Contract,createdBy,ObjectId,false,,6901c2b266f91af0c876c6a4
@@ -406,6 +442,8 @@ Payment,payment_number,String,false,,39
 Payment,zoho_status,String,false,,
 Payment,deposit_to_account_id,String,false,,2865532000000000456
 Payment,idempotency_key,String,false,,
+Payment,attachments,String,false,,
+Payment,bankCharges,String,false,
 Payment,raw_zoho_response,Mixed,false,,"{""payment_id"": ""2865532000000210019"", ""payment_number"": ""39"", ""amount"": 4000}"
 Payment,source,String,false,"manual, zoho_books, webhook",webhook
 Payment,createdAt,Date,true (auto),,2025-10-27T07:40:28.325Z
@@ -429,6 +467,9 @@ Event,location.address,String,false,,
 Event,capacity,Number,false,,10
 Event,rsvps,Array,false,,"[""68e357cf49d1100b172468db"", ""68e3620e7c63600194366c20""]"
 Event,attendance,Array,false,,[]
+Event,externalRegistrationUrl,
+Event,externalAddress,
+Event,externalAddressMapLink,
 Event,creditsRequired,Number,false,,0
 Event,status,String,false,"draft, published, completed, cancelled",published
 Event,thumbnail,String,false,,https://ik.imagekit.io/8znjbhgdh/Gemini_Generated_Image_jnkpktjnkpktjnkp%20(4).png?updatedAt=1759147688734
@@ -459,7 +500,6 @@ Invoice,billing_period.start,Date,false,,2025-10-23T00:00:00.000Z
 Invoice,billing_period.end,Date,false,,2025-10-31T00:00:00.000Z
 Invoice,customer_id,String,false,,2865532000000204002
 Invoice,gst_treatment,String,false,,business_gst
-Invoice,place_of_supply,String,false,,MH
 Invoice,gst_no,String,false,,
 Invoice,line_items,Array,false,,
 Invoice,line_items.description,String,true,,Monthly Rent - Oct 2025 (prorated 9/31 days)
@@ -494,13 +534,8 @@ Invoice,zoho_status,String,false,,draft
 Invoice,zoho_pdf_url,String,false,,
 Invoice,invoice_url,String,false,,https://zohosecurepay.in/books/flyde1/secure?CInvoiceID=2-4cc7ec0df0476da2765756978807b928d5e88d326a551bdf2436b11b8dd9496e422f16adc960337f5971adfee660fd72e87833e65d77c95d34ec8c2c7397d757bf747bf136c83d3b
 Invoice,template_id,String,false,,
-Invoice,payment_terms,Number,false,,10
-Invoice,payment_terms_label,String,false,,Custom
 Invoice,payment_expected_date,Date,false,,
 Invoice,last_payment_date,Date,false,,
-Invoice,shipping_charge,Number,false,,0
-Invoice,adjustment,Number,false,,0
-Invoice,adjustment_description,String,false,,
 Invoice,tax_authority_id,String,false,,
 Invoice,tax_exemption_id,String,false,,
 Invoice,is_inclusive_tax,Boolean,false,,false
@@ -525,31 +560,77 @@ Invoice,paid_at,Date,false,,
 Invoice,payment_id,String,false,,
 Invoice,createdAt,Date,true (auto),,2025-10-27T06:33:06.480Z
 Invoice,updatedAt,Date,true (auto),,2025-10-27T06:33:40.829Z
-MeetingRoom,building,ObjectId,false,,68e3592849d1100b172468f9
-MeetingRoom,name,String,true,,conference
-MeetingRoom,capacity,Number,true,,4
-MeetingRoom,amenities,Array,false,,"[""Projector"", ""Flipchart"", ""WiFi"", ""Whiteboard"", ""Air Conditioning""]"
-MeetingRoom,images,Array,false,,"[""https://ik.imagekit.io/flyde/meeting-rooms/meeting-room-1759731158429-zvmynw_eOh1dCiWN.png""]"
+MeetingRoom,building,ObjectId,true,,671a1d28f4bca52b4449e001
+MeetingRoom,name,String,true,,Ocean View Conference Room
+MeetingRoom,slug,String,false,,ocean-view-conference-room
+MeetingRoom,code,String,false,,B3-RM-05
+MeetingRoom,description,String,false,,Spacious meeting room with sea-facing view premium chairs projector and whiteboard.
+MeetingRoom,tags,Array,false,,"[""executive"", ""sea-view"", ""quiet-zone""]"
+MeetingRoom,floorNumber,Number,false,,3
+MeetingRoom,roomNumber,String,false,,305
+MeetingRoom,zone,String,false,,East Wing
+MeetingRoom,layoutType,String,false,,Boardroom
+MeetingRoom,capacity,Number,true,,10
+MeetingRoom,seatingCapacity,Number,false,,10
+MeetingRoom,maxGuests,Number,false,,12
+MeetingRoom,safetyFeatures,Array,false,,"[""Fire Extinguisher"", ""Emergency Exit""]"
+MeetingRoom,amenities,Array,false,,"[""671a1d28f4bca52b4449e101"", ""671a1d28f4bca52b4449e102""]"
+MeetingRoom,equipment,Array,false,,"[""671a1d28f4bca52b4449e201"", ""671a1d28f4bca52b4449e202""]"
+MeetingRoom,wifiNetwork.ssid,String,false,,CoworkHQ_Guest
+MeetingRoom,wifiNetwork.passwordProtected,Boolean,false,,true
+MeetingRoom,wifiNetwork.speedMbps,Number,false,,200
+MeetingRoom,images,Array,false,,"[""https://ik.imagekit.io/cowork/rooms/ocean-view-1.jpg"", ""https://ik.imagekit.io/cowork/rooms/ocean-view-2.jpg""]"
 MeetingRoom,pricing.currency,String,false,,INR
-MeetingRoom,pricing.dailyRate,Number,false,,4000
-MeetingRoom,availability.daysOfWeek,Array,false,,"[1, 2, 3, 4, 5]"
+MeetingRoom,pricing.hourlyRate,Number,false,,500
+MeetingRoom,pricing.memberRate,Number,false,,400
+MeetingRoom,pricing.nonMemberRate,Number,false,,550
+MeetingRoom,pricing.taxPercent,Number,false,,18
+MeetingRoom,pricing.depositRequired,Boolean,false,,true
+MeetingRoom,pricing.depositAmount,Number,false,,1000
+MeetingRoom,priceRules,Array,false,,
+MeetingRoom,priceRules.ruleType,String,false,,WeekendDiscount
+MeetingRoom,priceRules.value,Number,false,,10
+MeetingRoom,priceRules.startDate,Date,false,,2025-04-01T00:00:00.000Z
+MeetingRoom,priceRules.endDate,Date,false,,2025-12-31T00:00:00.000Z
+MeetingRoom,availability.daysOfWeek,Array,false,,"[1, 2, 3, 4, 5, 6]"
 MeetingRoom,availability.openTime,String,false,,09:00
-MeetingRoom,availability.closeTime,String,false,,19:00
+MeetingRoom,availability.closeTime,String,false,,20:00
 MeetingRoom,availability.minBookingMinutes,Number,false,,30
 MeetingRoom,availability.maxBookingMinutes,Number,false,,480
-MeetingRoom,blackoutDates,Array,false,,[]
+MeetingRoom,availability.timezone,String,false,,Asia/Kolkata
+MeetingRoom,blackoutDates,Array,false,,"[""2025-12-25"", ""2025-01-01""]"
+MeetingRoom,blackoutRanges,Array,false,,
+MeetingRoom,blackoutRanges.start,Date,false,,2025-06-10T09:00:00.000Z
+MeetingRoom,blackoutRanges.end,Date,false,,2025-06-15T18:00:00.000Z
+MeetingRoom,blackoutRanges.reason,String,false,,Scheduled Maintenance
+MeetingRoom,bookingRules.minNoticeHours,Number,false,,2
+MeetingRoom,bookingRules.maxNoticeDays,Number,false,,60
+MeetingRoom,bookingRules.bufferMinutesBefore,Number,false,,10
+MeetingRoom,bookingRules.bufferMinutesAfter,Number,false,,10
+MeetingRoom,bookingRules.allowRecurringBookings,Boolean,false,,true
+MeetingRoom,bookingRules.maxRecurringInstances,Number,false,,5
+MeetingRoom,bookingRules.cancellationPolicy.freeCancelBeforeHours,Number,false,,12
+MeetingRoom,bookingRules.cancellationPolicy.cancellationFee,Number,false,,200
 MeetingRoom,availableTimeSlots,Array,false,,
 MeetingRoom,availableTimeSlots.startTime,String,true,,09:00 AM
 MeetingRoom,availableTimeSlots.endTime,String,true,,10:00 AM
-MeetingRoom,reservedSlots,Array,false,,
-MeetingRoom,reservedSlots.date,Date,true,,2025-10-29T00:00:00.000Z
-MeetingRoom,reservedSlots.startTime,String,true,,04:00 PM
-MeetingRoom,reservedSlots.endTime,String,true,,05:00 PM
-MeetingRoom,reservedSlots.bookingId,ObjectId,false,,68ff21bb26176ddf4e0acf00
+MeetingRoom,isBookable,Boolean,false,,true
 MeetingRoom,isBookingClosed,Boolean,false,,false
+MeetingRoom,isArchived,Boolean,false,,false
 MeetingRoom,status,String,false,"active, inactive",active
-MeetingRoom,createdAt,Date,true (auto),,2025-10-06T06:12:40.559Z
-MeetingRoom,updatedAt,Date,true (auto),,2025-11-06T09:51:37.275Z
+MeetingRoom,location.type,String,false,,Point
+MeetingRoom,location.coordinates,Array,false,,"[72.823, 18.920]"
+MeetingRoom,location.mapLink,String,false,,https://goo.gl/maps/xyz123
+MeetingRoom,accessInstructions,String,false,,Check in at reception 3rd floor east wing.
+MeetingRoom,accessControl.method,String,false,,Keycard
+MeetingRoom,accessControl.allowedRoles,Array,false,,"[""admin"", ""receptionist""]"
+MeetingRoom,accessControl.allowedUsers,Array,false,,"[""671a1d28f4bca52b4449e999""]"
+MeetingRoom,createdBy,ObjectId,false,,671a1d28f4bca52b4449e555
+MeetingRoom,updatedBy,ObjectId,false,,671a1d28f4bca52b4449e556
+MeetingRoom,createdFromIp,String,false,,203.122.58.44
+MeetingRoom,lastUpdatedFromIp,String,false,,203.122.58.44
+MeetingRoom,createdAt,Date,true (auto),,2025-11-10T08:00:00.000Z
+MeetingRoom,updatedAt,Date,true (auto),,2025-11-10T08:00:00.000Z
 MeetingBooking,room,ObjectId,true,,68e35dd87c636001943668ff
 MeetingBooking,visitors,Array,false,,"[""68e8d402fd22034957e24569""]"
 MeetingBooking,member,ObjectId,false,,68e357cf49d1100b172468db

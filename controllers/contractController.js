@@ -643,6 +643,33 @@ export const checkSignatureStatus = async (req, res) => {
         zohoSignRequestId: contract.zohoSignRequestId,
         signatureStatus: status.request_status
       });
+
+      // After activation via Zoho Sign, grant initial credits if configured and not already granted
+      try {
+        const initialCredits = Number(contract?.initialCredits || 0);
+        if (initialCredits > 0) {
+          // Check for existing grant transaction for this contract to ensure idempotency
+          const CreditTransaction = (await import("../models/creditTransactionModel.js")).default;
+          const existingGrant = await CreditTransaction.findOne({
+            contractId: contract._id,
+            transactionType: "grant",
+          });
+
+          if (!existingGrant) {
+            const WalletService = (await import("../services/walletService.js")).default;
+            await WalletService.grantCredits({
+              clientId: contract.client,
+              credits: initialCredits,
+              refType: "contract",
+              refId: contract._id,
+              meta: { reason: "Initial credits granted on contract activation (Zoho Sign)", activation: true },
+              createdBy: req.user?._id || null,
+            });
+          }
+        }
+      } catch (grantErr) {
+        console.warn("Initial credits grant on activation failed or skipped:", grantErr?.message);
+      }
     }
 
     return res.json({ 

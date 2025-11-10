@@ -1,0 +1,120 @@
+{
+  "building": "671a1d28f4bca52b4449e001",
+  "name": "Ocean View Conference Room",
+  "slug": "ocean-view-conference-room",
+  "code": "B3-RM-05",
+  "description": "Spacious meeting room with sea-facing view, premium chairs, projector, and whiteboard.",
+  "tags": ["executive", "sea-view", "quiet-zone"],
+  "floorNumber": 3,
+  "roomNumber": "305",
+  "zone": "East Wing",
+
+  "layoutType": "Boardroom",
+  "capacity": 10,
+  "seatingCapacity": 10,
+  "maxGuests": 12,
+  "safetyFeatures": ["Fire Extinguisher", "Emergency Exit"],
+
+  "amenities": [
+    "671a1d28f4bca52b4449e101",
+    "671a1d28f4bca52b4449e102"
+  ],
+  "equipment": [
+    "671a1d28f4bca52b4449e201",
+    "671a1d28f4bca52b4449e202"
+  ],
+  "wifiNetwork": {
+    "ssid": "CoworkHQ_Guest",
+    "passwordProtected": true,
+    "speedMbps": 200
+  },
+
+  "images": [
+    "https://ik.imagekit.io/cowork/rooms/ocean-view-1.jpg",
+    "https://ik.imagekit.io/cowork/rooms/ocean-view-2.jpg"
+  ],
+
+  "pricing": {
+    "currency": "INR",
+    "hourlyRate": 500,
+    "memberRate": 400,
+    "nonMemberRate": 550,
+    "taxPercent": 18,
+    "depositRequired": true,
+    "depositAmount": 1000
+  },
+
+  "priceRules": [
+    {
+      "ruleType": "WeekendDiscount",
+      "value": 10,
+      "startDate": "2025-04-01T00:00:00.000Z",
+      "endDate": "2025-12-31T00:00:00.000Z"
+    }
+  ],
+
+  "availability": {
+    "daysOfWeek": [1, 2, 3, 4, 5, 6],
+    "openTime": "09:00",
+    "closeTime": "20:00",
+    "minBookingMinutes": 30,
+    "maxBookingMinutes": 480,
+    "timezone": "Asia/Kolkata"
+  },
+  "blackoutDates": ["2025-12-25", "2025-01-01"],
+  "blackoutRanges": [
+    {
+      "start": "2025-06-10T09:00:00.000Z",
+      "end": "2025-06-15T18:00:00.000Z",
+      "reason": "Scheduled Maintenance"
+    }
+  ],
+
+  "bookingRules": {
+    "minNoticeHours": 2,
+    "maxNoticeDays": 60,
+    "bufferMinutesBefore": 10,
+    "bufferMinutesAfter": 10,
+    "allowRecurringBookings": true,
+    "maxRecurringInstances": 5,
+    "cancellationPolicy": {
+      "freeCancelBeforeHours": 12,
+      "cancellationFee": 200
+    }
+  },
+
+  "availableTimeSlots": [
+    { "startTime": "09:00 AM", "endTime": "10:00 AM" },
+    { "startTime": "10:00 AM", "endTime": "11:00 AM" },
+    { "startTime": "11:00 AM", "endTime": "12:00 PM" },
+    { "startTime": "12:00 PM", "endTime": "01:00 PM" },
+    { "startTime": "02:00 PM", "endTime": "03:00 PM" },
+    { "startTime": "03:00 PM", "endTime": "04:00 PM" },
+    { "startTime": "04:00 PM", "endTime": "05:00 PM" }
+  ],
+
+  "isBookable": true,
+  "isBookingClosed": false,
+  "isArchived": false,
+  "status": "active",
+
+  "location": {
+    "type": "Point",
+    "coordinates": [72.823, 18.920],
+    "mapLink": "https://goo.gl/maps/xyz123"
+  },
+  "accessInstructions": "Check in at reception, 3rd floor east wing.",
+  "accessControl": {
+    "method": "Keycard",
+    "allowedRoles": ["admin", "receptionist"],
+    "allowedUsers": ["671a1d28f4bca52b4449e999"]
+  },
+
+
+  "createdBy": "671a1d28f4bca52b4449e555",
+  "updatedBy": "671a1d28f4bca52b4449e556",
+  "createdFromIp": "203.122.58.44",
+  "lastUpdatedFromIp": "203.122.58.44",
+  "createdAt": "2025-11-10T08:00:00.000Z",
+  "updatedAt": "2025-11-10T08:00:00.000Z"
+}

@@ -14,6 +14,11 @@ const checkPermission = (required) => {
       if (role.roleName && role.roleName.toLowerCase() === "ondemanduser") {
         return next();
       }
+      const requiredLower = String(required).toLowerCase();
+      const roleLower = String(role.roleName || '').toLowerCase();
+      if ((roleLower === 'client' || roleLower === 'member') && requiredLower === 'invoice:send') {
+        return next();
+      }
 
       const perms = Array.isArray(role.permissions) ? role.permissions : [];
       if (!perms.includes(required) && !perms.includes("*")) {

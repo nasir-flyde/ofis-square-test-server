@@ -1,6 +1,7 @@
 import express from "express";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
 import universalMiddleware from '../middlewares/universalAuthVerify.js';
+import upload from "../middlewares/multer.js";
 import {
   getMemberDashboard,
   getMyProfile,
@@ -19,7 +20,7 @@ router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 router.get("/me", getMyProfile);
 router.get("/me/tickets",universalMiddleware, getMyTickets);
-router.post("/me/tickets", createMyTicket);
+router.post("/me/tickets", upload.array('images', 5), createMyTicket);
 router.get("/me/bookings", getMyBookings);
 router.get("/me/notifications", getMyNotifications);
 router.post("/me/notifications/:id/read", markNotificationRead);
