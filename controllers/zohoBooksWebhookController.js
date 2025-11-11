@@ -37,8 +37,23 @@ export const handleZohoBooksWebhook = async (req, res) => {
       timestamp: new Date().toISOString(),
       method: req.method,
       url: req.url,
-      contentType: req.headers['content-type']
+      contentType: req.headers['content-type'],
+      contentLength: req.headers['content-length']
     });
+
+    // Handle webhook verification/test requests (empty body)
+    const contentLength = parseInt(req.headers['content-length'] || '0');
+    if (contentLength === 0 || !req.body || Object.keys(req.body).length === 0) {
+      console.log("Received webhook verification/test request with empty body");
+      const response = {
+        received: true,
+        message: "Webhook endpoint is active",
+        service: "ofis-square",
+        timestamp: new Date().toISOString()
+      };
+      await apiLogger.logWebhookResponse(requestId, 200, response, true);
+      return res.status(200).json(response);
+    }
 
     let payload = req.body;
     if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
@@ -56,13 +71,21 @@ export const handleZohoBooksWebhook = async (req, res) => {
       }
     }
 
-    // Basic webhook security - check for Zoho Books user agent and organization ID
+    // Basic webhook security - check for Zoho user agent and organization ID
     const userAgent = req.headers['user-agent'];
     const orgId = req.headers['x-com-zoho-organizationid'];
     const expectedOrgId = process.env.ZOHO_ORG_ID || '60047183737';
+    const zohoFeature = req.headers['x-zoho-crm-feature'];
     
-    if (!userAgent?.includes('ZohoBooks')) {
-      console.warn("Webhook received from non-Zoho Books user agent:", userAgent);
+    // Accept webhooks from both Zoho Books and Zoho CRM
+    const isZohoBooks = userAgent?.includes('ZohoBooks');
+    const isZohoCRM = userAgent?.includes('crm.zoho') || zohoFeature === 'webhook';
+    
+    if (!isZohoBooks && !isZohoCRM) {
+      console.warn("Webhook received from non-Zoho user agent:", userAgent);
+      // Don't reject - log and continue for debugging
+    } else {
+      console.log(`Webhook source identified: ${isZohoBooks ? 'Zoho Books' : 'Zoho CRM'}`);
     }
     
     if (orgId && orgId !== expectedOrgId) {
