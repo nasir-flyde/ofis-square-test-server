@@ -6,12 +6,14 @@ import {
   getUserById,
   createUser,
   updateUser,
-  deleteUser
+  deleteUser,
+  getInternalUsers
 } from "../controllers/userController.js";
 
 const router = express.Router();
 
 router.get("/", authMiddleware, getUsers);
+router.get("/internal", authMiddleware, getInternalUsers);
 router.get("/staff",getStaffUsers);
 router.get("/:id", getUserById);
 router.post("/", authMiddleware, createUser);

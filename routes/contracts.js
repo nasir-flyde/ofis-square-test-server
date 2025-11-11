@@ -137,8 +137,8 @@ router.post("/:id/send-to-client", authMiddleware, populateUserRole, requirePerm
 // Mark client as approved
 router.post("/:id/mark-client-approved", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_MARK_CLIENT_APPROVED), markClientApproved);
 
-// Record client feedback
-router.post("/:id/client-feedback", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), recordClientFeedback);
+// Record client feedback (with file attachments)
+router.post("/:id/client-feedback", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), upload.array('files', 10), recordClientFeedback);
 
 // Generate stamp paper version
 router.post("/:id/generate-stamp-paper", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_GENERATE_STAMP_PAPER), uploadStampPaper, generateStampPaper);

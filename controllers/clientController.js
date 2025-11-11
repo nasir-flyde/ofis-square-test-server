@@ -1180,14 +1180,14 @@ export const approveClientContract = async (req, res) => {
 export const submitClientContractFeedback = async (req, res) => {
   try {
     const { id } = req.params;
-    const { feedback } = req.body;
+    const feedback = req.body?.feedback || req.body;
     const clientId = req.clientId;
     
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    if (!feedback || !feedback.trim()) {
+    if (!feedback || (typeof feedback === 'string' && !feedback.trim())) {
       return res.status(400).json({ error: "Feedback is required" });
     }
 
@@ -1206,17 +1206,52 @@ export const submitClientContractFeedback = async (req, res) => {
       return res.status(400).json({ error: `Cannot provide feedback for contract with status: ${contract.status}` });
     }
 
-    // Update contract with feedback
-    contract.status = 'client_feedback_pending';
+    // Handle file uploads if present
+    const uploadedFiles = [];
+    if (req.files && req.files.length > 0) {
+      const imagekit = (await import('../utils/imageKit.js')).default;
+      for (const file of req.files) {
+        try {
+          const fileName = `client_feedback_${id}_${Date.now()}_${file.originalname}`;
+          const uploadResponse = await imagekit.upload({
+            file: file.buffer,
+            fileName: fileName,
+            folder: "/contracts/client-feedback"
+          });
+          
+          uploadedFiles.push({
+            fileName: file.originalname,
+            fileUrl: uploadResponse.url,
+            uploadedAt: new Date()
+          });
+        } catch (uploadErr) {
+          console.error("File upload error:", uploadErr);
+          // Continue with other files even if one fails
+        }
+      }
+    }
+
+    // Update contract with feedback (keep current status)
     contract.clientFeedback = feedback;
     contract.clientFeedbackAt = new Date();
     
+    // Add uploaded files to feedback attachments
+    if (uploadedFiles.length > 0) {
+      if (!contract.clientFeedbackAttachments) {
+        contract.clientFeedbackAttachments = [];
+      }
+      contract.clientFeedbackAttachments.push(...uploadedFiles);
+    }
+    
     // Add to comments array
     if (!contract.comments) contract.comments = [];
+    const attachmentInfo = uploadedFiles.length > 0 
+      ? ` (${uploadedFiles.length} attachment${uploadedFiles.length > 1 ? 's' : ''})` 
+      : '';
     contract.comments.push({
-      user: 'Client',
-      text: feedback,
-      timestamp: new Date()
+      type: 'client',
+      message: `Client feedback: ${feedback}${attachmentInfo}`,
+      at: new Date()
     });
     
     await contract.save();

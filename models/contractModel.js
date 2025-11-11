@@ -133,6 +133,11 @@ const contractSchema = new mongoose.Schema(
     clientApprovedAt: { type: Date },
     clientFeedback: { type: String, trim: true },
     clientFeedbackAt: { type: Date },
+    clientFeedbackAttachments: [{
+      fileName: { type: String, trim: true },
+      fileUrl: { type: String, trim: true },
+      uploadedAt: { type: Date, default: Date.now }
+    }],
     // Stamp paper
     stampPaperGeneratedAt: { type: Date },
     stampPaperUrl: { type: String, trim: true },
@@ -171,6 +176,10 @@ const contractSchema = new mongoose.Schema(
           default: "internal",
         },
         message: { type: String, trim: true },
+        mentionedUsers: [{
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User"
+        }],
       },
     ],
     // Legacy fields for backward compatibility

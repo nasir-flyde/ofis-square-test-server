@@ -65,7 +65,7 @@ router.get("/invoices", clientMiddleware, getClientInvoices);
 router.get("/payments", clientMiddleware, getClientPayments);
 router.get("/contracts", clientMiddleware, getClientContracts);
 router.post("/contracts/:id/approve", clientMiddleware, approveClientContract);
-router.post("/contracts/:id/feedback", clientMiddleware, submitClientContractFeedback);
+router.post("/contracts/:id/feedback", clientMiddleware, kycUploads, submitClientContractFeedback);
 router.get("/tickets", clientMiddleware, getClientTickets);
 router.post("/tickets", clientMiddleware, kycUploads, createClientTicket);
 

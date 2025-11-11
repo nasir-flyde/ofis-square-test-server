@@ -216,8 +216,32 @@ export const getContractById = async (req, res) => {
     const { id } = req.params;
     const contract = await Contract.findById(id)
       .populate("client", "companyName email contactPerson phone companyAddress")
-      .populate("building", "name address perSeatPricing city state");
+      .populate("building", "name address perSeatPricing city state")
+      .populate("comments.by", "name email")
+      .populate("comments.mentionedUsers", "name email");
+    
     if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+    
+    // Filter comments based on user access
+    const currentUserId = req.user?._id?.toString();
+    if (currentUserId && contract.comments) {
+      contract.comments = contract.comments.filter(comment => {
+        // Show all non-internal comments
+        if (comment.type !== 'internal') return true;
+        
+        // Show internal comments if user is the author
+        if (comment.by?._id?.toString() === currentUserId) return true;
+        
+        // Show internal comments if user is mentioned
+        if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
+          return true;
+        }
+        
+        // Hide other internal comments
+        return false;
+      });
+    }
+    
     return res.json({ success: true, data: contract });
   } catch (err) {
     console.error("getContractById error:", err);

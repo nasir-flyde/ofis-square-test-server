@@ -5,7 +5,6 @@ import bcrypt from "bcryptjs";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import mongoose from "mongoose";
 
-// GET /api/users - Get all users with optional filters
 export const getUsers = async (req, res) => {
   try {
     const { role, page = 1, limit = 20, search, excludeMember } = req.query;
@@ -19,8 +18,6 @@ export const getUsers = async (req, res) => {
         { phone: { $regex: search, $options: 'i' } }
       ];
     }
-
-    // Optionally exclude users with the 'member' role when requested and when no explicit role filter is applied
     if (excludeMember === 'true' && !role) {
       try {
         const memberRole = await Role.findOne({ roleName: 'member' }).select('_id');
@@ -28,12 +25,10 @@ export const getUsers = async (req, res) => {
           filter.role = { $ne: memberRole._id };
         }
       } catch (e) {
-        // If role lookup fails, proceed without excluding to avoid breaking the endpoint
       }
     }
 
     const skip = (page - 1) * limit;
-    
     const users = await User.find(filter)
       .populate('role', 'roleName permissions')
       .populate('buildingId', 'name address')
@@ -366,6 +361,43 @@ export const getStaffUsers = async (req, res) => {
       }
     });
   } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const getInternalUsers = async (req, res) => {
+  try {
+    // Fetch roles: legal_team, finance_junior, finance_senior, system_admin
+    const internalRoles = await Role.find({
+      roleName: { $in: ['Legal Team', 'Finance Junior', 'Finance Senior', 'System Admin'] }
+    }).select('_id roleName');
+
+    if (!internalRoles || internalRoles.length === 0) {
+      return res.json({
+        success: true,
+        users: []
+      });
+    }
+
+    const roleIds = internalRoles.map(r => r._id);
+
+    // Fetch users with these roles
+    const users = await User.find({ role: { $in: roleIds } })
+      .populate('role', 'roleName')
+      .select('_id name email role')
+      .sort({ name: 1 });
+
+    return res.json({
+      success: true,
+      users: users.map(u => ({
+        _id: u._id,
+        name: u.name,
+        email: u.email,
+        role: u.role?.roleName || 'Unknown'
+      }))
+    });
+  } catch (err) {
+    console.error('getInternalUsers error:', err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

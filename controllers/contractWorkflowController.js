@@ -368,34 +368,82 @@ export const recordClientFeedback = async (req, res) => {
       });
     }
     
-    contract.status = "draft"; // Return to draft for revision
+    // Handle file uploads if present
+    const uploadedFiles = [];
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const fileName = `feedback_${id}_${Date.now()}_${file.originalname}`;
+          const uploadResponse = await imagekit.upload({
+            file: file.buffer,
+            fileName: fileName,
+            folder: "/contracts/feedback"
+          });
+          
+          uploadedFiles.push({
+            fileName: file.originalname,
+            fileUrl: uploadResponse.url,
+            uploadedAt: new Date()
+          });
+        } catch (uploadErr) {
+          console.error("File upload error:", uploadErr);
+          // Continue with other files even if one fails
+        }
+      }
+    }
+    
+    // Keep current status, just update feedback
     contract.clientFeedback = feedback;
     contract.clientFeedbackAt = new Date();
+    
+    // Add uploaded files to feedback attachments
+    if (uploadedFiles.length > 0) {
+      if (!contract.clientFeedbackAttachments) {
+        contract.clientFeedbackAttachments = [];
+      }
+      contract.clientFeedbackAttachments.push(...uploadedFiles);
+    }
+    
     contract.lastActionBy = req.user?._id || null;
     contract.lastActionAt = new Date();
     contract.version += 1;
     
     // Add comment
+    const attachmentInfo = uploadedFiles.length > 0 
+      ? ` (${uploadedFiles.length} attachment${uploadedFiles.length > 1 ? 's' : ''})` 
+      : '';
     contract.comments.push({
       by: req.user?._id || null,
       type: "client",
-      message: `Client feedback: ${feedback}`
+      message: `Client feedback: ${feedback}${attachmentInfo}`
     });
     
     await contract.save();
     
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       feedback: feedback,
+      attachmentsCount: uploadedFiles.length,
       previousStatus: "sent_to_client",
       action: 'client_feedback'
     });
     
-    // TODO: Notify Sales and Legal about client feedback
+    // Send email notification to stakeholders
+    try {
+      const populatedContract = await Contract.findById(id)
+        .populate('client', 'companyName')
+        .populate('building', 'name');
+      const { sendClientFeedbackAlertEmail } = await import('../utils/contractEmailService.js');
+      await sendClientFeedbackAlertEmail(populatedContract, feedback);
+    } catch (emailErr) {
+      console.error('Failed to send feedback notification email:', emailErr);
+      // Don't fail the request if email fails
+    }
     
     return res.json({ 
       success: true,
       message: "Client feedback recorded, contract returned to draft",
-      contract
+      contract,
+      attachmentsUploaded: uploadedFiles.length
     });
   } catch (err) {
     console.error("recordClientFeedback error:", err);
@@ -620,7 +668,7 @@ export const markSigned = async (req, res) => {
 export const addComment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { message, type } = req.body || {};
+    const { message, type, mentionedUsers } = req.body || {};
     
     if (!message || message.trim() === "") {
       return res.status(400).json({ 
@@ -643,10 +691,14 @@ export const addComment = async (req, res) => {
       });
     }
     
+    // Validate mentionedUsers if provided
+    const validMentionedUsers = Array.isArray(mentionedUsers) ? mentionedUsers.filter(id => id) : [];
+    
     contract.comments.push({
       by: req.user?._id || null,
       type: commentType,
-      message: message.trim()
+      message: message.trim(),
+      mentionedUsers: validMentionedUsers
     });
     
     await contract.save();
@@ -655,20 +707,42 @@ export const addComment = async (req, res) => {
       commentBy: req.user?._id,
       commentType: commentType,
       message: message.trim(),
+      mentionedUsersCount: validMentionedUsers.length,
       action: 'comment_added'
     });
     
-    // Send email notification to stakeholders (Sales user + Legal team + Admins)
+    // Send targeted email notifications
     const populatedContract = await Contract.findById(id)
       .populate('client', 'companyName')
       .populate('building', 'name');
     const addedByName = req.user?.name || 'Unknown User';
-    await sendContractCommentEmail(populatedContract, message.trim(), addedByName);
+    
+    if (commentType === 'internal' && validMentionedUsers.length > 0) {
+      // Send email only to mentioned users for internal comments
+      const User = (await import('../models/userModel.js')).default;
+      const mentionedUserDocs = await User.find({ _id: { $in: validMentionedUsers } }).select('name email');
+      
+      for (const user of mentionedUserDocs) {
+        try {
+          await sendContractCommentEmail(populatedContract, message.trim(), addedByName, user.email, user.name);
+        } catch (emailErr) {
+          console.error(`Failed to send email to ${user.email}:`, emailErr);
+        }
+      }
+    } else {
+      // Send to all stakeholders for non-internal or non-mentioned comments
+      await sendContractCommentEmail(populatedContract, message.trim(), addedByName);
+    }
+    
+    // Populate the comment for response
+    const updatedContract = await Contract.findById(id)
+      .populate('comments.by', 'name email')
+      .populate('comments.mentionedUsers', 'name email');
     
     return res.json({ 
       success: true,
       message: "Comment added to contract",
-      contract
+      contract: updatedContract
     });
   } catch (err) {
     console.error("addComment error:", err);
