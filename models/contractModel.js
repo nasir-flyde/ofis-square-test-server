@@ -88,6 +88,73 @@ const contractSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // New approval flag system
+    iskycuploaded: {
+      type: Boolean,
+      default: false,
+    },
+    iskycapproved: {
+      type: Boolean,
+      default: false,
+    },
+    adminapproved: {
+      type: Boolean,
+      default: false,
+    },
+    legalteamapproved: {
+      type: Boolean,
+      default: false,
+    },
+    clientapproved: {
+      type: Boolean,
+      default: false,
+    },
+    financeapproved: {
+      type: Boolean,
+      default: false,
+    },
+    securitydeposited: {
+      type: Boolean,
+      default: false,
+    },
+    iscontractsentforsignature: {
+      type: Boolean,
+      default: false,
+    },
+    isclientsigned: {
+      type: Boolean,
+      default: false,
+    },
+    // Additional fields for approval workflow
+    kycDocuments: [{
+      fileName: { type: String, trim: true },
+      fileUrl: { type: String, trim: true },
+      uploadedAt: { type: Date, default: Date.now }
+    }],
+    kycApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    kycApprovedAt: { type: Date },
+    adminApprovalReason: { type: String, trim: true },
+    legalApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    legalApprovedAt: { type: Date },
+    legalApprovalReason: { type: String, trim: true },
+    financeApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    financeApprovedAt: { type: Date },
+    financeApprovalReason: { type: String, trim: true },
+    finalApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    finalApprovedAt: { type: Date },
+    finalApprovalReason: { type: String, trim: true },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -172,7 +239,7 @@ const contractSchema = new mongoose.Schema(
         at: { type: Date, default: Date.now },
         type: {
           type: String,
-          enum: ["review", "internal", "client"],
+          enum: ["review", "internal", "client", "legal_only"],
           default: "internal",
         },
         message: { type: String, trim: true },

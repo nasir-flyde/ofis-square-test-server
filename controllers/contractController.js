@@ -225,20 +225,35 @@ export const getContractById = async (req, res) => {
     // Filter comments based on user access
     const currentUserId = req.user?._id?.toString();
     if (currentUserId && contract.comments) {
+      // Get current user's role for legal_only filtering
+      const User = (await import('../models/userModel.js')).default;
+      const currentUser = await User.findById(currentUserId).populate('role', 'roleName');
+      const userRole = currentUser?.role?.roleName;
+      
       contract.comments = contract.comments.filter(comment => {
-        // Show all non-internal comments
-        if (comment.type !== 'internal') return true;
+        // Show all review and client comments
+        if (comment.type === 'review' || comment.type === 'client') return true;
         
-        // Show internal comments if user is the author
-        if (comment.by?._id?.toString() === currentUserId) return true;
-        
-        // Show internal comments if user is mentioned
-        if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
-          return true;
+        // Handle legal_only comments
+        if (comment.type === 'legal_only') {
+          return ['Legal Team', 'System Admin'].includes(userRole);
         }
         
-        // Hide other internal comments
-        return false;
+        // Handle internal comments
+        if (comment.type === 'internal') {
+          // Show internal comments if user is the author
+          if (comment.by?._id?.toString() === currentUserId) return true;
+          
+          // Show internal comments if user is mentioned
+          if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
+            return true;
+          }
+          
+          // Hide other internal comments
+          return false;
+        }
+        
+        return true;
       });
     }
     
@@ -354,11 +369,13 @@ export const updateContract = async (req, res) => {
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
       ...(terms && { terms }),
+      adminapproved: false,
+      legalteamapproved: false,
+      financeapproved: false,
     };
 
     const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
     
-    // Log activity
     await logCRUDActivity(req, 'UPDATE', 'Contract', id, {
       before: existing.toObject(),
       after: updated.toObject(),

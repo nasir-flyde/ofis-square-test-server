@@ -684,11 +684,27 @@ export const addComment = async (req, res) => {
     }
     
     const commentType = type || "internal";
-    if (!["review", "internal", "client"].includes(commentType)) {
+    if (!["review", "internal", "client", "legal_only"].includes(commentType)) {
       return res.status(400).json({ 
         success: false, 
-        message: "Invalid comment type. Must be: review, internal, or client" 
+        message: "Invalid comment type. Must be: review, internal, client, or legal_only" 
       });
+    }
+    
+    // Validate legal_only access
+    if (commentType === 'legal_only') {
+      const User = (await import('../models/userModel.js')).default;
+      const Role = (await import('../models/roleModel.js')).default;
+      
+      const userWithRole = await User.findById(req.user?._id).populate('role', 'roleName');
+      const userRole = userWithRole?.role?.roleName;
+      
+      if (!['Legal Team', 'System Admin'].includes(userRole)) {
+        return res.status(403).json({ 
+          success: false, 
+          message: "Only Legal Team and System Admin can add legal_only comments" 
+        });
+      }
     }
     
     // Validate mentionedUsers if provided
@@ -723,6 +739,25 @@ export const addComment = async (req, res) => {
       const mentionedUserDocs = await User.find({ _id: { $in: validMentionedUsers } }).select('name email');
       
       for (const user of mentionedUserDocs) {
+        try {
+          await sendContractCommentEmail(populatedContract, message.trim(), addedByName, user.email, user.name);
+        } catch (emailErr) {
+          console.error(`Failed to send email to ${user.email}:`, emailErr);
+        }
+      }
+    } else if (commentType === 'legal_only') {
+      // Send email only to legal team and admin users
+      const User = (await import('../models/userModel.js')).default;
+      const Role = (await import('../models/roleModel.js')).default;
+      
+      const legalRoles = await Role.find({
+        roleName: { $in: ['Legal Team', 'System Admin'] }
+      }).select('_id');
+      
+      const roleIds = legalRoles.map(r => r._id);
+      const legalUsers = await User.find({ role: { $in: roleIds } }).select('name email');
+      
+      for (const user of legalUsers) {
         try {
           await sendContractCommentEmail(populatedContract, message.trim(), addedByName, user.email, user.name);
         } catch (emailErr) {

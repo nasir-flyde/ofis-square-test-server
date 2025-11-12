@@ -39,7 +39,6 @@ const BuildingSchema = new Schema(
       min: 0,
       default: null
     },
-    // Credit system: value per credit (INR) for this building
     creditValue: {
       type: Number,
       min: 0,
