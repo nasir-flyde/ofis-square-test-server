@@ -372,9 +372,35 @@ export const updateContract = async (req, res) => {
       adminapproved: false,
       legalteamapproved: false,
       financeapproved: false,
+      iscontractstamppaperupload: false,
     };
 
     const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
+    
+    // Auto-generate and upload contract PDF after update
+    try {
+      const populatedContract = await Contract.findById(id)
+        .populate("client")
+        .populate("building", "name address perSeatPricing");
+      
+      const pdfBuffer = await generateContractPDFBuffer(populatedContract);
+      const fileName = `contract_${id}_${Date.now()}.pdf`;
+      
+      const uploadResponse = await imagekit.upload({
+        file: pdfBuffer,
+        fileName: fileName,
+        folder: "/contracts"
+      });
+      
+      // Update contract with the new PDF URL
+      await Contract.findByIdAndUpdate(id, { fileUrl: uploadResponse.url });
+      updated.fileUrl = uploadResponse.url;
+      
+      console.log(`Contract PDF regenerated and uploaded: ${uploadResponse.url}`);
+    } catch (pdfError) {
+      console.error("Failed to regenerate/upload contract PDF:", pdfError);
+      // Don't fail contract update if PDF generation fails
+    }
     
     await logCRUDActivity(req, 'UPDATE', 'Contract', id, {
       before: existing.toObject(),
@@ -1337,7 +1363,7 @@ export const generateContractPDF = async (req, res) => {
       terms: contract.terms || ""
     };
 
-    const docDefinition = getContractTemplate(contractData);
+    const docDefinition = buildContractTemplate(contractData);
 
     // Create PDF with built-in fonts (no external files needed)
     const fonts = getFonts();
@@ -1370,34 +1396,215 @@ export const generateContractPDF = async (req, res) => {
   }
 };
 
-// Helper function: Generate contract PDF buffer for Zoho Sign
+function formatDate(date) {
+  if (!date) return '';
+  try {
+    return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }).format(new Date(date));
+  } catch (e) {
+    return new Date(date).toDateString();
+  }
+}
+
+/**
+ * Build the pdfmake docDefinition from contractData
+ * - contractData.termsSections is an ordered array of { heading, body } objects
+ */
+function buildContractTemplate(contractData) {
+  const { companyName, contactPerson, email, phone, companyAddress, buildingName, buildingAddress, capacity, monthlyRent, securityDeposit, contractStartDate, contractEndDate, termsSections } = contractData;
+
+  // Header + Title
+  const content = [];
+
+  // Company header (left) and Contract title (center)
+  content.push(
+    { text: companyName || 'OFIS SPACES PRIVATE LIMITED', style: 'companyHeader', alignment: 'center', margin: [0, 0, 0, 8] },
+    { text: 'TERMS AND CONDITIONS GOVERNING THE ENTERPRISE SERVICES QUA ALLOCATED SEATS OBTAINED BY CLIENT', style: 'contractTitle', alignment: 'center', margin: [0, 0, 0, 10] }
+  );
+
+  // Contract metadata table
+  content.push({
+    style: 'metaTable',
+    table: {
+      widths: ['*', '*'],
+      body: [
+        [{ text: 'Client', style: 'metaLabel' }, { text: companyName || '-', style: 'metaValue' }],
+        [{ text: 'Contact Person', style: 'metaLabel' }, { text: contactPerson || '-', style: 'metaValue' }],
+        [{ text: 'Email', style: 'metaLabel' }, { text: email || '-', style: 'metaValue' }],
+        [{ text: 'Phone', style: 'metaLabel' }, { text: phone || '-', style: 'metaValue' }],
+        [{ text: 'Client Address', style: 'metaLabel' }, { text: companyAddress || '-', style: 'metaValue' }],
+        [{ text: 'Building', style: 'metaLabel' }, { text: buildingName || '-', style: 'metaValue' }],
+        [{ text: 'Building Address', style: 'metaLabel' }, { text: buildingAddress || '-', style: 'metaValue' }],
+        [{ text: 'Allocated Seats (Capacity)', style: 'metaLabel' }, { text: (capacity || '-') + ' seats', style: 'metaValue' }],
+        [{ text: 'Monthly Rent', style: 'metaLabel' }, { text: monthlyRent ? `₹ ${monthlyRent}` : '-', style: 'metaValue' }],
+        [{ text: 'Security Deposit', style: 'metaLabel' }, { text: securityDeposit ? `₹ ${securityDeposit}` : '-', style: 'metaValue' }],
+        [{ text: 'Commencement Date', style: 'metaLabel' }, { text: contractStartDate || '-', style: 'metaValue' }],
+        [{ text: 'End Date', style: 'metaLabel' }, { text: contractEndDate || '-', style: 'metaValue' }]
+      ]
+    },
+    layout: {
+      hLineWidth: function(i, node) { return (i === 0 || i === node.table.body.length) ? 0 : 0.4; },
+      vLineWidth: function() { return 0; },
+      paddingLeft: function() { return 4; },
+      paddingRight: function() { return 4; },
+      paddingTop: function() { return 4; },
+      paddingBottom: function() { return 4; }
+    },
+    margin: [0, 0, 0, 10]
+  });
+
+  // Terms sections: render each section as heading + body text.
+  // termsSections expected as array: [{ heading, body }]
+  if (Array.isArray(termsSections) && termsSections.length > 0) {
+    let sectionNumber = 1;
+    for (const sec of termsSections) {
+      const heading = sec.heading || 'Section';
+      const body = (sec.body || '').trim();
+
+      // Add section header (numbered)
+      content.push({ text: `${sectionNumber}. ${heading}`, style: 'sectionHeading', margin: [0, 6, 0, 4] });
+
+      // Body is potentially long and contains paragraphs separated by newlines. Split & push paragraphs for better spacing.
+      const paragraphs = body.split(/\n{1,}/).map(p => p.trim()).filter(Boolean);
+      for (const para of paragraphs) {
+        content.push({ text: para, style: 'sectionBody', margin: [0, 0, 0, 6] });
+      }
+      sectionNumber++;
+    }
+  } else if (contractData.termsPlain) {
+    // fallback: single blob text
+    content.push({ text: 'Terms & Conditions', style: 'sectionHeading', margin: [0, 6, 0, 4] });
+    const paragraphs = contractData.termsPlain.split(/\n{1,}/).map(p => p.trim()).filter(Boolean);
+    for (const para of paragraphs) content.push({ text: para, style: 'sectionBody', margin: [0, 0, 0, 6] });
+  } else {
+    content.push({ text: 'Terms & Conditions not provided', style: 'sectionBody' });
+  }
+
+  // Signature block (mirrors your Word doc end with client / company signature lines)
+  content.push({
+    columns: [
+      {
+        width: '50%',
+        stack: [
+          { text: '\n\n\n\n', margin: [0, 0, 0, 0] },
+          { text: 'Client', style: 'sigLabel' },
+          { text: '__________________________', style: 'sigLine' },
+          { text: 'Name: ', style: 'sigSmall' },
+        ],
+        margin: [0, 12, 0, 0]
+      },
+      {
+        width: '50%',
+        stack: [
+          { text: '\n\n\n\n', margin: [0, 0, 0, 0] },
+          { text: 'Ofis Square', style: 'sigLabel' },
+          { text: '__________________________', style: 'sigLine' },
+          { text: 'Name: ', style: 'sigSmall' }
+        ],
+        margin: [0, 12, 0, 0]
+      }
+    ],
+    columnGap: 10
+  });
+
+  // Footer with company details from your Word doc (static example; replace if you want dynamic)
+  const footer = (currentPage, pageCount) => {
+    return {
+      columns: [
+        { text: 'OFIS SPACES PRIVATE LIMITED | Unit No. 212, Ofis Square, The Iconic Corenthum, Plot No. A-41, Sector-62, Noida, Uttar Pradesh, India - 201301', style: 'footerText', width: '*' },
+        { text: `Page ${currentPage} of ${pageCount}`, alignment: 'right', width: 80, style: 'footerText' }
+      ],
+      margin: [40, 8, 40, 8]
+    };
+  };
+
+  const docDefinition = {
+    pageSize: 'A4',
+    pageMargins: [40, 80, 40, 80],
+    content,
+    footer,
+    styles: {
+      companyHeader: { fontSize: 10, bold: true },
+      contractTitle: { fontSize: 12, bold: true, alignment: 'center', margin: [0, 4, 0, 8] },
+      metaLabel: { fontSize: 9, bold: true },
+      metaValue: { fontSize: 9 },
+      sectionHeading: { fontSize: 11, bold: true, decoration: 'underline' },
+      sectionBody: { fontSize: 9, lineHeight: 1.2 },
+      sigLabel: { fontSize: 10, bold: true },
+      sigLine: { fontSize: 10, margin: [0, 6, 0, 6] },
+      sigSmall: { fontSize: 9 },
+      footerText: { fontSize: 8, color: '#555555' }
+    },
+    defaultStyle: {
+      font: 'Helvetica'
+    }
+  };
+
+  return docDefinition;
+}
+
+/**
+ * Main function to generate PDF buffer for a contract object
+ * Returns Promise<Buffer>
+ */
 function generateContractPDFBuffer(contract) {
   try {
+    // Prepare contractData used by template builder
+    const client = contract.client || {};
+    const building = contract.building || {};
+
+    // Map dates to formatted strings
+    const contractStartDate = contract.startDate ? formatDate(contract.startDate) : '';
+    const contractEndDate = contract.endDate ? formatDate(contract.endDate) : '';
+
+    // Build ordered terms sections from contract.termsandconditions (first element expected)
+    let termsSections = [];
+    if (Array.isArray(contract.termsandconditions) && contract.termsandconditions.length > 0) {
+      const t = contract.termsandconditions[0]; // your stored object with named section objects
+      // define the order to match the Word document
+      const order = [
+        'denotations', 'scope', 'rightsGrantedToClient', 'payments',
+        'consequencesOfNonPayment', 'obligationsOfClient', 'obligationsOfOfisSquare',
+        'termination', 'consequencesOfTermination', 'renewal', 'miscellaneous',
+        'parking', 'disputeResolution', 'governingLaw', 'electronicSignature'
+      ];
+
+      for (const key of order) {
+        if (t[key] && (t[key].body || t[key].heading)) {
+          termsSections.push({
+            heading: t[key].heading || key,
+            body: t[key].body || ''
+          });
+        }
+      }
+    }
+
+    // If no structured sections, check for single-string terms field
     const contractData = {
-      companyName: contract.client.companyName,
-      contactPerson: contract.client.contactPerson,
-      email: contract.client.email,
-      phone: contract.client.phone,
-      companyAddress: contract.client.companyAddress,
-      buildingName: contract.building?.name || "TBD",
-      buildingAddress: contract.building?.address || "TBD",
-      capacity: contract.capacity || 4,
-      monthlyRent: contract.monthlyRent || 15000,
-      securityDeposit: contract.securityDeposit || 30000,
-      contractStartDate: contract.startDate ? contract.startDate.toLocaleDateString() : new Date().toLocaleDateString(),
-      contractEndDate: contract.endDate ? contract.endDate.toLocaleDateString() : new Date(Date.now() + 365*24*60*60*1000).toLocaleDateString(),
-      terms: contract.terms || ""
+      companyName: client.companyName || client.name || 'OFIS SPACES PRIVATE LIMITED',
+      contactPerson: client.contactPerson || client.contact_name || '',
+      email: client.email || '',
+      phone: client.phone || '',
+      companyAddress: client.companyAddress || client.address || '',
+      buildingName: building.name || '',
+      buildingAddress: building.address || '',
+      capacity: contract.capacity || '',
+      monthlyRent: contract.monthlyRent || '',
+      securityDeposit: (contract.securityDeposit && contract.securityDeposit.amount) ? contract.securityDeposit.amount : '',
+      contractStartDate,
+      contractEndDate,
+      termsSections: termsSections.length > 0 ? termsSections : undefined,
+      termsPlain: (!termsSections.length && contract.terms) ? contract.terms : undefined
     };
 
-    const docDefinition = getContractTemplate(contractData);
+    const docDefinition = buildContractTemplate(contractData);
 
     const fonts = getFonts();
     const printer = new PdfPrinter(fonts);
     const pdfDoc = printer.createPdfKitDocument(docDefinition);
-    
+
     const chunks = [];
     pdfDoc.on('data', chunk => chunks.push(chunk));
-    
+
     return new Promise((resolve, reject) => {
       pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
       pdfDoc.on('error', reject);
@@ -1405,31 +1612,28 @@ function generateContractPDFBuffer(contract) {
     });
   } catch (error) {
     console.error("Generate contract PDF buffer error:", error);
-    // Fallback to simple text
+    // fallback plain text buffer (keeps earlier behavior)
     const contractText = `
 CONTRACT AGREEMENT
 
-Client: ${contract.client.companyName}
-Contact: ${contract.client.contactPerson}
-Email: ${contract.client.email}
+Client: ${contract?.client?.companyName || contract?.client?.name || ''}
+Contact: ${contract?.client?.contactPerson || ''}
 
-Start Date: ${contract.startDate ? contract.startDate.toDateString() : 'TBD'}
-End Date: ${contract.endDate ? contract.endDate.toDateString() : 'TBD'}
+Start Date: ${contract?.startDate ? new Date(contract.startDate).toDateString() : 'TBD'}
+End Date: ${contract?.endDate ? new Date(contract.endDate).toDateString() : 'TBD'}
 
 Terms and Conditions:
-[Contract terms would go here]
+${contract?.terms || '[Contract terms would go here]'}
 
 Signature: ___________________
 Date: ___________________
 `;
-  
-  return Buffer.from(contractText, 'utf8');
-}
+    return Promise.resolve(Buffer.from(contractText, 'utf8'));
+  }
 }
 
 // Helper: configure fonts for pdfmake in Node.js (use default fonts to avoid filesystem issues)
 function getFonts() {
-  // Use built-in fonts that don't require external files
   return {
     Helvetica: {
       normal: 'Helvetica',
@@ -1484,6 +1688,149 @@ export const updateSecurityDeposit = async (req, res) => {
   } catch (error) {
     console.error("Update security deposit error:", error);
     await logErrorActivity(req, error, "Update Security Deposit");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Add comment to contract (general or section-specific)
+export const addComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      message, 
+      type = "internal", 
+      mentionedUsers = [],
+      sectionType = "general",
+      termsSection,
+      paragraphIndex
+    } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, message: "Comment message is required" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Validate section-specific comment data
+    if (sectionType === "terms_section") {
+      if (!termsSection) {
+        return res.status(400).json({ success: false, message: "Terms section is required for section-specific comments" });
+      }
+      
+      const validSections = [
+        "denotations", "scope", "rightsGrantedToClient", "payments",
+        "consequencesOfNonPayment", "obligationsOfClient", "obligationsOfOfisSquare",
+        "termination", "consequencesOfTermination", "renewal", "miscellaneous",
+        "parking", "disputeResolution", "governingLaw", "electronicSignature"
+      ];
+      
+      if (!validSections.includes(termsSection)) {
+        return res.status(400).json({ success: false, message: "Invalid terms section" });
+      }
+    }
+
+    const newComment = {
+      by: req.user?._id,
+      at: new Date(),
+      type,
+      message: message.trim(),
+      mentionedUsers: mentionedUsers.filter(id => mongoose.Types.ObjectId.isValid(id)),
+      sectionType,
+      ...(sectionType === "terms_section" && { termsSection }),
+      ...(paragraphIndex !== undefined && { paragraphIndex: Number(paragraphIndex) })
+    };
+
+    contract.comments.push(newComment);
+    await contract.save();
+
+    // Populate the new comment for response
+    await contract.populate([
+      { path: "comments.by", select: "name email" },
+      { path: "comments.mentionedUsers", select: "name email" }
+    ]);
+
+    const addedComment = contract.comments[contract.comments.length - 1];
+
+    await logContractActivity(req, "COMMENT_ADDED", "Contract", contract._id, {
+      commentType: type,
+      sectionType,
+      termsSection,
+      paragraphIndex,
+      message: message.substring(0, 100) + (message.length > 100 ? "..." : "")
+    });
+
+    return res.json({
+      success: true,
+      data: addedComment,
+      message: "Comment added successfully"
+    });
+  } catch (error) {
+    console.error("Add comment error:", error);
+    await logErrorActivity(req, error, "Add Contract Comment");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get comments for a specific terms section
+export const getSectionComments = async (req, res) => {
+  try {
+    const { id, section } = req.params;
+    const { paragraphIndex } = req.query;
+
+    const contract = await Contract.findById(id)
+      .populate("comments.by", "name email")
+      .populate("comments.mentionedUsers", "name email");
+
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Filter comments for the specific section
+    let sectionComments = contract.comments.filter(comment => 
+      comment.sectionType === "terms_section" && 
+      comment.termsSection === section
+    );
+
+    // Further filter by paragraph index if specified
+    if (paragraphIndex !== undefined) {
+      const pIndex = Number(paragraphIndex);
+      sectionComments = sectionComments.filter(comment => 
+        comment.paragraphIndex === pIndex
+      );
+    }
+
+    // Filter comments based on user access (same logic as getContractById)
+    const currentUserId = req.user?._id?.toString();
+    if (currentUserId) {
+      const User = (await import('../models/userModel.js')).default;
+      const currentUser = await User.findById(currentUserId).populate('role', 'roleName');
+      const userRole = currentUser?.role?.roleName;
+      
+      sectionComments = sectionComments.filter(comment => {
+        if (comment.type === 'review' || comment.type === 'client') return true;
+        if (comment.type === 'legal_only') {
+          return ['Legal Team', 'System Admin'].includes(userRole);
+        }
+        if (comment.type === 'internal') {
+          if (comment.by?._id?.toString() === currentUserId) return true;
+          if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
+            return true;
+          }
+          return false;
+        }
+        return true;
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: sectionComments
+    });
+  } catch (error) {
+    console.error("Get section comments error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -5,6 +5,8 @@ import {
   legalApprove,
   setAdminApproval,
   setClientApproval,
+  uploadStampPaper,
+  recordSecurityDeposit,
   markClientSigned,
   getContractsByWorkflowStage,
   getWorkflowStatus
@@ -53,6 +55,23 @@ router.post("/:id/client/approve",
   populateUserRole, 
   requirePermission(PERMISSIONS.CONTRACT_UPDATE),
   setClientApproval
+);
+
+// Stamp Paper Upload (After client approval)
+router.post("/:id/stamp-paper/upload", 
+  authMiddleware, 
+  populateUserRole, 
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  upload.single('file'),
+  uploadStampPaper
+);
+
+// Security Deposit Recording (After client approval)
+router.post("/:id/security-deposit", 
+  authMiddleware, 
+  populateUserRole, 
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  recordSecurityDeposit
 );
 
 router.post("/:id/client/sign", 

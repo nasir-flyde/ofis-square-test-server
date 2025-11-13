@@ -15,7 +15,9 @@ import {
   approveContract,
   rejectContract,
   getPendingApprovalContracts,
-  updateSecurityDeposit
+  updateSecurityDeposit,
+  addComment,
+  getSectionComments
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -29,7 +31,6 @@ import {
   generateStampPaper,
   sendForESignature,
   markSigned,
-  addComment,
   getContractsByStatus
 } from "../controllers/contractWorkflowController.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -149,8 +150,11 @@ router.post("/:id/send-for-esignature", authMiddleware, populateUserRole, requir
 // Mark contract as signed
 router.post("/:id/mark-signed", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), markSigned);
 
-// Add comment to contract
+// Add comment to contract (general or section-specific)
 router.post("/:id/comments", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), addComment);
+
+// Get comments for a specific terms section
+router.get("/:id/sections/:section/comments", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getSectionComments);
 
 // Update security deposit
 router.post("/:id/security-deposit", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), updateSecurityDeposit);

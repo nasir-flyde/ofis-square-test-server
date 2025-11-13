@@ -219,7 +219,7 @@ export const legalApprove = async (req, res) => {
   }
 };
 
-// Admin approval (after legal approval)
+// Admin approval (System Admin only)
 export const setAdminApproval = async (req, res) => {
   try {
     const { id } = req.params;
@@ -233,11 +233,11 @@ export const setAdminApproval = async (req, res) => {
       });
     }
 
-    // Check if legal approval is completed first
-    if (!contract.legalteamapproved) {
-      return res.status(400).json({ 
+    // Check if user has System Admin role
+    if (req.user.role?.roleName !== 'System Admin') {
+      return res.status(403).json({ 
         success: false, 
-        message: 'Legal approval must be completed before admin approval' 
+        message: 'Only System Admin can perform admin approval' 
       });
     }
 
@@ -332,6 +332,81 @@ export const setClientApproval = async (req, res) => {
   }
 };
 
+// Upload stamp paper (separate from sending for signature)
+export const uploadStampPaper = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body || {};
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No stamp paper file provided' 
+      });
+    }
+    
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Contract not found' 
+      });
+    }
+
+    // Check if client approval is completed first
+    if (!contract.clientapproved) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Client approval must be completed before uploading stamp paper' 
+      });
+    }
+
+    // Upload file to ImageKit
+    const uploadResponse = await imagekit.upload({
+      file: file.buffer,
+      fileName: `${Date.now()}_${file.originalname}`,
+      folder: `/contracts/stamp-papers/${id}/`,
+      useUniqueFileName: true
+    });
+
+    // Update contract with stamp paper info
+    contract.stampPaperUrl = uploadResponse.url;
+    contract.stampPaperFileId = uploadResponse.fileId;
+    contract.stampPaperNotes = notes || null;
+    contract.stampPaperUploadedAt = new Date();
+    contract.stampPaperUploadedBy = req.user.id;
+    contract.iscontractstamppaperupload = true;
+    
+    await contract.save();
+
+    // Log activity
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      uploadedBy: req.user.id,
+      fileName: file.originalname,
+      notes: notes,
+      action: 'stamp_paper_uploaded'
+    });
+
+    res.json({
+      success: true,
+      message: 'Stamp paper uploaded successfully',
+      data: {
+        stampPaperUrl: uploadResponse.url,
+        workflowStage: getWorkflowStage(contract)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error uploading stamp paper:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to upload stamp paper',
+      error: error.message 
+    });
+  }
+};
+
 // Send contract for signature (after client approval)
 export const sendForSignature = async (req, res) => {
   try {
@@ -388,6 +463,70 @@ export const sendForSignature = async (req, res) => {
   }
 };
 
+
+// Security Deposit Recording (after client approval)
+export const recordSecurityDeposit = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, type, notes, paidAt } = req.body || {};
+    
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Contract not found' 
+      });
+    }
+
+    // Check if client approval is completed first
+    if (!contract.clientapproved) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Client approval must be completed before recording security deposit' 
+      });
+    }
+
+    // Update security deposit information
+    contract.securitydeposited = true;
+    contract.securityDeposit = {
+      amount: amount || 0,
+      type: type || 'cash',
+      notes: notes || null
+    };
+    contract.securityDepositPaidAt = paidAt ? new Date(paidAt) : new Date();
+    contract.securityDepositRecordedBy = req.user.id;
+    
+    await contract.save();
+
+    // Log activity
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      recordedBy: req.user.id,
+      amount: amount,
+      type: type,
+      notes: notes,
+      paidAt: contract.securityDepositPaidAt,
+      action: 'security_deposit_recorded'
+    });
+
+    res.json({
+      success: true,
+      message: 'Security deposit recorded successfully',
+      data: {
+        workflowStage: getWorkflowStage(contract),
+        securityDeposit: contract.securityDeposit,
+        securityDepositPaidAt: contract.securityDepositPaidAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Error recording security deposit:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to record security deposit',
+      error: error.message 
+    });
+  }
+};
 
 // Mark client as signed and activate contract
 export const markClientSigned = async (req, res) => {

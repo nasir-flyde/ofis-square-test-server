@@ -62,6 +62,68 @@ const contractSchema = new mongoose.Schema(
       ref: "User",
     },
     terms: { type: String, trim: true },
+    termsandconditions: [{
+      denotations: {
+        heading: { type: String, default: "Denotations" },
+        body: [{ type: String }]
+      },
+      scope: {
+        heading: { type: String, default: "Scope" },
+        body: [{ type: String }]
+      },
+      rightsGrantedToClient: {
+        heading: { type: String, default: "Rights granted to the Client" },
+        body: [{ type: String }]
+      },
+      payments: {
+        heading: { type: String, default: "Payments of Charges" },
+        body: [{ type: String }]
+      },
+      consequencesOfNonPayment: {
+        heading: { type: String, default: "Consequences of Non-Payment" },
+        body: [{ type: String }]
+      },
+      obligationsOfClient: {
+        heading: { type: String, default: "Obligations of the Client" },
+        body: [{ type: String }]
+      },
+      obligationsOfOfisSquare: {
+        heading: { type: String, default: "Rights / Obligations of Ofis Square" },
+        body: [{ type: String }]
+      },
+      termination: {
+        heading: { type: String, default: "Termination" },
+        body: [{ type: String }]
+      },
+      consequencesOfTermination: {
+        heading: { type: String, default: "Consequences of Termination" },
+        body: [{ type: String }]
+      },
+      renewal: {
+        heading: { type: String, default: "Renewal" },
+        body: [{ type: String }]
+      },
+      miscellaneous: {
+        heading: { type: String, default: "Miscellaneous" },
+        body: [{ type: String }]
+      },
+      parking: {
+        heading: { type: String, default: "Parking" },
+        body: [{ type: String }]
+      },
+      disputeResolution: {
+        heading: { type: String, default: "Dispute Resolution" },
+        body: [{ type: String }]
+      },
+      governingLaw: {
+        heading: { type: String, default: "Governing Law" },
+        body: [{ type: String }]
+      },
+      electronicSignature: {
+        heading: { type: String, default: "Electronic Signature Acknowledgement And Consent" },
+        body: [{ type: String }]
+      }
+    }],
     status: {
       type: String,
       enum: [
@@ -118,6 +180,10 @@ const contractSchema = new mongoose.Schema(
       default: false,
     },
     iscontractsentforsignature: {
+      type: Boolean,
+      default: false,
+    },
+    iscontractstamppaperupload: {
       type: Boolean,
       default: false,
     },
@@ -247,6 +313,22 @@ const contractSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: "User"
         }],
+        // Section-specific comment fields
+        sectionType: {
+          type: String,
+          enum: ["general", "terms_section"],
+          default: "general"
+        },
+        termsSection: {
+          type: String,
+          enum: [
+            "denotations", "scope", "rightsGrantedToClient", "payments",
+            "consequencesOfNonPayment", "obligationsOfClient", "obligationsOfOfisSquare",
+            "termination", "consequencesOfTermination", "renewal", "miscellaneous",
+            "parking", "disputeResolution", "governingLaw", "electronicSignature"
+          ]
+        },
+        paragraphIndex: { type: Number }, // For commenting on specific paragraphs within a section
       },
     ],
     // Legacy fields for backward compatibility

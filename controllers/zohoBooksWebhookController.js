@@ -779,17 +779,14 @@ async function mapZohoCustomerToClient(customer) {
         enable_portal: cp.enable_portal || false
       })) : [],
 
-    // Zoho linkage
     zohoBooksContactId: customer.customer_id,
     currencyId: customer.currency_id || undefined,
     pricebookId: customer.pricebook_id || undefined,
 
-    // Status
     companyDetailsComplete: true,
-    kycStatus: "pending"
+    kycStatus: "verified"
   };
 
-  // Remove undefined fields
   Object.keys(clientData).forEach(key => {
     if (clientData[key] === undefined) {
       delete clientData[key];
@@ -799,9 +796,7 @@ async function mapZohoCustomerToClient(customer) {
   return clientData;
 }
 
-// Legacy contact mapping function (for backward compatibility)
 async function mapZohoContactToClient(contact) {
-  // Map Zoho contact fields to client model
   const clientData = {
     companyName: contact.company_name || contact.contact_name || "Unknown Company",
     legalName: contact.legal_name || contact.company_name,
