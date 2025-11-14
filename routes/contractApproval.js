@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import {
   uploadKYCDocuments,
+  approveKYC,
   legalApprove,
   setAdminApproval,
   setClientApproval,
@@ -33,6 +34,14 @@ router.post("/:id/kyc/upload",
   uploadKYCDocuments
 );
 
+// KYC Approve (after upload)
+router.post("/:id/kyc/approve",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  approveKYC
+);
+
 // Legal Team Approval (First step after draft)
 router.post("/:id/legal/approve", 
   authMiddleware, 
@@ -57,7 +66,6 @@ router.post("/:id/client/approve",
   setClientApproval
 );
 
-// Stamp Paper Upload (After client approval)
 router.post("/:id/stamp-paper/upload", 
   authMiddleware, 
   populateUserRole, 
@@ -66,7 +74,6 @@ router.post("/:id/stamp-paper/upload",
   uploadStampPaper
 );
 
-// Security Deposit Recording (After client approval)
 router.post("/:id/security-deposit", 
   authMiddleware, 
   populateUserRole, 

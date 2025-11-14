@@ -9,7 +9,11 @@ import {
   allocateCabin, 
   releaseCabin,
   getAvailableCabinsByBuilding,
-  exportMasterFile
+  exportMasterFile,
+  blockCabin,
+  releaseCabinBlock,
+  listCabinBlocks,
+  allocateCabinFromBlock
 } from "../controllers/cabinController.js";
 
 const router = express.Router();
@@ -30,5 +34,11 @@ router.delete("/:id", authMiddleware, deleteCabin);
 router.post("/allocate", authMiddleware, allocateCabin);
 router.post("/:id/release", authMiddleware, releaseCabin);
 router.get("/building/:buildingId/available", getAvailableCabinsByBuilding);
+
+// Cabin blocking APIs
+router.post("/:id/block", authMiddleware, blockCabin);
+router.get("/:id/blocks", authMiddleware, listCabinBlocks);
+router.post("/:id/blocks/:blockId/release", authMiddleware, releaseCabinBlock);
+router.post("/:id/blocks/:blockId/allocate", authMiddleware, allocateCabinFromBlock);
 
 export default router;
