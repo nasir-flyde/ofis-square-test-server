@@ -1,4 +1,5 @@
 import Contract from "../models/contractModel.js";
+import Cabin from "../models/cabinModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import {
@@ -20,6 +21,45 @@ const checkWorkflowPrerequisites = (contract, requiredFlags) => {
     }
   }
   return missing;
+};
+
+// Approve KYC (only marks approval, upload is separate)
+export const approveKYC = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    // Ensure KYC documents are uploaded before approval
+    if (!contract.iskycuploaded || !contract.kycDocuments || contract.kycDocuments.length === 0) {
+      return res.status(400).json({ success: false, message: 'KYC documents must be uploaded before approval' });
+    }
+
+    // Mark KYC as approved
+    contract.iskycapproved = true;
+    contract.kycApprovedAt = new Date();
+    contract.kycApprovedBy = req.user?.id || null;
+    await contract.save();
+
+    // Log activity
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: 'kyc_approved',
+      approvedBy: req.user?.id || null,
+      documentsCount: contract.kycDocuments?.length || 0,
+    });
+
+    return res.json({
+      success: true,
+      message: 'KYC approved successfully',
+      data: { workflowStage: getWorkflowStage(contract) }
+    });
+  } catch (error) {
+    console.error('Error approving KYC:', error);
+    return res.status(500).json({ success: false, message: 'Failed to approve KYC', error: error.message });
+  }
 };
 
 // export const getContractWorkflowStatus = (contract) => {
@@ -135,6 +175,10 @@ export const uploadKYCDocuments = async (req, res) => {
     contract.kycDocuments = [...(contract.kycDocuments || []), ...uploadedFiles];
     contract.iskycuploaded = true;
     contract.kycUploadedAt = new Date();
+    // Since new documents were uploaded after approval, require re-approval
+    contract.iskycapproved = false;
+    contract.kycApprovedAt = null;
+    contract.kycApprovedBy = null;
     await contract.save();
 
     // Log activity
@@ -478,14 +522,6 @@ export const recordSecurityDeposit = async (req, res) => {
       });
     }
 
-    // Check if client approval is completed first
-    if (!contract.clientapproved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Client approval must be completed before recording security deposit' 
-      });
-    }
-
     // Update security deposit information
     contract.securitydeposited = true;
     contract.securityDeposit = {
@@ -558,6 +594,33 @@ export const markClientSigned = async (req, res) => {
     contract.status = 'active'; // Activate the contract
     
     await contract.save();
+
+    // Auto-allocate any active blocks linked to this contract
+    try {
+      const cabinsToAllocate = await Cabin.find({
+        "blocks.contract": id,
+        "blocks.status": "active",
+        status: { $in: ["available", "blocked"] },
+      });
+
+      for (const cabin of cabinsToAllocate) {
+        const blk = (cabin.blocks || []).find(
+          (b) => String(b.contract) === String(id) && b.status === "active"
+        );
+        if (!blk) continue;
+
+        // Allocate cabin to client
+        cabin.status = "occupied";
+        cabin.allocatedTo = blk.client;
+        cabin.contract = contract._id;
+        cabin.allocatedAt = new Date();
+        blk.status = "allocated";
+        blk.updatedAt = new Date();
+        await cabin.save();
+      }
+    } catch (allocErr) {
+      console.warn("Auto-allocation from blocks failed:", allocErr?.message);
+    }
 
     // Log activity
     await logContractActivity(req, 'UPDATE', id, contract.client, {

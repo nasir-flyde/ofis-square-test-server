@@ -298,6 +298,10 @@ const contractSchema = new mongoose.Schema(
     // Comments/notes
     comments: [
       {
+        _id: { 
+          type: mongoose.Schema.Types.ObjectId, 
+          default: () => new mongoose.Types.ObjectId() 
+        },
         by: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "User",
@@ -313,6 +317,12 @@ const contractSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: "User"
         }],
+        // Thread/reply support
+        parentCommentId: { 
+          type: mongoose.Schema.Types.ObjectId, 
+          default: null,
+          ref: "comments"
+        },
         // Section-specific comment fields
         sectionType: {
           type: String,

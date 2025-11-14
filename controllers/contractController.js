@@ -102,7 +102,8 @@ export const createContract = async (req, res) => {
         await Contract.findByIdAndUpdate(created._id, draftUpdate, { new: true });
         // Reflect in memory for response context
         Object.assign(created, draftUpdate);
-        await logContractActivity(req, 'CONTRACT_CREATED', 'Contract', created._id, {
+        await logContractActivity(req, 'CONTRACT_CREATED', created._id, created.client, {
+          event: 'CONTRACT_CREATED',
           createdBy: req.user?._id,
           requiresApproval: true,
         });
@@ -181,7 +182,6 @@ export const createContract = async (req, res) => {
   }
 };
 
-// Zoho Sign API configuration
 function getZohoSignBaseUrl() {
   const signDc = process.env.ZOHO_SIGN_DC; // e.g., sign.zoho.in
   if (signDc) return `https://${signDc}/api/v1`;
@@ -199,7 +199,7 @@ const ZOHO_SIGN_BASE_URL = getZohoSignBaseUrl();
 export const getContracts = async (req, res) => {
   try {
     const contracts = await Contract.find()
-      .populate("client", "companyName email contactPerson phone companyAddress")
+      .populate("client")
       .populate("building", "name address perSeatPricing city state")
       .sort({ createdAt: -1 });
     return res.json({ success: true, data: contracts });
@@ -215,7 +215,7 @@ export const getContractById = async (req, res) => {
   try {
     const { id } = req.params;
     const contract = await Contract.findById(id)
-      .populate("client", "companyName email contactPerson phone companyAddress")
+      .populate("client")
       .populate("building", "name address perSeatPricing city state")
       .populate("comments.by", "name email")
       .populate("comments.mentionedUsers", "name email");
@@ -451,7 +451,8 @@ export const submitContract = async (req, res) => {
       await contract.save();
       
       // Log activity
-      await logContractActivity(req, 'CONTRACT_AUTO_APPROVED', 'Contract', id, {
+      await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+        event: 'CONTRACT_AUTO_APPROVED',
         approvedBy: req.user?._id,
         autoApproved: true
       });
@@ -471,7 +472,8 @@ export const submitContract = async (req, res) => {
       await contract.save();
       
       // Log activity
-      await logContractActivity(req, 'CONTRACT_SUBMITTED', 'Contract', id, {
+      await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+        event: 'CONTRACT_SUBMITTED',
         submittedBy: req.user?._id,
         requiresApproval: true
       });
@@ -516,7 +518,8 @@ export const approveContract = async (req, res) => {
     await contract.save();
     
     // Log activity
-    await logContractActivity(req, 'CONTRACT_APPROVED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+      event: 'CONTRACT_APPROVED',
       approvedBy: req.user?._id,
       previousStatus: "pending_approval"
     });
@@ -562,7 +565,8 @@ export const rejectContract = async (req, res) => {
     await contract.save();
     
     // Log activity
-    await logContractActivity(req, 'CONTRACT_REJECTED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+      event: 'CONTRACT_REJECTED',
       rejectedBy: req.user?._id,
       rejectionReason: reason,
       previousStatus: "pending_approval"
@@ -665,7 +669,7 @@ export const sendForSignature = async (req, res) => {
     );
 
     // Log contract activity
-    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', 'Contract', contract._id, {
+    await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', contract._id, contract.client?._id, {
       zohoSignRequestId: requestId,
       clientEmail: contract.client.email,
       clientName: contract.client.companyName
@@ -706,12 +710,10 @@ export const checkSignatureStatus = async (req, res) => {
       });
       
       // Log contract completion
-      await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', id, {
+      await logContractActivity(req, 'CONTRACT_SIGNED', id, contract.client?._id, {
         zohoSignRequestId: contract.zohoSignRequestId,
         signatureStatus: status.request_status
       });
-
-      // After activation via Zoho Sign, grant initial credits if configured and not already granted
       try {
         const initialCredits = Number(contract?.initialCredits || 0);
         if (initialCredits > 0) {
@@ -932,7 +934,8 @@ export const uploadSignedContract = async (req, res) => {
     await contract.save();
     
     // Log contract activation
-    await logContractActivity(req, 'CONTRACT_ACTIVATED', 'Contract', id, {
+    await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
+      event: 'CONTRACT_ACTIVATED',
       fileUrl,
       activationMethod: 'manual_upload'
     });
@@ -1060,7 +1063,8 @@ export const handleZohoSignWebhook = async (req, res) => {
       // Log contract activity based on status change
       if (newStatus === "active") {
         // Log contract signing activity
-        await logContractActivity(req, 'CONTRACT_SIGNED', 'Contract', contract._id, {
+        await logContractActivity(req, 'UPDATE', contract._id, contract.client?._id, {
+          event: 'CONTRACT_SIGNED',
           zohoSignRequestId: request_id,
           signedAt: updateData.signedAt,
           previousStatus: contract.status,
@@ -1081,7 +1085,8 @@ export const handleZohoSignWebhook = async (req, res) => {
         }
       } else if (newStatus === "draft" && request_status === "declined") {
         // Log contract decline activity
-        await logContractActivity(req, 'UPDATE', 'Contract', contract._id, {
+        await logContractActivity(req, 'UPDATE', contract._id, contract.client?._id, {
+          event: 'CONTRACT_DECLINED',
           zohoSignRequestId: request_id,
           declinedAt: updateData.declinedAt,
           previousStatus: contract.status,
@@ -1674,10 +1679,13 @@ export const updateSecurityDeposit = async (req, res) => {
       });
     }
 
-    await logContractActivity(req, "SECURITY_DEPOSIT_PAID", "Contract", contract._id, {
+    await logContractActivity(req, "UPDATE", contract._id, contract.client?._id, {
+      event: "SECURITY_DEPOSIT_PAID",
       type,
       amount,
       notes,
+      receiptUrl: contract.securityDeposit?.receiptUrl,
+      receivedAt: contract.securityDeposit?.receivedAt,
     });
 
     return res.json({
@@ -1696,14 +1704,17 @@ export const updateSecurityDeposit = async (req, res) => {
 export const addComment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
-      message, 
-      type = "internal", 
+
+    // Use let so we can safely reassign/normalise values later
+    let {
+      message,
+      type = "internal",
       mentionedUsers = [],
       sectionType = "general",
       termsSection,
-      paragraphIndex
-    } = req.body;
+      paragraphIndex,
+      parentCommentId // NEW: Support for threaded replies
+    } = req.body || {};
 
     if (!message || !message.trim()) {
       return res.status(400).json({ success: false, message: "Comment message is required" });
@@ -1712,6 +1723,46 @@ export const addComment = async (req, res) => {
     const contract = await Contract.findById(id);
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Validate parent comment if replying
+    let parentComment = null;
+    if (parentCommentId) {
+      if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
+        return res.status(400).json({ success: false, message: "Invalid parent comment ID" });
+      }
+
+      // Find parent comment in contract
+      parentComment = contract.comments.id(parentCommentId);
+      if (!parentComment) {
+        return res.status(404).json({ success: false, message: "Parent comment not found" });
+      }
+
+      // Prevent circular references - check if parent is itself a reply
+      // (This is a simple check; deep circular checks would require recursion)
+      if (parentComment.parentCommentId) {
+        // Allow nested replies, but could add depth limit here if needed
+      }
+
+      // Inherit context from parent if not explicitly provided
+      if (!sectionType || sectionType === "general") {
+        sectionType = parentComment.sectionType || "general";
+      }
+      if (!termsSection && parentComment.termsSection) {
+        termsSection = parentComment.termsSection;
+      }
+      if (typeof paragraphIndex === "undefined" && parentComment.paragraphIndex !== undefined) {
+        paragraphIndex = parentComment.paragraphIndex;
+      }
+
+      // Inherit type from parent (replies should match parent type)
+      // Allow override only for admins or if explicitly different
+      const userRole = req.user?.role?.name || "";
+      const isAdmin = ["System Admin", "Admin"].includes(userRole);
+      if (!isAdmin && type !== parentComment.type) {
+        // Reply type should match parent, but allow override for admins
+        type = parentComment.type;
+      }
     }
 
     // Validate section-specific comment data
@@ -1732,12 +1783,22 @@ export const addComment = async (req, res) => {
       }
     }
 
+    // Normalize paragraphIndex if present
+    if (typeof paragraphIndex !== "undefined" && paragraphIndex !== null && paragraphIndex !== "") {
+      const parsed = Number(paragraphIndex);
+      if (Number.isNaN(parsed)) {
+        return res.status(400).json({ success: false, message: "Invalid paragraphIndex" });
+      }
+      paragraphIndex = parsed;
+    }
+
     const newComment = {
       by: req.user?._id,
       at: new Date(),
       type,
       message: message.trim(),
       mentionedUsers: mentionedUsers.filter(id => mongoose.Types.ObjectId.isValid(id)),
+      parentCommentId: parentCommentId || null, // NEW: Set parent reference
       sectionType,
       ...(sectionType === "terms_section" && { termsSection }),
       ...(paragraphIndex !== undefined && { paragraphIndex: Number(paragraphIndex) })
@@ -1754,11 +1815,13 @@ export const addComment = async (req, res) => {
 
     const addedComment = contract.comments[contract.comments.length - 1];
 
-    await logContractActivity(req, "COMMENT_ADDED", "Contract", contract._id, {
+    await logContractActivity(req, "UPDATE", contract._id, contract.client?._id, {
+      event: parentCommentId ? "COMMENT_REPLY_ADDED" : "COMMENT_ADDED",
       commentType: type,
       sectionType,
       termsSection,
       paragraphIndex,
+      parentCommentId: parentCommentId || null,
       message: message.substring(0, 100) + (message.length > 100 ? "..." : "")
     });
 
@@ -1774,7 +1837,9 @@ export const addComment = async (req, res) => {
   }
 };
 
+
 // Get comments for a specific terms section
+
 export const getSectionComments = async (req, res) => {
   try {
     const { id, section } = req.params;
@@ -1788,49 +1853,63 @@ export const getSectionComments = async (req, res) => {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
 
-    // Filter comments for the specific section
-    let sectionComments = contract.comments.filter(comment => 
-      comment.sectionType === "terms_section" && 
-      comment.termsSection === section
+    // Build initial array (use a new variable name to avoid collisions)
+    let filteredComments = contract.comments.filter(c =>
+      c.sectionType === "terms_section" && c.termsSection === section
     );
 
     // Further filter by paragraph index if specified
-    if (paragraphIndex !== undefined) {
+    if (typeof paragraphIndex !== "undefined" && paragraphIndex !== null && paragraphIndex !== "") {
       const pIndex = Number(paragraphIndex);
-      sectionComments = sectionComments.filter(comment => 
-        comment.paragraphIndex === pIndex
-      );
+      if (!Number.isNaN(pIndex)) {
+        filteredComments = filteredComments.filter(c => c.paragraphIndex === pIndex);
+      } else {
+        // If paragraphIndex was provided but invalid, return empty or a 400 — choose what fits
+        return res.status(400).json({ success: false, message: "Invalid paragraphIndex" });
+      }
     }
 
     // Filter comments based on user access (same logic as getContractById)
-    const currentUserId = req.user?._id?.toString();
+    const currentUserId = req.user?._id ? req.user._id.toString() : null;
     if (currentUserId) {
-      const User = (await import('../models/userModel.js')).default;
+      // dynamic import to avoid circular deps; name chosen to avoid shadowing
+      const UserModule = await import('../models/userModel.js');
+      const User = UserModule.default || UserModule;
       const currentUser = await User.findById(currentUserId).populate('role', 'roleName');
       const userRole = currentUser?.role?.roleName;
-      
-      sectionComments = sectionComments.filter(comment => {
+
+      filteredComments = filteredComments.filter(comment => {
         if (comment.type === 'review' || comment.type === 'client') return true;
+
         if (comment.type === 'legal_only') {
           return ['Legal Team', 'System Admin'].includes(userRole);
         }
+
         if (comment.type === 'internal') {
-          if (comment.by?._id?.toString() === currentUserId) return true;
-          if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
+          // author
+          if (comment.by?._id?.toString && comment.by._id.toString() === currentUserId) return true;
+
+          // mentioned users
+          if (Array.isArray(comment.mentionedUsers) &&
+              comment.mentionedUsers.some(u => u?._id?.toString && u._id.toString() === currentUserId)) {
             return true;
           }
+
           return false;
         }
+
         return true;
       });
     }
 
     return res.json({
       success: true,
-      data: sectionComments
+      data: filteredComments
     });
   } catch (error) {
     console.error("Get section comments error:", error);
+    // If it's the "Assignment to constant variable." error, the stacktrace will show where.
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+

@@ -34,18 +34,37 @@ const CabinSchema = new Schema(
 
     status: {
       type: String,
-      enum: ["available", "occupied", "maintenance"],
+      enum: ["available", "blocked", "occupied", "maintenance"],
       default: "available",
       index: true,
     },
-
-    // References to Desk documents contained within this cabin
     desks: [{ type: Schema.Types.ObjectId, ref: "Desk", default: [] }],
 
     allocatedTo: { type: Schema.Types.ObjectId, ref: "Client", default: null, index: true },
     contract: { type: Schema.Types.ObjectId, ref: "Contract", default: null, index: true },
     allocatedAt: { type: Date },
     releasedAt: { type: Date },
+
+    // Cabin blocks (inline subdocuments to avoid a new model)
+    blocks: [
+      {
+        client: { type: Schema.Types.ObjectId, ref: "Client", required: true },
+        contract: { type: Schema.Types.ObjectId, ref: "Contract" },
+        fromDate: { type: Date, required: true },
+        toDate: { type: Date, required: true },
+        status: {
+          type: String,
+          enum: ["active", "released", "expired", "allocated"],
+          default: "active",
+        },
+        reason: { type: String },
+        notes: { type: String },
+        createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+        updatedBy: { type: Schema.Types.ObjectId, ref: "User" },
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date },
+      },
+    ],
   },
   {
     timestamps: true,

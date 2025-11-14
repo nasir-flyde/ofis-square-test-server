@@ -343,7 +343,9 @@ export const releaseCabin = async (req, res) => {
       return res.status(409).json({ success: false, message: "Cabin is not currently occupied" });
     }
 
-    cabin.status = "available";
+    // If there are active blocks, keep cabin as 'blocked', else 'available'
+    const hasActiveBlocks = (cabin.blocks || []).some(b => b.status === 'active');
+    cabin.status = hasActiveBlocks ? "blocked" : "available";
     cabin.allocatedTo = null;
     cabin.contract = null;
     cabin.releasedAt = new Date();
@@ -395,6 +397,179 @@ export const getAvailableCabinsByBuilding = async (req, res) => {
   }
 };
 
+// Create a block for a cabin for a client (and optionally a contract)
+export const blockCabin = async (req, res) => {
+  try {
+    const { id } = req.params; // cabin id
+    const { clientId, contractId, fromDate, toDate, reason, notes } = req.body || {};
+
+    if (!clientId || !fromDate || !toDate) {
+      return res.status(400).json({ success: false, message: 'clientId, fromDate and toDate are required' });
+    }
+
+    const from = new Date(fromDate);
+    const to = new Date(toDate);
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || to < from) {
+      return res.status(400).json({ success: false, message: 'Invalid date range' });
+    }
+
+    const cabin = await Cabin.findById(id).populate('building');
+    if (!cabin) return res.status(404).json({ success: false, message: 'Cabin not found' });
+
+    if (cabin.status === 'occupied') {
+      return res.status(409).json({ success: false, message: 'Cabin is currently occupied and cannot be blocked' });
+    }
+
+    // Overlap check against active blocks
+    const overlap = (b) => b.status === 'active' && !(new Date(b.toDate) < from || new Date(b.fromDate) > to);
+    if ((cabin.blocks || []).some(overlap)) {
+      return res.status(409).json({ success: false, message: 'Cabin already has an overlapping active block' });
+    }
+
+    const block = {
+      client: clientId,
+      contract: contractId || undefined,
+      fromDate: from,
+      toDate: to,
+      status: 'active',
+      reason: reason || undefined,
+      notes: notes || undefined,
+      createdBy: req.user?.id,
+      createdAt: new Date(),
+    };
+
+    cabin.blocks = cabin.blocks || [];
+    cabin.blocks.push(block);
+    // Mark cabin status as blocked
+    if (cabin.status === 'available') {
+      cabin.status = 'blocked';
+    }
+    await cabin.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, {
+      action: 'block_created',
+      blockClient: clientId,
+      contractId: contractId || null,
+      fromDate: from,
+      toDate: to,
+    });
+
+    return res.status(201).json({ success: true, message: 'Cabin blocked successfully', data: { block: cabin.blocks[cabin.blocks.length - 1], cabinId: cabin._id } });
+  } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Release a specific block on a cabin
+export const releaseCabinBlock = async (req, res) => {
+  try {
+    const { id, blockId } = req.params;
+    const cabin = await Cabin.findById(id);
+    if (!cabin) return res.status(404).json({ success: false, message: 'Cabin not found' });
+
+    const blk = (cabin.blocks || []).id(blockId);
+    if (!blk) return res.status(404).json({ success: false, message: 'Block not found' });
+    if (blk.status !== 'active') {
+      return res.status(409).json({ success: false, message: `Block is not active (status: ${blk.status})` });
+    }
+
+    blk.status = 'released';
+    blk.updatedBy = req.user?.id;
+    blk.updatedAt = new Date();
+    // If no other active blocks remain, revert cabin status to available (if not occupied)
+    const hasOtherActive = (cabin.blocks || []).some(b => b._id.toString() !== blk._id.toString() && b.status === 'active');
+    if (!hasOtherActive && cabin.status === 'blocked') {
+      cabin.status = 'available';
+    }
+    await cabin.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, { action: 'block_released', blockId });
+
+    return res.json({ success: true, message: 'Block released successfully', data: { block: blk } });
+  } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// List blocks for a cabin (auto-expiring past blocks)
+export const listCabinBlocks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.query || {};
+    const cabin = await Cabin.findById(id)
+      .populate('blocks.client', 'companyName')
+      .populate('blocks.contract', 'startDate endDate status');
+    if (!cabin) return res.status(404).json({ success: false, message: 'Cabin not found' });
+
+    // Auto-expire blocks past their toDate
+    let changed = false;
+    const now = new Date();
+    (cabin.blocks || []).forEach(b => {
+      if (b.status === 'active' && b.toDate && new Date(b.toDate) < now) {
+        b.status = 'expired';
+        b.updatedAt = now;
+        changed = true;
+      }
+    });
+    if (changed) await cabin.save();
+
+    let blocks = cabin.blocks || [];
+    if (status) blocks = blocks.filter(b => b.status === status);
+
+    return res.json({ success: true, data: blocks });
+  } catch (error) {
+    await logErrorActivity(req, 'READ', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Allocate a cabin from a specific active block
+export const allocateCabinFromBlock = async (req, res) => {
+  try {
+    const { id, blockId } = req.params;
+    const cabin = await Cabin.findById(id).populate('building');
+    if (!cabin) return res.status(404).json({ success: false, message: 'Cabin not found' });
+
+    const blk = (cabin.blocks || []).id(blockId);
+    if (!blk) return res.status(404).json({ success: false, message: 'Block not found' });
+    if (blk.status !== 'active') {
+      return res.status(409).json({ success: false, message: `Block is not active (status: ${blk.status})` });
+    }
+    if (!['available','blocked'].includes(cabin.status)) {
+      return res.status(409).json({ success: false, message: `Cabin is not in allocatable state (status: ${cabin.status})` });
+    }
+
+    // If a contract is linked and exists, optionally ensure it's active
+    if (blk.contract) {
+      const contract = await Contract.findById(blk.contract);
+      if (!contract) return res.status(404).json({ success: false, message: 'Linked contract not found' });
+      if (contract.status !== 'active') {
+        return res.status(409).json({ success: false, message: 'Contract is not active for allocation' });
+      }
+    }
+
+    cabin.status = 'occupied';
+    cabin.allocatedTo = blk.client;
+    cabin.contract = blk.contract || cabin.contract;
+    cabin.allocatedAt = new Date();
+
+    blk.status = 'allocated';
+    blk.updatedBy = req.user?.id;
+    blk.updatedAt = new Date();
+
+    await cabin.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, { action: 'block_allocated', blockId });
+
+    return res.json({ success: true, message: 'Cabin allocated from block successfully', data: { cabin } });
+  } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const exportMasterFile = async (req, res) => {
   try {
     const CabinAmenity = (await import("../models/cabinAmenityModel.js")).default;
@@ -405,7 +580,7 @@ export const exportMasterFile = async (req, res) => {
 
     const cabinTypes = ['cabin', 'private', 'shared'];
     const cabinCategories = ['Standard', 'Premium', 'Executive', 'Deluxe'];
-    const cabinStatuses = ['available', 'occupied', 'maintenance'];
+    const cabinStatuses = ['available', 'blocked', 'occupied', 'maintenance'];
     const masterData = {
       buildings: buildings.map(b => b.name),
       amenities: amenities.map(a => a.name),
