@@ -23,6 +23,75 @@ const checkWorkflowPrerequisites = (contract, requiredFlags) => {
   return missing;
 };
 
+// Finance approval (after legal and admin approvals)
+export const setFinanceApproval = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approved, reason } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
+      });
+    }
+
+    // Prerequisites: legal and admin approvals must be completed first
+    if (!contract.legalteamapproved || !contract.adminapproved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Legal and Admin approvals must be completed before Finance approval'
+      });
+    }
+
+    // Update finance approval
+    contract.financeapproved = !!approved;
+    contract.financeApprovedBy = approved ? (req.user?.id || null) : null;
+    contract.financeApprovedAt = approved ? new Date() : null;
+    contract.financeApprovalReason = reason || null;
+
+    await contract.save();
+
+    // Log activity
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      approvedBy: approved ? (req.user?.id || null) : null,
+      approved: !!approved,
+      reason: reason,
+      action: approved ? 'finance_approved' : 'finance_rejected'
+    });
+
+    return res.json({
+      success: true,
+      message: `Finance ${approved ? 'approved' : 'rejected'} contract successfully`,
+      data: {
+        // Keep returning the simplified workflow stage for now
+        workflowStage: getWorkflowStage(contract)
+      }
+    });
+  } catch (error) {
+    console.error('Error setting finance approval:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to set finance approval',
+      error: error.message
+    });
+  }
+};
+
+// Allowed KYC document types as per Contract.kycDocuments schema
+const KYC_DOC_TYPES = [
+  'addressProof',
+  'boardResolutionOrLetterOfAuthority',
+  'photoIdAndAddressProofOfSignatory',
+  'certificateOfIncorporation',
+  'businessLicenseGST',
+  'panCard',
+  'tanNo',
+  'moa',
+  'aoa'
+];
+
 // Approve KYC (only marks approval, upload is separate)
 export const approveKYC = async (req, res) => {
   try {
@@ -33,8 +102,9 @@ export const approveKYC = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Contract not found' });
     }
 
-    // Ensure KYC documents are uploaded before approval
-    if (!contract.iskycuploaded || !contract.kycDocuments || contract.kycDocuments.length === 0) {
+    // Ensure at least one KYC document is uploaded before global approval
+    const anyUploaded = KYC_DOC_TYPES.some(dt => contract.kycDocuments?.[dt]?.fileUrl);
+    if (!contract.iskycuploaded || !anyUploaded) {
       return res.status(400).json({ success: false, message: 'KYC documents must be uploaded before approval' });
     }
 
@@ -59,6 +129,272 @@ export const approveKYC = async (req, res) => {
   } catch (error) {
     console.error('Error approving KYC:', error);
     return res.status(500).json({ success: false, message: 'Failed to approve KYC', error: error.message });
+  }
+};
+
+// Upload a specific KYC document by type (structured fields)
+export const uploadKYCDocumentByType = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+    const file = req.file;
+
+    if (!KYC_DOC_TYPES.includes(docType)) {
+      return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
+    }
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'No file provided' });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    const uploadResponse = await imagekit.upload({
+      file: file.buffer,
+      fileName: `${Date.now()}_${file.originalname}`,
+      folder: `/contracts/kyc/${id}/${docType}/`,
+      useUniqueFileName: true
+    });
+
+    contract.kycDocuments = contract.kycDocuments || {};
+    contract.kycDocuments[docType] = {
+      fileName: file.originalname,
+      fileUrl: uploadResponse.url,
+      approvedBy: null,
+      approved: false,
+      uploadedAt: new Date()
+    };
+    contract.iskycuploaded = true;
+    // Reset global approval if any doc changes
+    contract.iskycapproved = false;
+    contract.kycApprovedAt = null;
+    contract.kycApprovedBy = null;
+    await contract.save();
+
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: 'kyc_document_uploaded',
+      docType,
+      fileName: file.originalname
+    });
+
+    return res.json({
+      success: true,
+      message: 'KYC document uploaded',
+      data: { docType, fileUrl: uploadResponse.url, workflowStage: getWorkflowStage(contract) }
+    });
+  } catch (error) {
+    console.error('Error uploading KYC document by type:', error);
+    return res.status(500).json({ success: false, message: 'Failed to upload KYC document', error: error.message });
+  }
+};
+
+// Approve a specific KYC document by type
+export const approveKYCDocumentByType = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+    if (!KYC_DOC_TYPES.includes(docType)) {
+      return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    const doc = contract.kycDocuments?.[docType];
+    if (!doc || !doc.fileUrl) {
+      return res.status(400).json({ success: false, message: 'Document not uploaded yet' });
+    }
+
+    contract.kycDocuments[docType].approved = true;
+    contract.kycDocuments[docType].approvedBy = req.user?.id || null;
+    await contract.save(); // pre-save hook will set iskycapproved when all docs approved
+
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: 'kyc_document_approved',
+      docType,
+      approvedBy: req.user?.id || null
+    });
+
+    return res.json({ success: true, message: 'KYC document approved', data: { docType, approved: true, workflowStage: getWorkflowStage(contract) } });
+  } catch (error) {
+    console.error('Error approving KYC document:', error);
+    return res.status(500).json({ success: false, message: 'Failed to approve KYC document', error: error.message });
+  }
+};
+
+// Bulk upload multiple KYC documents by type in a single request
+// Accepts multipart/form-data with field name 'documents' (multiple files) and a matching 'docTypes' array.
+// docTypes can be provided as JSON string (e.g., ["panCard","addressProof"]) or comma-separated string, or as repeated fields.
+export const bulkUploadKYCDocumentsByType = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const files = req.files || [];
+
+    // Parse docTypes from body
+    let docTypesRaw = req.body?.docTypes;
+    let docTypes = [];
+    if (Array.isArray(docTypesRaw)) {
+      docTypes = docTypesRaw;
+    } else if (typeof docTypesRaw === 'string') {
+      try {
+        const parsed = JSON.parse(docTypesRaw);
+        docTypes = Array.isArray(parsed) ? parsed : String(docTypesRaw).split(',').map(s => s.trim()).filter(Boolean);
+      } catch {
+        docTypes = String(docTypesRaw).split(',').map(s => s.trim()).filter(Boolean);
+      }
+    }
+
+    if (!files.length) {
+      return res.status(400).json({ success: false, message: 'No files provided' });
+    }
+    if (docTypes.length !== files.length) {
+      return res.status(400).json({ success: false, message: 'docTypes count must match number of uploaded files' });
+    }
+
+    // Validate all docTypes
+    for (const dt of docTypes) {
+      if (!KYC_DOC_TYPES.includes(dt)) {
+        return res.status(400).json({ success: false, message: `Invalid KYC document type: ${dt}` });
+      }
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    contract.kycDocuments = contract.kycDocuments || {};
+
+    const results = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const docType = docTypes[i];
+
+      const uploadResponse = await imagekit.upload({
+        file: file.buffer,
+        fileName: `${Date.now()}_${file.originalname}`,
+        folder: `/contracts/kyc/${id}/${docType}/`,
+        useUniqueFileName: true
+      });
+
+      contract.kycDocuments[docType] = {
+        fileName: file.originalname,
+        fileUrl: uploadResponse.url,
+        fileId: uploadResponse.fileId,
+        approved: false,
+        approvedBy: null,
+        uploadedAt: new Date()
+      };
+
+      results.push({ docType, fileUrl: uploadResponse.url });
+    }
+
+    // Mark KYC as uploaded and reset global approval
+    contract.iskycuploaded = true;
+    contract.kycUploadedAt = new Date();
+    contract.iskycapproved = false;
+    contract.kycApprovedAt = null;
+    contract.kycApprovedBy = null;
+
+    await contract.save();
+
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: 'kyc_documents_bulk_uploaded',
+      count: results.length,
+      docTypes: results.map(r => r.docType)
+    });
+
+    return res.json({
+      success: true,
+      message: 'KYC documents uploaded successfully',
+      data: { items: results, workflowStage: getWorkflowStage(contract) }
+    });
+  } catch (error) {
+    console.error('Error in bulk KYC upload:', error);
+    return res.status(500).json({ success: false, message: 'Failed to bulk upload KYC documents', error: error.message });
+  }
+};
+
+// Bulk approve multiple KYC document types in one request
+// Body: { docTypes: ["panCard","addressProof" ] } OR { all: true } to approve all uploaded docs
+export const bulkApproveKYCDocumentsByType = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { all } = req.body || {};
+    let docTypes = [];
+
+    // Parse docTypes similar to bulk upload
+    let docTypesRaw = req.body?.docTypes;
+    if (all === true) {
+      // Approve all uploaded docs
+      const contractForScan = await Contract.findById(id);
+      if (!contractForScan) {
+        return res.status(404).json({ success: false, message: 'Contract not found' });
+      }
+      docTypes = KYC_DOC_TYPES.filter(dt => contractForScan.kycDocuments?.[dt]?.fileUrl);
+    } else if (Array.isArray(docTypesRaw)) {
+      docTypes = docTypesRaw;
+    } else if (typeof docTypesRaw === 'string') {
+      try {
+        const parsed = JSON.parse(docTypesRaw);
+        docTypes = Array.isArray(parsed) ? parsed : String(docTypesRaw).split(',').map(s => s.trim()).filter(Boolean);
+      } catch {
+        docTypes = String(docTypesRaw || '').split(',').map(s => s.trim()).filter(Boolean);
+      }
+    }
+
+    if (!docTypes || docTypes.length === 0) {
+      return res.status(400).json({ success: false, message: 'No docTypes provided' });
+    }
+
+    for (const dt of docTypes) {
+      if (!KYC_DOC_TYPES.includes(dt)) {
+        return res.status(400).json({ success: false, message: `Invalid KYC document type: ${dt}` });
+      }
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    contract.kycDocuments = contract.kycDocuments || {};
+    const approvedDocTypes = [];
+    const skipped = [];
+
+    for (const dt of docTypes) {
+      const doc = contract.kycDocuments?.[dt];
+      if (!doc || !doc.fileUrl) {
+        skipped.push({ docType: dt, reason: 'Document not uploaded' });
+        continue;
+      }
+      contract.kycDocuments[dt].approved = true;
+      contract.kycDocuments[dt].approvedBy = req.user?.id || null;
+      approvedDocTypes.push(dt);
+    }
+
+    await contract.save();
+
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: 'kyc_documents_bulk_approved',
+      approvedDocTypes,
+      skipped
+    });
+
+    return res.json({
+      success: true,
+      message: 'Selected KYC documents approved',
+      data: {
+        approvedDocTypes,
+        skipped,
+        workflowStage: getWorkflowStage(contract)
+      }
+    });
+  } catch (error) {
+    console.error('Error in bulk KYC approve:', error);
+    return res.status(500).json({ success: false, message: 'Failed to bulk approve KYC documents', error: error.message });
   }
 };
 
@@ -171,11 +507,12 @@ export const uploadKYCDocuments = async (req, res) => {
 
     const uploadedFiles = await Promise.all(uploadPromises);
 
-    // Update contract with KYC documents (append to existing)
-    contract.kycDocuments = [...(contract.kycDocuments || []), ...uploadedFiles];
+    // Note: The schema defines structured kycDocuments per document type.
+    // This bulk-upload endpoint will not mutate structured fields to avoid schema mismatch.
+    // We only mark that KYC docs exist and return the uploaded files for reference.
     contract.iskycuploaded = true;
     contract.kycUploadedAt = new Date();
-    // Since new documents were uploaded after approval, require re-approval
+    // Since documents were uploaded, ensure global approval is reset
     contract.iskycapproved = false;
     contract.kycApprovedAt = null;
     contract.kycApprovedBy = null;
@@ -189,7 +526,7 @@ export const uploadKYCDocuments = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'KYC documents uploaded successfully',
+      message: 'KYC documents uploaded successfully. Use per-document upload to attach to specific KYC fields.',
       data: {
         documents: uploadedFiles,
         workflowStage: getWorkflowStage(contract)

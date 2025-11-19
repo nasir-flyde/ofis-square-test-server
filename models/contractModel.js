@@ -6,6 +6,8 @@ const contractSchema = new mongoose.Schema(
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", required: true, index: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
+    commencementDate: { type: Date },
+    allocationDate: { type: Date },
     capacity: { type: Number, required: true, min: 1 },
     monthlyRent: {
       type: Number,
@@ -60,6 +62,43 @@ const contractSchema = new mongoose.Schema(
     securityDepositPaidBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+    },
+    // Legal and administrative fields
+    legalExpenses: { type: Number, default: 0, min: 0 },
+    allocationSeatsNumber: { type: Number, default: 0 },
+    // Parking details
+    parkingSpaces: {
+      noOf2WheelerParking: { type: Number, default: 0 },
+      noOf4WheelerParking: { type: Number, default: 0 }
+    },
+    // Contract duration details
+    durationMonths: { type: Number, default: 12 },
+    lockInPeriodMonths: { type: Number, default: 0 },
+    noticePeriodDays: { type: Number, default: 30 },
+    // Escalation details
+    escalation: {
+      ratePercent: { type: Number, default: 0 },
+      frequencyMonths: { type: Number, default: 12 }
+    },
+    // Renewal details
+    renewal: {
+      isAutoRenewal: { type: Boolean, default: false },
+      renewalTermMonths: { type: Number, default: 12 }
+    },
+    // Fully serviced business hours
+    fullyServicedBusinessHours: {
+      startTime: { type: String, default: "09:00" },
+      endTime: { type: String, default: "18:00" },
+      days: { type: [String], default: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"] }
+    },
+    // Additional charges
+    cleaningAndRestorationFees: { type: Number, default: 0, min: 0 },
+    // Freebies
+    freebies: [{ type: String, trim: true }],
+    // Pay as you go services
+    payAsYouGo: {
+      acCharges: [{ type: Number }],
+      additions: [{ type: String, trim: true }]
     },
     terms: { type: String, trim: true },
     termsandconditions: [{
@@ -124,6 +163,25 @@ const contractSchema = new mongoose.Schema(
         body: [{ type: String }]
       }
     }],
+    // Terms and conditions acceptance
+    termsAndConditionAcceptance: {
+      ofisSquareAcceptance: {
+        name: { type: String, trim: true },
+        designation: { type: String, trim: true },
+        dateOfBoardResolution: { type: Date },
+        companyStamp: { type: String, trim: true },
+        signedAt: { type: Date },
+        signatureUrl: { type: String, trim: true }
+      },
+      clientAcceptance: {
+        name: { type: String, trim: true },
+        designation: { type: String, trim: true },
+        dateOfBoardResolution: { type: Date },
+        companyStamp: { type: String, trim: true },
+        signedAt: { type: Date },
+        signatureUrl: { type: String, trim: true }
+      }
+    },
     status: {
       type: String,
       enum: [
@@ -192,11 +250,71 @@ const contractSchema = new mongoose.Schema(
       default: false,
     },
     // Additional fields for approval workflow
-    kycDocuments: [{
-      fileName: { type: String, trim: true },
-      fileUrl: { type: String, trim: true },
-      uploadedAt: { type: Date, default: Date.now }
-    }],
+    kycDocuments: {
+      addressProof: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      boardResolutionOrLetterOfAuthority: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      photoIdAndAddressProofOfSignatory: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      certificateOfIncorporation: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      businessLicenseGST: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      panCard: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      tanNo: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      moa: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      },
+      aoa: {
+        fileName: { type: String, trim: true },
+        fileUrl: { type: String, trim: true },
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved: { type: Boolean, default: false },
+        uploadedAt: { type: Date, default: Date.now }
+      }
+    },
     kycApprovedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -366,6 +484,28 @@ const contractSchema = new mongoose.Schema(
     collection: "contracts",
   }
 );
+
+// Middleware to automatically update iskycapproved when all KYC documents are approved
+contractSchema.pre('save', function(next) {
+  const allDocumentsApproved =
+    this.kycDocuments.addressProof?.approved &&
+    this.kycDocuments.boardResolutionOrLetterOfAuthority?.approved &&
+    this.kycDocuments.photoIdAndAddressProofOfSignatory?.approved &&
+    this.kycDocuments.certificateOfIncorporation?.approved &&
+    this.kycDocuments.businessLicenseGST?.approved &&
+    this.kycDocuments.panCard?.approved &&
+    this.kycDocuments.tanNo?.approved &&
+    this.kycDocuments.moa?.approved &&
+    this.kycDocuments.aoa?.approved;
+
+  if (allDocumentsApproved) {
+    this.iskycapproved = true;
+  } else {
+    this.iskycapproved = false;
+  }
+
+  next();
+});
 
 export default mongoose.model("Contract", contractSchema);
 

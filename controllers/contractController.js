@@ -10,6 +10,10 @@ import { getAccessToken } from "../utils/zohoSignAuth.js";
 import imagekit from "../utils/imageKit.js";
 import PdfPrinter from "pdfmake";
 import getContractTemplate from "./contractTemplate.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import { promises as fsp } from "fs";
+import puppeteer from "puppeteer";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
 import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
@@ -28,6 +32,25 @@ export const createContract = async (req, res) => {
       contractStartDate,
       contractEndDate,
       terms,
+      // New fields
+      commencementDate,
+      allocationDate,
+      version,
+      legalExpenses,
+      allocationSeatsNumber,
+      parkingSpaces,
+      durationMonths,
+      lockInPeriodMonths,
+      noticePeriodDays,
+      escalation,
+      renewal,
+      fullyServicedBusinessHours,
+      cleaningAndRestorationFees,
+      freebies,
+      payAsYouGo,
+      termsAndConditionAcceptance,
+      // Security deposit
+      securityDeposit,
     } = req.body || {};
 
     // Check if user can auto-approve (has contract:approve permission)
@@ -81,6 +104,25 @@ export const createContract = async (req, res) => {
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
       ...(terms && { terms }),
+      // New fields
+      ...(commencementDate && { commencementDate: new Date(commencementDate) }),
+      ...(allocationDate && { allocationDate: new Date(allocationDate) }),
+      ...(version && { version: Number(version) }),
+      ...(legalExpenses && { legalExpenses: Number(legalExpenses) }),
+      ...(allocationSeatsNumber && { allocationSeatsNumber: Number(allocationSeatsNumber) }),
+      ...(parkingSpaces && { parkingSpaces }),
+      ...(durationMonths && { durationMonths: Number(durationMonths) }),
+      ...(lockInPeriodMonths && { lockInPeriodMonths: Number(lockInPeriodMonths) }),
+      ...(noticePeriodDays && { noticePeriodDays: Number(noticePeriodDays) }),
+      ...(escalation && { escalation }),
+      ...(renewal && { renewal }),
+      ...(fullyServicedBusinessHours && { fullyServicedBusinessHours }),
+      ...(cleaningAndRestorationFees && { cleaningAndRestorationFees: Number(cleaningAndRestorationFees) }),
+      ...(freebies && { freebies }),
+      ...(payAsYouGo && { payAsYouGo }),
+      ...(termsAndConditionAcceptance && { termsAndConditionAcceptance }),
+      // Security deposit
+      ...(securityDeposit && { securityDeposit }),
       status: "draft",
       fileUrl: "placeholder",
       requiresApproval: !canAutoApprove, // Admin/Approver doesn't need approval
@@ -309,6 +351,63 @@ export const updateContract = async (req, res) => {
       contractStartDate,
       contractEndDate,
       terms,
+      termsandconditions,
+      // New fields
+      commencementDate,
+      allocationDate,
+      version,
+      legalExpenses,
+      allocationSeatsNumber,
+      parkingSpaces,
+      durationMonths,
+      lockInPeriodMonths,
+      noticePeriodDays,
+      escalation,
+      renewal,
+      fullyServicedBusinessHours,
+      cleaningAndRestorationFees,
+      freebies,
+      payAsYouGo,
+      termsAndConditionAcceptance,
+      // Timestamp fields
+      submittedToLegalAt,
+      submittedToAdminAt,
+      adminApprovedAt,
+      adminRejectedAt,
+      clientApprovedAt,
+      clientFeedbackAt,
+      stampPaperGeneratedAt,
+      sentForSignatureAt,
+      signedAt,
+      declinedAt,
+      kycApprovedAt,
+      financeApprovedAt,
+      finalApprovedAt,
+      lastActionAt,
+      // Approval workflow fields
+      requiresApproval,
+      iskycuploaded,
+      iskycapproved,
+      adminapproved,
+      legalteamapproved,
+      clientapproved,
+      financeapproved,
+      securitydeposited,
+      iscontractsentforsignature,
+      iscontractstamppaperupload,
+      isclientsigned,
+      // Additional approval fields
+      submittedToLegalBy,
+      submittedToAdminBy,
+      adminApprovedBy,
+      adminRejectedBy,
+      legalApprovedBy,
+      financeApprovedBy,
+      finalApprovedBy,
+      sentToClientBy,
+      kycApprovedBy,
+      // Client email field
+      clientEmail,
     } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -359,6 +458,13 @@ export const updateContract = async (req, res) => {
     const start = contractStartDate ? new Date(contractStartDate) : existing.startDate;
     const end = contractEndDate ? new Date(contractEndDate) : existing.endDate;
 
+    // Normalize termsandconditions: accept either an array or a single object
+    const normalizedTermsAndConditions = Array.isArray(termsandconditions)
+      ? termsandconditions
+      : (termsandconditions && typeof termsandconditions === 'object'
+          ? [termsandconditions]
+          : undefined);
+
     const updateData = {
       client: clientId,
       building: buildingId,
@@ -366,12 +472,33 @@ export const updateContract = async (req, res) => {
       endDate: end,
       capacity: Number(capacity),
       monthlyRent: monthlyRent,
+      // New fields
+      ...(commencementDate !== undefined && { commencementDate: new Date(commencementDate) }),
+      ...(allocationDate !== undefined && { allocationDate: new Date(allocationDate) }),
+      ...(version !== undefined && { version: Number(version) }),
+      ...(legalExpenses !== undefined && { legalExpenses: Number(legalExpenses) }),
+      ...(allocationSeatsNumber !== undefined && { allocationSeatsNumber: Number(allocationSeatsNumber) }),
+      ...(parkingSpaces && { parkingSpaces }),
+      ...(durationMonths !== undefined && { durationMonths: Number(durationMonths) }),
+      ...(lockInPeriodMonths !== undefined && { lockInPeriodMonths: Number(lockInPeriodMonths) }),
+      ...(noticePeriodDays !== undefined && { noticePeriodDays: Number(noticePeriodDays) }),
+      ...(escalation && { escalation }),
+      ...(renewal && { renewal }),
+      ...(fullyServicedBusinessHours && { fullyServicedBusinessHours }),
+      ...(cleaningAndRestorationFees !== undefined && { cleaningAndRestorationFees: Number(cleaningAndRestorationFees) }),
+      ...(freebies && { freebies }),
+      ...(payAsYouGo && { payAsYouGo }),
+      ...(termsAndConditionAcceptance && { termsAndConditionAcceptance }),
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
       ...(terms && { terms }),
+      ...(normalizedTermsAndConditions && { termsandconditions: normalizedTermsAndConditions }),
+      // Security deposit
+      ...(securityDeposit && { securityDeposit }),
       adminapproved: false,
       legalteamapproved: false,
       financeapproved: false,
+      clientapproved: false,
       iscontractstamppaperupload: false,
     };
 
@@ -1111,6 +1238,574 @@ export const handleZohoSignWebhook = async (req, res) => {
   }
 }
 
+// ===== HTML template based PDF generation =====
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Format amount as INR with commas
+function formatINR(num) {
+  if (num == null || num === '') return '';
+  const n = Number(num);
+  if (Number.isNaN(n)) return String(num);
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n).replace(/\.00$/, '');
+}
+
+// Use placeholder dots when value is missing
+function orDots(value, dots = '……………..') {
+  if (value === null || value === undefined) return dots;
+  const s = String(value).trim();
+  return s ? s : dots;
+}
+
+async function buildContractHtmlFromTemplate(contract) {
+  // Resolve HTML template path: ../docs/contract.html relative to this controller
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const templatePath = path.join(__dirname, '../docs/contract.html');
+
+  let html = await fsp.readFile(templatePath, 'utf8');
+
+  const client = contract.client || {};
+  const companyName = client.companyName || client.name || 'OFIS SPACES PRIVATE LIMITED';
+  const buildingAddress = contract.building?.address || '';
+  const buildingName = contract.building?.name || '';
+
+  // Replace a basic placeholder in converted HTML "(Company Name)"
+  html = html.replace(/\(Company Name\)/g, escapeHtml(companyName));
+
+  // ==== Inject dynamic Terms & Conditions into the marked region ====
+  // Build dynamic HTML based on structured sections or plain terms
+  function buildTermsHtml() {
+    // Construct a clean HTML block that will be inserted between markers
+    // Styling is inline to avoid dependency on external CSS
+    const headingStyle = 'font-family: "Bookman Old Style", serif; font-size: 18px; font-weight: 700; text-align: center; margin: 16px 0 12px;';
+    const sectionHeadingStyle = 'font-family: "Bookman Old Style", serif; font-size: 17px; font-weight: 700; margin: 18px 0 8px;';
+    const paraStyle = 'font-family: "Bookman Old Style", serif; font-size: 16px; line-height: 1.5; margin: 0 0 10px;';
+
+    // Helper: convert various body shapes into an array of paragraphs
+    const toParagraphs = (bodyVal) => {
+      if (Array.isArray(bodyVal)) {
+        return bodyVal.map((item) => String(item).trim()).filter(Boolean);
+      }
+      if (typeof bodyVal === 'string') {
+        return bodyVal.split(/\n{1,}/).map(p => p.trim()).filter(Boolean);
+      }
+      if (bodyVal === null || bodyVal === undefined) return [];
+      return [String(bodyVal)];
+    };
+
+    // Prefer structured termsandconditions (keep section key for special rendering like tables)
+    let termsSections = [];
+    if (Array.isArray(contract.termsandconditions) && contract.termsandconditions.length > 0) {
+      const t = contract.termsandconditions[0];
+      const order = [
+        'denotations', 'scope', 'rightsGrantedToClient', 'payments',
+        'consequencesOfNonPayment', 'obligationsOfClient', 'obligationsOfOfisSquare',
+        'termination', 'consequencesOfTermination', 'renewal', 'miscellaneous',
+        'parking', 'disputeResolution', 'governingLaw', 'electronicSignature'
+      ];
+      for (const key of order) {
+        if (t[key] && (t[key].body || t[key].heading)) {
+          termsSections.push({
+            key,
+            heading: t[key].heading || key,
+            body: t[key].body || ''
+          });
+        }
+      }
+    }
+
+    let htmlParts = [];
+    htmlParts.push(`<h2 style="${headingStyle}">TERMS AND CONDITIONS GOVERNING THE ENTERPRISE SERVICES QUA ALLOCATED SEATS OBTAINED BY CLIENT</h2>`);
+
+    // Helper: build 2-column table for Denotations when body contains key-definition pairs
+    const buildDenotationsTable = (paragraphs) => {
+      if (!Array.isArray(paragraphs) || paragraphs.length === 0) return '';
+      // Render each pair as its own 2-col table so borders close on every page
+      const tableStyle = 'width:100%; border-collapse:collapse; table-layout:fixed; page-break-inside:avoid; margin: 0 0 6px 0;';
+      const thtd = 'border:1px solid #000; padding:6px 8px; vertical-align:top; font-size:16px; line-height:1.4; page-break-inside:avoid; break-inside:avoid;';
+      const trStyle = 'page-break-inside:avoid; break-inside:avoid;';
+      const blocks = paragraphs.map(raw => {
+        const txt = String(raw);
+        // Try several separators: dash with spaces, em/en dash, colon
+        let term = txt;
+        let def = '';
+        const separators = [' - ', ' – ', ' — ', ': '];
+        for (const sep of separators) {
+          const idx = txt.indexOf(sep);
+          if (idx > -1) {
+            term = txt.slice(0, idx);
+            def = txt.slice(idx + sep.length);
+            break;
+          }
+        }
+        return `<table style="${tableStyle}"><tbody><tr style="${trStyle}"><td style="${thtd}"><strong>${escapeHtml(term.trim())}</strong></td><td style="${thtd}">${escapeHtml(def.trim())}</td></tr></tbody></table>`;
+      }).join('');
+      return blocks;
+    };
+
+    if (termsSections.length > 0) {
+      let sectionNumber = 1;
+      for (const sec of termsSections) {
+        const h = escapeHtml(sec.heading || `Section ${sectionNumber}`);
+        htmlParts.push(`<h3 style="${sectionHeadingStyle}">${sectionNumber}. ${h}</h3>`);
+        const paragraphs = toParagraphs(sec.body);
+        if (sec.key === 'denotations') {
+          // The first sentence acts as a sub-heading/intro; render it above the table
+          if (paragraphs.length > 0) {
+            htmlParts.push(`<p style="${paraStyle}"><em>${escapeHtml(paragraphs[0])}</em></p>`);
+          }
+          const tableRows = paragraphs.slice(1);
+          htmlParts.push(buildDenotationsTable(tableRows));
+        } else {
+          // Number each paragraph within the section body
+          let item = 1;
+          for (const p of paragraphs) {
+            htmlParts.push(`<p style="${paraStyle}"><strong>${item}.</strong> ${escapeHtml(p)}</p>`);
+            item++;
+          }
+        }
+        sectionNumber++;
+      }
+    } else {
+      // Fallback to single plain terms string
+      const termsPlain = contract.terms;
+      const paragraphs = toParagraphs(termsPlain);
+      if (paragraphs.length > 0) {
+        htmlParts.push(`<h3 style="${sectionHeadingStyle}">Terms &amp; Conditions</h3>`);
+        for (const p of paragraphs) {
+          htmlParts.push(`<p style="${paraStyle}">${escapeHtml(p)}</p>`);
+        }
+      } else {
+        htmlParts.push(`<p style="${paraStyle}">Terms &amp; Conditions not provided</p>`);
+      }
+    }
+
+    return htmlParts.join('\n');
+  }
+
+  // Always build a clean dynamic document to ensure cover is Page 1 and content is fully dynamic
+  const baseStyles = `
+    @page { size: A4; margin: 20mm 12mm 18mm 12mm; }
+    body { font-family: 'Bookman Old Style', Georgia, serif; color: #111; }
+    .container { max-width: 800px; margin: 0 auto; padding: 0 8px; }
+    .cover { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; position: relative; background: #fff; }
+    .cover .logo { width: 160px; height: 160px; object-fit: contain; margin-bottom: 16px; }
+    .cover .client { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .cover .addr { position: absolute; bottom: 36mm; left: 0; right: 0; text-align: center; font-size: 14px; color: #333; }
+    .page-break { page-break-after: always; }
+    h2 { font-size: 18px; text-align: center; margin: 16px 0 12px; }
+    h3 { font-size: 17px; margin: 18px 0 8px; }
+    p { font-size: 16px; line-height: 1.5; margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; page-break-inside: auto; }
+    td, th { border: 1px solid #000; padding: 6px 8px; vertical-align: top; page-break-inside: avoid; break-inside: avoid; }
+    tr { page-break-inside: avoid; break-inside: avoid; }
+    .no-break { page-break-inside: avoid; break-inside: avoid; }
+    .cover-details { max-width: 800px; margin: 0 auto; padding: 0 8px; }
+    .cd h1 { font-size: 22px; text-align: center; margin: 0 0 8px; }
+    .cd h2 { font-size: 18px; margin: 14px 0 6px; }
+    .cd h3 { font-size: 16px; margin: 10px 0 6px; }
+    .cd p, .cd li { font-size: 14px; line-height: 1.5; }
+    .cd ul { margin: 6px 0 10px 18px; }
+    .cd .sep { height: 1px; background: #ccc; margin: 10px 0; }
+    .cd .kv { margin: 4px 0; }
+    .cd .kv b { display: inline-block; min-width: 200px; }
+    .cd .sig-line { height: 2px; background: #000; margin: 6px 0; }
+    .cd .sig-label { font-size: 12px; text-align: center; margin-bottom: 6px; }
+    .cd table.kv { width: 100%; border-collapse: collapse; table-layout: fixed; page-break-inside: auto; }
+    .cd table.kv td, .cd table.kv th { border: 1px solid #000; padding: 8px 10px; vertical-align: top; font-size: 14px; page-break-inside: avoid; break-inside: avoid; }
+    .cd table.kv tr { page-break-inside: avoid; break-inside: avoid; }
+    .cd table.kv tr > td:first-child { width: 34%; font-weight: 700; }
+    .cd table.kv tr > td:last-child { width: 66%; }
+    .cd table.kv .kv { margin: 0 0 6px 0; }
+    .cd table.kv .kv:last-child { margin-bottom: 0; }
+    .cd table.kv .kv b { min-width: 160px; }
+    .cd table.sig td { width: 50%; }
+    /* Three-column numbered rows */
+    .cd table.kv.three td.idx { width: 6%; text-align: center; font-weight: 700; }
+    .cd table.kv.three td.key { width: 28%; font-weight: 700; }
+    .cd table.kv.three td.val { width: 66%; }
+    .cd .and { text-align: center; margin: 8px 0; font-weight: 700; }
+  `;
+  const dynamicTerms = buildTermsHtml();
+
+  function buildCoverDetailsHtml() {
+    const execDate = contract.commencementDate ? new Date(contract.commencementDate) : null;
+    const execDateStr = execDate ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(execDate) : '……………..';
+    const party2Name = contract.client?.companyName || contract.client?.name || '……………..';
+    const clientAcceptance = contract.termsAndConditionAcceptance?.clientAcceptance || {};
+    const ofisAcceptance = contract.termsAndConditionAcceptance?.ofisSquareAcceptance || {};
+    const ofisSignName = ofisAcceptance.name || 'Mahender Adhikari';
+    const ofisSignDesig = ofisAcceptance.designation || 'Authorized Signatory';
+    const ofisBoardDate = ofisAcceptance.dateOfBoardResolution ? new Date(ofisAcceptance.dateOfBoardResolution) : null;
+    const ofisBoardDateStr = ofisBoardDate ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(ofisBoardDate) : '01 Oct 2022';
+
+    const clientCin = contract.client?.cin || '……………..';
+    const clientReg = contract.client?.registeredAddress || contract.client?.registeredOffice || '……………..';
+    const clientCorp = contract.client?.corporateAddress || contract.client?.corporateOffice || '……………..';
+    const clientSignName = clientAcceptance.name || '……………..';
+    const clientSignDesig = clientAcceptance.designation || '……………..';
+    const clientBoardDate = clientAcceptance.dateOfBoardResolution ? new Date(clientAcceptance.dateOfBoardResolution) : null;
+    const clientBoardDateStr = clientBoardDate ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(clientBoardDate) : '……………..';
+
+    const location = contract.building?.address || 'Ofis Square Tower A-1, Sector 3, Noida, Uttar Pradesh';
+    const allocatedAddress = contract.building?.address || '…………………, Ofis Square Tower A-1, Sector 3, Noida, Uttar Pradesh';
+
+    const fourW = (contract.parkingSpaces?.noOf4WheelerParking ?? '');
+    const twoW = (contract.parkingSpaces?.noOf2WheelerParking ?? '');
+    const noticePeriod = contract.noticePeriodDays ? `${Math.round(contract.noticePeriodDays/30)} months` : '……………..';
+
+    const commence = contract.commencementDate ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(contract.commencementDate)) : '………………';
+    const duration = (contract.durationMonths ?? '') || '';
+    const lockin = (contract.lockInPeriodMonths ?? '') || '';
+
+    const monthly = contract.monthlyRent != null ? formatINR(contract.monthlyRent) : '………..';
+    const ifrsd = contract.securityDeposit?.amount != null ? formatINR(contract.securityDeposit.amount) : '……………';
+    const legalExp = contract.legalExpenses != null ? `${formatINR(contract.legalExpenses)} + taxes` : '………… + taxes';
+
+    const escPct = contract.escalation?.ratePercent != null ? `${contract.escalation.ratePercent}%` : '……%';
+    const escFreq = contract.escalation?.frequencyMonths != null ? `${contract.escalation.frequencyMonths} months` : '12 months';
+
+    const renewalTerm = contract.renewal?.renewalTermMonths != null ? `${contract.renewal.renewalTermMonths} months` : '12 months';
+    const lockinRenewal = lockin || '6';
+
+    const fsStart = contract.fullyServicedBusinessHours?.startTime || '10:00';
+    const fsEnd = contract.fullyServicedBusinessHours?.endTime || '7:00';
+    const fsDays = (contract.fullyServicedBusinessHours?.days || []).join(', ') || 'Monday–Friday';
+
+    const cleaningFee = contract.cleaningAndRestorationFees != null ? formatINR(contract.cleaningAndRestorationFees) : '2000';
+
+    const mrCredits = '……';
+    const printingCredits = '25';
+
+    return `
+    <section class="cover-details cd">
+      <div class="cover-details-inner">
+        <div class="cd">
+          <h2>Company</h2>
+          <p><b>Ofis Spaces Private Limited</b></p>
+          <div class="kv"><b>CIN:</b> U70109UP2022PTC167914</div>
+          <div class="kv"><b>Address:</b> Unit No. 212, Ofis Square, The Iconic Corenthum, Plot No. A-41, Sector-62, Noida, Gautam Buddha Nagar, Uttar Pradesh, 201301</div>
+          <div class="kv"><b>Authorized Signatory:</b> ${escapeHtml(ofisSignName)}</div>
+          <div class="kv"><b>Board Resolution Date:</b> ${escapeHtml(ofisBoardDateStr)}</div>
+
+          <div class="sep"></div>
+
+          <h2>Contract Details</h2>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">1.</td>
+            <td class="key">Execution Date</td>
+            <td class="val">${escapeHtml(execDateStr)}</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">2.</td>
+            <td class="key">Place</td>
+            <td class="val">Noida, Uttar Pradesh</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">3.</td>
+            <td class="key">Parties</td>
+            <td class="val">
+              <p><b>M/s. OFIS SPACES PRIVATE LIMITED</b>, having its registered office at Unit No. 212, Ofis Square, The Iconic Corenthum, Plot No. A-41, Sector-62, Noida, Gautam Buddha Nagar, Noida, Uttar Pradesh, India, 201301 represented by ${escapeHtml(ofisSignName)} authorized by a Board Resolution dated ${escapeHtml(ofisBoardDateStr)} hereinafter referred to as <i>"Ofis Square"</i> (which expression shall unless repugnant to the subject or context be deemed to mean and include its successors in interest, agents and assigns);</p>
+              <div class="and">AND</div>
+              <p>${escapeHtml(party2Name)} (CIN: ${escapeHtml(clientCin)}), having its registered office at ${escapeHtml(clientReg)} and corporate office at ${escapeHtml(clientCorp)} represented by ${escapeHtml(clientSignName)} (Authorized Signatory) authorized by a Board Resolution dated ${escapeHtml(clientBoardDateStr)} hereinafter referred to as <i>"Client"</i> (which expression shall unless repugnant to the subject or context be deemed to mean and include its successors in interest, successors in office and agents);</p>
+              <p>Client is engaged in business of _______</p>
+              <p>The Client and Ofis Square in their individual context shall be referred to as "Party" and collectively as "Parties".</p>
+            </td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">4.</td>
+            <td class="key">Coworking Space</td>
+            <td class="val">${escapeHtml(location)}<br/><br/>
+              <i>(Note: For the purpose of registration with any government/statutory authorities, address mentioned at S. No. 5 shall be used.)</i>
+            </td>
+          </tr></tbody></table>
+
+          <div class="sep"></div>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">5.</td>
+            <td class="key">Allocated Seats</td>
+            <td class="val">
+              Designated office space on the Coworking Space comprising of:<br/>
+              <br/>
+              <b>${escapeHtml(allocatedAddress)}</b><br/>
+              <br/>
+              Detailed final layout of the Allocated Seats is annexed hereto as Annexure A of this Contract.
+            </td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">6.</td>
+            <td class="key">Parking Spaces</td>
+            <td class="val">
+              ${escapeHtml(String(fourW ?? '____'))} number of 4 wheeler parking.<br/>
+              ${escapeHtml(String(twoW ?? '____'))} number of 2 wheeler parking.<br/>
+              <br/>
+              <b>Note:</b> Notice to surrender the parking shall be 3 months.<br/>
+              Parking slots will be allotted as per sole discretion of OFIS SQUARE and may change without any prior information.
+            </td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">7.</td>
+            <td class="key">Commencement Date</td>
+            <td class="val">${escapeHtml(commence)}</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">8.</td>
+            <td class="key">Duration</td>
+            <td class="val">${escapeHtml(String(duration || '…………'))} Months from the Commencement Date</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">9.</td>
+            <td class="key">Lock-in Period</td>
+            <td class="val">${escapeHtml(String(lockin || '…………'))} Months from the Commencement Date</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">10.</td>
+            <td class="key">Fixed Payment</td>
+            <td class="val">Rs. <b>${escapeHtml(monthly)}</b> per month + all applicable taxes thereon, on and from the Commencement Date.</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">11.</td>
+            <td class="key">Interest Free Refundable Security Deposit ("IFRSD")</td>
+            <td class="val">Total Interest Free Refundable Security Deposit amounting to Rs. <b>${escapeHtml(ifrsd)}</b> to be deposited by the Client on or before execution of this Contract.</td>
+          </tr></tbody></table>
+          <table class="kv three"><tbody><tr>
+            <td class="idx">12.</td>
+            <td class="key">Legal Expenses</td>
+            <td class="val">Rs 1,200/- (Rupees Twelve Hundred only) + all applicable taxes thereon as legal expense for executing the agreement. Additional copy of executed agreement: Rs. 800 + taxes.</td>
+          </tr></tbody></table>
+
+          <div class="sep"></div>
+
+          <table class="kv three">
+            <tbody>
+              <tr>
+                <td class="idx">13.</td>
+                <td class="key">Freebies</td>
+                <td class="val">
+                  Unlimited usage of tea/coffee, usage of crockery / cutlery, consumption of water, usage of common microwave and refrigerator.<br/>
+                  	• Meeting Rooms/Conference Room credits: __ credits per month subject to availability.<br/>
+                  	• Printing credits: <b>25 A4 Black/White paper per user per month</b>.<br/>
+                  <i>(Note: Unused Meeting Rooms/Conference Room credit/Printing credits shall not be rolled over to any subsequent months)</i>
+                </td>
+              </tr>
+              <tr>
+                <td class="idx">14.</td>
+                <td class="key">Pay as you Go Services</td>
+                <td class="val">
+                  1. AC charges beyond Fully Serviced Business Hours: as per actual charges billed by Builder.<br/>
+                  2. Additional Parking charges:<br/>
+                  &nbsp;&nbsp;a. Subsequent 1 car parking at INR 5,000 + GST per slot or as per the prevailing tariff sheet of Builder whichever is higher. (subject to availability)<br/>
+                  &nbsp;&nbsp;b. Subsequent 1 two wheeler parking at INR 1,500 + GST per slot or as per the prevailing tariff sheet of Builder whichever is higher. (subject to availability)<br/>
+                  <b>Note:</b> Notice period to surrender Additional Parking is 3 months.<br/>
+                  3. Print out and Scanning charges:<br/>
+                  &nbsp;&nbsp;a. Rs. 5 for A4 and Rs. 8 for A3 per black & white page.<br/>
+                  &nbsp;&nbsp;b. Rs. 5 per page for document scanning.<br/>
+                  4. Access card INR 500/- per access card.<br/>
+                  5. Lost / replacement / damaged Access Cards: Rs 500 per access card.<br/>
+                  6. Courier Charges: On actuals depending on concierge rates.<br/>
+                  7. Charges as prescribed and published from time to time.<br/>
+                  <i>Note: The above mentioned charges shall be exclusive of all applicable taxes.</i>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="sep"></div>
+
+          <h3>15. Signatures</h3>
+          <p>The attached Terms and Conditions are integral part of this coversheet and form one document (<b>“Contract”</b>).</p>
+
+          <p><b>For Ofis Square</b></p>
+          <table class="kv">
+            <tbody>
+              <tr>
+                <td><b>Name</b></td>
+                <td>${escapeHtml(ofisSignName)}</td>
+              </tr>
+              <tr>
+                <td><b>Designation</b></td>
+                <td>${escapeHtml(ofisSignDesig)}</td>
+              </tr>
+              <tr>
+                <td><b>Date of Board Resolution</b></td>
+                <td>${escapeHtml(ofisBoardDateStr)}</td>
+              </tr>
+              <tr>
+                <td><b>Company Stamp, Date and Signature</b></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+
+ 
+
+          <p><b>For ${escapeHtml(companyName)}</b></p>
+          <table class="kv">
+            <tbody>
+              <tr>
+                <td><b>Name</b></td>
+                <td>${escapeHtml(clientSignName)}</td>
+              </tr>
+              <tr>
+                <td><b>Designation</b></td>
+                <td>${escapeHtml(clientSignDesig)}</td>
+              </tr>
+              <tr>
+                <td><b>Date of Board Resolution</b></td>
+                <td>${escapeHtml(clientBoardDateStr)}</td>
+              </tr>
+              <tr>
+                <td><b>Email Id</b></td>
+                <td>${escapeHtml(contract.client?.email || '……………..')}</td>
+              </tr>
+              <tr>
+                <td><b>Company Stamp, Date and Signature</b></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="sep"></div>
+
+          <h3>16. Required Documents (Client)</h3>
+          <ol>
+            <li>Address proof – Electricity bill</li>
+            <li>Board Resolution / Letter of Authority</li>
+            <li>Photo ID & Address Proof of Signatory</li>
+            <li>Certificate of Incorporation (Company/LLP)</li>
+            <li>GST Certificate</li>
+            <li>PAN</li>
+            <li>TAN</li>
+            <li>MOA</li>
+            <li>AOA</li>
+          </ol>
+        </div>
+      </div>
+    </section>`;
+  }
+  const topLogoUrl = '__INLINE_LOGO_DATA_URL__';
+  html = `<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Contract</title>
+        <style>${baseStyles}</style>
+      </head>
+      <body>
+        <!-- Cover Page -->
+        <section class="cover">
+          <img class="logo" src="${topLogoUrl}" alt="Ofis Square Logo" />
+          <div class="client">${escapeHtml(companyName)}</div>
+          <div class="addr">${escapeHtml(buildingAddress || '')}</div>
+        </section>
+
+        <!-- Cover Extracted Details -->
+        <div class="cover-details">
+          ${buildCoverDetailsHtml()}
+        </div>
+
+        <div class="page-break"></div>
+
+        <!-- Content Pages (Terms & Conditions) -->
+        <div class="container">
+          ${dynamicTerms}
+        </div>
+      </body>
+    </html>`;
+
+  return html;
+}
+
+async function generateContractPDFFromHtml(contract) {
+  // Build HTML content
+  let html = await buildContractHtmlFromTemplate(contract);
+
+  // Launch Puppeteer and render to PDF
+  const browser = await puppeteer.launch({
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+  try {
+    const page = await browser.newPage();
+    // Pre-fetch logo and inline it as data URL so PDF generation doesn't depend on external network
+    const logoUrl = 'https://ik.imagekit.io/8znjbhgdh/ofis%20square%20logo.jpg';
+    let logoDataUrl = logoUrl;
+    try {
+      const resp = await fetch(logoUrl);
+      if (resp.ok) {
+        const buf = Buffer.from(await resp.arrayBuffer());
+        const b64 = buf.toString('base64');
+        const contentType = resp.headers.get('content-type') || 'image/jpeg';
+        logoDataUrl = `data:${contentType};base64,${b64}`;
+      }
+    } catch (e) {
+      // keep original URL if inline fetch fails
+    }
+
+    // Replace placeholder in HTML with the inlined data URL (cover page)
+    html = html.replace(/__INLINE_LOGO_DATA_URL__/g, logoDataUrl);
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.emulateMediaType('screen');
+    // Build header template with top-right logo and page numbers
+    const headerTemplate = `
+      <style>
+        .hdr { width: 100%; font-size: 9px; color: #444; padding: 0 8mm; }
+        .hdr-inner { display: flex; align-items: center; justify-content: space-between; }
+        .hdr .logo { width: 110px; height: 34px; object-fit: contain; }
+        .pg { font-family: Arial, sans-serif; }
+      </style>
+      <div class="hdr">
+        <div class="hdr-inner">
+          <div class="left"><img class="logo" src="${logoDataUrl}" /></div>
+          <div class="right"><span class="pg">Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>
+        </div>
+      </div>`;
+
+    // Footer with signature boxes: left = Ofis Square, right = Client
+    const footerTemplate = `
+      <style>
+        .ftr { width: 100%; padding: 0 12mm 6mm 12mm; box-sizing: border-box; }
+        .ftr-inner { display: flex; align-items: center; justify-content: space-between; }
+        .sig-box { width: 160px; border: 1px solid #000; padding: 6px 10px; box-sizing: border-box; }
+        .sig-line { height: 2px; background: #000; margin: 6px 0; }
+        .sig-label { font-size: 9px; text-align: center; font-family: Arial, sans-serif; color: #222; }
+      </style>
+      <div class="ftr">
+        <div class="ftr-inner">
+          <div class="sig-box">
+            <div class="sig-line"></div>
+            <div class="sig-label">Ofis Square</div>
+          </div>
+          <div class="sig-box">
+            <div class="sig-line"></div>
+            <div class="sig-label">Client</div>
+          </div>
+        </div>
+      </div>`;
+
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
+      margin: { top: '20mm', right: '12mm', bottom: '28mm', left: '12mm' }
+    });
+    await page.close();
+    return pdf;
+  } finally {
+    await browser.close();
+  }
+}
+
 // Helper function: Create document in Zoho Sign
 async function createZohoSignDocument(contract) {
   const formData = new FormData();
@@ -1353,47 +2048,20 @@ export const generateContractPDF = async (req, res) => {
       return res.status(404).json({ error: "Contract not found" });
     }
 
-    const contractData = {
-      companyName: contract.client.companyName,
-      contactPerson: contract.client.contactPerson,
-      email: contract.client.email,
-      phone: contract.client.phone,
-      companyAddress: contract.client.companyAddress,
-      buildingName: contract.building?.name || "TBD",
-      buildingAddress: contract.building?.address || "TBD",
-      capacity: contract.capacity || 4,
-      monthlyRent: contract.monthlyRent || 15000,
-      contractStartDate: contract.startDate ? contract.startDate.toLocaleDateString() : new Date().toLocaleDateString(),
-      contractEndDate: contract.endDate ? contract.endDate.toLocaleDateString() : new Date(Date.now() + 365*24*60*60*1000).toLocaleDateString(),
-      terms: contract.terms || ""
-    };
+    // Generate Buffer (prefers HTML template, falls back to pdfmake internally)
+    const pdfBuffer = await generateContractPDFBuffer(contract);
 
-    const docDefinition = buildContractTemplate(contractData);
-
-    // Create PDF with built-in fonts (no external files needed)
-    const fonts = getFonts();
-    const printer = new PdfPrinter(fonts);
-    const pdfDoc = printer.createPdfKitDocument(docDefinition);
-    
     // Set response headers for PDF download
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="contract_${contract.client.companyName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf"`);
-    
-    // Update contract fileUrl with the download URL before streaming
+
+    // Update contract fileUrl with a downloadable route (for consistency with previous behaviour)
     if (contract.status === 'draft' && !contract.fileUrl) {
       const downloadUrl = `${req.protocol}://${req.get('host')}/api/contracts/${id}/download-pdf`;
       await Contract.findByIdAndUpdate(id, { fileUrl: downloadUrl });
     }
 
-    // Stream PDF to response with error handling
-    pdfDoc.on("error", (err) => {
-      console.error("PDF stream error:", err);
-      if (!res.headersSent) {
-        return res.status(500).json({ error: "Failed to generate contract PDF" });
-      }
-    });
-    pdfDoc.pipe(res);
-    pdfDoc.end();
+    return res.status(200).send(pdfBuffer);
 
   } catch (error) {
     console.error("Generate contract PDF error:", error);
@@ -1414,6 +2082,23 @@ function formatDate(date) {
  * Build the pdfmake docDefinition from contractData
  * - contractData.termsSections is an ordered array of { heading, body } objects
  */
+// Helper: normalize text values (arrays, strings) into printable text
+function normalizeTextValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeTextValue(item))
+      .filter((item) => item && item.trim())
+      .join('\n\n');
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return String(value);
+}
+
 function buildContractTemplate(contractData) {
   const { companyName, contactPerson, email, phone, companyAddress, buildingName, buildingAddress, capacity, monthlyRent, securityDeposit, contractStartDate, contractEndDate, termsSections } = contractData;
 
@@ -1463,7 +2148,7 @@ function buildContractTemplate(contractData) {
     let sectionNumber = 1;
     for (const sec of termsSections) {
       const heading = sec.heading || 'Section';
-      const body = (sec.body || '').trim();
+      const body = normalizeTextValue(sec.body).trim();
 
       // Add section header (numbered)
       content.push({ text: `${sectionNumber}. ${heading}`, style: 'sectionHeading', margin: [0, 6, 0, 4] });
@@ -1553,68 +2238,81 @@ function buildContractTemplate(contractData) {
  */
 function generateContractPDFBuffer(contract) {
   try {
-    // Prepare contractData used by template builder
-    const client = contract.client || {};
-    const building = contract.building || {};
+    // Prefer HTML template rendering first
+    return generateContractPDFFromHtml(contract)
+      .catch((e) => {
+        console.warn('HTML template generation failed, falling back to pdfmake:', e?.message);
+        // Fall back to pdfmake flow below
+        // We intentionally do not throw here so the pdfmake code path executes
+        return null;
+      })
+      .then(async (htmlPdfBuffer) => {
+        if (htmlPdfBuffer) return htmlPdfBuffer;
 
-    // Map dates to formatted strings
-    const contractStartDate = contract.startDate ? formatDate(contract.startDate) : '';
-    const contractEndDate = contract.endDate ? formatDate(contract.endDate) : '';
+        // ==== pdfmake fallback path ====
+        // Prepare contractData used by template builder
+        const client = contract.client || {};
+        const building = contract.building || {};
 
-    // Build ordered terms sections from contract.termsandconditions (first element expected)
-    let termsSections = [];
-    if (Array.isArray(contract.termsandconditions) && contract.termsandconditions.length > 0) {
-      const t = contract.termsandconditions[0]; // your stored object with named section objects
-      // define the order to match the Word document
-      const order = [
-        'denotations', 'scope', 'rightsGrantedToClient', 'payments',
-        'consequencesOfNonPayment', 'obligationsOfClient', 'obligationsOfOfisSquare',
-        'termination', 'consequencesOfTermination', 'renewal', 'miscellaneous',
-        'parking', 'disputeResolution', 'governingLaw', 'electronicSignature'
-      ];
+        // Map dates to formatted strings
+        const contractStartDate = contract.startDate ? formatDate(contract.startDate) : '';
+        const contractEndDate = contract.endDate ? formatDate(contract.endDate) : '';
 
-      for (const key of order) {
-        if (t[key] && (t[key].body || t[key].heading)) {
-          termsSections.push({
-            heading: t[key].heading || key,
-            body: t[key].body || ''
-          });
+        // Build ordered terms sections from contract.termsandconditions (first element expected)
+        let termsSections = [];
+        if (Array.isArray(contract.termsandconditions) && contract.termsandconditions.length > 0) {
+          const t = contract.termsandconditions[0]; // your stored object with named section objects
+          // define the order to match the Word document
+          const order = [
+            'denotations', 'scope', 'rightsGrantedToClient', 'payments',
+            'consequencesOfNonPayment', 'obligationsOfClient', 'obligationsOfOfisSquare',
+            'termination', 'consequencesOfTermination', 'renewal', 'miscellaneous',
+            'parking', 'disputeResolution', 'governingLaw', 'electronicSignature'
+          ];
+
+          for (const key of order) {
+            if (t[key] && (t[key].body || t[key].heading)) {
+              termsSections.push({
+                heading: t[key].heading || key,
+                body: t[key].body || ''
+              });
+            }
+          }
         }
-      }
-    }
 
-    // If no structured sections, check for single-string terms field
-    const contractData = {
-      companyName: client.companyName || client.name || 'OFIS SPACES PRIVATE LIMITED',
-      contactPerson: client.contactPerson || client.contact_name || '',
-      email: client.email || '',
-      phone: client.phone || '',
-      companyAddress: client.companyAddress || client.address || '',
-      buildingName: building.name || '',
-      buildingAddress: building.address || '',
-      capacity: contract.capacity || '',
-      monthlyRent: contract.monthlyRent || '',
-      securityDeposit: (contract.securityDeposit && contract.securityDeposit.amount) ? contract.securityDeposit.amount : '',
-      contractStartDate,
-      contractEndDate,
-      termsSections: termsSections.length > 0 ? termsSections : undefined,
-      termsPlain: (!termsSections.length && contract.terms) ? contract.terms : undefined
-    };
+        // If no structured sections, check for single-string terms field
+        const contractData = {
+          companyName: client.companyName || client.name || 'OFIS SPACES PRIVATE LIMITED',
+          contactPerson: client.contactPerson || client.contact_name || '',
+          email: client.email || '',
+          phone: client.phone || '',
+          companyAddress: client.companyAddress || client.address || '',
+          buildingName: building.name || '',
+          buildingAddress: building.address || '',
+          capacity: contract.capacity || '',
+          monthlyRent: contract.monthlyRent || '',
+          securityDeposit: (contract.securityDeposit && contract.securityDeposit.amount) ? contract.securityDeposit.amount : '',
+          contractStartDate,
+          contractEndDate,
+          termsSections: termsSections.length > 0 ? termsSections : undefined,
+          termsPlain: (!termsSections.length && contract.terms) ? contract.terms : undefined
+        };
 
-    const docDefinition = buildContractTemplate(contractData);
+        const docDefinition = buildContractTemplate(contractData);
 
-    const fonts = getFonts();
-    const printer = new PdfPrinter(fonts);
-    const pdfDoc = printer.createPdfKitDocument(docDefinition);
+        const fonts = getFonts();
+        const printer = new PdfPrinter(fonts);
+        const pdfDoc = printer.createPdfKitDocument(docDefinition);
 
-    const chunks = [];
-    pdfDoc.on('data', chunk => chunks.push(chunk));
+        const chunks = [];
+        pdfDoc.on('data', chunk => chunks.push(chunk));
 
-    return new Promise((resolve, reject) => {
-      pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
-      pdfDoc.on('error', reject);
-      pdfDoc.end();
-    });
+        return new Promise((resolve, reject) => {
+          pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
+          pdfDoc.on('error', reject);
+          pdfDoc.end();
+        });
+      });
   } catch (error) {
     console.error("Generate contract PDF buffer error:", error);
     // fallback plain text buffer (keeps earlier behavior)
@@ -1911,5 +2609,4 @@ export const getSectionComments = async (req, res) => {
     // If it's the "Assignment to constant variable." error, the stacktrace will show where.
     return res.status(500).json({ success: false, message: error.message });
   }
-};
-
+}

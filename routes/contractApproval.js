@@ -3,8 +3,13 @@ import multer from "multer";
 import {
   uploadKYCDocuments,
   approveKYC,
+  uploadKYCDocumentByType,
+  approveKYCDocumentByType,
+  bulkUploadKYCDocumentsByType,
+  bulkApproveKYCDocumentsByType,
   legalApprove,
   setAdminApproval,
+  setFinanceApproval,
   setClientApproval,
   uploadStampPaper,
   recordSecurityDeposit,
@@ -34,12 +39,49 @@ router.post("/:id/kyc/upload",
   uploadKYCDocuments
 );
 
+// Bulk KYC upload with per-document types mapping
+// multipart/form-data:
+//  - documents: multiple files
+//  - docTypes: array or JSON string of doc types (e.g., ["panCard","addressProof"]) matching the files order
+router.post("/:id/kyc/bulk/upload",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  upload.array('documents', 20),
+  bulkUploadKYCDocumentsByType
+);
+
+// Per-document KYC upload (docType must be one of the schema keys)
+router.post("/:id/kyc/:docType/upload",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  upload.single('file'),
+  uploadKYCDocumentByType
+);
+
 // KYC Approve (after upload)
 router.post("/:id/kyc/approve",
   authMiddleware,
   populateUserRole,
   requirePermission(PERMISSIONS.CONTRACT_UPDATE),
   approveKYC
+);
+
+// Bulk approve KYC docs: body { docTypes: [..] } or { all: true }
+router.post("/:id/kyc/bulk/approve",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  bulkApproveKYCDocumentsByType
+);
+
+// Per-document KYC approve
+router.post("/:id/kyc/:docType/approve",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  approveKYCDocumentByType
 );
 
 // Legal Team Approval (First step after draft)
@@ -56,6 +98,14 @@ router.post("/:id/admin/approve",
   populateUserRole, 
   requirePermission(PERMISSIONS.CONTRACT_ADMIN_APPROVE),
   setAdminApproval
+);
+
+// Finance Approval (After admin approval)
+router.post("/:id/finance/approve", 
+  authMiddleware, 
+  populateUserRole, 
+  requirePermission(PERMISSIONS.CONTRACT_FINANCE_APPROVE),
+  setFinanceApproval
 );
 
 // Client Approval (After admin approval)
