@@ -173,6 +173,7 @@ async function updateContractStatus(contract, eventData) {
       if (contract.status !== "active") {
         newStatus = "active";
         updateData.signedAt = new Date();
+        updateData.isclientsigned = true; // Set client signed flag to true
         actionTaken = "activated";
         console.log(`Contract ${contract._id} marked as active (signed)`);
       }
@@ -221,6 +222,7 @@ async function updateContractStatus(contract, eventData) {
         if (contract.status !== "active") {
           newStatus = "active";
           updateData.signedAt = new Date();
+          updateData.isclientsigned = true; // Set client signed flag to true
           actionTaken = "activated";
         }
         break;
@@ -260,6 +262,7 @@ async function updateContractStatus(contract, eventData) {
       if (contract.status !== "active") {
         newStatus = "active";
         updateData.signedAt = new Date();
+        updateData.isclientsigned = true; // Set client signed flag to true
         actionTaken = "activated";
       }
     } else if (activity.toLowerCase().includes("declined")) {
