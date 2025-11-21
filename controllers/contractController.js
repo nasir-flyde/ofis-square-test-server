@@ -32,7 +32,8 @@ export const createContract = async (req, res) => {
       contractStartDate,
       contractEndDate,
       terms,
-      // New fields
+      termsandconditions,
+      
       commencementDate,
       allocationDate,
       version,
@@ -94,6 +95,13 @@ export const createContract = async (req, res) => {
     const start = contractStartDate ? new Date(contractStartDate) : new Date();
     const end = contractEndDate ? new Date(contractEndDate) : new Date(Date.now() + 365*24*60*60*1000);
 
+    // Normalize termsandconditions: accept either an array or a single object
+    const normalizedTermsAndConditions = Array.isArray(termsandconditions)
+      ? termsandconditions
+      : (termsandconditions && typeof termsandconditions === 'object'
+          ? [termsandconditions]
+          : undefined);
+
     const payload = {
       client: clientId,
       building: buildingId,
@@ -104,6 +112,7 @@ export const createContract = async (req, res) => {
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
       ...(creditValueAtSignup && { creditValueAtSignup: Number(creditValueAtSignup) }),
       ...(terms && { terms }),
+      ...(normalizedTermsAndConditions && { termsandconditions: normalizedTermsAndConditions }),
       // New fields
       ...(commencementDate && { commencementDate: new Date(commencementDate) }),
       ...(allocationDate && { allocationDate: new Date(allocationDate) }),
@@ -169,24 +178,40 @@ export const createContract = async (req, res) => {
       const populatedContract = await Contract.findById(created._id)
         .populate("client")
         .populate("building", "name address perSeatPricing");
-      
+
       const pdfBuffer = await generateContractPDFBuffer(populatedContract);
-      const fileName = `contract_${created._id}_${Date.now()}.pdf`;
-      
-      const uploadResponse = await imagekit.upload({
-        file: pdfBuffer,
-        fileName: fileName,
-        folder: "/contracts"
-      });
-      
-      // Update contract with the uploaded PDF URL
-      await Contract.findByIdAndUpdate(created._id, { fileUrl: uploadResponse.url });
-      created.fileUrl = uploadResponse.url;
-      
-      console.log(`Contract PDF uploaded: ${uploadResponse.url}`);
+
+      // Only proceed with upload if we have a valid buffer
+      if (pdfBuffer && Buffer.isBuffer(pdfBuffer)) {
+        const fileName = `contract_${created._id}_${Date.now()}.pdf`;
+
+        // Ensure the buffer is properly formatted for ImageKit
+        let fileForUpload = pdfBuffer;
+        if (Buffer.isBuffer(pdfBuffer)) {
+          // Convert buffer to base64 string for ImageKit
+          fileForUpload = pdfBuffer.toString('base64');
+        } else if (typeof pdfBuffer === 'object' && pdfBuffer.buffer) {
+          // Handle if it's a typed array view
+          fileForUpload = Buffer.from(pdfBuffer).toString('base64');
+        }
+
+        const uploadResponse = await imagekit.upload({
+          file: fileForUpload,
+          fileName: fileName,
+          folder: "/contracts"
+        });
+
+        // Update contract with the uploaded PDF URL
+        await Contract.findByIdAndUpdate(created._id, { fileUrl: uploadResponse.url });
+        created.fileUrl = uploadResponse.url;
+
+        console.log(`Contract PDF uploaded: ${uploadResponse.url}`);
+      } else {
+        console.error('Generated PDF is not a valid buffer, skipping upload:', typeof pdfBuffer, pdfBuffer?.constructor?.name);
+      }
     } catch (pdfError) {
       console.error("Failed to generate/upload contract PDF:", pdfError);
-      // Don't fail contract creation if PDF upload fails
+      // Don't fail contract creation if PDF upload fails - contract can still be created without PDF
     }
 
     // Update client with building ID when contract is created
@@ -224,6 +249,208 @@ export const createContract = async (req, res) => {
   }
 };
 
+// Provide default Terms & Conditions structure for prefilling contracts
+export const getDefaultTermsAndConditions = async (req, res) => {
+  try {
+    const defaults = [
+      {
+        denotations: {
+          heading: "No Denotations",
+          body: [
+            "Phrases used in the Contract Coversheet, unless repugnant to the subject or context, shall have the following meanings:",
+            "Yes Month – English Calendar Month",
+            "No Allocated Seats – Designated office space as described in Contract Cover Sheet and earmarked on the layout plan attached herewith;",
+            "Yes Coworking Space – Means the premises or the building or the portion of a building wherein the Allocated Seats are located",
+            "Freebies – Access to services during the Fully Serviced Business Hours to be provided by Ofis Square to the Client at the Coworking Space without any charges to the extent agreed and recorded in the Contract Coversheet which are otherwise chargeable.",
+            "Free Services – Cost of electricity (at the existing load), Access to existing air conditioning, internet services (shared bandwidth at the common areas of the Coworking Space), existing office equipment, designated common spaces, knowledge resources, pantry, cafeteria, concierge, community events, earmarked consumables, other common areas, facilities, services earmarked for free use of Client in common with other Clients at the Coworking Space, during the Fully Serviced Business Hours.",
+            "Pay As You Go Services – Access to services which may be provided by Ofis Square from time to time on a chargeable basis at the Coworking Space as mentioned in the Contract Cover Sheet.",
+            "Lock in Period – The Period for which Fixed Payments are payable by the Client irrespective of continuance of this Contract as mentioned in the Contract Coversheet.",
+            "Notice Period – Notice period to be served by the Client to bring an end to this Contract signed between the Parties.",
+            "Committed Fixed Charges – Sum Total of the Fixed Payment Payable by the Client during the entire tenure of the agreed Lock-in Period including escalations and applicable taxes thereof, without any adjustments, deductions or abatements.",
+            "Material Breach by Client – Any breach by the Client which would affect the essence of the Contract which shall include but not limited to breach of terms of this Contract, Default in payment for 2 successive Months or 3 cumulative Months in a calendar year, failure to make good any damage caused to the Coworking Space or any facilities, amenities, equipments etc.",
+            "Material Breach by Ofis Square – Any breach by the Ofis Square which would affect the essence of the Contract which shall include but not limited to breach of terms of this Contract or failure to provide Services for a period exceeding the timelines agreed herein.",
+            "Immediate Termination – Termination without needing Notice Period or any option to cure any breach.",
+            "Fully Serviced Business Hours – Period during which the services attached with the Allocated Seats are to be provided by Ofis Square as part of Fixed Payment.",
+            "Fixed Payment – The amount payable by the Client by the 7th of each Month, in advance, commencing from the month in which the Commencement Date falls and ending on the 7th of the Month in which this Contract is due to expire.",
+            "Exit Formalities – Payment of all dues; Surrender of access cards; Removal of all third party cabling and any other installations and restoration of the Allocated Seats in the original position; Inventory tally as per the inventory list shared by Ofis Square with Client on the date of commencement of Contract; Payment of applicable exit charges in case of damage, destruction, missing inventory and Cleaning and Restoration Fees payable on Exit; Complete removal of the Client and all persons from the Allocated Seats along with all goods, properties and assets brought into the Coworking Space by the Client; Upto date paid bills of third-party utilities obtained by the Client at the Coworking Space; Documents showing removal of the Coworking Space address from the records of all Statutory and other authorities including shifting of registered office (if applicable).",
+            "Interest free Refundable Security Deposit – The agreed sum as recorded in the Contract Cover Sheet which shall be held by Ofis Square until Client completes all Exit Formalities and shall be refunded by Ofis Square within 30 days after all Exit Formalities have been completed by the Client, without any interest of any manner whatsoever.",
+            "Enterprise Services – Access to Allocated Seats along with the Free Services and Pay as You Go Services."
+          ]
+        },
+        scope: {
+          heading: "Scope",
+          body: [
+            "Client has obtained Enterprise Services from Ofis Square at its Coworking Space for the purposes of using the same as its office space for the agreed Duration.",
+            "Ofis Square as part of such Enterprise Services has agreed to provide access and granted permission to the Client to enter and use the Allocated Seats situated at a designated area as per the attached layout herein along with access to the Free Services and Pay As You Go Services. Freebies to the extent specified shall be deemed to be included in the Fixed Payments.",
+            "No tenancy or other right, title or interest and/or possession whatsoever is created or intended to be created by this Contract in favor of the Client.",
+            "Ofis Square has in view of the client agreeing to the Lock in Period, the Notice Period and having undertaken to pay the Committed Fixed Charges in the form of periodic Fixed Payment and the Pay as You Go Services (if any), has agreed to not charge any induction fee or cost to be incurred by the Client.",
+            "This Contract shall become effective immediately upon the date of its execution."
+          ]
+        },
+        rightsGrantedToClient: {
+          heading: "Rights granted to the Client",
+          body: [
+            "The Client shall be entitled to use the Allocated Seats for the purposes of carrying on its office wherein the Client shall be entitled to allow its own employees, to attend and carry on work.",
+            "The Client must use the Allocated Seats for office purposes only. Use of Coworking Space or the Allocated Seats for business of any nature involving frequent visits by members of the public or as a retail, residential or living space or for any non-business purpose shall not be permitted. The Allocated Seats cannot be used for the purposes of demonstration or display of products. The Client shall not be entitled to invite public at large for visiting it at the Coworking Space or the Allocated Seats, except in pre-booked Meeting/Conference/Training Rooms subject to payment of charges as applicable and to the capacity of such Meeting/Conference/Training Rooms.",
+            "The Client shall be entitled to enjoy Enterprise Services obtained from Ofis Square during the entire period of subsistence of this Contract, subject to payment of the Fixed Payments and the Pay as You Go Service charges and also subject to adherence and fulfillment of its obligations hereunder as also strictly following and complying with the User Rules and Regulations framed from time to time relating to use of the various facilities and amenities made available at the Coworking Space.",
+            "The Client shall not be entitled to allow entry of person (employees or visitors) exceeding the number of workstations obtained by the Client as part of the Allocated Seats.",
+            "All visitors of the Client shall be restricted to the reception area which shall be allowed to be used temporarily and in common with the other Clients of Ofis Square. No visitors shall be allowed to enter beyond the reception area, unless the Client has booked the meeting room or has its own dedicated meeting room as part of the Allocated Seats which shall in any event not exceed the total number of workstation or meeting room seats obtained or booked by the Client.",
+            "The Client shall be permitted to put up name cards or displayed signboard, or any other form of its name or signage of the prescribed size at the space specified by Ofis Square at additional cost, as specified by Ofis Square.",
+            "The Client and its employees shall be entitled to bring in their removable and non-fixed hardware like computers, laptops, printers, scanners, copiers, etc.",
+            "Ofis Square during the subsistence of the Contract may display the name of the Client at the designated list of occupants of the Coworking Space.",
+            "The Client shall be entitled to access the Coworking Space and avail the Enterprise Services with the help of Ofis Square mobile application (“Ofis Square App”). Also, the Client may also be entitled to obtain exclusive access cards for the Allocated Seats. It is clarified that the exclusive access excludes all persons other than Ofis Square. It is understood that the said access cards shall always remain the property of Ofis Square and Ofis Square shall be entitled to deactivate the same in case of Termination or suspension of this Contract."
+          ]
+        },
+        payments: {
+          heading: "Payments of Charges",
+          body: [
+            "Client shall be required to make payment of Fixed Payment in Advance and within the 7th of each month even if there is a delay in  receipt of invoice from Ofis Square for such amount.",
+            "Client shall be required to make payment of Pay as You Go Services within 7 days of the Invoice for such charges being raised. All invoices for the Pay as You Go Services would ideally be raised at the end of a Month, unless otherwise thought fit by Ofis Square.",
+            "Ofis Square will send all invoices electronically. In case of physical copy being required, Client may obtain the same from the respective community manager of the Coworking Space.",
+            "All payments are required to be made by Bank Transfers / Demand Drafts / Account Payee Cheques / other Electronic means in favour of Ofis Spaces Private Limited.",
+            "Dishonor of Cheque, Declined Credit Cards or bounced ECS will be treated as non-payment and shall attract Bank handling charges of Rs. 1500/- and other Consequences Of Non-Payment.",
+            "In case payments are made in any currency other than INR, the Client is required to make sufficient payment so as to be effective credit of the entire payments in INR into the account of Ofis Square, post deduction of bank charges, forex charges, currency fluctuations etc.",
+            "The Client hereby undertakes to make the payment of Fixed Payments and/or Pay as You Go Services charges to such bank, financial institution or other entity as may be designated by Ofis Square from time to time. Such payments made by the Client will constitute a sufficient discharge of all obligations of the Client under this Contract.",
+            "Client shall furnish the tax deduction certificates on a quarterly basis to Ofis Square, at the rate applicable to the Ofis Square. Failure to deposit Tax Deducted at Source (TDS) or, any other similar deductions by the Client or excess Deduction or Failure to Furnish such certificate shall amount to Non-Payment of charges and Ofis Square shall be entitled to invoke the Consequences of Non- Payment."
+          ]
+        },
+        consequencesOfNonPayment: {
+          heading: "Consequences of Non-Payment",
+          body: [
+            "Ofis Square reserves the right to withhold services (including for the avoidance of doubt, denying the Client access to its premises) while there are any outstanding fees and/or interest or the Client is in breach of this Contract without requiring to first terminate the Contract.",
+            "In case of default in payment of charges or any part thereof within the due dates, the Client shall be liable to pay interest @ 1.5% p.m. or part thereof, computed from the Month for which the same is due compounded for each Month of non-payment until actual payments.",
+            "In addition to the interest, the Client shall also be liable to pay a flat 5% late fee in the event of subsequent defaults.",
+            "Client acknowledges that in case of repeated instances of non-payment or repeated instances of damage being caused to the property of Ofis Square, Ofis Square may at its sole discretion be entitled to seek 100% additional Security Deposit to allow the Client to continue with the Contract."
+          ]
+        },
+        obligationsOfClient: {
+          heading: "Obligations of the Client",
+          body: [
+            "The Client shall be responsible and ensure that all its employees, visitors, staff or any other person entering the Coworking Space through or in connection with the Client shall be bound by this Contract and shall also be required to abide by  all the Rules made and/or published by Ofis Square relating to use of the Coworking Space, the Allocated Seats and other facilities, amenities and services made available at the Coworking Space.",
+            "The Client shall be required to obtain all necessary permissions, trade licenses, approvals, and other statutory permissions for carrying on its business from Allocated Seats at the Coworking Space.",
+            "The Client acknowledges, accepts and provides its consent to the fact that the Client’s personal KYC, telephone numbers and email id data shall be provided by the Client to Ofis Square and further acknowledges that such data shall be used by Ofis Square to inter alia provide access to Ofis Square App and in case of other emergencies.",
+            "The Client shall not be entitled to make any addition or alteration or changes or re-arrange the fittings and fixtures in the Allocated Seats or carry out work for installation or otherwise requiring any drilling, fixing, sticking or other activities within the Coworking Space.",
+            "The Client must not install any cabling, IT or telecom connections without Ofis Square’s consent, which Ofis Square may refuse at its absolute discretion. In case any permission is granted, the Client shall permit Ofis Square to oversee any installations (for example IT or electrical systems) and to verify that such installations are in accordance with the plan approved by Ofis Square and such installations do not cause any interfere or disturbance.",
+            "The Client shall be held responsible and shall be liable towards Ofis Square for any disruption or disturbance of business at the Coworking Space caused on account of activities carried out by the Client, its employee (s) and affiliate. This is in addition to any claim that may arise against the Client by a co-occupant or a co-user at the Coworking Space.",
+            "The Client assumes total liability towards the cost of any loss or damage to Ofis Square or any other Client, or any equipment, facilities, amenities, fixtures, furniture’s and other installations in the Coworking Space caused deliberately or by negligence or resulting from improper usage, utilization or enjoyment of any services at the Coworking Space by the Client, its employee(s) and affiliate or any person having entered the Coworking Space in relation to the Client, in any capacity whatsoever, which shall not be limited to the cost of replacement of the damaged goods and also consequential losses caused due to such damage.",
+            "Client is entitled to use the Coworking Space address as its registered office subject to payment of additional charges and  obtaining prior written consent from Ofis Square. Client is not permitted to use the office address to obtain any other government licenses except of GST.The Client shall be liable to disclose the nature of this Contract under which it is using the Coworking Space address as its address to any government & semi-government bodies, financial institutions, utility provider and other such persons where the address is intended to be shown as the Client’s business address.",
+            "The Client undertakes that it shall immediately on obtaining any registration at the address of the Coworking Space shall inform Ofis Square of the fact and submit a certified copy thereof and shall before the  expiry of the service Contract shall intimate all the authorities that it has shifted its office from the Coworking Space to the new address and shall also surrender the registrations obtained at the address of Ofis Square Coworking Space and submit the proof thereof to Ofis Square. Such compliance shall be mandatory part of Exit Formalities.",
+            "The Client agrees to pay promptly (i) all taxes and license fees which it is required to pay to any governmental or semi government authority in its business(and, at the Ofis Square’s request, will provide to the Ofis Square evidence of such payment); (ii) all other applicable taxes, duties, levies or charges being made applicable to the instant transaction; (iii) payment of any utilities or other additional services obtained by the Client from Third Party (with consent of Ofis Square). For the avoidance of doubt, all charges set forth in this Agreement are exclusive of any applicable taxes, which shall be borne and paid by the Client.",
+            "Client must at all times comply with all applicable relevant laws and regulations in the conduct of its business in relation to this Contract and also with all relevant anti-bribery and anti-corruption laws.",
+            "Client shall under no circumstances be entitled to seek refund of any charges made payment by the Client.",
+            "The Client shall be solely responsible for any data and/or software used and/or stored at the servers of Ofis Square and Ofis Square shall be entitled to terminate such storage and/or access to the Ofis Square network, if it is brought to its notice or otherwise comes to know that the Client or any of it employee(s) or associates content and/or data and/or software is unlawful and/or violates any rules, laws including piracy laws.",
+            "Client must not carry on any business that competes with the business of Ofis Square inter alia of running Coworking offices / services offices / Enterprise Services during the period of this Contract and for a period of 2 years after expiry of this Contract.",
+            "Client acknowledges that the ownership and all other rights in respect of the trademark/s, goodwill, trade name/s, copyright/s and/or any other intellectual property right/s of Ofis Square shall at all times belong exclusively to Ofis Square, whether during the term of the Contract or after its expiry / termination and Client shall not be entitled to any such intellectual property right/s of Ofis Square or to the use thereof in any manner whatsoever. Client shall not use the name and/or logo of Ofis Square or any pictures or illustrations of any portion of any properties (including the Coworking Space and the Allocated Seats) in any advertisement, promotional material and/or other media coverage, save and except with the prior written consent of Ofis Square.",
+            "Client further acknowledges that Ofis Square shall be entitled to include the name / logo of Client in any of its promotional material, advertisement, reports, media coverage, etc.",
+            "It is the Client’s responsibility to arrange insurance for its own property which it brings in to the Coworking Space and for its own liability to its employees and to third parties",
+            "Without prejudice to the specific indemnities, the Client hereby indemnifies and assures to keep Ofis Square indemnified, against any loss, damage, claim or demand arising out of any act of omission or commission by Client. Client shall also indemnify Ofis Square from and against any and all third party claims, liabilities, and expenses including reasonable attorneys’ fees, resulting from any breach or alleged breach of this Contract by Client, its guests or invitees.",
+            "Client acknowledges that all areas outside the Allocated Seats are of restricted or no access for the Client and Client shall not be entitled to occupy or use any areas outside the Allocated Seats other than for the purposes for which they have been earmarked by Ofis Square. Client shall be fully responsible for ensuring that the privacy of other occupiers of the Coworking Space is not breached by Client or any of its employees or visitors.",
+            "Client shall not entitled to enter into any other seats / workstations / offices / allocates areas of other clients / meeting rooms / restricted areas in the Coworking Space and Client shall be fully responsible for ensuring that the privacy of other occupiers of the Coworking Space is not breached by Client or any of its employees or visitors.",
+            "Any and all taxes, duties, stamp charges and other expenses arising out of or relating to the execution of this contract (including those assessed subsequently) shall be borne and payable by the Client, for executing this Contract."
+          ]
+        },
+        obligationsOfOfisSquare: {
+          heading: "Rights / Obligations of Ofis Square",
+          body: [
+            "Ofis Square shall be obliged to provide Enterprise Services as agreed herein to the Client, subject to the Client complying with the terms and conditions for use and enjoyment of the Enterprise Services.",
+            "Ofis Square shall ensure that the services are kept running at all times. However Ofis Square shall not have any liability in case of any services being disrupted due to third party failures or intervening events over which Ofis Square has no control.",
+            "Ofis Square or its past, present and future officers employees individually shall not be liable for any special, incidental, indirect, punitive, consequential or other damages whatsoever (including, but not limited to damages for loss of profits, loss of confidential or other information, business interruption, personal injury, loss of privacy, failure to meet any duty or otherwise under or in connection with any provision of this Contract).",
+            "The liability of Ofis Square shall under no circumstances exceed a sum equivalent to the Fixed Payments actually paid by the Client in the last 3 Months from such liability arising.",
+            "Ofis Square hereby indemnifies and assures to keep Client indemnified, against any third party loss, damage, claim or demand arising from any Material breach of this Contract by Ofis Square or its employee, to the extent stated herein.",
+            "Ofis Square shall have a right of access of the Allocated Seats, with or without notice to the Client, for the purposes of safety, cleaning, repairs, maintenance, in case of emergency or for any other purpose. Ofis Square shall be entitled to move the furniture / fixtures within the Allocated Seats and shall also be entitled to shift the Allocated Seats to another location within the same Coworking Space, however without reducing the total area of the Allocated Seats and without affecting the amenities available to Client.",
+            "Ofis Square shall be entitled to add / alter / remove amenities, facilities or services at the Coworking Space at any time. Ofis Square shall also be entitled to provide the Enterprise Services or parts thereof through its affiliates or third parties, at its sole discretion.",
+            "Ofis Square does not control and shall not be responsible for the actions of other clients or any other third parties at the Coworking Space. If a dispute arises between Client and other clients of Ofis Square, or their invitees or guests, Ofis Square shall have no responsibility or obligation to participate, mediate or indemnify any party.",
+            "Ofis Sqaure shall not be involved in or liable for, the provision of products or services by third parties (“Third Party Services”) that Client may elect to purchase in connection with their access to Enterprise Services including Pay As You Go services, even if it appears on their invoice. Third Party Services are provided solely by the applicable third party (“Third Party Service Providers”) and pursuant to separate arrangements between Client and the applicable Third Party Service Providers. These Third Party Service Providers’ terms and conditions will control with respect to the relevant Third Party Services and Ofis Square shall have no obligation or liability in connection with delivery or performance of such Third Party Services, except as provided in the Contract."
+          ]
+        },
+        termination: {
+          heading: "Termination",
+          body: [
+            "Contract can be terminated by Client during the Lock in Period by complying with all Exit Formalities including making payment of unpaid portion of the Committed Fixed Charges. In case of Material Breach of Ofis Square during Lock-In period, and upon failure to cure Material Breach by Ofis Square despite notice by Client, Lock-in would stand waived in terms hereof;",
+            "Contract cannot be terminated by Ofis Square during the Lock in Period except for Material Breach of Client.",
+            "If either party desires to not continue the Contract beyond the Lock in Period, then a notice of such intention with the duration of the agreed Notice Period herein post expiry of the Lock-In Period would be required to be given.",
+            "In case of Material Breach by Ofis Square, Client shall be entitled to terminate this Contract by giving 30 days notice to enable Ofis Square to cure the Material Breach; If Ofis Square fails to cure the Material Breach despite expiry of 30 days, the Client shall be entitled to thereafter end this Contract  by stopping to avail any of the Enterprise Services and completing the Exit Formalities.",
+            "In case the Contract is terminated by Client during the Lock In Period due to failure of Ofis Square to cure a Material Breach despite notice having been given, then the Client would be relieved of making payment of the balance Committed Fixed Charges from the date of the Client completing the Exit Formalities. It is clarified that the Client would continue to remain liable for payment of the Fixed Payments upto the period till when the Client has utilized the services.",
+            "In case of Material Breach by Client, Ofis Square shall be entitled to terminate this Contract by giving 30 days’ notice to enable Client to cure the Material Breach; If Client fails to cure the Material Breach despite expiry of 30 days, Ofis Square shall be entitled to forthwith end this Contract and become entitled to the entire balance Committed Fixed Charges, if the Lock In period has not expired and shall be entitled to take all actions including but not limited to deactivating access of the Client to the Coworking Space and the Allocated Seats.",
+            "In case of the Client  is insolvent or bankrupt, then this Contract shall be deemed to have automatically come to an end on the preceding day of order of admission of insolvency or bankruptcy proceedings without any formal notice being required to be given by either Party and the Security Deposit shall stand forfeited.",
+            "In case the Client abandons the Coworking Space and/or starts removing its goods from the Coworking Space without prior written confirmation from Ofis Square, the same shall be deemed to be a notice of immediate termination by the Client.",
+            "Upon termination of this Contract by either party and until completion of Exit Formalities by the Client, Ofis Square shall have a lien over the properties of the Client lying within the Coworking Space and Ofis Square shall be entitled to restrain removal of any goods by the Client from the Coworking Space until Exit Formalities are completed.",
+            "In case the rights of Ofis Square to the Coworking Space are terminated and/or or user rights are restrained/suspended, then Ofis Square would be entitled to immediately terminate this Contract and refund the Security Deposit within 30 days from such termination subject to the Client completing all Exit Formalities.",
+            "If any government/ judicial /quasi-judicial authority or other legislative body has passed an order against the Client that the Client is conducting or is under investigation for any unlawful/ illegal/criminal activities in their business, then Ofis Square shall be entitled to terminate this Contract with immediate effect."
+          ]
+        },
+        consequencesOfTermination: {
+          heading: "Consequences of Termination",
+          body: [
+            "Upon termination in the manner aforesaid, the Client shall be required to complete the Exit Formalities. Termination by Client for the purposes of computing the period of Payments required to be made by the Client shall be deemed to be effective only upon completing the Exit Formalities and full payments being made by the Client.",
+            "Upon termination, in addition to other remedies, Ofis Square shall be entitled to prevent access to the Client to the Coworking Space or any other Services obtained by the Client under this Contract from the date of expiry of Notice Period agreed herein. However, the same shall not exonerate the Client from its liability to make payment unless the Client has completed the Exit Formalities.",
+            "Ofis Square shall have a lien and/or charge on all goods brought into the Coworking Space by the Client under this Contract until the Exit Formalities are completed by the Client with a right to store the goods at an alternate location. Client hereby indemnifies Ofis Square in respect of any claims of any third parties in respect of such goods.",
+            "Ofis Square shall be entitled to dispose off any property remaining in or on the Allocated Seats area and/or Coworking Space after the termination or expiration of the Contract and will not have any obligation to store such property, and Client hereby waives any claims or demands regarding such property or Ofis Square’s handling or disposal of such property. Client will be responsible for paying any fees reasonably incurred by Ofis Square regarding such removal. Ofis Square shall have no implied obligations as a bailee or custodian.",
+            "Ofis Square shall not be under any obligation to forward or hold Client’s mail or other packages delivered to Coworking Space address post expiry or termination of this Contract.",
+            "Ofis Square shall refund the Refundable Security Deposit no later than 30 days from completion of the Exit Formalities by the Client, which however shall not carry interest under any circumstances. Beyond 30 days, Client shall be entitled to interest @ 1.5 % p.m. for such period of delay.",
+            "In case of Immediate Termination, in addition to other remedies,  Ofis Square shall be entitled to forthwith suspend and prevent access of the Coworking Space to the Client and revoke all authorities granted hereunder forthwith without any prior notice."
+          ]
+        },
+        renewal: {
+          heading: "Renewal",
+          body: [
+            "The Client acknowledges that although the Duration of this Contract has been fixed, yet the Client shall be obliged to intimate its intention not to continue beyond the Duration hereby agreed, by initiating the Exit Formalities and giving a written intimation of such intention to not renew this Contract;",
+            "In case Ofis Square does not receive such written intimation 6 months before the end of the Duration, this Contract shall automatically stand renewed for a period of 12 months with a lock in period of 6 months from the end of the Duration on the same terms and conditions of this Contract, including escalation on the terms agreed herein."
+          ]
+        },
+        miscellaneous: {
+          heading: "Miscellaneous",
+          body: [
+            "All previous correspondences, emails, agreements, understandings, writings, commitments, LOA / LOI etc stand superseded with this Contract;",
+            "Client acknowledges that the Allocated Seats are complete in all nature and furnished as per the agreed terms of the LOI. No complaint in respect of any obligation or liability accrued prior to this Contract survives and any claim relating thereto stands waived and/or abandoned and/or withdrawn;",
+            "Any notices relating to termination of this Agreement:",
+            "By the Client – shall be delivered to the Community Manager at community@ofisspaces.com. A copy of the notice shall also be sent to Ofis Square at its registered office address by post and via email at ho@ofisspaces.com.",
+            "By Ofis Square – shall be delivered in writing to the Client’s registered email address as provided in this Agreement and shall also be sent via post to their registered address.",
+            "All notices shall be deemed valid and effective if sent by post, on the third business day following the date of dispatch.",
+            "Client acknowledges that Ofis Square shall be entitled to induct other Clients in the Coworking Space who are in competing businesses as that of the Client and the Client shall not have any right of exclusivity as against Ofis Square.",
+            "This Contract or any rights obtained hereunder cannot be assigned by the Client in any manner whatsoever, including but not limited to any corporate restructuring, save and except with written consent of Ofis Square and payment of applicable charges, by the Client.",
+            "Client acknowledges that no rights/title in property is being created by this Contract."
+          ]
+        },
+        parking: {
+          heading: "Parking",
+          body: [
+            "The parking will be at Client’s risk basis and the Ofis Square shall not be responsible for any  type of loss/ damage to any four/two wheeler.",
+            "Overnight four wheeler parking will not be permitted without prior written intimation to the security in charge of the said building/said commercial complex.",
+            "The Client shall not encroach any other four/two wheeler at parking space in any manner.",
+            "Speed limit in all basements is 10km/hr and the Client adheres to follow the same.The Ofis Square however may restrict the service of the Client if speed limit is violated."
+          ]
+        },
+        disputeResolution: {
+          heading: "Dispute Resolution",
+          body: [
+            "Unless prohibited by any applicable law in force, all claims, disputes differences or questions of any nature arising between the parties to this Contract in relation to the terms used in or clause of this Contract or as to the rights, duties, liabilities of the Parties arising out of this Contract shall be referred to arbitration under the Arbitration and Conciliation Act, 1996 including any amendments thereto by a sole arbitrator appointed mutually by the Parties. That the seat and venue of arbitration proceedings shall be New Delhi. The arbitration proceedings shall be conducted in the english language.",
+            "Subject to the above clause. The Parties agree that all judicial and/or legal proceedings relating to or arising out of this Contract as maintainable under law shall be filed by either Party in the courts of competent jurisdiction situated at Delhi only, to the exclusion of all other courts."
+          ]
+        },
+        governingLaw: {
+          heading: "Governing Law",
+          body: [
+            "The Relationship between the Client and Ofis Square will be governed by the Indian law."
+          ]
+        },
+        electronicSignature: {
+          heading: "Electronic Signature Acknowledgement And Consent",
+          body: [
+            "Each party agrees that the electronic signatures, whether digital or encrypted, of the parties included in this Agreement, if any, are intended to authenticate this Agreement and to have the same force and effect as manual signatures.",
+            "Under penalty of perjury, the signatory hereby affirm that the electronic signature affixed within this Agreement, were signed by the authorised signatory with full knowledge and consent and the signing party is legally bound to these terms and conditions."
+          ]
+        }
+      }
+    ];
+
+    return res.json({ success: true, data: defaults });
+  } catch (error) {
+    console.error('getDefaultTermsAndConditions error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch default terms and conditions' });
+  }
+};
+
 function getZohoSignBaseUrl() {
   const signDc = process.env.ZOHO_SIGN_DC; // e.g., sign.zoho.in
   if (signDc) return `https://${signDc}/api/v1`;
@@ -256,6 +483,9 @@ export const getContracts = async (req, res) => {
 export const getContractById = async (req, res) => {
   try {
     const { id } = req.params;
+    // if (!mongoose.Types.ObjectId.isValid(id)) {
+    //   return res.status(400).json({ success: false, message: "Invalid contract id" });
+    // }
     const contract = await Contract.findById(id)
       .populate("client")
       .populate("building", "name address perSeatPricing city state")
@@ -513,8 +743,18 @@ export const updateContract = async (req, res) => {
       const pdfBuffer = await generateContractPDFBuffer(populatedContract);
       const fileName = `contract_${id}_${Date.now()}.pdf`;
       
+      // Ensure the buffer is properly formatted for ImageKit
+      let fileForUpload = pdfBuffer;
+      if (Buffer.isBuffer(pdfBuffer)) {
+        // Convert buffer to base64 string for ImageKit
+        fileForUpload = pdfBuffer.toString('base64');
+      } else if (typeof pdfBuffer === 'object' && pdfBuffer.buffer) {
+        // Handle if it's a typed array view
+        fileForUpload = Buffer.from(pdfBuffer).toString('base64');
+      }
+
       const uploadResponse = await imagekit.upload({
-        file: pdfBuffer,
+        file: fileForUpload,
         fileName: fileName,
         folder: "/contracts"
       });
@@ -546,6 +786,7 @@ export const updateContract = async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to update contract" });
   }
 };
+
 
 // Submit contract for approval or auto-approve
 export const submitContract = async (req, res) => {
@@ -740,9 +981,6 @@ export const sendForSignature = async (req, res) => {
       .populate("building", "name address pricing");
     
     if (!contract) return res.status(404).json({ error: "Contract not found" });
-    if (contract.status !== "draft" && contract.status !== "approved") {
-      return res.status(400).json({ error: "Only draft or approved contracts can be sent for signature" });
-    }
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
     
     // Use stampPaperUrl if available, otherwise fallback to fileUrl
@@ -789,6 +1027,7 @@ export const sendForSignature = async (req, res) => {
       id,
       { 
         status: "pending_signature",
+        iscontractsentforsignature : true,
         zohoSignRequestId: requestId,
         sentForSignatureAt: new Date()
       },
@@ -1055,6 +1294,7 @@ export const uploadSignedContract = async (req, res) => {
     contract.fileUrl = fileUrl;
     contract.status = "active";
     contract.signedAt = new Date();
+    contract.isclientsigned = true; // Set client signed flag to true
     // Optional: clear zohoSignRequestId if this path bypassed Zoho Sign
     // contract.zohoSignRequestId = undefined;
 
@@ -1170,6 +1410,7 @@ export const handleZohoSignWebhook = async (req, res) => {
     if (request_status === "completed") {
       newStatus = "active";
       updateData.signedAt = new Date();
+      updateData.isclientsigned = true; // Set client signed flag to true
       try {
         const signedDocumentUrl = await loggedZohoSign.downloadSignedDocument(request_id);
         updateData.fileUrl = signedDocumentUrl;
@@ -1178,7 +1419,7 @@ export const handleZohoSignWebhook = async (req, res) => {
         console.error(`Failed to download signed document for contract ${contract._id}:`, downloadError);
       }
     } else if (request_status === "declined") {
-      newStatus = "draft"; 
+      newStatus = "draft";
       updateData.declinedAt = new Date();
     }
 
@@ -1800,6 +2041,36 @@ async function generateContractPDFFromHtml(contract) {
       margin: { top: '20mm', right: '12mm', bottom: '28mm', left: '12mm' }
     });
     await page.close();
+
+    // Ensure the returned PDF is a Buffer instance
+    if (!Buffer.isBuffer(pdf)) {
+      console.error('Puppeteer page.pdf() did not return a Buffer, type:', typeof pdf, 'constructor:', pdf?.constructor?.name);
+      // Puppeteer should return a Buffer, but if it doesn't, convert appropriately
+      if (pdf instanceof ArrayBuffer) {
+        return Buffer.from(pdf);
+      } else if (pdf.buffer && ArrayBuffer.isView(pdf)) {
+        // TypedArray like Uint8Array
+        return Buffer.from(pdf.buffer, pdf.byteOffset, pdf.byteLength);
+      } else if (Array.isArray(pdf)) {
+        return Buffer.from(pdf);
+      } else if (typeof pdf === 'object' && pdf.data) {
+        // If it's an object with a data property that's buffer-like
+        if (Buffer.isBuffer(pdf.data)) {
+          return pdf.data;
+        } else if (pdf.data instanceof ArrayBuffer) {
+          return Buffer.from(pdf.data);
+        } else if (Array.isArray(pdf.data)) {
+          return Buffer.from(pdf.data);
+        }
+      }
+      // As a last resort, convert to string then back to buffer
+      if (typeof pdf === 'string') {
+        return Buffer.from(pdf, 'utf8');
+      }
+
+      throw new Error(`Puppeteer page.pdf() returned unexpected type: ${typeof pdf}`);
+    }
+
     return pdf;
   } finally {
     await browser.close();
@@ -2020,11 +2291,22 @@ async function downloadSignedDocument(requestId) {
     }
 
     const pdfBuffer = Buffer.from(await response.arrayBuffer());
-    
+
     // Upload to ImageKit
     const fileName = `signed_contract_${requestId}_${Date.now()}.pdf`;
+
+    // Ensure the buffer is properly formatted for ImageKit
+    let fileForUpload = pdfBuffer;
+    if (Buffer.isBuffer(pdfBuffer)) {
+      // Convert buffer to base64 string for ImageKit
+      fileForUpload = pdfBuffer.toString('base64');
+    } else if (typeof pdfBuffer === 'object' && pdfBuffer.buffer) {
+      // Handle if it's a typed array view
+      fileForUpload = Buffer.from(pdfBuffer).toString('base64');
+    }
+
     const uploadResponse = await imagekit.upload({
-      file: pdfBuffer,
+      file: fileForUpload,
       fileName: fileName,
       folder: "/contracts/signed"
     });
@@ -2035,6 +2317,7 @@ async function downloadSignedDocument(requestId) {
     throw error;
   }
 }
+
 
 // Generate contract PDF using template
 export const generateContractPDF = async (req, res) => {
@@ -2496,7 +2779,7 @@ export const addComment = async (req, res) => {
       type,
       message: message.trim(),
       mentionedUsers: mentionedUsers.filter(id => mongoose.Types.ObjectId.isValid(id)),
-      parentCommentId: parentCommentId || null, // NEW: Set parent reference
+      parentCommentId: parentCommentId || null,
       sectionType,
       ...(sectionType === "terms_section" && { termsSection }),
       ...(paragraphIndex !== undefined && { paragraphIndex: Number(paragraphIndex) })

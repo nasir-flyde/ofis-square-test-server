@@ -15,7 +15,9 @@ import {
   recordSecurityDeposit,
   markClientSigned,
   getContractsByWorkflowStage,
-  getWorkflowStatus
+  getWorkflowStatus,
+  updateContractApprovalFlag,
+  finalApprove
 } from "../controllers/contractApprovalController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import { populateUserRole, requirePermission } from "../middlewares/rbacMiddleware.js";
@@ -131,11 +133,19 @@ router.post("/:id/security-deposit",
   recordSecurityDeposit
 );
 
-router.post("/:id/client/sign", 
-  authMiddleware, 
-  populateUserRole, 
+router.post("/:id/client/sign",
+  authMiddleware,
+  populateUserRole,
   requirePermission(PERMISSIONS.CONTRACT_UPDATE),
   markClientSigned
+);
+
+// Update generic contract approval flag (for workflow steps like stamp paper)
+router.post("/:id/flag/update",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_UPDATE),
+  updateContractApprovalFlag
 );
 
 // Get contracts by workflow stage
@@ -152,6 +162,14 @@ router.get("/:id/workflow/status",
   populateUserRole, 
   requirePermission(PERMISSIONS.CONTRACT_READ),
   getWorkflowStatus
+);
+
+// Final Approval
+router.post("/:id/final/approve",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_FINAL_APPROVE),
+  finalApprove
 );
 
 export default router;

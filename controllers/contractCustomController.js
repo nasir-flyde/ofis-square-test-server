@@ -1,0 +1,367 @@
+import Contract from "../models/contractModel.js";
+import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
+
+// Compute stage for custom flow
+export const getCustomWorkflowStatus = (contract) => {
+  const flags = {
+    status: contract.status,
+    salesSeniorApproved: !!contract.salesSeniorApproved,
+    adminapproved: !!contract.adminapproved,
+    iscontractsentforsignature: !!contract.iscontractsentforsignature,
+    isclientsigned: !!contract.isclientsigned,
+    hasFileUrl: !!contract.fileUrl && contract.fileUrl !== "placeholder",
+    // Treat Legal Upload as done only when legal uploaded metadata is present (and fileUrl is valid)
+    hasLegalUpload: (
+      (!!contract.legalUploadedAt || !!contract.legalUploadedBy) &&
+      !!contract.fileUrl && contract.fileUrl !== "placeholder"
+    ),
+  };
+
+  if (contract.status === "pushed" && !flags.salesSeniorApproved) {
+    return { stage: "sales_senior_pending", flags };
+  }
+  // Require explicit legal upload metadata, do not skip to Admin approval just because fileUrl exists
+  if (flags.salesSeniorApproved && !flags.hasLegalUpload) {
+    return { stage: "legal_upload_pending", flags };
+  }
+  if (flags.hasLegalUpload && !flags.adminapproved) {
+    return { stage: "admin_approval_pending", flags };
+  }
+  if (!flags.iscontractsentforsignature || (flags.iscontractsentforsignature && !flags.isclientsigned)) {
+    return { stage: "client_signature_pending", flags };
+  }
+  return { stage: "completed", flags };
+};
+
+// Sales creates a contract with basic details; status = pushed
+export const createBySales = async (req, res) => {
+  try {
+    const {
+      client,
+      building,
+      startDate,
+      endDate,
+      capacity,
+      monthlyRent,
+      commencementDate,
+      allocationDate,
+      terms,
+      termsandconditions,
+    } = req.body || {};
+
+    if (!client || !building || !startDate || !endDate || !capacity || monthlyRent === undefined) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    const contract = await Contract.create({
+      client,
+      building,
+      startDate,
+      endDate,
+      capacity,
+      monthlyRent,
+      commencementDate: commencementDate || undefined,
+      allocationDate: allocationDate || undefined,
+      terms: terms || undefined,
+      termsandconditions: termsandconditions || undefined,
+      status: "pushed",
+      createdBy: req.user?._id || undefined,
+      lastActionBy: req.user?._id || undefined,
+      lastActionAt: new Date(),
+    });
+
+    await logContractActivity(req, "CREATE", contract._id, client, {
+      action: "sales_created",
+    });
+
+    return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id } });
+  } catch (err) {
+    console.error("createBySales error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Sales Create");
+    return res.status(500).json({ success: false, message: "Failed to create contract" });
+  }
+};
+
+// Sales Senior updates contract and approves
+export const salesSeniorUpdateAndApprove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approve, notes, updates } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    // Allow updating broad fields; protect system fields
+    const protectedFields = new Set([
+      "_id", "id", "status", "createdBy", "lastActionBy", "lastActionAt",
+      "adminapproved", "iscontractsentforsignature", "isclientsigned", "clientapproved",
+      "salesSeniorApproved", "salesSeniorApprovedBy", "salesSeniorApprovedAt"
+    ]);
+
+    if (updates && typeof updates === "object") {
+      Object.entries(updates).forEach(([k, v]) => {
+        if (!protectedFields.has(k)) {
+          contract[k] = v;
+        }
+      });
+    }
+
+    if (approve) {
+      contract.salesSeniorApproved = true;
+      contract.salesSeniorApprovedBy = req.user?._id || null;
+      contract.salesSeniorApprovedAt = new Date();
+      contract.salesSeniorApprovalNotes = notes || null;
+      // Optional status transition
+      if (contract.status === "pushed") {
+        contract.status = "submitted_to_legal";
+      }
+    }
+
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: approve ? "sales_senior_approved" : "sales_senior_updated",
+      notes,
+    });
+
+    return res.json({ success: true, message: approve ? "Approved by Sales Senior" : "Updated by Sales Senior" });
+  } catch (err) {
+    console.error("salesSeniorUpdateAndApprove error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Sales Senior Update/Approve");
+    return res.status(500).json({ success: false, message: "Failed to update/approve" });
+  }
+};
+
+// Legal uploads final contract document -> sets fileUrl
+export const legalUploadDocument = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body || {};
+    const file = req.file;
+
+    if (!file) return res.status(400).json({ success: false, message: "No file provided" });
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    if (!contract.salesSeniorApproved) {
+      return res.status(400).json({ success: false, message: "Sales Senior approval required before legal upload" });
+    }
+
+    const uploadResponse = await imagekit.upload({
+      file: file.buffer,
+      fileName: `${Date.now()}_${file.originalname}`,
+      folder: `/contracts/legal/${id}/`,
+      useUniqueFileName: true,
+    });
+
+    contract.fileUrl = uploadResponse.url;
+    contract.legalUploadedBy = req.user?._id || null;
+    contract.legalUploadedAt = new Date();
+    contract.legalUploadNotes = notes || null;
+    // Optional status transition
+    if (contract.status === "submitted_to_legal") {
+      contract.status = "legal_reviewed";
+    }
+
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "legal_uploaded",
+      fileName: file.originalname,
+    });
+
+    return res.json({ success: true, message: "Document uploaded", data: { fileUrl: contract.fileUrl } });
+  } catch (err) {
+    console.error("legalUploadDocument error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Legal Upload");
+    return res.status(500).json({ success: false, message: "Failed to upload document" });
+  }
+};
+
+// System Admin approves
+export const adminApproveCustom = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    if (!contract.fileUrl || contract.fileUrl === "placeholder") {
+      return res.status(400).json({ success: false, message: "Contract document (fileUrl) must be uploaded before admin approval" });
+    }
+
+    // Optional hard role gate: System Admin only
+    if (req.user?.role?.roleName !== "System Admin") {
+      return res.status(403).json({ success: false, message: "Only System Admin can approve at this stage" });
+    }
+
+    contract.adminapproved = true;
+    contract.adminApprovalReason = reason || null;
+    contract.adminApprovedBy = req.user?._id || null;
+    contract.adminApprovedAt = new Date();
+    if (contract.status === "legal_reviewed" || contract.status === "pending_admin_approval") {
+      contract.status = "admin_approved";
+    }
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "admin_approved",
+      reason,
+    });
+
+    return res.json({ success: true, message: "Admin approved contract" });
+  } catch (err) {
+    console.error("adminApproveCustom error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Admin Approve");
+    return res.status(500).json({ success: false, message: "Failed to approve" });
+  }
+};
+
+// Send to client for signature (Zoho eSign placeholder)
+export const sendToClientForSignature = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { signerEmail, signerName, subject, message } = req.body || {};
+
+    const contract = await Contract.findById(id).populate("client", "companyName email");
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    if (!contract.adminapproved) {
+      return res.status(400).json({ success: false, message: "Admin approval required before sending for signature" });
+    }
+    if (!contract.fileUrl || contract.fileUrl === "placeholder") {
+      return res.status(400).json({ success: false, message: "fileUrl is required to send for signature" });
+    }
+
+    // TODO: Integrate real Zoho eSign service. Placeholder envelope id:
+    const envelopeId = `ZOHO_SIGN_${Date.now()}`;
+
+    contract.iscontractsentforsignature = true;
+    contract.signatureProvider = "zoho_sign";
+    contract.signatureEnvelopeId = envelopeId;
+    contract.sentForSignatureAt = new Date();
+    contract.sentToClientAt = new Date();
+    contract.sentToClientBy = req.user?._id || null;
+    if (contract.status !== "sent_for_signature") contract.status = "sent_for_signature";
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "sent_for_signature",
+      signerEmail: signerEmail || contract.client?.email,
+    });
+
+    return res.json({ success: true, message: "Sent to client for signature", data: { envelopeId } });
+  } catch (err) {
+    console.error("sendToClientForSignature error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Send For Signature");
+    return res.status(500).json({ success: false, message: "Failed to send for signature" });
+  }
+};
+
+// Client feedback -> reset to legal stage
+export const clientFeedbackAction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text } = req.body || {};
+    if (!text) return res.status(400).json({ success: false, message: "Feedback text is required" });
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    // Save feedback and add to history
+    contract.clientFeedback = text;
+    contract.clientFeedbackAt = new Date();
+    contract.clientFeedbackHistory = contract.clientFeedbackHistory || [];
+    contract.clientFeedbackHistory.push({ text, submittedAt: new Date(), submittedBy: req.user?._id || null });
+
+    // Reset flags to require legal upload again
+    contract.iscontractsentforsignature = false;
+    contract.adminapproved = false;
+    contract.clientapproved = false;
+    contract.isclientsigned = false;
+    // Clear current uploaded file to enforce re-upload
+    contract.fileUrl = null;
+    contract.legalUploadedAt = null;
+    contract.legalUploadedBy = null;
+    contract.legalUploadNotes = null;
+    contract.status = "client_feedback_pending";
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "client_feedback",
+    });
+
+    return res.json({ success: true, message: "Feedback recorded and workflow reset to Legal Upload" });
+  } catch (err) {
+    console.error("clientFeedbackAction error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Client Feedback");
+    return res.status(500).json({ success: false, message: "Failed to record feedback" });
+  }
+};
+
+// Client approves/signs -> activate contract
+export const clientApproveAndSign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { signedBy, signatureDate } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    if (!contract.iscontractsentforsignature) {
+      return res.status(400).json({ success: false, message: "Contract must be sent for signature before signing" });
+    }
+
+    contract.clientapproved = true;
+    contract.isclientsigned = true;
+    contract.signedAt = signatureDate ? new Date(signatureDate) : new Date();
+    contract.signedBy = signedBy || contract.signedBy || "client";
+    contract.status = "active";
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "client_signed",
+    });
+
+    return res.json({ success: true, message: "Contract signed and activated" });
+  } catch (err) {
+    console.error("clientApproveAndSign error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Client Approve/Sign");
+    return res.status(500).json({ success: false, message: "Failed to mark contract signed" });
+  }
+};
+
+export const getWorkflowStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+    const status = getCustomWorkflowStatus(contract);
+    return res.json({ success: true, data: status });
+  } catch (err) {
+    console.error("getWorkflowStatus error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Get Workflow Status");
+    return res.status(500).json({ success: false, message: "Failed to get workflow status" });
+  }
+};

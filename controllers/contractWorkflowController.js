@@ -361,10 +361,12 @@ export const recordClientFeedback = async (req, res) => {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
     
-    if (contract.status !== "sent_to_client") {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Can only record feedback for contracts sent to client. Current status: ${contract.status}` 
+    // Allow feedback for draft, sent_to_client, or client_feedback_pending contracts
+    const validStatuses = ["draft", "sent_to_client", "client_feedback_pending"];
+    if (!validStatuses.includes(contract.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Can only record feedback for draft, sent to client, or feedback pending contracts. Current status: ${contract.status}`
       });
     }
     
@@ -423,7 +425,7 @@ export const recordClientFeedback = async (req, res) => {
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       feedback: feedback,
       attachmentsCount: uploadedFiles.length,
-      previousStatus: "sent_to_client",
+      previousStatus: contract.status,
       action: 'client_feedback'
     });
     
@@ -439,9 +441,9 @@ export const recordClientFeedback = async (req, res) => {
       // Don't fail the request if email fails
     }
     
-    return res.json({ 
+    return res.json({
       success: true,
-      message: "Client feedback recorded, contract returned to draft",
+      message: "Client feedback recorded successfully",
       contract,
       attachmentsUploaded: uploadedFiles.length
     });

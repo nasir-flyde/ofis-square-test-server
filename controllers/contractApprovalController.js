@@ -12,7 +12,6 @@ import {
   sendContractSignedEmail
 } from "../utils/contractEmailService.js";
 
-// Helper function to check workflow prerequisites
 const checkWorkflowPrerequisites = (contract, requiredFlags) => {
   const missing = [];
   for (const flag of requiredFlags) {
@@ -23,7 +22,46 @@ const checkWorkflowPrerequisites = (contract, requiredFlags) => {
   return missing;
 };
 
-// Finance approval (after legal and admin approvals)
+// Final Approval (System Admin or users with CONTRACT_FINAL_APPROVE)
+export const finalApprove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approved = true, reason } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: 'Contract not found' });
+    }
+
+    // Only allow when invoices have been fully paid and flag is set, OR if user is System Admin
+    if (!contract.isfinalapproval && req.user.role?.roleName !== 'System Admin') {
+      return res.status(400).json({ success: false, message: 'Final approval not ready. Ensure all invoices are paid.' });
+    }
+
+    // Set final approval metadata
+    contract.finalApprovedBy = approved ? (req.user?.id || null) : null;
+    contract.finalApprovedAt = approved ? new Date() : null;
+    contract.finalApprovalReason = reason || null;
+    // Keep isfinalapproval flag true as the readiness indicator
+    await contract.save();
+
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      action: approved ? 'final_approved' : 'final_rejected',
+      approved,
+      reason,
+    });
+
+    return res.json({
+      success: true,
+      message: approved ? 'Final approval completed. Onboarding done.' : 'Final approval rejected.',
+      data: { finalApproved: approved }
+    });
+  } catch (error) {
+    console.error('Error in final approval:', error);
+    return res.status(500).json({ success: false, message: 'Failed to perform final approval', error: error.message });
+  }
+};
+
 export const setFinanceApproval = async (req, res) => {
   try {
     const { id } = req.params;
@@ -36,24 +74,18 @@ export const setFinanceApproval = async (req, res) => {
         message: 'Contract not found'
       });
     }
-
-    // Prerequisites: legal and admin approvals must be completed first
     if (!contract.legalteamapproved || !contract.adminapproved) {
       return res.status(400).json({
         success: false,
         message: 'Legal and Admin approvals must be completed before Finance approval'
       });
     }
-
-    // Update finance approval
     contract.financeapproved = !!approved;
     contract.financeApprovedBy = approved ? (req.user?.id || null) : null;
     contract.financeApprovedAt = approved ? new Date() : null;
     contract.financeApprovalReason = reason || null;
 
     await contract.save();
-
-    // Log activity
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       approvedBy: approved ? (req.user?.id || null) : null,
       approved: !!approved,
@@ -65,7 +97,6 @@ export const setFinanceApproval = async (req, res) => {
       success: true,
       message: `Finance ${approved ? 'approved' : 'rejected'} contract successfully`,
       data: {
-        // Keep returning the simplified workflow stage for now
         workflowStage: getWorkflowStage(contract)
       }
     });
@@ -558,13 +589,6 @@ export const legalApprove = async (req, res) => {
       });
     }
 
-    // Check if contract is in draft status
-    if (contract.status !== 'draft') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Contract must be in draft status for legal review' 
-      });
-    }
 
     // Update legal approval status
     contract.legalteamapproved = approved;
@@ -1075,9 +1099,128 @@ export const getWorkflowStatus = async (req, res) => {
   } catch (err) {
     console.error("getWorkflowStatus error:", err);
     await logErrorActivity(req, err, 'Get Workflow Status');
-    return res.status(500).json({ 
-      success: false, 
-      message: "Failed to get workflow status" 
+    return res.status(500).json({
+      success: false,
+      message: "Failed to get workflow status"
+    });
+  }
+};
+
+// Generic function to update contract approval flags
+export const updateContractApprovalFlag = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { flag, approved, reason } = req.body || {};
+
+    // Validation
+    if (!flag) {
+      return res.status(400).json({
+        success: false,
+        message: 'Flag name is required'
+      });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
+      });
+    }
+
+    // List of allowed boolean flags that can be updated
+    const allowedFlags = [
+      'iskycapproved',
+      'legalteamapproved',
+      'adminapproved',
+      'clientapproved',
+      'financeapproved',
+      'securitydeposited',
+      'iscontractstamppaperupload',
+      'isfinalapproval',
+      'isclientsigned'
+    ];
+
+    if (!allowedFlags.includes(flag)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update flag: ${flag}. Allowed flags: ${allowedFlags.join(', ')}`
+      });
+    }
+
+    // Update the specified flag
+    contract[flag] = !!approved;
+
+    // Update related timestamp fields based on the flag
+    const approvedAtFieldMap = {
+      'iskycapproved': 'kycApprovedAt',
+      'legalteamapproved': 'legalApprovedAt',
+      'adminapproved': 'adminApprovedAt',
+      'clientapproved': 'clientApprovedAt',
+      'financeapproved': 'financeApprovedAt',
+      'isfinalapproval': 'finalApprovedAt',
+      'isclientsigned': 'signedAt'
+    };
+
+    const approvedByFieldMap = {
+      'iskycapproved': 'kycApprovedBy',
+      'legalteamapproved': 'legalApprovedBy',
+      'adminapproved': 'adminApprovedBy',
+      'clientapproved': 'clientApprovedBy',
+      'financeapproved': 'financeApprovedBy',
+      'isfinalapproval': 'finalApprovedBy',
+      'isclientsigned': null // client signed doesn't need a by field as it's automatic
+    };
+
+    if (approvedAtFieldMap[flag]) {
+      contract[approvedAtFieldMap[flag]] = approved ? new Date() : null;
+    }
+
+    if (approvedByFieldMap[flag] && approvedByFieldMap[flag] !== null) {
+      contract[approvedByFieldMap[flag]] = approved ? (req.user?.id || null) : null;
+    }
+
+    // Add reason if provided
+    const reasonFieldMap = {
+      'iskycapproved': 'kycApprovalReason',
+      'legalteamapproved': 'legalApprovalReason',
+      'adminapproved': 'adminApprovalReason',
+      'clientapproved': 'clientApprovalReason',
+      'financeapproved': 'financeApprovalReason',
+      'isfinalapproval': 'finalApprovalReason'
+    };
+
+    if (reasonFieldMap[flag] && reason) {
+      contract[reasonFieldMap[flag]] = reason;
+    }
+
+    await contract.save();
+
+    // Log activity
+    await logContractActivity(req, 'UPDATE', id, contract.client, {
+      flag: flag,
+      approved: !!approved,
+      approvedBy: approved ? (req.user?.id || null) : null,
+      reason: reason || null,
+      action: `${flag.replace(/^is/, '').replace(/([A-Z])/g, '_$1').toLowerCase()}_updated`
+    });
+
+    return res.json({
+      success: true,
+      message: `Contract flag ${flag} updated successfully`,
+      data: {
+        contractId: contract._id,
+        flag: flag,
+        value: !!approved
+      }
+    });
+
+  } catch (err) {
+    console.error("updateContractApprovalFlag error:", err);
+    await logErrorActivity(req, err, 'Update Contract Approval Flag');
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update contract approval flag"
     });
   }
 };

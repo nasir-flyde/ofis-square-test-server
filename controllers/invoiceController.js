@@ -6,6 +6,8 @@ import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { getValidAccessToken } from "../utils/zohoTokenManager.js";
 import axios from "axios";
 import { logCRUDActivity, logPaymentActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
+import imagekit from "../utils/imageKit.js";
+
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
 import {
@@ -169,6 +171,37 @@ export const createInvoice = async (req, res) => {
   }
 };
 
+export const uploadEInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const inv = await Invoice.findById(id);
+    if (!inv) return res.status(404).json({ success: false, message: 'Invoice not found' });
+
+    let eUrl = req.body?.fileUrl || req.body?.url;
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!eUrl && files.length > 0) {
+      const f = files[0];
+      const result = await imagekit.upload({
+        file: f.buffer,
+        fileName: f.originalname || `e_invoice_${id}_${Date.now()}`,
+        folder: "/invoices/e-invoices"
+      });
+      eUrl = result?.url;
+    }
+
+    if (!eUrl) return res.status(400).json({ success: false, message: 'Provide file (multipart) or fileUrl in body' });
+
+    inv.e_invoice_url = eUrl;
+    await inv.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Invoice', inv._id, null, { e_invoice_url: true });
+    return res.json({ success: true, data: inv });
+  } catch (error) {
+    await logErrorActivity(req, error, 'Upload E-Invoice');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const downloadInvoicePdf = async (req, res) => {
   try {
     const { id } = req.params;
@@ -220,22 +253,81 @@ export const pushInvoiceToZoho = async (req, res) => {
     
     // Role-based restriction: Only Finance Senior can push to Zoho
     const userRole = req.userRole?.roleName || "";
-    if (userRole === "finance_junior") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only Finance Senior users can push invoices to Zoho Books. Please contact your Finance Senior." 
+    if (userRole !== "System Admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Finance Senior users can push invoices to Zoho Books. Please contact your Finance Senior."
       });
     }
     
     const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (invoice.zoho_invoice_id) {
-      return res.json({
-        success: true,
-        data: invoice,
-        message: "Invoice already linked to Zoho Books",
-        zoho_invoice_id: invoice.zoho_invoice_id,
-      });
+      // Invoice already exists in Zoho, but if sendStatus is 'sent', attempt to send it
+      if (sendStatus === 'sent') {
+        // Check if invoice is still in draft status in Zoho
+        if (invoice.zoho_status === 'draft' || invoice.status === 'draft') {
+          // Attempt to send the existing draft invoice
+          const client = invoice.client || await Client.findById(invoice.client);
+          if (!client) {
+            return res.status(400).json({ success: false, message: "Invoice has no linked client" });
+          }
+
+          if (!client.email) {
+            return res.status(400).json({
+              success: false,
+              message: 'Cannot send invoice: Client has no email address'
+            });
+          }
+
+          try {
+            console.log(`Sending existing draft invoice ${invoice._id} to client email: ${client.email}`);
+            await sendZohoInvoiceEmail(invoice.zoho_invoice_id, {
+              to_mail_ids: [client.email],
+              subject: `Invoice ${invoice.invoice_number || invoice.zoho_invoice_number}`,
+              body: 'Please find attached your invoice.'
+            });
+
+            // Update the status to sent
+            invoice.status = 'sent';
+            invoice.sent_at = new Date();
+            invoice.zoho_status = 'sent';
+            await invoice.save();
+
+            console.log(`✅ Invoice ${invoice._id} was already in Zoho but sent to client ${client.email}`);
+
+            return res.json({
+              success: true,
+              data: invoice,
+              message: "Invoice sent to client from existing Zoho draft",
+              zoho_invoice_id: invoice.zoho_invoice_id,
+              sent: true
+            });
+          } catch (emailError) {
+            console.error(`❌ Failed to send existing draft invoice email:`, emailError.message);
+            return res.status(400).json({
+              success: false,
+              message: `Failed to send draft invoice to client: ${emailError.message}`
+            });
+          }
+        } else {
+          // Invoice is already sent, return with message
+          return res.json({
+            success: true,
+            data: invoice,
+            message: "Invoice already linked to Zoho Books and already sent",
+            zoho_invoice_id: invoice.zoho_invoice_id,
+          });
+        }
+      } else {
+        // For draft status, just return the existing invoice info
+        return res.json({
+          success: true,
+          data: invoice,
+          message: "Invoice already linked to Zoho Books",
+          zoho_invoice_id: invoice.zoho_invoice_id,
+        });
+      }
     }
 
     // Ensure invoice has a client and Zoho contact
@@ -248,6 +340,22 @@ export const pushInvoiceToZoho = async (req, res) => {
         // Update invoice with the client
         invoice.client = client._id;
         await invoice.save();
+
+    // If this invoice is linked to a contract, check if all invoices for that contract are paid
+    try {
+      if (invoice.contract) {
+        const remaining = await Invoice.countDocuments({ contract: invoice.contract, status: { $ne: 'paid' } });
+        if (remaining === 0) {
+          await Contract.findByIdAndUpdate(invoice.contract, { isfinalapproval: true }, { new: true });
+          await logCRUDActivity(req, 'UPDATE', 'Contract', invoice.contract, null, {
+            isfinalapproval: true,
+            reason: 'All invoices paid'
+          });
+        }
+      }
+    } catch (flagErr) {
+      console.warn('Failed to set contract.isfinalapproval on payment:', flagErr?.message || flagErr);
+    }
       }
     }
     
@@ -403,11 +511,10 @@ export const pushInvoiceToZoho = async (req, res) => {
           });
         }
       } else {
-        // Push as sent (direct) without email
-        console.log(`Pushing invoice ${invoice._id} as sent (direct, no email)`);
-        invoice.status = 'sent';
-        invoice.sent_at = new Date();
-        invoice.zoho_status = 'sent';
+        // Keep as draft (just pushed to Zoho, not sent)
+        console.log(`Invoice ${invoice._id} pushed to Zoho as draft`);
+        invoice.status = 'draft';
+        invoice.zoho_status = 'draft';
         await invoice.save();
       }
 
@@ -434,7 +541,7 @@ export const sendInvoiceEmail = async (req, res) => {
     
     // Role-based restriction: Only Finance Senior can send invoices
     const userRole = req.userRole?.roleName || "";
-    if (userRole === "finance_junior") {
+    if (userRole === "System Admin") {
       return res.status(403).json({ 
         success: false, 
         message: "Only Finance Senior users can send invoices. Please contact your Finance Senior." 
@@ -563,8 +670,25 @@ export const recordInvoicePayment = async (req, res) => {
       invoice.status = "paid";
       invoice.paid_at = new Date();
     }
+
     invoice.paymentId = payment?.payment_id || invoice.paymentId;
     await invoice.save();
+
+    // If this invoice is linked to a contract, check if all invoices for that contract are paid
+    try {
+      if (invoice.contract) {
+        const remaining = await Invoice.countDocuments({ contract: invoice.contract, status: { $ne: 'paid' } });
+        if (remaining === 0) {
+          await Contract.findByIdAndUpdate(invoice.contract, { isfinalapproval: true }, { new: true });
+          await logCRUDActivity(req, 'UPDATE', 'Contract', invoice.contract, null, {
+            isfinalapproval: true,
+            reason: 'All invoices paid'
+          });
+        }
+      }
+    } catch (flagErr) {
+      console.warn('Failed to set contract.isfinalapproval on payment:', flagErr?.message || flagErr);
+    }
 
     // Log payment activity
     await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {

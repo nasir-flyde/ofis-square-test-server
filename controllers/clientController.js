@@ -1111,9 +1111,13 @@ export const getClientContracts = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
+    // Fetch all contracts for the client, including draft contracts
     const contracts = await Contract.find({ client: clientId })
       .populate('building', 'name address')
       .sort({ createdAt: -1 });
+
+    // Explicitly ensure draft contracts are accessible to clients
+    // The frontend will handle display filtering based on status
 
     return res.json({ success: true, data: contracts });
   } catch (err) {
@@ -1142,14 +1146,17 @@ export const approveClientContract = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
     }
 
-    // Only allow approval if contract is sent_to_client or client_feedback_pending
-    if (contract.status !== 'sent_to_client' && contract.status !== 'client_feedback_pending') {
-      return res.status(400).json({ error: `Cannot approve contract with status: ${contract.status}` });
+    // Allow approval if contract is draft, sent_to_client, or client_feedback_pending
+    const validStatuses = ['draft', 'sent_to_client', 'client_feedback_pending','sent_for_signature'];
+    if (!validStatuses.includes(contract.status)) {
+      return res.status(400).json({ error: `Cannot approve contract with status: ${contract.status}. Valid statuses: ${validStatuses.join(', ')}` });
     }
 
     // Update contract status to client_approved
     contract.status = 'client_approved';
     contract.clientApprovedAt = new Date();
+    contract.clientapproved = true; // Set the client approval flag to true
+
     await contract.save();
 
     await logActivity({
@@ -1201,9 +1208,10 @@ export const submitClientContractFeedback = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
     }
 
-    // Allow feedback if contract is sent_to_client or client_feedback_pending (to update feedback)
-    if (contract.status !== 'sent_to_client' && contract.status !== 'client_feedback_pending') {
-      return res.status(400).json({ error: `Cannot provide feedback for contract with status: ${contract.status}` });
+    // Allow feedback if contract is draft, sent_to_client, client_feedback_pending, or sent_for_signature
+    const validStatuses = ['draft', 'sent_to_client', 'client_feedback_pending', 'sent_for_signature'];
+    if (!validStatuses.includes(contract.status)) {
+      return res.status(400).json({ error: `Cannot provide feedback for contract with status: ${contract.status}. Valid statuses: ${validStatuses.join(', ')}` });
     }
 
     // Handle file uploads if present
@@ -1231,7 +1239,7 @@ export const submitClientContractFeedback = async (req, res) => {
       }
     }
 
-    // Update contract with feedback (keep current status)
+    // Update contract with feedback
     contract.clientFeedback = feedback;
     contract.clientFeedbackAt = new Date();
     
@@ -1253,7 +1261,25 @@ export const submitClientContractFeedback = async (req, res) => {
       message: `Client feedback: ${feedback}${attachmentInfo}`,
       at: new Date()
     });
-    
+
+    // Custom flow reset: on client feedback, roll back to Legal stage
+    // Clear send/sign flags and force a fresh legal upload
+    contract.iscontractsentforsignature = false;
+    contract.adminapproved = false;
+    contract.clientapproved = false;
+    contract.isclientsigned = false;
+    // contract.fileUrl = null;
+    contract.legalUploadedAt = null;
+    contract.legalUploadedBy = null;
+    contract.legalUploadNotes = null;
+    contract.status = 'client_feedback_pending';
+
+    // Maintain an audit trail in clientFeedbackHistory
+    try {
+      if (!Array.isArray(contract.clientFeedbackHistory)) contract.clientFeedbackHistory = [];
+      contract.clientFeedbackHistory.push({ text: feedback, submittedAt: new Date(), submittedBy: clientId });
+    } catch {}
+
     await contract.save();
 
     await logActivity({

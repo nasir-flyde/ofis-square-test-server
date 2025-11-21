@@ -72,6 +72,8 @@ const invoiceSchema = new mongoose.Schema(
     zoho_status: { type: String },
     zoho_pdf_url: { type: String },
     invoice_url: { type: String },
+    // E-Invoice upload (manual or via storage)
+    e_invoice_url: { type: String },
     template_id: { type: String },
     payment_terms: { type: Number },
     payment_terms_label: { type: String },

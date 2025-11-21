@@ -185,6 +185,7 @@ const contractSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
+        "pushed",
         "draft",
         "submitted_to_legal",
         "legal_reviewed",
@@ -246,6 +247,10 @@ const contractSchema = new mongoose.Schema(
       default: false,
     },
     isclientsigned: {
+      type: Boolean,
+      default: false,
+    },
+    isfinalapproval: {
       type: Boolean,
       default: false,
     },
@@ -327,6 +332,21 @@ const contractSchema = new mongoose.Schema(
     },
     legalApprovedAt: { type: Date },
     legalApprovalReason: { type: String, trim: true },
+    // Sales Senior review/approval fields (custom flow)
+    salesSeniorApproved: { type: Boolean, default: false },
+    salesSeniorApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    salesSeniorApprovedAt: { type: Date },
+    salesSeniorApprovalNotes: { type: String, trim: true },
+    // Legal upload metadata (using existing fileUrl for document)
+    legalUploadedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    legalUploadedAt: { type: Date },
+    legalUploadNotes: { type: String, trim: true },
     financeApprovedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -384,6 +404,13 @@ const contractSchema = new mongoose.Schema(
     clientApprovedAt: { type: Date },
     clientFeedback: { type: String, trim: true },
     clientFeedbackAt: { type: Date },
+    clientFeedbackHistory: [
+      {
+        text: { type: String, trim: true },
+        submittedAt: { type: Date, default: Date.now },
+        submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      }
+    ],
     clientFeedbackAttachments: [{
       fileName: { type: String, trim: true },
       fileUrl: { type: String, trim: true },

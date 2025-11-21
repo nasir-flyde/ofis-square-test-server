@@ -561,6 +561,28 @@ export const recordCustomerPayment = async (req, res) => {
       await updateInvoiceAfterZohoPayment(inv.invoiceId, inv.amount_applied);
     }
 
+    // If invoices belong to contracts, when all invoices for a contract are paid
+    // mark contract.isfinalapproval = true so Final Approval toggle becomes available
+    try {
+      const contractIds = Array.from(new Set(dbInvoices
+        .map(i => i.contract)
+        .filter(Boolean)
+        .map(id => id.toString())));
+
+      for (const cId of contractIds) {
+        const remaining = await Invoice.countDocuments({ contract: cId, status: { $ne: 'paid' } });
+        if (remaining === 0) {
+          await Contract.findByIdAndUpdate(cId, { isfinalapproval: true }, { new: true });
+          await logCRUDActivity(req, 'UPDATE', 'Contract', cId, null, {
+            isfinalapproval: true,
+            reason: 'All invoices paid'
+          });
+        }
+      }
+    } catch (flagErr) {
+      // Non-blocking
+    }
+
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
       zohoPaymentId: zohoData.payment?.payment_id,

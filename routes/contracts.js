@@ -17,7 +17,8 @@ import {
   getPendingApprovalContracts,
   updateSecurityDeposit,
   addComment,
-  getSectionComments
+  getSectionComments,
+  getDefaultTermsAndConditions
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -49,6 +50,9 @@ const upload = multer({
 
 // Get all contracts
 router.get("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContracts);
+
+// Get default Terms & Conditions for prefilling (auth only)
+router.get("/defaults/terms-and-conditions", authMiddleware, getDefaultTermsAndConditions);
 
 // Get contracts pending approval (for approvers)
 router.get("/pending-approval", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), getPendingApprovalContracts);
