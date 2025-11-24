@@ -204,6 +204,20 @@ const contractSchema = new mongoose.Schema(
       default: "draft",
       index: true,
     },
+    // Workflow mode selection (automated vs custom)
+    workflowMode: {
+      type: String,
+      enum: ["automated", "custom"],
+      default: null,
+      index: true,
+    },
+    workflowModeMeta: {
+      selectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      selectedAt: { type: Date },
+      reason: { type: String, trim: true },
+      // Lock by default to prevent accidental flips; allow admin override via force
+      locked: { type: Boolean, default: false },
+    },
     // Approval workflow fields
     requiresApproval: {
       type: Boolean,

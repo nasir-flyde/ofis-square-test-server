@@ -572,7 +572,7 @@ export const recordCustomerPayment = async (req, res) => {
       for (const cId of contractIds) {
         const remaining = await Invoice.countDocuments({ contract: cId, status: { $ne: 'paid' } });
         if (remaining === 0) {
-          await Contract.findByIdAndUpdate(cId, { isfinalapproval: true }, { new: true });
+          // await Contract.findByIdAndUpdate(cId, { isfinalapproval: true }, { new: true });
           await logCRUDActivity(req, 'UPDATE', 'Contract', cId, null, {
             isfinalapproval: true,
             reason: 'All invoices paid'

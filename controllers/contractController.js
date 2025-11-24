@@ -19,6 +19,76 @@ import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivi
 import loggedZohoSign from "../utils/loggedZohoSign.js";
 import apiLogger from "../utils/apiLogger.js";
 
+// Set workflow mode (automated | custom)
+export const setWorkflowMode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { mode, reason, force } = req.body || {};
+
+    if (!['automated', 'custom'].includes(mode)) {
+      return res.status(400).json({ success: false, message: "mode must be 'automated' or 'custom'" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    // Permission: allow Legal approve or System Admin via middleware flags
+    const userHasLegal = typeof req.hasPermission === 'function' && req.hasPermission('contract:legal:approve');
+    const userIsAdmin = typeof req.hasPermission === 'function' && req.hasPermission('*:*');
+    if (!userHasLegal && !userIsAdmin) {
+      return res.status(403).json({ success: false, message: "Not authorized to set workflow mode" });
+    }
+
+    // Guard: prevent switching after progression unless force and admin
+    const progressed = Boolean(
+      contract.legalUploadedAt ||
+      contract.adminapproved ||
+      contract.clientapproved ||
+      contract.financeapproved ||
+      contract.isfinalapproval ||
+      contract.iscontractsentforsignature ||
+      contract.isclientsigned ||
+      (Array.isArray(contract.clientFeedbackHistory) && contract.clientFeedbackHistory.length > 0)
+    );
+
+    const locked = Boolean(contract.workflowModeMeta?.locked);
+    if ((progressed || locked) && !(force && userIsAdmin)) {
+      return res.status(400).json({
+        success: false,
+        message: "Workflow mode cannot be changed after progress or once locked",
+        details: { progressed, locked }
+      });
+    }
+
+    contract.workflowMode = mode;
+    contract.workflowModeMeta = {
+      ...(contract.workflowModeMeta || {}),
+      selectedBy: req.user?._id || contract.workflowModeMeta?.selectedBy || null,
+      selectedAt: new Date(),
+      reason: reason || contract.workflowModeMeta?.reason || undefined,
+      locked: true,
+    };
+    await contract.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Contract', contract._id, null, {
+      event: 'WORKFLOW_MODE_SELECTED',
+      mode,
+      reason: reason || undefined,
+      selectedBy: req.user?._id || null,
+      progressed,
+      forceApplied: Boolean(force && userIsAdmin)
+    });
+
+    return res.json({ success: true, data: contract, message: `Workflow mode set to ${mode}` });
+  } catch (err) {
+    console.error('setWorkflowMode error:', err);
+    await logErrorActivity(req, err, 'Set Workflow Mode');
+    return res.status(500).json({ success: false, message: 'Failed to set workflow mode' });
+  }
+};
+
 // Create a new contract
 export const createContract = async (req, res) => {
   try {

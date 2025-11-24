@@ -18,7 +18,8 @@ import {
   updateSecurityDeposit,
   addComment,
   getSectionComments,
-  getDefaultTermsAndConditions
+  getDefaultTermsAndConditions,
+  setWorkflowMode
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -162,5 +163,13 @@ router.get("/:id/sections/:section/comments", authMiddleware, populateUserRole, 
 
 // Update security deposit
 router.post("/:id/security-deposit", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), updateSecurityDeposit);
+
+router.put(
+  "/:id/workflow-mode",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_LEGAL_APPROVE),
+  setWorkflowMode
+);
 
 export default router;

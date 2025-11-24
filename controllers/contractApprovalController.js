@@ -12,7 +12,9 @@ import {
   sendContractSignedEmail
 } from "../utils/contractEmailService.js";
 
-const checkWorkflowPrerequisites = (contract, requiredFlags) => {
+const checkWorkflowPrerequisites = (contract, requiredFlags, isSystemAdmin = false) => {
+  if (isSystemAdmin) return []; // Bypass all checks for System Admin
+
   const missing = [];
   for (const flag of requiredFlags) {
     if (!contract[flag]) {
@@ -20,6 +22,11 @@ const checkWorkflowPrerequisites = (contract, requiredFlags) => {
     }
   }
   return missing;
+};
+
+// Check if user is System Admin
+const isSystemAdmin = (user) => {
+  return user?.role?.roleName === 'System Admin';
 };
 
 // Final Approval (System Admin or users with CONTRACT_FINAL_APPROVE)
@@ -34,7 +41,7 @@ export const finalApprove = async (req, res) => {
     }
 
     // Only allow when invoices have been fully paid and flag is set, OR if user is System Admin
-    if (!contract.isfinalapproval && req.user.role?.roleName !== 'System Admin') {
+    if (req.user.role?.roleName !== 'System Admin') {
       return res.status(400).json({ success: false, message: 'Final approval not ready. Ensure all invoices are paid.' });
     }
 
@@ -42,7 +49,10 @@ export const finalApprove = async (req, res) => {
     contract.finalApprovedBy = approved ? (req.user?.id || null) : null;
     contract.finalApprovedAt = approved ? new Date() : null;
     contract.finalApprovalReason = reason || null;
-    // Keep isfinalapproval flag true as the readiness indicator
+    // Set isfinalapproval flag to true when approved
+    if (approved) {
+      contract.isfinalapproval = true;
+    }
     await contract.save();
 
     await logContractActivity(req, 'UPDATE', id, contract.client, {
@@ -53,15 +63,25 @@ export const finalApprove = async (req, res) => {
 
     return res.json({
       success: true,
-      message: approved ? 'Final approval completed. Onboarding done.' : 'Final approval rejected.',
-      data: { finalApproved: approved }
+      message: `Contract ${approved ? 'approved' : 'rejected'} successfully`,
+      data: {
+        id: contract._id,
+        finalApprovedBy: contract.finalApprovedBy,
+        finalApprovedAt: contract.finalApprovedAt,
+        finalApprovalReason: contract.finalApprovalReason,
+        isfinalapproval: contract.isfinalapproval
+      }
     });
+
   } catch (error) {
     console.error('Error in final approval:', error);
-    return res.status(500).json({ success: false, message: 'Failed to perform final approval', error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to process final approval',
+      error: error.message
+    });
   }
 };
-
 export const setFinanceApproval = async (req, res) => {
   try {
     const { id } = req.params;
@@ -80,10 +100,16 @@ export const setFinanceApproval = async (req, res) => {
         message: 'Legal and Admin approvals must be completed before Finance approval'
       });
     }
+    const isAdminOverride = isSystemAdmin(req.user);
     contract.financeapproved = !!approved;
     contract.financeApprovedBy = approved ? (req.user?.id || null) : null;
     contract.financeApprovedAt = approved ? new Date() : null;
-    contract.financeApprovalReason = reason || null;
+    contract.financeApprovalReason = reason || (isAdminOverride ? 'Approved by System Admin override' : null);
+
+    // Log admin override if applicable
+    if (isAdminOverride) {
+      console.log(`System Admin ${req.user._id} overrode finance approval for contract ${id}`);
+    }
 
     await contract.save();
     await logContractActivity(req, 'UPDATE', id, contract.client, {
@@ -452,7 +478,7 @@ export const bulkApproveKYCDocumentsByType = async (req, res) => {
 //   if (!flags.securitydeposited) return { stage: 'security_deposit_pending', flags };
 //   if (!flags.isfinalapproval) return { stage: 'final_approval_pending', flags };
 //   if (!flags.isclientsigned) return { stage: 'client_signature_pending', flags };
-  
+
 //   return { stage: 'completed', flags };
 // };
 
@@ -473,7 +499,7 @@ export const getContractWorkflowStatus = (contract) => {
   if (!flags.clientapproved) return { stage: 'client_approval_pending', flags };
   if (!flags.iscontractsentforsignature) return { stage: 'stamp_paper_pending', flags };
   if (!flags.isclientsigned) return { stage: 'client_signature_pending', flags };
-  
+
   return { stage: 'completed', flags };
 };
 
@@ -504,18 +530,18 @@ export const uploadKYCDocuments = async (req, res) => {
     const files = req.files;
 
     if (!files || files.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No files provided' 
+      return res.status(400).json({
+        success: false,
+        message: 'No files provided'
       });
     }
 
     // Find the contract
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
@@ -566,10 +592,10 @@ export const uploadKYCDocuments = async (req, res) => {
 
   } catch (error) {
     console.error('Error uploading KYC documents:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to upload KYC documents',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -583,19 +609,25 @@ export const legalApprove = async (req, res) => {
     // Find the contract
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
 
     // Update legal approval status
+    const isAdminOverride = isSystemAdmin(req.user);
     contract.legalteamapproved = approved;
     contract.legalApprovedBy = approved ? req.user.id : null;
     contract.legalApprovedAt = approved ? new Date() : null;
-    contract.legalApprovalReason = reason || null;
-    
+    contract.legalApprovalReason = reason || (isAdminOverride ? 'Approved by System Admin override' : null);
+
+    // Log admin override if applicable
+    if (isAdminOverride) {
+      console.log(`System Admin ${req.user._id} overrode legal approval for contract ${id}`);
+    }
+
     await contract.save();
 
     // Log activity
@@ -616,10 +648,10 @@ export const legalApprove = async (req, res) => {
 
   } catch (error) {
     console.error('Error processing legal approval:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to process legal approval',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -629,20 +661,20 @@ export const setAdminApproval = async (req, res) => {
   try {
     const { id } = req.params;
     const { approved, reason } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
     // Check if user has System Admin role
     if (req.user.role?.roleName !== 'System Admin') {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Only System Admin can perform admin approval' 
+      return res.status(403).json({
+        success: false,
+        message: 'Only System Admin can perform admin approval'
       });
     }
 
@@ -651,7 +683,7 @@ export const setAdminApproval = async (req, res) => {
     contract.adminApprovedBy = approved ? req.user.id : null;
     contract.adminApprovedAt = approved ? new Date() : null;
     contract.adminApprovalReason = reason || null;
-    
+
     await contract.save();
 
     // Log activity
@@ -672,10 +704,10 @@ export const setAdminApproval = async (req, res) => {
 
   } catch (error) {
     console.error('Error setting admin approval:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to set admin approval',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -686,20 +718,20 @@ export const setClientApproval = async (req, res) => {
   try {
     const { id } = req.params;
     const { approved, feedback } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
-    // Check if admin approval is completed first
-    if (!contract.adminapproved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Admin approval must be completed before client review' 
+    // Check if admin approval is completed first (unless user is System Admin)
+    if ((!contract.legalteamapproved || !contract.adminapproved) && !isSystemAdmin(req.user)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Legal and Admin approvals must be completed before Finance approval'
       });
     }
 
@@ -708,7 +740,7 @@ export const setClientApproval = async (req, res) => {
     contract.clientApprovedBy = approved ? req.user.id : null;
     contract.clientApprovedAt = approved ? new Date() : null;
     contract.clientFeedback = feedback || null;
-    
+
     await contract.save();
 
     // Log activity
@@ -729,10 +761,10 @@ export const setClientApproval = async (req, res) => {
 
   } catch (error) {
     console.error('Error setting client approval:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to set client approval',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -743,27 +775,27 @@ export const uploadStampPaper = async (req, res) => {
     const { id } = req.params;
     const { notes } = req.body || {};
     const file = req.file;
-    
+
     if (!file) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No stamp paper file provided' 
+      return res.status(400).json({
+        success: false,
+        message: 'No stamp paper file provided'
       });
     }
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
     // Check if client approval is completed first
     if (!contract.clientapproved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Client approval must be completed before uploading stamp paper' 
+      return res.status(400).json({
+        success: false,
+        message: 'Client approval must be completed before uploading stamp paper'
       });
     }
 
@@ -782,7 +814,7 @@ export const uploadStampPaper = async (req, res) => {
     contract.stampPaperUploadedAt = new Date();
     contract.stampPaperUploadedBy = req.user.id;
     contract.iscontractstamppaperupload = true;
-    
+
     await contract.save();
 
     // Log activity
@@ -804,10 +836,10 @@ export const uploadStampPaper = async (req, res) => {
 
   } catch (error) {
     console.error('Error uploading stamp paper:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to upload stamp paper',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -817,20 +849,20 @@ export const sendForSignature = async (req, res) => {
   try {
     const { id } = req.params;
     const { stampPaperAttached, notes } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
     // Check if client approval is completed first
     if (!contract.clientapproved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Client approval must be completed before sending for signature' 
+      return res.status(400).json({
+        success: false,
+        message: 'Client approval must be completed before sending for signature'
       });
     }
 
@@ -839,7 +871,7 @@ export const sendForSignature = async (req, res) => {
     contract.sentForSignatureBy = req.user.id;
     contract.sentForSignatureAt = new Date();
     contract.stampPaperNotes = notes || null;
-    
+
     await contract.save();
 
     // Log activity
@@ -860,10 +892,10 @@ export const sendForSignature = async (req, res) => {
 
   } catch (error) {
     console.error('Error sending contract for signature:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to send contract for signature',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -874,12 +906,12 @@ export const recordSecurityDeposit = async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, type, notes, paidAt } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
@@ -892,7 +924,7 @@ export const recordSecurityDeposit = async (req, res) => {
     };
     contract.securityDepositPaidAt = paidAt ? new Date(paidAt) : new Date();
     contract.securityDepositRecordedBy = req.user.id;
-    
+
     await contract.save();
 
     // Log activity
@@ -917,10 +949,10 @@ export const recordSecurityDeposit = async (req, res) => {
 
   } catch (error) {
     console.error('Error recording security deposit:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to record security deposit',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -930,20 +962,20 @@ export const markClientSigned = async (req, res) => {
   try {
     const { id } = req.params;
     const { signedBy, signatureDate, notes } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Contract not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Contract not found'
       });
     }
 
     // Check if contract is sent for signature first
     if (!contract.iscontractsentforsignature) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Contract must be sent for signature before it can be signed' 
+      return res.status(400).json({
+        success: false,
+        message: 'Contract must be sent for signature before it can be signed'
       });
     }
 
@@ -953,7 +985,7 @@ export const markClientSigned = async (req, res) => {
     contract.clientSignedAt = signatureDate ? new Date(signatureDate) : new Date();
     contract.signatureNotes = notes || null;
     contract.status = 'active'; // Activate the contract
-    
+
     await contract.save();
 
     // Auto-allocate any active blocks linked to this contract
@@ -1002,10 +1034,10 @@ export const markClientSigned = async (req, res) => {
 
   } catch (error) {
     console.error('Error marking contract as signed:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to mark contract as signed',
-      error: error.message 
+      error: error.message
     });
   }
 };
@@ -1014,10 +1046,10 @@ export const markClientSigned = async (req, res) => {
 export const getContractsByWorkflowStage = async (req, res) => {
   try {
     const { stage } = req.params;
-    
+
     // Define filter based on simplified workflow stages
     let filter = { status: 'draft' }; // Only look at draft contracts in workflow
-    
+
     switch (stage) {
       case 'legal_approval_pending':
         filter.legalteamapproved = false;
@@ -1052,20 +1084,20 @@ export const getContractsByWorkflowStage = async (req, res) => {
         filter.isclientsigned = true;
         break;
       default:
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Invalid workflow stage' 
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid workflow stage'
         });
     }
-    
+
     const contracts = await Contract.find(filter)
       .populate("client", "companyName email contactPerson phone")
       .populate("building", "name address pricing")
       .populate("createdBy", "name email")
       .sort({ lastActionAt: -1, createdAt: -1 });
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       data: contracts,
       count: contracts.length,
       stage: stage
@@ -1082,18 +1114,18 @@ export const getWorkflowStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const contract = await Contract.findById(id);
-    
+
     if (!contract) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Contract not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Contract not found"
       });
     }
-    
+
     const workflowStatus = getContractWorkflowStatus(contract);
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       data: workflowStatus
     });
   } catch (err) {

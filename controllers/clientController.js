@@ -658,12 +658,65 @@ export const getClientById = async (req, res) => {
 export const updateClient = async (req, res) => {
   try {
     const { id } = req.params;
-    const updated = await Client.findByIdAndUpdate(id, { $set: req.body || {} }, { new: true });
+    // Start with shallow copy of body and normalize fields
+    const payload = { ...(req.body || {}) };
+
+    // Normalize companyAddress - schema expects a String
+    let companyAddress = payload.companyAddress ?? payload.company_address;
+    if (companyAddress !== undefined) {
+      if (typeof companyAddress === 'object' && companyAddress !== null) {
+        // Compose a readable single-line address string from known fields
+        const parts = [];
+        const ca = companyAddress;
+        // Support common keys
+        const candidates = [
+          ca.attention,
+          ca.address,
+          ca.street,
+          ca.street1,
+          ca.street2,
+          ca.city,
+          ca.state,
+          ca.state_code,
+          ca.zip,
+          ca.postalCode,
+          ca.country,
+        ];
+        candidates.forEach((p) => {
+          if (p !== undefined && p !== null && String(p).trim() !== '') parts.push(String(p).trim());
+        });
+        payload.companyAddress = parts.join(', ') || undefined;
+      } else if (typeof companyAddress === 'string') {
+        payload.companyAddress = companyAddress;
+      } else {
+        // Unknown type; drop to avoid cast errors
+        payload.companyAddress = undefined;
+      }
+      delete payload.company_address;
+    }
+
+    // Normalize billing/shipping address: may arrive as JSON strings
+    if (typeof payload.billingAddress === 'string') {
+      try { payload.billingAddress = JSON.parse(payload.billingAddress); } catch (_) { delete payload.billingAddress; }
+    }
+    if (typeof payload.shippingAddress === 'string') {
+      try { payload.shippingAddress = JSON.parse(payload.shippingAddress); } catch (_) { delete payload.shippingAddress; }
+    }
+
+    // Normalize contactPersons if provided as JSON string
+    if (typeof payload.contactPersons === 'string') {
+      try { payload.contactPersons = JSON.parse(payload.contactPersons); } catch (_) { delete payload.contactPersons; }
+    }
+
+    // Remove undefined to avoid unintentionally unsetting fields
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+    const updated = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!updated) return res.status(404).json({ error: "Client not found" });
     
     // Activity log: client updated (generic)
     await logCRUDActivity(req, 'UPDATE', 'Client', id, null, {
-      updatedFields: Object.keys(req.body || {})
+      updatedFields: Object.keys(payload)
     });
     return res.json({ message: "Client updated", client: updated });
   } catch (err) {
