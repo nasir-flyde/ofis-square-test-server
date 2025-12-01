@@ -21,6 +21,8 @@ import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
 export const createClient = async (req, res) => {
   try {
     const body = req.body || {};
+
+
     
     // Handle file uploads for KYC documents
     const files = Array.isArray(req.files) ? req.files : [];
@@ -398,6 +400,31 @@ export const createClient = async (req, res) => {
   } catch (err) {
     console.error("createClient error:", err);
     return res.status(500).json({ error: "Failed to create client" });
+  }
+};
+
+export const getClientLegalUsers = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId || !mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ success: false, message: "Invalid client context" });
+    }
+
+    // Find the role document for "Client Legal Team" (case-insensitive)
+    const role = await Role.findOne({ roleName: { $regex: /^client legal team$/i } }).select('_id roleName');
+    if (!role?._id) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Find users assigned to this client and role
+    const users = await User.find({ role: role._id, clientId })
+      .select('_id name email phone role clientId createdAt')
+      .sort({ createdAt: -1 });
+
+    return res.json({ success: true, data: users });
+  } catch (err) {
+    console.error('getClientLegalUsers error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch client legal users' });
   }
 };
 
@@ -1233,6 +1260,68 @@ export const approveClientContract = async (req, res) => {
   } catch (err) {
     console.error("approveClientContract error:", err);
     return res.status(500).json({ error: "Failed to approve contract" });
+  }
+};
+
+// Send a contract to the client's legal team for review
+export const sendContractToLegalTeam = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientId = req.clientId;
+
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ error: "Contract not found" });
+
+    // Ensure the contract belongs to this client
+    if (contract.client.toString() !== clientId) {
+      return res.status(403).json({ error: "Unauthorized: Contract does not belong to this client" });
+    }
+
+    // Do not resend if already sent to client or contract is active
+    if (contract.status === 'sent_to_client') {
+      return res.status(400).json({ error: "Contract is already sent to client legal team" });
+    }
+    if (contract.status === 'active') {
+      return res.status(400).json({ error: "Cannot send active contract to legal team" });
+    }
+
+    // Allowed states to transition from
+    const allowed = ['draft', 'client_feedback_pending', 'sent_for_signature', 'pending_signature'];
+    if (!allowed.includes(contract.status)) {
+      return res.status(400).json({ error: `Cannot send contract in status '${contract.status}' to legal team` });
+    }
+
+    // Transition to sent_to_client for review by client legal team
+    contract.status = 'sent_to_client';
+    contract.sentToClientAt = new Date();
+
+    // Optional: Append a comment entry (audit trail)
+    if (!Array.isArray(contract.comments)) contract.comments = [];
+    contract.comments.push({
+      type: 'internal',
+      message: 'Contract sent to client legal team for review',
+      at: new Date(),
+    });
+
+    await contract.save();
+
+    await logActivity({
+      req,
+      action: 'CONTRACT_SENT_TO_CLIENT',
+      entity: 'Contract',
+      entityId: contract._id,
+      description: `Client sent contract ${contract._id} to legal team`,
+      metadata: { clientId, contractId: contract._id }
+    });
+
+    return res.json({ success: true, message: 'Contract sent to client legal team', data: contract });
+  } catch (err) {
+    console.error("sendContractToLegalTeam error:", err);
+    return res.status(500).json({ error: "Failed to send contract to legal team" });
   }
 };
 

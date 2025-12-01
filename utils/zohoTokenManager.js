@@ -2,11 +2,16 @@ import fetch from "node-fetch";
 import fs from "fs/promises";
 import path from "path";
 import dotenv from "dotenv";
+import os from "os";
 
 // Load environment variables
 dotenv.config();
 
-const TOKEN_FILE_PATH = path.join(process.cwd(), "zoho-tokens.json");
+// Token file storage
+const DEFAULT_TOKENS_FILE = path.join(os.tmpdir(), "ofis-square-zoho-tokens.json");
+const LEGACY_TOKENS_FILE = path.join(process.cwd(), "zoho-tokens.json");
+const TOKEN_FILE_PATH = process.env.ZOHO_TOKENS_FILE || DEFAULT_TOKENS_FILE;
+
 const CLIENT_ID = process.env.ZOHO_BOOKS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ZOHO_BOOKS_CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.ZOHO_BOOKS_REFRESH_TOKEN;
@@ -21,14 +26,25 @@ async function loadTokens() {
   try {
     const data = await fs.readFile(TOKEN_FILE_PATH, 'utf8');
     tokenData = { ...tokenData, ...JSON.parse(data) };
+    console.log(`Loaded Zoho token from: ${TOKEN_FILE_PATH}`);
   } catch (error) {
-    console.log("No existing token file found, will create new one");
+    try {
+      const legacy = await fs.readFile(LEGACY_TOKENS_FILE, 'utf8');
+      tokenData = { ...tokenData, ...JSON.parse(legacy) };
+      console.log(`Loaded Zoho token from legacy path: ${LEGACY_TOKENS_FILE}`);
+      await saveTokens();
+      console.log(`Migrated Zoho token to: ${TOKEN_FILE_PATH}`);
+    } catch (_) {
+      console.log("No existing token file found, will create new one on first refresh");
+    }
   }
 }
 
 async function saveTokens() {
   try {
+    try { await fs.mkdir(path.dirname(TOKEN_FILE_PATH), { recursive: true }); } catch (_) {}
     await fs.writeFile(TOKEN_FILE_PATH, JSON.stringify(tokenData, null, 2));
+    console.log(`Saved Zoho token to: ${TOKEN_FILE_PATH}`);
   } catch (error) {
     console.error("Failed to save tokens:", error.message);
   }

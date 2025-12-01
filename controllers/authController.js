@@ -10,7 +10,6 @@ import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
 import Guest from "../models/guestModel.js";
 import Building from "../models/buildingModel.js";
-import bcrypt from "bcryptjs";
 import { logAuthActivity, logCRUDActivity } from "../utils/activityLogger.js";
 
 export const clientSignup = async (req, res) => {
@@ -118,8 +117,8 @@ export const adminLogin = async (req, res) => {
       return res.status(403).json({ error: "Role is not allowed to login" });
     }
     
-    // Block client, member, community, and staff roles from admin portal
-    const blockedRoles = ['client', 'member', 'community', 'staff'];
+    // Block client, client legal team, member, community, and staff roles from admin portal
+    const blockedRoles = ['client', 'client legal team', 'member', 'community', 'staff'];
     const normalizedRoleName = (role.roleName || '').toLowerCase().trim();
     
     if (blockedRoles.includes(normalizedRoleName)) {
@@ -197,15 +196,24 @@ export const clientLogin = async (req, res) => {
     const role = await Role.findById(user.role);
     if (!role) return res.status(401).json({ error: "User role not found" });
 
-    if ((role.roleName || "").toLowerCase() !== "client") {
-      return res.status(403).json({ error: "Not a client account" });
+    const roleNameLower = (role.roleName || "").toLowerCase();
+    if (roleNameLower !== "client" && roleNameLower !== "client legal team") {
+      return res.status(403).json({ error: "Not a client/Client Legal Team account" });
     }
-    const client = await Client.findOne({
-      $or: [
-        ...(user.email ? [{ email: user.email }] : []),
-        ...(user.phone ? [{ phone: user.phone }] : []),
-      ],
-    });
+
+    // Resolve client for both client and client legal team
+    let client = null;
+    if (roleNameLower === "client legal team" && user.clientId) {
+      client = await Client.findById(user.clientId);
+    }
+    if (!client) {
+      client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      });
+    }
     if (!client) {
       return res.status(404).json({ error: "Client record not found. Please sign up first." });
     }

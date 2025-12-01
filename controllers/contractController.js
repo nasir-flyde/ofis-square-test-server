@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
+import Cabin from "../models/cabinModel.js";
 import fetch from "node-fetch";
 import FormData from "form-data";
 import fs from "fs";
@@ -15,6 +16,7 @@ import { fileURLToPath } from "url";
 import { promises as fsp } from "fs";
 import puppeteer from "puppeteer";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
 import apiLogger from "../utils/apiLogger.js";
@@ -105,12 +107,10 @@ export const createContract = async (req, res) => {
       termsandconditions,
       
       commencementDate,
-      allocationDate,
-      version,
       legalExpenses,
       allocationSeatsNumber,
       parkingSpaces,
-      durationMonths,
+      parkingFees,
       lockInPeriodMonths,
       noticePeriodDays,
       escalation,
@@ -164,6 +164,16 @@ export const createContract = async (req, res) => {
 
     const start = contractStartDate ? new Date(contractStartDate) : new Date();
     const end = contractEndDate ? new Date(contractEndDate) : new Date(Date.now() + 365*24*60*60*1000);
+    // Compute duration in months between start and end (inclusive of months boundary)
+    const calcMonths = (s, e) => {
+      const sd = new Date(s);
+      const ed = new Date(e);
+      let months = (ed.getFullYear() - sd.getFullYear()) * 12 + (ed.getMonth() - sd.getMonth());
+      // If end date's day is >= start date's day, count the current month as full
+      if (ed.getDate() >= sd.getDate()) months += 1;
+      return Math.max(0, months);
+    };
+    const derivedDurationMonths = calcMonths(start, end);
 
     // Normalize termsandconditions: accept either an array or a single object
     const normalizedTermsAndConditions = Array.isArray(termsandconditions)
@@ -184,19 +194,25 @@ export const createContract = async (req, res) => {
       ...(terms && { terms }),
       ...(normalizedTermsAndConditions && { termsandconditions: normalizedTermsAndConditions }),
       // New fields
-      ...(commencementDate && { commencementDate: new Date(commencementDate) }),
-      ...(allocationDate && { allocationDate: new Date(allocationDate) }),
-      ...(version && { version: Number(version) }),
-      ...(legalExpenses && { legalExpenses: Number(legalExpenses) }),
+      // Commencement date should be same as start date
+      commencementDate: start,
+      // Defaults for expenses/fees
+      legalExpenses: legalExpenses !== undefined ? Number(legalExpenses) : 1200,
       ...(allocationSeatsNumber && { allocationSeatsNumber: Number(allocationSeatsNumber) }),
       ...(parkingSpaces && { parkingSpaces }),
-      ...(durationMonths && { durationMonths: Number(durationMonths) }),
-      ...(lockInPeriodMonths && { lockInPeriodMonths: Number(lockInPeriodMonths) }),
+      // Parking fees with defaults
+      parkingFees: {
+        twoWheeler: parkingFees?.twoWheeler !== undefined ? Number(parkingFees.twoWheeler) : 1500,
+        fourWheeler: parkingFees?.fourWheeler !== undefined ? Number(parkingFees.fourWheeler) : 5000,
+      },
+      // Computed duration and lock-in
+      durationMonths: derivedDurationMonths,
+      lockInPeriodMonths: lockInPeriodMonths !== undefined ? Number(lockInPeriodMonths) : derivedDurationMonths,
       ...(noticePeriodDays && { noticePeriodDays: Number(noticePeriodDays) }),
       ...(escalation && { escalation }),
       ...(renewal && { renewal }),
       ...(fullyServicedBusinessHours && { fullyServicedBusinessHours }),
-      ...(cleaningAndRestorationFees && { cleaningAndRestorationFees: Number(cleaningAndRestorationFees) }),
+      cleaningAndRestorationFees: cleaningAndRestorationFees !== undefined ? Number(cleaningAndRestorationFees) : 2000,
       ...(freebies && { freebies }),
       ...(payAsYouGo && { payAsYouGo }),
       ...(termsAndConditionAcceptance && { termsAndConditionAcceptance }),
@@ -654,12 +670,10 @@ export const updateContract = async (req, res) => {
       termsandconditions,
       // New fields
       commencementDate,
-      allocationDate,
-      version,
       legalExpenses,
       allocationSeatsNumber,
       parkingSpaces,
-      durationMonths,
+      parkingFees,
       lockInPeriodMonths,
       noticePeriodDays,
       escalation,
@@ -757,6 +771,14 @@ export const updateContract = async (req, res) => {
 
     const start = contractStartDate ? new Date(contractStartDate) : existing.startDate;
     const end = contractEndDate ? new Date(contractEndDate) : existing.endDate;
+    const calcMonths = (s, e) => {
+      const sd = new Date(s);
+      const ed = new Date(e);
+      let months = (ed.getFullYear() - sd.getFullYear()) * 12 + (ed.getMonth() - sd.getMonth());
+      if (ed.getDate() >= sd.getDate()) months += 1;
+      return Math.max(0, months);
+    };
+    const derivedDurationMonths = calcMonths(start, end);
 
     // Normalize termsandconditions: accept either an array or a single object
     const normalizedTermsAndConditions = Array.isArray(termsandconditions)
@@ -773,19 +795,37 @@ export const updateContract = async (req, res) => {
       capacity: Number(capacity),
       monthlyRent: monthlyRent,
       // New fields
-      ...(commencementDate !== undefined && { commencementDate: new Date(commencementDate) }),
-      ...(allocationDate !== undefined && { allocationDate: new Date(allocationDate) }),
-      ...(version !== undefined && { version: Number(version) }),
-      ...(legalExpenses !== undefined && { legalExpenses: Number(legalExpenses) }),
+      // Commencement date should be same as start date
+      commencementDate: start,
+      ...(legalExpenses !== undefined ? { legalExpenses: Number(legalExpenses) } : { legalExpenses: existing.legalExpenses ?? 1200 }),
       ...(allocationSeatsNumber !== undefined && { allocationSeatsNumber: Number(allocationSeatsNumber) }),
       ...(parkingSpaces && { parkingSpaces }),
-      ...(durationMonths !== undefined && { durationMonths: Number(durationMonths) }),
-      ...(lockInPeriodMonths !== undefined && { lockInPeriodMonths: Number(lockInPeriodMonths) }),
-      ...(noticePeriodDays !== undefined && { noticePeriodDays: Number(noticePeriodDays) }),
+      // Parking fees (keep existing if not provided, else default to schema defaults)
+      ...(parkingFees !== undefined
+        ? { parkingFees: {
+            twoWheeler: parkingFees?.twoWheeler !== undefined ? Number(parkingFees.twoWheeler) : (existing.parkingFees?.twoWheeler ?? 1500),
+            fourWheeler: parkingFees?.fourWheeler !== undefined ? Number(parkingFees.fourWheeler) : (existing.parkingFees?.fourWheeler ?? 5000),
+          } }
+        : (existing.parkingFees ? {} : { parkingFees: { twoWheeler: 1500, fourWheeler: 5000 } })
+      ),
+      // Always derive duration from dates
+      durationMonths: derivedDurationMonths,
+      // Default lock-in to duration unless explicitly provided
+      ...(lockInPeriodMonths !== undefined
+        ? { lockInPeriodMonths: Number(lockInPeriodMonths) }
+        : { lockInPeriodMonths: derivedDurationMonths }
+      ),
+      ...(noticePeriodDays !== undefined
+        ? { noticePeriodDays: Number(noticePeriodDays) }
+        : {}
+      ),
       ...(escalation && { escalation }),
       ...(renewal && { renewal }),
       ...(fullyServicedBusinessHours && { fullyServicedBusinessHours }),
-      ...(cleaningAndRestorationFees !== undefined && { cleaningAndRestorationFees: Number(cleaningAndRestorationFees) }),
+      ...(cleaningAndRestorationFees !== undefined
+        ? { cleaningAndRestorationFees: Number(cleaningAndRestorationFees) }
+        : { cleaningAndRestorationFees: existing.cleaningAndRestorationFees ?? 2000 }
+      ),
       ...(freebies && { freebies }),
       ...(payAsYouGo && { payAsYouGo }),
       ...(termsAndConditionAcceptance && { termsAndConditionAcceptance }),
@@ -1053,6 +1093,23 @@ export const sendForSignature = async (req, res) => {
     if (!contract) return res.status(404).json({ error: "Contract not found" });
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
     
+    // Require an active cabin block for this client in this building before sending for signature
+    try {
+      const hasActiveBlock = await Cabin.exists({
+        building: contract.building,
+        "blocks.status": "active",
+        "blocks.client": contract.client,
+      });
+      if (!hasActiveBlock) {
+        return res.status(400).json({
+          error: "No active cabin block found for this client. Please block a cabin before sending for signature.",
+        });
+      }
+    } catch (blkErr) {
+      console.error("Block pre-check failed:", blkErr);
+      return res.status(500).json({ error: "Failed to validate cabin block status" });
+    }
+
     // Use stampPaperUrl if available, otherwise fallback to fileUrl
     const documentUrl = contract.stampPaperUrl || contract.fileUrl;
     if (!documentUrl) {
@@ -1068,11 +1125,6 @@ export const sendForSignature = async (req, res) => {
       usingStampPaper: !!contract.stampPaperUrl,
       status: contract.status
     });
-
-    // Use logged Zoho Sign wrapper for all API calls
-    // loggedZohoSign is already an instance, not a constructor
-    
-    // Step 1: Create document in Zoho Sign
     const requestId = await loggedZohoSign.createDocument(contract);
     console.log("Document created with request ID:", requestId);
     
@@ -1386,6 +1438,14 @@ export const uploadSignedContract = async (req, res) => {
     } catch (invoiceError) {
       console.error("Failed to auto-create invoice:", invoiceError);
       // Don't fail the contract activation if invoice creation fails
+    }
+
+    // Allocate any cabins that were blocked for this client upon activation
+    try {
+      const allocResult = await allocateBlockedCabinsForContract(contract._id);
+      console.log("Cabin allocation after manual signed upload:", allocResult);
+    } catch (allocErr) {
+      console.error("Cabin allocation failed after signed upload:", allocErr);
     }
 
     return res.status(200).json({

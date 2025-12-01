@@ -10,6 +10,7 @@ export const getUsers = async (req, res) => {
     const { role, page = 1, limit = 20, search, excludeMember } = req.query;
     
     const filter = {};
+    
     if (role) filter.role = role;
     if (search) {
       filter.$or = [
@@ -52,6 +53,68 @@ export const getUsers = async (req, res) => {
       }
     });
   } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/users/client-legal - Create a client-scoped Legal Team user
+export const createClientLegalUser = async (req, res) => {
+  try {
+    const { clientId, name, email, phone, password } = req.body;
+
+    if (!clientId || !mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ success: false, message: "Valid clientId is required" });
+    }
+    if (!name || !password || (!email && !phone)) {
+      return res.status(400).json({ success: false, message: "name, password and either email or phone are required" });
+    }
+
+    // Ensure role exists or create it
+    let role = await Role.findOne({ roleName: "Client Legal Team" });
+    if (!role) {
+      role = await Role.create({
+        roleName: "Client Legal Team",
+        description: "Client-side legal user with contract feedback access",
+        canLogin: true,
+        permissions: []
+      });
+    }
+
+    // Check duplicates
+    const duplicate = await User.findOne({
+      $or: [
+        ...(email ? [{ email: email.toLowerCase().trim() }] : []),
+        ...(phone ? [{ phone: phone.trim() }] : []),
+      ]
+    });
+    if (duplicate) {
+      return res.status(400).json({ success: false, message: "User with this email or phone already exists" });
+    }
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    const user = await User.create({
+      name: name.trim(),
+      email: email ? email.toLowerCase().trim() : undefined,
+      phone: phone ? phone.trim() : undefined,
+      password: hashedPassword,
+      role: role._id,
+      clientId,
+    });
+
+    await logCRUDActivity(req, 'CREATE', 'User', user._id, null, {
+      userName: user.name,
+      email: user.email,
+      roleId: role._id,
+      clientId
+    });
+
+    const safe = user.toObject();
+    delete safe.password;
+    return res.status(201).json({ success: true, message: 'Client Legal Team user created', data: safe });
+  } catch (err) {
+    console.error('createClientLegalUser error:', err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

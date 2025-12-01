@@ -1,6 +1,8 @@
 import Contract from "../models/contractModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
+import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 
 // Compute stage for custom flow
 export const getCustomWorkflowStatus = (contract) => {
@@ -45,7 +47,6 @@ export const createBySales = async (req, res) => {
       capacity,
       monthlyRent,
       commencementDate,
-      allocationDate,
       terms,
       termsandconditions,
     } = req.body || {};
@@ -54,6 +55,16 @@ export const createBySales = async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing required fields" });
     }
 
+    // Derive duration in months (inclusive months) and default lock-in to duration
+    const calcMonths = (s, e) => {
+      const sd = new Date(s);
+      const ed = new Date(e);
+      let months = (ed.getFullYear() - sd.getFullYear()) * 12 + (ed.getMonth() - sd.getMonth());
+      if (ed.getDate() >= sd.getDate()) months += 1;
+      return Math.max(0, months);
+    };
+    const derivedDurationMonths = calcMonths(startDate, endDate);
+
     const contract = await Contract.create({
       client,
       building,
@@ -61,10 +72,16 @@ export const createBySales = async (req, res) => {
       endDate,
       capacity,
       monthlyRent,
-      commencementDate: commencementDate || undefined,
-      allocationDate: allocationDate || undefined,
+      // Commencement date should be same as start date
+      commencementDate: startDate,
       terms: terms || undefined,
       termsandconditions: termsandconditions || undefined,
+      // Defaults as per new rules
+      durationMonths: derivedDurationMonths,
+      lockInPeriodMonths: derivedDurationMonths,
+      legalExpenses: 1200,
+      cleaningAndRestorationFees: 2000,
+      parkingFees: { twoWheeler: 1500, fourWheeler: 5000 },
       status: "pushed",
       createdBy: req.user?._id || undefined,
       lastActionBy: req.user?._id || undefined,
@@ -343,6 +360,22 @@ export const clientApproveAndSign = async (req, res) => {
     await logContractActivity(req, "UPDATE", id, contract.client, {
       action: "client_signed",
     });
+    try {
+      const invoice = await createInvoiceFromContract(contract._id, {
+        issueOn: "activation",
+        prorate: true,
+        dueDays: 7,
+      });
+      console.log(`Auto-created invoice ${invoice?._id} for contract ${contract._id} via custom client approve/sign`);
+    } catch (invoiceError) {
+      console.error("Failed to auto-create invoice from custom client sign:", invoiceError);
+    }
+    try {
+      const allocResult = await allocateBlockedCabinsForContract(contract._id);
+      console.log("Cabin allocation after custom client sign:", allocResult);
+    } catch (allocErr) {
+      console.error("Cabin allocation failed after custom client sign:", allocErr);
+    }
 
     return res.json({ success: true, message: "Contract signed and activated" });
   } catch (err) {

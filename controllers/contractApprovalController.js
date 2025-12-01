@@ -915,10 +915,32 @@ export const recordSecurityDeposit = async (req, res) => {
       });
     }
 
-    // Update security deposit information
+    // Compute Security Deposit as 25% of (durationMonths × monthlyRent)
+    // Prefer explicit durationMonths on contract; fallback to months diff between start and end
+    const safeNumber = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const monthsFromField = safeNumber(contract.durationMonths) > 0 ? safeNumber(contract.durationMonths) : null;
+    const monthsFromDates = (() => {
+      try {
+        const start = contract.startDate ? new Date(contract.startDate) : null;
+        const end = contract.endDate ? new Date(contract.endDate) : null;
+        if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+        const years = end.getFullYear() - start.getFullYear();
+        const months = end.getMonth() - start.getMonth() + years * 12;
+        return months > 0 ? months : 0;
+      } catch { return null; }
+    })();
+    const durationMonths = monthsFromField ?? monthsFromDates ?? 0;
+    const monthlyRent = safeNumber(contract.monthlyRent);
+    const computedAmountRaw = monthlyRent * durationMonths * 0.25;
+    const computedAmount = Math.round(computedAmountRaw); // round to nearest rupee
+
+    // Update security deposit information (override any client-provided amount)
     contract.securitydeposited = true;
     contract.securityDeposit = {
-      amount: amount || 0,
+      amount: computedAmount,
       type: type || 'cash',
       notes: notes || null
     };
@@ -930,7 +952,7 @@ export const recordSecurityDeposit = async (req, res) => {
     // Log activity
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       recordedBy: req.user.id,
-      amount: amount,
+      amount: computedAmount,
       type: type,
       notes: notes,
       paidAt: contract.securityDepositPaidAt,
@@ -956,8 +978,6 @@ export const recordSecurityDeposit = async (req, res) => {
     });
   }
 };
-
-// Mark client as signed and activate contract
 export const markClientSigned = async (req, res) => {
   try {
     const { id } = req.params;

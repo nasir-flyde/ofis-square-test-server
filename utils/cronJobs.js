@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { markNoShows } from '../controllers/visitorController.js';
 import { createMonthlyInvoices } from '../services/monthlyInvoiceService.js';
+import { getValidAccessToken } from './zohoTokenManager.js';
 
 const scheduleNoShowUpdates = () => {
   cron.schedule('0 1 * * *', async () => {
@@ -36,5 +37,24 @@ const scheduleMonthlyInvoices = () => {
   console.log('Monthly invoice generation cron job scheduled for 1st of every month at 2 AM');
 };
 
+const scheduleZohoTokenRefresh = () => {
+  // Every 10 minutes
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      console.log('Running Zoho token refresh job...');
+      const token = await getValidAccessToken();
+      const masked = token ? `${String(token).slice(0, 8)}...` : 'none';
+      console.log(`Zoho token check complete. Current token: ${masked}`);
+    } catch (error) {
+      console.error('Error in Zoho token refresh job:', error?.message || error);
+    }
+  }, {
+    scheduled: true,
+    timezone: 'Asia/Kolkata'
+  });
 
-export { scheduleNoShowUpdates, scheduleMonthlyInvoices };
+  console.log('Zoho token refresh cron job scheduled for every 10 minutes');
+};
+
+
+export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh };

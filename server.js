@@ -10,7 +10,7 @@ import apiRoutes from "./routes/api.js";
 import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
-import { scheduleNoShowUpdates, scheduleMonthlyInvoices } from './utils/cronJobs.js';
+import { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
 import notificationScheduler from "./services/notifications/scheduler.js";
 import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
@@ -55,8 +55,6 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // }));
 
 app.use("/api", apiRoutes);
-
-// Serve static files for uploaded photos
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 mongoose
@@ -70,8 +68,8 @@ app.get("/", (req, res) => {
 
 scheduleNoShowUpdates();
 scheduleMonthlyInvoices();
+scheduleZohoTokenRefresh();
 initializeScheduler();
-// Start notifications scheduler (checks every minute)
 notificationScheduler.start();
 
 const PORT = process.env.PORT || 5001;

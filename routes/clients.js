@@ -21,6 +21,7 @@ import {
   getClientContracts,
   approveClientContract,
   submitClientContractFeedback,
+  getClientLegalUsers,
   getClientTickets,
   createClientTicket,
   getClientMembers,
@@ -35,7 +36,8 @@ import {
   getCurrentClientProfile,
   updateCurrentClientProfile,
   getOnboardingStatus,
-  approveOnboarding
+  approveOnboarding,
+  sendContractToLegalTeam
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -66,6 +68,8 @@ router.get("/payments", clientMiddleware, getClientPayments);
 router.get("/contracts", clientMiddleware, getClientContracts);
 router.post("/contracts/:id/approve", clientMiddleware, approveClientContract);
 router.post("/contracts/:id/feedback", clientMiddleware, kycUploads, submitClientContractFeedback);
+router.post("/contracts/:id/send-to-legal-team", clientMiddleware, sendContractToLegalTeam);
+router.get("/legal-users", clientMiddleware, getClientLegalUsers);
 router.get("/tickets", clientMiddleware, getClientTickets);
 router.post("/tickets", clientMiddleware, kycUploads, createClientTicket);
 

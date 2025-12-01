@@ -7,6 +7,7 @@ import Role from "../models/roleModel.js";
 import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 import { getAccessToken } from "../utils/zohoSignAuth.js";
 import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import fetch from "node-fetch";
@@ -385,6 +386,15 @@ async function updateContractStatus(contract, eventData) {
       } catch (invoiceError) {
         console.error("❌ Failed to auto-create invoice from webhook:", invoiceError);
         // Don't fail the webhook processing if invoice creation fails
+      }
+
+      // Allocate any cabins that were blocked for this client upon activation
+      try {
+        const allocResult = await allocateBlockedCabinsForContract(contract._id);
+        console.log("🏠 Cabin allocation on Zoho Sign activation:", allocResult);
+        actionTaken += "_with_cabin_allocation";
+      } catch (allocErr) {
+        console.error("❌ Cabin allocation failed on activation:", allocErr);
       }
     }
   }

@@ -41,6 +41,13 @@ const clientMiddleware = (req, res, next) => {
     if (name === "admin" || name === "client") {
       return next();
     }
+    if (name === "client legal team") {
+      const path = req.path || "";
+      if (typeof path === 'string' && path.startsWith('/contracts')) {
+        return next();
+      }
+      return res.status(403).json({ error: "Forbidden: Client Legal Team can access contracts only" });
+    }
 
     return res.status(403).json({ error: "Forbidden: role not allowed for client routes" });
   } catch (err) {
