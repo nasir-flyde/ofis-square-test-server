@@ -36,7 +36,10 @@ import eventCategoriesRoutes from "./eventCategories.js";
 import leadsRoutes from "./leads.js";
 import notificationsRoutes from "./notifications.js";
 import announcementsRoutes from "./announcements.js";
+import accessRoutes from "./access.js";
 import pincodeRoutes from "./pincode.js";
+import matrixDevicesRoutes from "./matrixDevices.js";
+import bhaifiRoutes from "./bhaifi.js";
 
 
 const router = express.Router();
@@ -79,4 +82,7 @@ router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/announcements", announcementsRoutes);
 router.use("/pincode", pincodeRoutes);
+router.use("/access", accessRoutes);
+router.use("/matrix-devices", matrixDevicesRoutes);
+router.use("/bhaifi", bhaifiRoutes);
 export default router;

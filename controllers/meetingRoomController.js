@@ -4,11 +4,27 @@ import Building from "../models/buildingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
+import MatrixDevice from "../models/matrixDeviceModel.js";
 
 // Create a meeting room
 export const createRoom = async (req, res) => {
   try {
     const roomData = { ...req.body };
+    // Validate matrix devices if provided
+    if (Array.isArray(roomData.matrixDeviceIds) && roomData.matrixDeviceIds.length > 0) {
+      const buildingId = roomData.building;
+      if (!buildingId) return res.status(400).json({ success: false, message: 'building is required when attaching matrix devices' });
+      const devices = await MatrixDevice.find({ _id: { $in: roomData.matrixDeviceIds } }).select('_id buildingId status').lean();
+      const foundIds = new Set(devices.map(d => String(d._id)));
+      const missing = roomData.matrixDeviceIds.map(String).filter(x => !foundIds.has(x));
+      if (missing.length) return res.status(400).json({ success: false, message: `Unknown matrix devices: ${missing.join(', ')}` });
+      const invalid = devices.filter(d => String(d.buildingId) !== String(buildingId));
+      if (invalid.length) return res.status(400).json({ success: false, message: 'Matrix devices must belong to the same building as the meeting room' });
+      const inactive = devices.filter(d => d.status !== 'active');
+      if (inactive.length) return res.status(400).json({ success: false, message: 'Matrix devices must be active' });
+      roomData.matrixDevices = roomData.matrixDeviceIds;
+      delete roomData.matrixDeviceIds;
+    }
     
     // Handle uploaded images with ImageKit
     if (req.files && req.files.length > 0) {
@@ -154,6 +170,26 @@ export const updateRoom = async (req, res) => {
       }
     }
     
+    // Validate matrix devices if provided
+    if (updateData.matrixDeviceIds !== undefined) {
+      const ids = Array.isArray(updateData.matrixDeviceIds) ? updateData.matrixDeviceIds : [];
+      const existing = await MeetingRoom.findById(req.params.id).select('building');
+      if (!existing) return res.status(404).json({ success: false, message: 'Room not found' });
+      const buildingId = updateData.building || existing.building;
+      if (ids.length > 0) {
+        const devices = await MatrixDevice.find({ _id: { $in: ids } }).select('_id buildingId status').lean();
+        const foundIds = new Set(devices.map(d => String(d._id)));
+        const missing = ids.map(String).filter(x => !foundIds.has(x));
+        if (missing.length) return res.status(400).json({ success: false, message: `Unknown matrix devices: ${missing.join(', ')}` });
+        const invalid = devices.filter(d => String(d.buildingId) !== String(buildingId));
+        if (invalid.length) return res.status(400).json({ success: false, message: 'Matrix devices must belong to the same building as the meeting room' });
+        const inactive = devices.filter(d => d.status !== 'active');
+        if (inactive.length) return res.status(400).json({ success: false, message: 'Matrix devices must be active' });
+      }
+      updateData.matrixDevices = ids;
+      delete updateData.matrixDeviceIds;
+    }
+
     const room = await MeetingRoom.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
     

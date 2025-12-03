@@ -64,7 +64,7 @@ const invoiceSchema = new mongoose.Schema(
     terms: { type: String },
     status: {
       type: String,
-      enum: ["draft", "sent", "partially_paid", "paid", "issued"],
+      enum: ["draft", "sent", "partially_paid", "paid", "issued", "overdue", "void"],
       default: "draft",
     },
     zoho_invoice_id: { type: String, index: true },

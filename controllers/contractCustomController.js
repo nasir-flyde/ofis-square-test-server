@@ -3,6 +3,8 @@ import { logContractActivity, logErrorActivity } from "../utils/activityLogger.j
 import imagekit from "../utils/imageKit.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
 import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
+import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
+import { grantOnContractActivation, enforceAccessByInvoices } from "../services/accessService.js";
 
 // Compute stage for custom flow
 export const getCustomWorkflowStatus = (contract) => {
@@ -237,6 +239,47 @@ export const adminApproveCustom = async (req, res) => {
       action: "admin_approved",
       reason,
     });
+
+    // Ensure default access policy and grant access ONLY if final approval is true
+    let ensuredPolicy = null;
+    try {
+      const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+      ensuredPolicy = policyResult?.policy || null;
+      if (policyResult?.created || policyResult?.updated) {
+        console.log("Default access policy ensured (admin approve):", {
+          client: String(contract.client),
+          created: policyResult.created,
+          updated: policyResult.updated,
+          policyId: ensuredPolicy?._id,
+        });
+      }
+    } catch (policyErr) {
+      console.warn("Failed to ensure default access policy on admin approval:", policyErr?.message);
+    }
+    try {
+      if (contract.isfinalapproval) {
+        if (ensuredPolicy?._id) {
+          const grantRes = await grantOnContractActivation(contract, {
+            policyId: ensuredPolicy._id,
+            startsAt: contract.startDate || contract.commencementDate || new Date(),
+            endsAt: contract.endDate || undefined,
+            source: "AUTO_CONTRACT",
+          });
+          console.log("Access grants created on admin approval (final approval):", grantRes);
+          try {
+            await enforceAccessByInvoices(contract.client);
+          } catch (enfErr) {
+            console.warn("enforceAccessByInvoices after admin approval failed:", enfErr?.message);
+          }
+        } else {
+          console.warn("No default access policy available to grant access on admin approval.");
+        }
+      } else {
+        console.log("Skipping access grants on admin approval: isfinalapproval is not true.");
+      }
+    } catch (grantErr) {
+      console.warn("Access grant on admin approval failed:", grantErr?.message);
+    }
 
     return res.json({ success: true, message: "Admin approved contract" });
   } catch (err) {

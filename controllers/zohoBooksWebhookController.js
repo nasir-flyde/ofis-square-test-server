@@ -9,6 +9,7 @@ import CreditCustomItem from "../models/creditCustomItemModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import apiLogger from "../utils/apiLogger.js";
+import { enforceAccessByInvoices } from "../services/accessService.js";
 
 // Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
@@ -1185,6 +1186,15 @@ async function handleInvoiceEvent(invoiceData) {
       result.customer_id = invoiceData.customer_id;
     }
 
+    // Enforce access based on invoices for this client
+    if (client && client._id) {
+      try {
+        await enforceAccessByInvoices(client._id);
+      } catch (e) {
+        console.warn("enforceAccessByInvoices (invoice event) failed:", e?.message);
+      }
+    }
+
     return result;
 
   } catch (error) {
@@ -1464,6 +1474,15 @@ async function handlePaymentReceived(paymentData) {
     } else {
       result.client_linked = false;
       result.customer_id = paymentData.customer_id;
+    }
+
+    // Enforce access based on invoices for this client after payment application
+    if (client && client._id) {
+      try {
+        await enforceAccessByInvoices(client._id);
+      } catch (e) {
+        console.warn("enforceAccessByInvoices (payment event) failed:", e?.message);
+      }
     }
 
     return result;

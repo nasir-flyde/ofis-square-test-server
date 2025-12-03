@@ -7,7 +7,6 @@ const contractSchema = new mongoose.Schema(
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     commencementDate: { type: Date },
-    allocationDate: { type: Date },
     capacity: { type: Number, required: true, min: 1 },
     monthlyRent: {
       type: Number,
@@ -64,12 +63,17 @@ const contractSchema = new mongoose.Schema(
       ref: "User",
     },
     // Legal and administrative fields
-    legalExpenses: { type: Number, default: 0, min: 0 },
+    legalExpenses: { type: Number, default: 1200, min: 0 },
     allocationSeatsNumber: { type: Number, default: 0 },
     // Parking details
     parkingSpaces: {
       noOf2WheelerParking: { type: Number, default: 0 },
       noOf4WheelerParking: { type: Number, default: 0 }
+    },
+    // Parking fees (per slot)
+    parkingFees: {
+      twoWheeler: { type: Number, default: 1500, min: 0 },
+      fourWheeler: { type: Number, default: 5000, min: 0 }
     },
     // Contract duration details
     durationMonths: { type: Number, default: 12 },
@@ -92,7 +96,7 @@ const contractSchema = new mongoose.Schema(
       days: { type: [String], default: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"] }
     },
     // Additional charges
-    cleaningAndRestorationFees: { type: Number, default: 0, min: 0 },
+    cleaningAndRestorationFees: { type: Number, default: 2000, min: 0 },
     // Freebies
     freebies: [{ type: String, trim: true }],
     // Pay as you go services
@@ -444,11 +448,7 @@ const contractSchema = new mongoose.Schema(
     signedAt: { type: Date },
     signedBy: { type: String, trim: true },
     declinedAt: { type: Date },
-    // Version control
-    version: {
-      type: Number,
-      default: 1,
-    },
+    // Version control (removed)
     lastActionBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

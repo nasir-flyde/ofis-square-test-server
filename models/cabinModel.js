@@ -38,6 +38,8 @@ const CabinSchema = new Schema(
       default: "available",
       index: true,
     },
+    // Matrix access devices associated with this cabin
+    matrixDevices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice", default: [] }],
     desks: [{ type: Schema.Types.ObjectId, ref: "Desk", default: [] }],
 
     allocatedTo: { type: Schema.Types.ObjectId, ref: "Client", default: null, index: true },

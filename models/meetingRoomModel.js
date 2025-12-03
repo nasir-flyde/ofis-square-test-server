@@ -50,6 +50,8 @@ const meetingRoomSchema = new Schema(
     pricing: { type: pricingSchema, default: () => ({}) },
     availability: { type: availabilitySchema, default: () => ({}) },
     blackoutDates: { type: [Date], default: [] },
+    // Matrix access devices associated with this meeting room
+    matrixDevices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice", default: [] }],
     availableTimeSlots: {
       type: [timeSlotSchema],
       default: () => [

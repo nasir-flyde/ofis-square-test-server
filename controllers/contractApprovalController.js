@@ -1,7 +1,15 @@
+import mongoose from "mongoose";
 import Contract from "../models/contractModel.js";
 import Cabin from "../models/cabinModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
+import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
+import { grantOnContractActivation } from "../services/accessService.js";
+import AccessPolicy from "../models/accessPolicyModel.js";
+import Client from "../models/clientModel.js";
+import MatrixDevice from "../models/matrixDeviceModel.js";
+import Member from "../models/memberModel.js";
+import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import {
   sendAdminApprovalRequestEmail,
   sendAdminApprovalConfirmationEmail,
@@ -60,6 +68,152 @@ export const finalApprove = async (req, res) => {
       approved,
       reason,
     });
+
+    // On final approval, ensure default access policy and grant access, then enforce invoice-based access
+    if (approved) {
+      let ensuredPolicy = null;
+      try {
+        const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+        ensuredPolicy = policyResult?.policy || null;
+        if (policyResult?.created || policyResult?.updated) {
+          console.log("Default access policy ensured (final approve):", {
+            client: String(contract.client),
+            created: policyResult.created,
+            updated: policyResult.updated,
+            policyId: ensuredPolicy?._id,
+          });
+        }
+      } catch (policyErr) {
+        console.warn("Failed to ensure default access policy on final approval:", policyErr?.message);
+      }
+      try {
+        // Fallback: create default building-scoped policy directly if not available
+        if (!ensuredPolicy?._id) {
+          let buildingId = null;
+          try {
+            const cli = await Client.findById(contract.client).select('building').lean();
+            buildingId = cli?.building || null;
+          } catch {}
+          ensuredPolicy = await AccessPolicy.create({
+            buildingId,
+            name: "Default Access",
+            description: `Auto-created at final approval for contract ${contract._id}`,
+            accessPointIds: [],
+            isDefaultForBuilding: true,
+            ...(contract.startDate || contract.commencementDate ? { effectiveFrom: contract.startDate || contract.commencementDate } : {}),
+            ...(contract.endDate ? { effectiveTo: contract.endDate } : {}),
+          });
+          console.log("Created default building access policy directly (final approval):", ensuredPolicy?._id);
+        }
+
+        // Attach allocated cabins' Matrix devices to policy (meeting rooms handled manually later)
+        try {
+          const allocatedCabins = await Cabin.find({ contract: contract._id, allocatedTo: contract.client })
+            .select('_id matrixDevices building')
+            .lean();
+          if (Array.isArray(allocatedCabins) && allocatedCabins.length > 0) {
+            // If policy buildingId is missing, derive from allocated cabins
+            if (!ensuredPolicy.buildingId) {
+              const derivedBuildingId = allocatedCabins[0]?.building || null;
+              if (derivedBuildingId) {
+                ensuredPolicy.buildingId = derivedBuildingId;
+                await ensuredPolicy.save();
+              }
+            }
+            const deviceIdSet = new Set();
+            for (const c of allocatedCabins) {
+              (c.matrixDevices || []).forEach((did) => deviceIdSet.add(String(did)));
+            }
+            let deviceIds = Array.from(deviceIdSet);
+            // Fallback: if no devices from allocated cabins, include devices from cabins having active/allocated blocks for this client
+            if (deviceIds.length === 0) {
+              try {
+                const blockFilteredCabins = await Cabin.find({
+                  'blocks.client': contract.client,
+                  'blocks.status': { $in: ['active', 'allocated'] }
+                }).select('_id matrixDevices building').lean();
+                for (const c of (blockFilteredCabins || [])) {
+                  (c.matrixDevices || []).forEach((did) => deviceIdSet.add(String(did)));
+                }
+                deviceIds = Array.from(deviceIdSet);
+              } catch (blkErr) {
+                console.warn('Failed to fetch cabins by active blocks for policy devices:', blkErr?.message);
+              }
+            }
+            if (deviceIds.length > 0) {
+              // Validate devices belong to the same building as the policy and are active
+              const devices = await MatrixDevice.find({ _id: { $in: deviceIds } })
+                .select('_id buildingId status')
+                .lean();
+              const validIds = devices
+                .filter((d) => {
+                  const sameBuilding = ensuredPolicy.buildingId ? (String(d.buildingId) === String(ensuredPolicy.buildingId)) : true;
+                  return sameBuilding && d.status === 'active';
+                })
+                .map((d) => String(d._id));
+              console.log("Policy device attach diagnostic:", {
+                policyId: String(ensuredPolicy._id),
+                policyBuilding: String(ensuredPolicy.buildingId || ''),
+                candidateDeviceIds: deviceIds.length,
+                fetchedDevices: devices.length,
+                validActiveDevices: validIds.length,
+              });
+              if (validIds.length > 0) {
+                const objectIdList = validIds.map((id) => new mongoose.Types.ObjectId(id));
+                const upd = await AccessPolicy.updateOne(
+                  { _id: ensuredPolicy._id },
+                  { $addToSet: { accessPointIds: { $each: objectIdList } } }
+                );
+                console.log("AccessPolicy $addToSet result:", { matched: upd.matchedCount, modified: upd.modifiedCount });
+              }
+            }
+          } else {
+            console.log("No allocated cabins found to attach to access policy for this contract.");
+          }
+        } catch (attachErr) {
+          console.warn("Failed to attach cabin devices to access policy:", attachErr?.message);
+        }
+
+        const grantRes = await grantOnContractActivation(contract, {
+          policyId: ensuredPolicy._id,
+          startsAt: contract.startDate || contract.commencementDate || new Date(),
+          endsAt: contract.endDate || undefined,
+          source: "AUTO_CONTRACT",
+        });
+        console.log("Access grants created on final approval:", grantRes);
+      } catch (grantErr) {
+        console.warn("Access grant on final approval failed:", grantErr?.message);
+      }
+
+      // Bhaifi auto-provisioning for members of this contract's client (member-centric)
+      try {
+        const members = await Member.find({ client: contract.client, status: "active" })
+          .select("_id firstName lastName email phone")
+          .lean();
+        if (Array.isArray(members) && members.length > 0) {
+          // Process sequentially to be gentle on upstream; ignore individual failures
+          for (const m of members) {
+            try {
+              await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
+            } catch (bfErr) {
+              console.warn("Bhaifi provision failed for member", String(m._id), {
+                message: bfErr?.message,
+                status: bfErr?.response?.status,
+                data: bfErr?.response?.data,
+              });
+            }
+          }
+          await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+            action: 'bhaifi_users_provision_attempted',
+            count: members.length,
+          });
+        } else {
+          console.log("No active members found for client to provision Bhaifi users.");
+        }
+      } catch (bhaifiErr) {
+        console.warn("Bhaifi auto-provision orchestration failed:", bhaifiErr?.message);
+      }
+    }
 
     return res.json({
       success: true,

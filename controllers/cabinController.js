@@ -5,6 +5,7 @@ import Contract from "../models/contractModel.js";
 import Desk from "../models/deskModel.js";
 import imagekit from "../utils/imageKit.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import MatrixDevice from "../models/matrixDeviceModel.js";
 
 export const getCabins = async (req, res) => {
   try {
@@ -225,7 +226,8 @@ export const updateCabin = async (req, res) => {
       sizeSqFt,
       amenities,
       images,
-      pricing
+      pricing,
+      matrixDeviceIds
     } = req.body || {};
     const existingCabin = await Cabin.findById(id);
     if (!existingCabin) {
@@ -291,6 +293,29 @@ export const updateCabin = async (req, res) => {
     if (amenities !== undefined) updateData.amenities = amenities;
     if (processedImages) updateData.images = processedImages;
     if (pricing !== undefined) updateData.pricing = pricing;
+
+    // Validate and set matrix devices, if provided
+    if (matrixDeviceIds !== undefined) {
+      const ids = Array.isArray(matrixDeviceIds) ? matrixDeviceIds : [];
+      if (ids.length > 0) {
+        const devices = await MatrixDevice.find({ _id: { $in: ids } }).select('_id buildingId status').lean();
+        const targetBuildingId = String(building || existingCabin.building);
+        const foundIds = new Set(devices.map(d => String(d._id)));
+        const missing = ids.map(String).filter(x => !foundIds.has(x));
+        if (missing.length) {
+          return res.status(400).json({ success: false, message: `Unknown matrix devices: ${missing.join(', ')}` });
+        }
+        const invalid = devices.filter(d => String(d.buildingId) !== targetBuildingId);
+        if (invalid.length) {
+          return res.status(400).json({ success: false, message: 'Matrix devices must belong to the same building as the cabin' });
+        }
+        const inactive = devices.filter(d => d.status !== 'active');
+        if (inactive.length) {
+          return res.status(400).json({ success: false, message: 'Matrix devices must be active' });
+        }
+      }
+      updateData.matrixDevices = ids;
+    }
 
     const cabin = await Cabin.findByIdAndUpdate(
       id,

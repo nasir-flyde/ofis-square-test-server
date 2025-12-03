@@ -12,6 +12,8 @@ import { getAccessToken } from "../utils/zohoSignAuth.js";
 import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import fetch from "node-fetch";
 import { sendWelcomeEmail } from "../utils/emailService.js";
+import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
+import { grantOnContractActivation, enforceAccessByInvoices } from "../services/accessService.js";
 
 export const handleZohoSignWebhook = async (req, res) => {
   try {
@@ -387,8 +389,46 @@ async function updateContractStatus(contract, eventData) {
         console.error("❌ Failed to auto-create invoice from webhook:", invoiceError);
         // Don't fail the webhook processing if invoice creation fails
       }
-
-      // Allocate any cabins that were blocked for this client upon activation
+      // Ensure a default access policy exists for this client upon activation, and grant access ONLY if final approval is true
+      let ensuredPolicy = null;
+      try {
+        const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+        ensuredPolicy = policyResult?.policy || null;
+        if (policyResult?.created || policyResult?.updated) {
+          console.log(`✅ Default access policy ensured for client ${contract.client}:`, {
+            created: policyResult.created,
+            updated: policyResult.updated,
+            policyId: ensuredPolicy?._id
+          });
+        }
+      } catch (policyErr) {
+        console.warn("⚠️ Failed to ensure default access policy on activation:", policyErr?.message);
+      }
+      try {
+        if (contract.isfinalapproval) {
+          if (ensuredPolicy?._id) {
+            const grantRes = await grantOnContractActivation(contract, {
+              policyId: ensuredPolicy._id,
+              startsAt: contract.startDate || contract.commencementDate || new Date(),
+              endsAt: contract.endDate || undefined,
+              source: "AUTO_CONTRACT",
+            });
+            console.log("🔐 Access grants created on activation (final approval):", grantRes);
+            // Enforce invoice state immediately after grants
+            try {
+              await enforceAccessByInvoices(contract.client);
+            } catch (enfErr) {
+              console.warn("enforceAccessByInvoices after activation failed:", enfErr?.message);
+            }
+          } else {
+            console.warn("No default access policy available to grant access on activation.");
+          }
+        } else {
+          console.log("Skipping access grants: contract.isfinalapproval is not true.");
+        }
+      } catch (grantErr) {
+        console.warn("⚠️ Access grant on activation failed:", grantErr?.message);
+      }
       try {
         const allocResult = await allocateBlockedCabinsForContract(contract._id);
         console.log("🏠 Cabin allocation on Zoho Sign activation:", allocResult);
