@@ -40,7 +40,11 @@ import accessRoutes from "./access.js";
 import pincodeRoutes from "./pincode.js";
 import matrixDevicesRoutes from "./matrixDevices.js";
 import bhaifiRoutes from "./bhaifi.js";
-
+import accessPointsRoutes from "./accessPoints.js";
+import accessZonesRoutes from "./accessZones.js";
+import rfidCardsRoutes from "./rfidCards.js";
+import accessEventsRoutes from "./accessEvents.js";
+import provisioningJobsRoutes from "./provisioningJobs.js";
 
 const router = express.Router();
 
@@ -83,6 +87,11 @@ router.use("/notifications", notificationsRoutes);
 router.use("/announcements", announcementsRoutes);
 router.use("/pincode", pincodeRoutes);
 router.use("/access", accessRoutes);
+router.use("/access-points", accessPointsRoutes);
+router.use("/access-zones", accessZonesRoutes);
+router.use("/rfid-cards", rfidCardsRoutes);
+router.use("/access-events", accessEventsRoutes);
+router.use("/provisioning-jobs", provisioningJobsRoutes);
 router.use("/matrix-devices", matrixDevicesRoutes);
 router.use("/bhaifi", bhaifiRoutes);
 export default router;

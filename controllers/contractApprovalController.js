@@ -9,6 +9,7 @@ import AccessPolicy from "../models/accessPolicyModel.js";
 import Client from "../models/clientModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import Member from "../models/memberModel.js";
+import AccessPoint from "../models/accessPointModel.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import {
   sendAdminApprovalRequestEmail,
@@ -106,7 +107,7 @@ export const finalApprove = async (req, res) => {
           console.log("Created default building access policy directly (final approval):", ensuredPolicy?._id);
         }
 
-        // Attach allocated cabins' Matrix devices to policy (meeting rooms handled manually later)
+        // Attach allocated cabins' devices to policy by mapping to AccessPoints (meeting rooms handled manually later)
         try {
           const allocatedCabins = await Cabin.find({ contract: contract._id, allocatedTo: contract.client })
             .select('_id matrixDevices building')
@@ -120,58 +121,82 @@ export const finalApprove = async (req, res) => {
                 await ensuredPolicy.save();
               }
             }
-            const deviceIdSet = new Set();
+
+            const apIdSet = new Set();
+
+            // First pass: per allocated cabin, ensure/find APs for its Matrix devices
             for (const c of allocatedCabins) {
-              (c.matrixDevices || []).forEach((did) => deviceIdSet.add(String(did)));
+              for (const did of (c.matrixDevices || [])) {
+                let ap = await AccessPoint.findOne({
+                  buildingId: ensuredPolicy.buildingId || c.building,
+                  "deviceBindings.deviceId": did,
+                }).select('_id').lean();
+                if (!ap) {
+                  const nameSuffix = String(did).slice(-6);
+                  const createdAp = await AccessPoint.create({
+                    buildingId: ensuredPolicy.buildingId || c.building,
+                    name: `AP ${nameSuffix}`,
+                    bindingType: 'cabin',
+                    resource: { refType: 'Cabin', refId: c._id, label: String(c._id) },
+                    pointType: 'DOOR',
+                    deviceBindings: [{ vendor: 'MATRIX_COSEC', deviceId: did, direction: 'BIDIRECTIONAL' }],
+                    status: 'active',
+                  });
+                  apIdSet.add(String(createdAp._id));
+                } else {
+                  apIdSet.add(String(ap._id));
+                }
+              }
             }
-            let deviceIds = Array.from(deviceIdSet);
-            // Fallback: if no devices from allocated cabins, include devices from cabins having active/allocated blocks for this client
-            if (deviceIds.length === 0) {
+
+            // Fallback: if none from allocated cabins, look at active/allocated blocks
+            if (apIdSet.size === 0) {
               try {
                 const blockFilteredCabins = await Cabin.find({
                   'blocks.client': contract.client,
                   'blocks.status': { $in: ['active', 'allocated'] }
                 }).select('_id matrixDevices building').lean();
                 for (const c of (blockFilteredCabins || [])) {
-                  (c.matrixDevices || []).forEach((did) => deviceIdSet.add(String(did)));
+                  for (const did of (c.matrixDevices || [])) {
+                    let ap = await AccessPoint.findOne({
+                      buildingId: ensuredPolicy.buildingId || c.building,
+                      "deviceBindings.deviceId": did,
+                    }).select('_id').lean();
+                    if (!ap) {
+                      const nameSuffix = String(did).slice(-6);
+                      const createdAp = await AccessPoint.create({
+                        buildingId: ensuredPolicy.buildingId || c.building,
+                        name: `AP ${nameSuffix}`,
+                        bindingType: 'cabin',
+                        resource: { refType: 'Cabin', refId: c._id, label: String(c._id) },
+                        pointType: 'DOOR',
+                        deviceBindings: [{ vendor: 'MATRIX_COSEC', deviceId: did, direction: 'BIDIRECTIONAL' }],
+                        status: 'active',
+                      });
+                      apIdSet.add(String(createdAp._id));
+                    } else {
+                      apIdSet.add(String(ap._id));
+                    }
+                  }
                 }
-                deviceIds = Array.from(deviceIdSet);
               } catch (blkErr) {
-                console.warn('Failed to fetch cabins by active blocks for policy devices:', blkErr?.message);
+                console.warn('Failed to fetch cabins by active blocks for policy APs:', blkErr?.message);
               }
             }
-            if (deviceIds.length > 0) {
-              // Validate devices belong to the same building as the policy and are active
-              const devices = await MatrixDevice.find({ _id: { $in: deviceIds } })
-                .select('_id buildingId status')
-                .lean();
-              const validIds = devices
-                .filter((d) => {
-                  const sameBuilding = ensuredPolicy.buildingId ? (String(d.buildingId) === String(ensuredPolicy.buildingId)) : true;
-                  return sameBuilding && d.status === 'active';
-                })
-                .map((d) => String(d._id));
-              console.log("Policy device attach diagnostic:", {
-                policyId: String(ensuredPolicy._id),
-                policyBuilding: String(ensuredPolicy.buildingId || ''),
-                candidateDeviceIds: deviceIds.length,
-                fetchedDevices: devices.length,
-                validActiveDevices: validIds.length,
-              });
-              if (validIds.length > 0) {
-                const objectIdList = validIds.map((id) => new mongoose.Types.ObjectId(id));
-                const upd = await AccessPolicy.updateOne(
-                  { _id: ensuredPolicy._id },
-                  { $addToSet: { accessPointIds: { $each: objectIdList } } }
-                );
-                console.log("AccessPolicy $addToSet result:", { matched: upd.matchedCount, modified: upd.modifiedCount });
-              }
+
+            if (apIdSet.size > 0) {
+              const objectIdList = Array.from(apIdSet).map((id) => new mongoose.Types.ObjectId(id));
+              const upd = await AccessPolicy.updateOne(
+                { _id: ensuredPolicy._id },
+                { $addToSet: { accessPointIds: { $each: objectIdList } } }
+              );
+              console.log("AccessPolicy AP attach result:", { matched: upd.matchedCount, modified: upd.modifiedCount, added: objectIdList.length });
             }
           } else {
             console.log("No allocated cabins found to attach to access policy for this contract.");
           }
         } catch (attachErr) {
-          console.warn("Failed to attach cabin devices to access policy:", attachErr?.message);
+          console.warn("Failed to attach cabin AccessPoints to access policy:", attachErr?.message);
         }
 
         const grantRes = await grantOnContractActivation(contract, {
@@ -608,33 +633,6 @@ export const bulkApproveKYCDocumentsByType = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to bulk approve KYC documents', error: error.message });
   }
 };
-
-// export const getContractWorkflowStatus = (contract) => {
-//   const flags = {
-//     iskycuploaded: contract.iskycuploaded,
-//     iskycapproved: contract.iskycapproved,
-//     adminapproved: contract.adminapproved,
-//     legalteamapproved: contract.legalteamapproved,
-//     clientapproved: contract.clientapproved,
-//     financeapproved: contract.financeapproved,
-//     securitydeposited: contract.securitydeposited,
-//     isfinalapproval: contract.isfinalapproval,
-//     isclientsigned: contract.isclientsigned
-//   };
-
-//   // Determine current workflow stage
-//   if (!flags.iskycuploaded) return { stage: 'kyc_upload_pending', flags };
-//   if (!flags.iskycapproved) return { stage: 'kyc_approval_pending', flags };
-//   if (!flags.adminapproved) return { stage: 'admin_approval_pending', flags };
-//   if (!flags.legalteamapproved) return { stage: 'legal_approval_pending', flags };
-//   if (!flags.financeapproved) return { stage: 'finance_approval_pending', flags };
-//   if (!flags.clientapproved) return { stage: 'client_approval_pending', flags };
-//   if (!flags.securitydeposited) return { stage: 'security_deposit_pending', flags };
-//   if (!flags.isfinalapproval) return { stage: 'final_approval_pending', flags };
-//   if (!flags.isclientsigned) return { stage: 'client_signature_pending', flags };
-
-//   return { stage: 'completed', flags };
-// };
 
 // Helper function to get workflow status for the simplified workflow
 export const getContractWorkflowStatus = (contract) => {

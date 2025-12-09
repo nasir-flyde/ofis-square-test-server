@@ -133,6 +133,7 @@ export const createBhaifiUser = async (req, res) => {
           doc.lastWhitelistedAt = new Date();
           doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
           doc.lastSyncAt = new Date();
+          doc.status = "active";
           doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate, endDate } };
           doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
           doc.whitelistHistory.push({
@@ -184,6 +185,7 @@ export const dewhitelistBhaifiUser = async (req, res) => {
     // Mark active-until as now (logical end)
     doc.whitelistActiveUntil = new Date();
     doc.lastSyncAt = new Date();
+    doc.status = "dewhitelist";
     doc.meta = { ...(doc.meta || {}), lastDewhitelist: apiRes?.data };
     await doc.save();
     return res.json({ success: true, message: 'Dewhitelisted successfully', data: apiRes?.data });
@@ -270,6 +272,7 @@ export const whitelistBhaifiUser = async (req, res) => {
     doc.lastSyncAt = new Date();
     doc.lastWhitelistedAt = new Date();
     doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
+    doc.status = "active";
     doc.meta = { ...(doc.meta || {}), lastWhitelist: apiRes?.data };
     doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
     doc.whitelistHistory.push({
@@ -357,6 +360,7 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
           doc.lastWhitelistedAt = new Date();
           doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
           doc.lastSyncAt = new Date();
+          doc.status = "active";
           doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate, endDate } };
           doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
           doc.whitelistHistory.push({

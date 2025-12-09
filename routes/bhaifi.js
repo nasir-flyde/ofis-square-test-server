@@ -21,6 +21,12 @@ router.get(
   checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
   listBhaifiUsers
 );
+// List users
+// router.get(
+//   "/users",
+//   listBhaifiUsers
+// );
+
 
 // Create user for a member
 router.post(

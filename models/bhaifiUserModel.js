@@ -16,7 +16,7 @@ const bhaifiUserSchema = new Schema(
     nasId: { type: String, default: process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1" },
 
     bhaifiUserId: { type: String }, // external id if returned by Bhaifi
-    status: { type: String, enum: ["created", "active", "suspended", "error"], default: "created", index: true },
+    status: { type: String, enum: ["created", "active", "suspended", "dewhitelisted", "error"], default: "created", index: true },
 
     lastSyncAt: { type: Date },
     lastError: { type: String },
