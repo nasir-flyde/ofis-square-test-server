@@ -10,6 +10,8 @@ import Client from "../models/clientModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import Member from "../models/memberModel.js";
 import AccessPoint from "../models/accessPointModel.js";
+import ProvisioningJob from "../models/provisioningJobModel.js";
+import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import {
   sendAdminApprovalRequestEmail,
@@ -46,26 +48,33 @@ export const finalApprove = async (req, res) => {
 
     const contract = await Contract.findById(id);
     if (!contract) {
-      return res.status(404).json({ success: false, message: 'Contract not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: "Contract not found" });
     }
 
     // Only allow when invoices have been fully paid and flag is set, OR if user is System Admin
-    if (req.user.role?.roleName !== 'System Admin') {
-      return res.status(400).json({ success: false, message: 'Final approval not ready. Ensure all invoices are paid.' });
+    if (req.user.role?.roleName !== "System Admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Final approval not ready. Ensure all invoices are paid.",
+      });
     }
 
     // Set final approval metadata
-    contract.finalApprovedBy = approved ? (req.user?.id || null) : null;
+    contract.finalApprovedBy = approved ? req.user?.id || null : null;
     contract.finalApprovedAt = approved ? new Date() : null;
     contract.finalApprovalReason = reason || null;
+
     // Set isfinalapproval flag to true when approved
     if (approved) {
       contract.isfinalapproval = true;
     }
+
     await contract.save();
 
-    await logContractActivity(req, 'UPDATE', id, contract.client, {
-      action: approved ? 'final_approved' : 'final_rejected',
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: approved ? "final_approved" : "final_rejected",
       approved,
       reason,
     });
@@ -73,8 +82,12 @@ export const finalApprove = async (req, res) => {
     // On final approval, ensure default access policy and grant access, then enforce invoice-based access
     if (approved) {
       let ensuredPolicy = null;
+
+      // 1. Ensure default access policy for this contract
       try {
-        const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+        const policyResult = await ensureDefaultAccessPolicyForContract(
+          contract._id
+        );
         ensuredPolicy = policyResult?.policy || null;
         if (policyResult?.created || policyResult?.updated) {
           console.log("Default access policy ensured (final approve):", {
@@ -85,33 +98,50 @@ export const finalApprove = async (req, res) => {
           });
         }
       } catch (policyErr) {
-        console.warn("Failed to ensure default access policy on final approval:", policyErr?.message);
+        console.warn(
+          "Failed to ensure default access policy on final approval:",
+          policyErr?.message
+        );
       }
+
+      // 2. Fallback + grant + provisioning (wrapped in single try/catch)
       try {
         // Fallback: create default building-scoped policy directly if not available
         if (!ensuredPolicy?._id) {
           let buildingId = null;
           try {
-            const cli = await Client.findById(contract.client).select('building').lean();
+            const cli = await Client.findById(contract.client)
+              .select("building")
+              .lean();
             buildingId = cli?.building || null;
           } catch {}
+
           ensuredPolicy = await AccessPolicy.create({
             buildingId,
             name: "Default Access",
             description: `Auto-created at final approval for contract ${contract._id}`,
             accessPointIds: [],
             isDefaultForBuilding: true,
-            ...(contract.startDate || contract.commencementDate ? { effectiveFrom: contract.startDate || contract.commencementDate } : {}),
+            ...(contract.startDate || contract.commencementDate
+              ? { effectiveFrom: contract.startDate || contract.commencementDate }
+              : {}),
             ...(contract.endDate ? { effectiveTo: contract.endDate } : {}),
           });
-          console.log("Created default building access policy directly (final approval):", ensuredPolicy?._id);
+          console.log(
+            "Created default building access policy directly (final approval):",
+            ensuredPolicy?._id
+          );
         }
 
         // Attach allocated cabins' devices to policy by mapping to AccessPoints (meeting rooms handled manually later)
         try {
-          const allocatedCabins = await Cabin.find({ contract: contract._id, allocatedTo: contract.client })
-            .select('_id matrixDevices building')
+          const allocatedCabins = await Cabin.find({
+            contract: contract._id,
+            allocatedTo: contract.client,
+          })
+            .select("_id matrixDevices building")
             .lean();
+
           if (Array.isArray(allocatedCabins) && allocatedCabins.length > 0) {
             // If policy buildingId is missing, derive from allocated cabins
             if (!ensuredPolicy.buildingId) {
@@ -126,21 +156,34 @@ export const finalApprove = async (req, res) => {
 
             // First pass: per allocated cabin, ensure/find APs for its Matrix devices
             for (const c of allocatedCabins) {
-              for (const did of (c.matrixDevices || [])) {
+              for (const did of c.matrixDevices || []) {
                 let ap = await AccessPoint.findOne({
                   buildingId: ensuredPolicy.buildingId || c.building,
                   "deviceBindings.deviceId": did,
-                }).select('_id').lean();
+                })
+                  .select("_id")
+                  .lean();
+
                 if (!ap) {
                   const nameSuffix = String(did).slice(-6);
                   const createdAp = await AccessPoint.create({
                     buildingId: ensuredPolicy.buildingId || c.building,
                     name: `AP ${nameSuffix}`,
-                    bindingType: 'cabin',
-                    resource: { refType: 'Cabin', refId: c._id, label: String(c._id) },
-                    pointType: 'DOOR',
-                    deviceBindings: [{ vendor: 'MATRIX_COSEC', deviceId: did, direction: 'BIDIRECTIONAL' }],
-                    status: 'active',
+                    bindingType: "cabin",
+                    resource: {
+                      refType: "Cabin",
+                      refId: c._id,
+                      label: String(c._id),
+                    },
+                    pointType: "DOOR",
+                    deviceBindings: [
+                      {
+                        vendor: "MATRIX_COSEC",
+                        deviceId: did,
+                        direction: "BIDIRECTIONAL",
+                      },
+                    ],
+                    status: "active",
                   });
                   apIdSet.add(String(createdAp._id));
                 } else {
@@ -153,25 +196,41 @@ export const finalApprove = async (req, res) => {
             if (apIdSet.size === 0) {
               try {
                 const blockFilteredCabins = await Cabin.find({
-                  'blocks.client': contract.client,
-                  'blocks.status': { $in: ['active', 'allocated'] }
-                }).select('_id matrixDevices building').lean();
-                for (const c of (blockFilteredCabins || [])) {
-                  for (const did of (c.matrixDevices || [])) {
+                  "blocks.client": contract.client,
+                  "blocks.status": { $in: ["active", "allocated"] },
+                })
+                  .select("_id matrixDevices building")
+                  .lean();
+
+                for (const c of blockFilteredCabins || []) {
+                  for (const did of c.matrixDevices || []) {
                     let ap = await AccessPoint.findOne({
                       buildingId: ensuredPolicy.buildingId || c.building,
                       "deviceBindings.deviceId": did,
-                    }).select('_id').lean();
+                    })
+                      .select("_id")
+                      .lean();
+
                     if (!ap) {
                       const nameSuffix = String(did).slice(-6);
                       const createdAp = await AccessPoint.create({
                         buildingId: ensuredPolicy.buildingId || c.building,
                         name: `AP ${nameSuffix}`,
-                        bindingType: 'cabin',
-                        resource: { refType: 'Cabin', refId: c._id, label: String(c._id) },
-                        pointType: 'DOOR',
-                        deviceBindings: [{ vendor: 'MATRIX_COSEC', deviceId: did, direction: 'BIDIRECTIONAL' }],
-                        status: 'active',
+                        bindingType: "cabin",
+                        resource: {
+                          refType: "Cabin",
+                          refId: c._id,
+                          label: String(c._id),
+                        },
+                        pointType: "DOOR",
+                        deviceBindings: [
+                          {
+                            vendor: "MATRIX_COSEC",
+                            deviceId: did,
+                            direction: "BIDIRECTIONAL",
+                          },
+                        ],
+                        status: "active",
                       });
                       apIdSet.add(String(createdAp._id));
                     } else {
@@ -180,23 +239,37 @@ export const finalApprove = async (req, res) => {
                   }
                 }
               } catch (blkErr) {
-                console.warn('Failed to fetch cabins by active blocks for policy APs:', blkErr?.message);
+                console.warn(
+                  "Failed to fetch cabins by active blocks for policy APs:",
+                  blkErr?.message
+                );
               }
             }
 
             if (apIdSet.size > 0) {
-              const objectIdList = Array.from(apIdSet).map((id) => new mongoose.Types.ObjectId(id));
+              const objectIdList = Array.from(apIdSet).map(
+                (id) => new mongoose.Types.ObjectId(id)
+              );
               const upd = await AccessPolicy.updateOne(
                 { _id: ensuredPolicy._id },
                 { $addToSet: { accessPointIds: { $each: objectIdList } } }
               );
-              console.log("AccessPolicy AP attach result:", { matched: upd.matchedCount, modified: upd.modifiedCount, added: objectIdList.length });
+              console.log("AccessPolicy AP attach result:", {
+                matched: upd.matchedCount,
+                modified: upd.modifiedCount,
+                added: objectIdList.length,
+              });
             }
           } else {
-            console.log("No allocated cabins found to attach to access policy for this contract.");
+            console.log(
+              "No allocated cabins found to attach to access policy for this contract."
+            );
           }
         } catch (attachErr) {
-          console.warn("Failed to attach cabin AccessPoints to access policy:", attachErr?.message);
+          console.warn(
+            "Failed to attach cabin AccessPoints to access policy:",
+            attachErr?.message
+          );
         }
 
         const grantRes = await grantOnContractActivation(contract, {
@@ -206,61 +279,120 @@ export const finalApprove = async (req, res) => {
           source: "AUTO_CONTRACT",
         });
         console.log("Access grants created on final approval:", grantRes);
-      } catch (grantErr) {
-        console.warn("Access grant on final approval failed:", grantErr?.message);
-      }
 
-      // Bhaifi auto-provisioning for members of this contract's client (member-centric)
-      try {
-        const members = await Member.find({ client: contract.client, status: "active" })
-          .select("_id firstName lastName email phone")
-          .lean();
-        if (Array.isArray(members) && members.length > 0) {
-          // Process sequentially to be gentle on upstream; ignore individual failures
-          for (const m of members) {
+        // Enqueue MATRIX_COSEC UPSERT_USER jobs for all active members of this client
+        try {
+          let buildingIdForJobs = ensuredPolicy?.buildingId || null;
+          if (!buildingIdForJobs) {
             try {
-              await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
-            } catch (bfErr) {
-              console.warn("Bhaifi provision failed for member", String(m._id), {
-                message: bfErr?.message,
-                status: bfErr?.response?.status,
-                data: bfErr?.response?.data,
+              const cliForJobs = await Client.findById(contract.client)
+                .select("building")
+                .lean();
+              buildingIdForJobs = cliForJobs?.building || null;
+            } catch {}
+          }
+
+          const membersForJobs = await Member.find({
+            client: contract.client,
+            status: "active",
+          })
+            .select("_id firstName lastName email phone")
+            .lean();
+
+          for (const m of membersForJobs || []) {
+            try {
+              // Ensure matrixUserId is available for both API call and job payload
+              let matrixUserId;
+
+              // Best-effort direct call to Matrix to create/upsert user
+              try {
+                const random6 = Math.floor(100000 + Math.random() * 900000);
+                matrixUserId = `MEM${random6}`;
+                await matrixApi.createUser({
+                  id: matrixUserId,
+                  name:
+                    m.firstName || m.lastName
+                      ? `${m.firstName || ""} ${m.lastName || ""}`.trim()
+                      : undefined,
+                  email: m.email || undefined,
+                  phone: m.phone || undefined,
+                  status: "active",
+                });
+              } catch (apiErr) {
+                console.warn(
+                  "Matrix createUser failed for member",
+                  String(m._id),
+                  apiErr?.message
+                );
+                // Ensure we still have an ID to queue in the job if API call failed early
+                if (!matrixUserId) {
+                  const fallbackRand = Math.floor(100000 + Math.random() * 900000);
+                  matrixUserId = `MEM${fallbackRand}`;
+                }
+              }
+
+              // Also enqueue a job so the background worker can reconcile/retry
+              await ProvisioningJob.create({
+                vendor: "MATRIX_COSEC",
+                jobType: "UPSERT_USER",
+                buildingId: buildingIdForJobs,
+                memberId: m._id,
+                payload: {
+                  externalUserId: matrixUserId,
+                  name:
+                    m.firstName || m.lastName
+                      ? `${m.firstName || ""} ${m.lastName || ""}`.trim()
+                      : undefined,
+                  email: m.email || undefined,
+                  phone: m.phone || undefined,
+                  status: "active",
+                  source: "AUTO_CONTRACT_FINAL_APPROVE",
+                },
               });
+            } catch (jobErr) {
+              console.warn(
+                "Failed to enqueue UPSERT_USER job for member",
+                String(m._id),
+                jobErr?.message
+              );
             }
           }
-          await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
-            action: 'bhaifi_users_provision_attempted',
-            count: members.length,
+
+          await logContractActivity(req, "UPDATE", contract._id, contract.client, {
+            action: "matrix_upsert_user_jobs_enqueued",
+            count: (membersForJobs || []).length,
           });
-        } else {
-          console.log("No active members found for client to provision Bhaifi users.");
+        } catch (provErr) {
+          console.warn("Matrix UPSERT_USER enqueue failed:", provErr?.message);
         }
-      } catch (bhaifiErr) {
-        console.warn("Bhaifi auto-provision orchestration failed:", bhaifiErr?.message);
+
+        // Bhaifi auto-provisioning block intentionally commented out
+      } catch (grantErr) {
+        console.warn("Access grant on final approval failed:", grantErr?.message);
       }
     }
 
     return res.json({
       success: true,
-      message: `Contract ${approved ? 'approved' : 'rejected'} successfully`,
+      message: `Contract ${approved ? "approved" : "rejected"} successfully`,
       data: {
         id: contract._id,
         finalApprovedBy: contract.finalApprovedBy,
         finalApprovedAt: contract.finalApprovedAt,
         finalApprovalReason: contract.finalApprovalReason,
-        isfinalapproval: contract.isfinalapproval
-      }
+        isfinalapproval: contract.isfinalapproval,
+      },
     });
-
   } catch (error) {
-    console.error('Error in final approval:', error);
+    console.error("Error in final approval:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to process final approval',
-      error: error.message
+      message: "Failed to process final approval",
+      error: error.message,
     });
   }
 };
+
 export const setFinanceApproval = async (req, res) => {
   try {
     const { id } = req.params;

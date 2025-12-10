@@ -11,7 +11,7 @@ const apiCallLogSchema = new mongoose.Schema({
   service: {
     type: String,
     required: true,
-    enum: ['zoho_books', 'zoho_sign', 'razorpay', 'sms_waale', 'other'],
+    enum: ['zoho_books', 'zoho_sign', 'razorpay', 'sms_waale', 'other','matrix'],
     index: true
   },
   operation: {

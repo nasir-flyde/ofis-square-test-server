@@ -14,10 +14,6 @@ const writeAudit = async ({ memberId, clientId, accessGrantId, action, actorType
   }
 };
 
-/**
- * Create ACTIVE access grants for members when a contract is activated.
- * You can adapt how members are determined (from contract.members or client members).
- */
 export const grantOnContractActivation = async (contract, { policyId, startsAt, endsAt, source = "AUTO_CONTRACT" } = {}) => {
   if (!contract) return { created: 0, errors: [] };
   const clientId = contract.client || contract.clientId;
@@ -25,18 +21,14 @@ export const grantOnContractActivation = async (contract, { policyId, startsAt, 
   if (Array.isArray(contract.members) && contract.members.length > 0) {
     memberIds = contract.members;
   } else if (clientId) {
-    // Fallback: all active members under the client
     const members = await Member.find({ client: clientId, status: 'active' }).select('_id').lean();
     memberIds = members.map(m => m._id);
   }
-
-  // Determine an access point (MatrixDevice) to bind QR to using the policy's accessPointIds (ObjectIds)
   let cabinBoundAccessPointId = null;
   try {
     if (policyId) {
       const policy = await AccessPolicy.findById(policyId).lean();
       if (policy && Array.isArray(policy.accessPointIds) && policy.accessPointIds.length > 0) {
-        // Pick the first device id as the bound access point
         cabinBoundAccessPointId = String(policy.accessPointIds[0]);
       }
     }
@@ -45,7 +37,6 @@ export const grantOnContractActivation = async (contract, { policyId, startsAt, 
   const results = { created: 0, errors: [] };
   for (const memberId of memberIds) {
     try {
-      // Auto-generate a cabin-bound QR token; prefer expiry = grant.endsAt (if set), otherwise long TTL (365 days)
       const now = new Date();
       const longTtlMs = 365 * 24 * 60 * 60 * 1000; // 365 days
       const token = crypto.randomBytes(24).toString("hex");
@@ -101,11 +92,6 @@ export const extendGrant = async (grantId, endsAt) => {
   return grant;
 };
 
-/**
- * Enforce access based on invoice state:
- * - If ANY invoice for the client is past due (due_date < now) AND balance > 0 => suspend all ACTIVE grants
- * - ELSE (no overdue invoices) => resume any SUSPENDED grants
- */
 export const enforceAccessByInvoices = async (clientId) => {
   if (!clientId) return { action: 'ignored', reason: 'no_client' };
   const now = new Date();
