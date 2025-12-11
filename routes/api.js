@@ -45,6 +45,8 @@ import accessZonesRoutes from "./accessZones.js";
 import rfidCardsRoutes from "./rfidCards.js";
 import accessEventsRoutes from "./accessEvents.js";
 import provisioningJobsRoutes from "./provisioningJobs.js";
+import matrixUsersRoutes from "./matrixUsers.js";
+import enrollmentDetails from "./enrollmentDetails.js"
 
 const router = express.Router();
 
@@ -94,4 +96,6 @@ router.use("/access-events", accessEventsRoutes);
 router.use("/provisioning-jobs", provisioningJobsRoutes);
 router.use("/matrix-devices", matrixDevicesRoutes);
 router.use("/bhaifi", bhaifiRoutes);
+router.use("/matrix-users", matrixUsersRoutes);
+router.use("/enrollment-details", enrollmentDetails)
 export default router;

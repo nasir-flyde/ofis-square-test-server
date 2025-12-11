@@ -66,9 +66,8 @@ function isMatrixSuccess(body) {
   return true;
 }
 
-function buildQuery({ id, name, email, phone, status, emailField }) {
+function buildQuery({ id, name, email, phone, status, emailField, branch }) {
   const enc = (v) => encodeURIComponent(String(v));
-  // Preserve '@' in email while safely encoding other characters
   const encEmail = (v) => encodeURIComponent(String(v)).replace(/%40/gi, "@");
   const active = status === "inactive" ? 0 : 1; // default to active
 
@@ -80,6 +79,7 @@ function buildQuery({ id, name, email, phone, status, emailField }) {
     emailField && email ? `${emailField}=${encEmail(email)}` : null,
     phone ? `personal-cell=${enc(String(phone))}` : null,
     `active=${active}`,
+    branch ? `branch=${enc(String(branch))}` : null,
   ]
     .filter(Boolean)
     .join(";");
@@ -170,38 +170,76 @@ export const matrixApi = {
       throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
     }
 
-    const { id, name, email, phone, status } = payload || {};
+    const { id, name, email, phone, status, branch = 3 } = payload || {};
     if (!id) throw new Error("matrixApi.createUser: id is required");
     const normEmail = typeof email === "string" && email.trim() ? String(email).trim().toLowerCase() : undefined;
 
     // Try GET with personal-email first
-    const qpPersonal = buildQuery({ id, name, email: normEmail, phone, status, emailField: normEmail ? "personal-email" : null });
+    const qpPersonal = buildQuery({ id, name, email: normEmail, phone, status, emailField: normEmail ? "personal-email" : null, branch });
     const first = await loggedGet(`/user?${qpPersonal}`, "user.set.personal-email");
     if (first.ok) return first.data;
 
     // If email present and server complains about personal email, try official-email
     if (normEmail) {
-      const qpOfficial = buildQuery({ id, name, email: normEmail, phone, status, emailField: "official-email" });
+      const qpOfficial = buildQuery({ id, name, email: normEmail, phone, status, emailField: "official-email", branch });
       const second = await loggedGet(`/user?${qpOfficial}`, "user.set.official-email");
       if (second.ok) return second.data;
 
       // Try generic 'email' as third option
-      const qpGeneric = buildQuery({ id, name, email: normEmail, phone, status, emailField: "email" });
+      const qpGeneric = buildQuery({ id, name, email: normEmail, phone, status, emailField: "email", branch });
       const third = await loggedGet(`/user?${qpGeneric}`, "user.set.email");
       if (third.ok) return third.data;
 
       // Last resort: omit email entirely
-      const qpNoEmail = buildQuery({ id, name, email: null, phone, status, emailField: null });
+      const qpNoEmail = buildQuery({ id, name, email: null, phone, status, emailField: null, branch });
       const fourth = await loggedGet(`/user?${qpNoEmail}`, "user.set.no-email");
       if (fourth.ok) return fourth.data;
     }
 
     // Fallback POST JSON
-    const post = await loggedPostJson(`/user`, { id, name, email: normEmail, phone, status }, { action: "set" }, "user.set.post");
+    const post = await loggedPostJson(`/user`, { id, name, email: normEmail, phone, status }, { action: "set", branch }, "user.set.post");
     if (post.ok) return post.data;
 
     // If all attempts failed, throw last error object for caller to handle
     throw new Error(`Matrix createUser failed. See ApiCallLog for details. lastStatus=${post.status || "unknown"}`);
+  },
+
+  // Assign a Matrix user to a specific device by its device_id
+  async assignUserToDevice({ device_id, externalUserId }) {
+    if (!BASE_URL || !authHeader) {
+      throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
+    }
+    if (!device_id || !externalUserId) {
+      throw new Error("matrixApi.assignUserToDevice requires device_id and externalUserId");
+    }
+
+    const qp = `action=assign;device=${encodeURIComponent(device_id)};id=${encodeURIComponent(externalUserId)}`;
+    const url = `/device?${qp}`;
+    const res = await loggedGet(url, "device.assign");
+    return res;
+  },
+
+  // Enroll a card for a Matrix user on a specific device
+  async enrollCardToDevice({ externalUserId, device, device_id, deviceType = 16, enrollType = "card", enrollCount = 1 }) {
+    if (!BASE_URL || !authHeader) {
+      throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
+    }
+    const deviceParam = (typeof device === 'number' && Number.isFinite(device)) ? device : device_id;
+    if (!externalUserId || (deviceParam === undefined || deviceParam === null || deviceParam === '')) {
+      throw new Error("matrixApi.enrollCardToDevice requires externalUserId and device (numeric) or device_id");
+    }
+
+    const qp = [
+      `action=enroll`,
+      `id=${encodeURIComponent(externalUserId)}`,
+      `device-type=${encodeURIComponent(String(deviceType))}`,
+      `device-id=${encodeURIComponent(String(deviceParam))}`,
+      `enroll-type=${encodeURIComponent(enrollType)}`,
+      `enroll-count=${encodeURIComponent(String(enrollCount))}`,
+    ].join(";");
+    const url = `/user?${qp}`;
+    const res = await loggedGet(url, "user.enroll.card");
+    return res;
   },
 
   // Expand here with more endpoints when needed

@@ -11,6 +11,7 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import Member from "../models/memberModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import ProvisioningJob from "../models/provisioningJobModel.js";
+import MatrixUser from "../models/matrixUserModel.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import {
@@ -331,6 +332,40 @@ export const finalApprove = async (req, res) => {
                 }
               }
 
+              // Upsert a MatrixUser record in DB and attach memberId, clientId, buildingId
+              try {
+                const fullName =
+                  (m.firstName || m.lastName)
+                    ? `${m.firstName || ""} ${m.lastName || ""}`.trim()
+                    : (m.email || m.phone || "Unnamed");
+
+                await MatrixUser.findOneAndUpdate(
+                  { externalUserId: matrixUserId },
+                  {
+                    $setOnInsert: {
+                      externalUserId: matrixUserId,
+                      name: fullName,
+                      email: m.email || undefined,
+                      phone: m.phone || undefined,
+                      status: "active",
+                    },
+                    $set: {
+                      buildingId: buildingIdForJobs || undefined,
+                      clientId: contract.client,
+                      memberId: m._id,
+                      ...(ensuredPolicy?._id ? { policyId: ensuredPolicy._id } : {}),
+                    },
+                  },
+                  { upsert: true, new: true }
+                );
+              } catch (e) {
+                console.warn(
+                  "MatrixUser upsert failed for member",
+                  String(m._id),
+                  e?.message
+                );
+              }
+
               // Also enqueue a job so the background worker can reconcile/retry
               await ProvisioningJob.create({
                 vendor: "MATRIX_COSEC",
@@ -349,6 +384,62 @@ export const finalApprove = async (req, res) => {
                   source: "AUTO_CONTRACT_FINAL_APPROVE",
                 },
               });
+
+              // Mirror createMatrixUser: assign user to devices derived from ensuredPolicy access points
+              try {
+                let assignedCount = 0;
+                const polId = ensuredPolicy?._id;
+                if (polId) {
+                  const policyDoc = await AccessPolicy.findById(polId)
+                    .select('accessPointIds')
+                    .lean();
+                  if (policyDoc?.accessPointIds?.length) {
+                    const aps = await AccessPoint.find({ _id: { $in: policyDoc.accessPointIds } })
+                      .select('deviceBindings')
+                      .lean();
+                    const devObjIds = [];
+                    for (const ap of aps) {
+                      const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+                      for (const b of bindings) {
+                        if (b?.vendor === 'MATRIX_COSEC' && b?.deviceId) {
+                          devObjIds.push(String(b.deviceId));
+                        }
+                      }
+                    }
+                    const uniqueDevObjIds = Array.from(new Set(devObjIds));
+                    if (uniqueDevObjIds.length) {
+                      const devs = await MatrixDevice.find({ _id: { $in: uniqueDevObjIds } })
+                        .select('device_id')
+                        .lean();
+                      for (const d of devs) {
+                        const device_id = d?.device_id;
+                        if (!device_id) continue;
+                        try {
+                          const assignRes = await matrixApi.assignUserToDevice({ device_id, externalUserId: matrixUserId });
+                          if (assignRes?.ok) assignedCount += 1;
+                        } catch (e) {
+                          await logErrorActivity(req, e, 'FinalApprove:DeviceAssign', { memberId: m._id, externalUserId: matrixUserId, device_id });
+                        }
+                      }
+                    }
+                  }
+                }
+                if (assignedCount > 0) {
+                  await MatrixUser.findOneAndUpdate(
+                    { externalUserId: matrixUserId },
+                    { $set: { isDeviceAssigned: true, isEnrolled: true, ...(ensuredPolicy?._id ? { policyId: ensuredPolicy._id } : {}) } }
+                  );
+                  await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+                    action: 'matrix_user_assigned_to_devices',
+                    memberId: String(m._id),
+                    externalUserId: matrixUserId,
+                    assignedDevices: assignedCount,
+                    policyId: ensuredPolicy?._id ? String(ensuredPolicy._id) : null,
+                  });
+                }
+              } catch (e) {
+                console.warn('FinalApprove device assignment failed:', e?.message);
+              }
             } catch (jobErr) {
               console.warn(
                 "Failed to enqueue UPSERT_USER job for member",
@@ -358,8 +449,8 @@ export const finalApprove = async (req, res) => {
             }
           }
 
-          await logContractActivity(req, "UPDATE", contract._id, contract.client, {
-            action: "matrix_upsert_user_jobs_enqueued",
+          await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+            action: 'matrix_upsert_user_jobs_enqueued',
             count: (membersForJobs || []).length,
           });
         } catch (provErr) {

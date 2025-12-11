@@ -60,7 +60,7 @@ const scheduleZohoTokenRefresh = () => {
 
 const scheduleAccessEnforcement = () => {
   // Run every 2 minutes
-  cron.schedule('*/60 * * * *', async () => {
+  cron.schedule('*/3600 * * * *', async () => {
     try {
       console.log('Running hourly access enforcement job...');
       const clientIds = await AccessGrant.distinct('clientId', {});

@@ -11,10 +11,12 @@ export const createMatrixDevice = async (req, res) => {
       deviceType,
       direction = "BIDIRECTIONAL",
       externalDeviceId,
+      device_id,
       ipAddress,
       macAddress,
+      site,
       location,
-      status = "active",
+      status = "Active",
       meta,
     } = req.body || {};
 
@@ -30,6 +32,11 @@ export const createMatrixDevice = async (req, res) => {
       if (dup) return res.status(409).json({ success: false, message: "externalDeviceId already exists" });
     }
 
+    if (device_id) {
+      const dupDevId = await MatrixDevice.findOne({ device_id });
+      if (dupDevId) return res.status(409).json({ success: false, message: "device_id already exists" });
+    }
+
     const device = await MatrixDevice.create({
       buildingId,
       name: name.trim(),
@@ -37,8 +44,10 @@ export const createMatrixDevice = async (req, res) => {
       deviceType,
       direction,
       externalDeviceId,
+      device_id,
       ipAddress,
       macAddress,
+      site,
       location,
       status,
       meta,
@@ -54,16 +63,19 @@ export const createMatrixDevice = async (req, res) => {
 
 export const listMatrixDevices = async (req, res) => {
   try {
-    const { buildingId, deviceType, status, q, page = 1, limit = 100 } = req.query || {};
+    const { buildingId, deviceType, status, site, q, page = 1, limit = 100 } = req.query || {};
     const filter = {};
     if (buildingId) filter.buildingId = buildingId;
     if (deviceType) filter.deviceType = deviceType;
     if (status) filter.status = status;
+    if (site) filter.site = site;
     if (q) filter.$or = [
       { name: { $regex: q, $options: 'i' } },
       { externalDeviceId: { $regex: q, $options: 'i' } },
+      { device_id: { $regex: q, $options: 'i' } },
       { ipAddress: { $regex: q, $options: 'i' } },
       { macAddress: { $regex: q, $options: 'i' } },
+      { site: { $regex: q, $options: 'i' } },
     ];
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -98,6 +110,10 @@ export const updateMatrixDevice = async (req, res) => {
     if (update.externalDeviceId) {
       const dup = await MatrixDevice.findOne({ externalDeviceId: update.externalDeviceId, _id: { $ne: id } });
       if (dup) return res.status(409).json({ success: false, message: 'externalDeviceId already exists' });
+    }
+    if (update.device_id) {
+      const dupDevId = await MatrixDevice.findOne({ device_id: update.device_id, _id: { $ne: id } });
+      if (dupDevId) return res.status(409).json({ success: false, message: 'device_id already exists' });
     }
     if (update.buildingId) {
       const building = await Building.findById(update.buildingId).select('_id');

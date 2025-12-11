@@ -1,0 +1,47 @@
+ID,Name,Device Type,Site,Status
+47,OFFICE NO. 211 MG ROAD,Path V2,Site-1,Active
+46,OFFICE NO. 210 MG ROAD,Path V2,Site-1,Active
+45,OFFICE NO. 209 MG ROAD,Path V2,Site-1,Active
+44,OFFICE NO. 208 MG ROAD,Path V2,Site-1,Active
+43,OFFICE NO. 207 MG ROAD,Path V2,Site-1,Active
+42,OFFICE NO. 206 MG ROAD,Path V2,Site-1,Active
+41,OFFICE NO. 205 MG ROAD,Path V2,Site-1,Active
+40,OFFICE NO. 204 MG ROAD,Path V2,Site-1,Active
+39,OFFICE NO. 203 MG ROAD,Path V2,Site-1,Active
+38,OFFICE NO. 202 MG ROAD,Path V2,Site-1,Active
+37,OFFICE NO. 201 MG ROAD,Path V2,Site-1,Active
+36,CAFETERIA DOOR2 SOHNA,Path V2,Site-1,Active
+35,CAFETERIA EXIT DOOR SOHNA,Path V2,Site-1,Active
+34,CAFETERIA MAIN DOOR SOHNA,Path V2,Site-1,Active
+33,MEETING ROOM 1 SOHNA,Path V2,Site-1,Active
+32,MEETING ROOM2 SOHNA,Path V2,Site-1,Active
+31,CABIN NO 1202,Path V2,Site-1,Active
+30,CABIN NO 1203,Path V2,Site-1,Active
+29,CABIN NO 1204,Path V2,Site-1,Active
+28,CABIN NO 1205,Path V2,Site-1,Active
+27,CABIN NO 1206,Path V2,Site-1,Active
+26,CABIN NO 1207,Path V2,Site-1,Active
+25,CABIN NO 1208,Path V2,Site-1,Active
+24,CABIN NO 1212,Path V2,Site-1,Active
+23,CABIN NO 1212A,Path V2,Site-1,Active
+22,CABIN NO 1209,Path V2,Site-1,Active
+21,CABIN NO 1210,Path V2,Site-1,Active
+20,CABIN NO 1211,Path V2,Site-1,Active
+19,OFIS 109,Path V2,Site-1,Active
+18,OFIS 108,Path V2,Site-1,Active
+17,OFIS 107,Path V2,Site-1,Active
+16,OFIS 106,Path V2,Site-1,Active
+15,OFIS 105,Path V2,Site-1,Active
+14,OFIS 104,Path V2,Site-1,Active
+13,OFIS 103,Path V2,Site-1,Active
+12,OFIS 102,Path V2,Site-1,Active
+11,OFIS 101,Path V2,Site-1,Active
+10,EXIT-1,ARC DC 200,Site-1,Active
+9,EXIT -2,ARC DC 200,Site-1,Active
+8,ENTRY -1,ARC DC 200,Site-1,Active
+6,ENTRY -2,ARC DC 200,Site-1,Active
+5,BOARD ROOM,Path V2,Site-1,Active
+4,4 SEATER MEETING ROOM,Path V2,Site-1,Active
+3,8 SEATER ROOM,Path V2,Site-1,Active
+2,DISCUSSION ROOM,Path V2,Site-1,Active
+1,3 Seater Meeting Room,Path V2,Site-1,Active
