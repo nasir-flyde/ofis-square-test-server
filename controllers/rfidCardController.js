@@ -5,11 +5,9 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const listRFIDCards = async (req, res) => {
   try {
-    const { buildingId, clientId, memberId, status, q, page = 1, limit = 50 } = req.query || {};
+    const { buildingId, status, q, page = 1, limit = 50 } = req.query || {};
     const filter = {};
     if (buildingId) filter.buildingId = buildingId;
-    if (clientId) filter.clientId = clientId;
-    if (memberId) filter.memberId = memberId;
     if (status) filter.status = status;
     if (q) {
       filter.$or = [
@@ -31,13 +29,11 @@ export const listRFIDCards = async (req, res) => {
 
 export const createRFIDCard = async (req, res) => {
   try {
-    const { buildingId, clientId, memberId, cardUid, facilityCode, technology, cardType = "PHYSICAL", status = "ISSUED", expiresAt } = req.body || {};
+    const { buildingId, cardUid, facilityCode, technology, cardType = "PHYSICAL", status = "ISSUED", expiresAt } = req.body || {};
     if (!cardUid || !String(cardUid).trim()) return res.status(400).json({ success: false, message: "cardUid is required" });
 
     const created = await RFIDCard.create({
       buildingId: buildingId || undefined,
-      clientId: clientId || undefined,
-      memberId: memberId || undefined,
       cardUid: String(cardUid).trim(),
       facilityCode: facilityCode || undefined,
       technology: technology || undefined,
@@ -71,18 +67,18 @@ export const getRFIDCardById = async (req, res) => {
 export const assignMemberToCard = async (req, res) => {
   try {
     const { id } = req.params;
-    const { memberId, clientId } = req.body || {};
+    const { memberId } = req.body || {};
     if (!memberId || !mongoose.Types.ObjectId.isValid(memberId)) return res.status(400).json({ success: false, message: "Valid memberId is required" });
-    const updated = await RFIDCard.findByIdAndUpdate(id, { memberId, clientId: clientId || undefined }, { new: true });
-    if (!updated) return res.status(404).json({ success: false, message: "Not found" });
+    const card = await RFIDCard.findById(id);
+    if (!card) return res.status(404).json({ success: false, message: "Not found" });
 
     // Enqueue provisioning for assignment
     try {
-      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "ASSIGN_CARD", memberId, cardId: updated._id, payload: { cardUid: updated.cardUid, memberId } });
+      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "ASSIGN_CARD", memberId, cardId: card._id, payload: { cardUid: card.cardUid, memberId } });
     } catch (e) { /* swallow */ }
 
-    await logCRUDActivity(req, "UPDATE", "RFIDCard", updated._id, null, { memberId: updated.memberId });
-    return res.json({ success: true, data: updated });
+    await logCRUDActivity(req, "UPDATE", "RFIDCard", card._id, null, { assignedMemberId: memberId });
+    return res.json({ success: true, data: card, message: "Assignment job enqueued" });
   } catch (err) {
     await logErrorActivity(req, err, "RFIDCards:AssignMember");
     return res.status(500).json({ success: false, message: "Failed to assign member" });
@@ -94,12 +90,6 @@ export const activateRFIDCard = async (req, res) => {
     const { id } = req.params;
     const updated = await RFIDCard.findByIdAndUpdate(id, { status: "ACTIVE", activatedAt: new Date() }, { new: true });
     if (!updated) return res.status(404).json({ success: false, message: "Not found" });
-
-    if (updated.memberId) {
-      try {
-        await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "ASSIGN_CARD", memberId: updated.memberId, cardId: updated._id, payload: { cardUid: updated.cardUid, memberId: updated.memberId } });
-      } catch {}
-    }
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", updated._id, null, { status: updated.status });
     return res.json({ success: true, data: updated });
@@ -129,7 +119,7 @@ export const revokeRFIDCard = async (req, res) => {
     if (!updated) return res.status(404).json({ success: false, message: "Not found" });
 
     try {
-      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: updated._id, memberId: updated.memberId || undefined, payload: { cardUid: updated.cardUid } });
+      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: updated._id, payload: { cardUid: updated.cardUid } });
     } catch {}
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", updated._id, null, { status: updated.status });
@@ -163,8 +153,6 @@ export const replaceRFIDCard = async (req, res) => {
 
     const newCard = await RFIDCard.create({
       buildingId: oldCard.buildingId || undefined,
-      clientId: oldCard.clientId || undefined,
-      memberId: oldCard.memberId || undefined,
       cardUid: String(newCardUid).trim(),
       facilityCode: facilityCode || undefined,
       technology: technology || oldCard.technology,
@@ -180,10 +168,7 @@ export const replaceRFIDCard = async (req, res) => {
     await oldCard.save();
 
     try {
-      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: oldCard._id, memberId: oldCard.memberId || undefined, payload: { cardUid: oldCard.cardUid } });
-      if (newCard.memberId) {
-        await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "ASSIGN_CARD", cardId: newCard._id, memberId: newCard.memberId, payload: { cardUid: newCard.cardUid, memberId: newCard.memberId } });
-      }
+      await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: oldCard._id, payload: { cardUid: oldCard.cardUid } });
     } catch {}
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", oldCard._id, null, { replacedById: newCard._id });

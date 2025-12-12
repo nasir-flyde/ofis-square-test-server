@@ -38,7 +38,7 @@ export const listAccessZones = async (req, res) => {
 
 export const createAccessZone = async (req, res) => {
   try {
-    const { buildingId, name, description, accessPointIds = [], status = "active", meta } = req.body || {};
+    const { buildingId, name, description, matrixDevices = [], status = "active", meta } = req.body || {};
     if (!buildingId || !mongoose.Types.ObjectId.isValid(buildingId)) {
       return res.status(400).json({ success: false, message: "Valid buildingId is required" });
     }
@@ -46,7 +46,7 @@ export const createAccessZone = async (req, res) => {
       return res.status(400).json({ success: false, message: "name is required" });
     }
 
-    const created = await AccessZone.create({ buildingId, name: String(name).trim(), description, accessPointIds, status, meta });
+    const created = await AccessZone.create({ buildingId, name: String(name).trim(), description, matrixDevices, status, meta });
     await logCRUDActivity(req, "CREATE", "AccessZone", created._id, null, { buildingId, name: created.name });
     return res.status(201).json({ success: true, data: created });
   } catch (err) {
@@ -70,11 +70,11 @@ export const getAccessZoneById = async (req, res) => {
 export const updateAccessZone = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, accessPointIds, status, meta } = req.body || {};
+    const { name, description, matrixDevices, status, meta } = req.body || {};
     const update = {};
     if (name !== undefined) update.name = String(name).trim();
     if (description !== undefined) update.description = description;
-    if (accessPointIds !== undefined) update.accessPointIds = accessPointIds;
+    if (matrixDevices !== undefined) update.matrixDevices = matrixDevices;
     if (status !== undefined) update.status = status;
     if (meta !== undefined) update.meta = meta;
 

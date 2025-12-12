@@ -4,8 +4,6 @@ const { Schema } = mongoose;
 const RFIDCardSchema = new Schema(
   {
     buildingId: { type: Schema.Types.ObjectId, ref: "Building", index: true },
-    clientId: { type: Schema.Types.ObjectId, ref: "Client", index: true },
-    memberId: { type: Schema.Types.ObjectId, ref: "Member", index: true },
 
     cardUid: { type: String, required: true, trim: true, unique: true, index: true },
     facilityCode: { type: String, trim: true },
@@ -20,12 +18,15 @@ const RFIDCardSchema = new Schema(
     expiresAt: { type: Date },
     replacedById: { type: Schema.Types.ObjectId, ref: "RFIDCard" },
 
+    // Matrix devices this card is associated with
+    devices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice" }],
+
     lastSeenAt: { type: Date },
     meta: { type: Schema.Types.Mixed },
   },
   { timestamps: true, collection: "rfid_cards" }
 );
 
-RFIDCardSchema.index({ memberId: 1, status: 1 });
+RFIDCardSchema.index({ buildingId: 1, status: 1 });
 
 export default mongoose.model("RFIDCard", RFIDCardSchema);

@@ -14,6 +14,10 @@ import {
   addAccessHistory,
   assignToDevice,
   enrollCardToDevice,
+  setCardCredential,
+  listPolicyDevices,
+  revokeFromDevice,
+  listCardDevices,
 } from "../controllers/matrixUserController.js";
 
 const router = express.Router();
@@ -64,6 +68,42 @@ router.post(
   populateUserRole,
   requireSystemAdmin,
   enrollCardToDevice
+);
+
+// Set card credential on Matrix (hardcoded credential-type=card; data from RFID cardUid via rfidCardId)
+router.post(
+  "/:id/set-card-credential",
+  authMiddleware,
+  populateUserRole,
+  requireSystemAdmin,
+  setCardCredential
+);
+
+// List policy devices to operate against (restricted)
+router.get(
+  "/:id/policy-devices",
+  authMiddleware,
+  populateUserRole,
+  requireSystemAdmin,
+  listPolicyDevices
+);
+
+// Revoke access from a specific device (restricted)
+router.post(
+  "/:id/revoke-device",
+  authMiddleware,
+  populateUserRole,
+  requireSystemAdmin,
+  revokeFromDevice
+);
+
+// List devices derived from user's RFID cards (restricted)
+router.get(
+  "/:id/card-devices",
+  authMiddleware,
+  populateUserRole,
+  requireSystemAdmin,
+  listCardDevices
 );
 
 export default router;

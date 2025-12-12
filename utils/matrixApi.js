@@ -66,7 +66,18 @@ function isMatrixSuccess(body) {
   return true;
 }
 
-function buildQuery({ id, name, email, phone, status, emailField, branch }) {
+// Format access validity date to DDMMYYYY (e.g., 31122025)
+function formatAccessValidityDate(dateLike) {
+  if (!dateLike) return undefined;
+  const d = new Date(dateLike);
+  if (isNaN(d.getTime())) return undefined;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = String(d.getFullYear());
+  return `${dd}${mm}${yyyy}`;
+}
+
+function buildQuery({ id, name, email, phone, status, emailField, branch, accessValidityDate }) {
   const enc = (v) => encodeURIComponent(String(v));
   const encEmail = (v) => encodeURIComponent(String(v)).replace(/%40/gi, "@");
   const active = status === "inactive" ? 0 : 1; // default to active
@@ -80,6 +91,7 @@ function buildQuery({ id, name, email, phone, status, emailField, branch }) {
     phone ? `personal-cell=${enc(String(phone))}` : null,
     `active=${active}`,
     branch ? `branch=${enc(String(branch))}` : null,
+    accessValidityDate ? `access-validity-date=${enc(String(accessValidityDate))}` : null,
   ]
     .filter(Boolean)
     .join(";");
@@ -170,34 +182,39 @@ export const matrixApi = {
       throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
     }
 
-    const { id, name, email, phone, status, branch = 3 } = payload || {};
+    const { id, name, email, phone, status, branch = 3, contractEndDate, accessValidityDate: accessValidityDateRaw } = payload || {};
     if (!id) throw new Error("matrixApi.createUser: id is required");
     const normEmail = typeof email === "string" && email.trim() ? String(email).trim().toLowerCase() : undefined;
 
+    // Decide access-validity-date (DDMMYYYY)
+    const accessValidityDate = formatAccessValidityDate(accessValidityDateRaw || contractEndDate);
+
     // Try GET with personal-email first
-    const qpPersonal = buildQuery({ id, name, email: normEmail, phone, status, emailField: normEmail ? "personal-email" : null, branch });
+    const qpPersonal = buildQuery({ id, name, email: normEmail, phone, status, emailField: normEmail ? "personal-email" : null, branch, accessValidityDate });
     const first = await loggedGet(`/user?${qpPersonal}`, "user.set.personal-email");
     if (first.ok) return first.data;
 
     // If email present and server complains about personal email, try official-email
     if (normEmail) {
-      const qpOfficial = buildQuery({ id, name, email: normEmail, phone, status, emailField: "official-email", branch });
+      const qpOfficial = buildQuery({ id, name, email: normEmail, phone, status, emailField: "official-email", branch, accessValidityDate });
       const second = await loggedGet(`/user?${qpOfficial}`, "user.set.official-email");
       if (second.ok) return second.data;
 
       // Try generic 'email' as third option
-      const qpGeneric = buildQuery({ id, name, email: normEmail, phone, status, emailField: "email", branch });
+      const qpGeneric = buildQuery({ id, name, email: normEmail, phone, status, emailField: "email", branch, accessValidityDate });
       const third = await loggedGet(`/user?${qpGeneric}`, "user.set.email");
       if (third.ok) return third.data;
 
       // Last resort: omit email entirely
-      const qpNoEmail = buildQuery({ id, name, email: null, phone, status, emailField: null, branch });
+      const qpNoEmail = buildQuery({ id, name, email: null, phone, status, emailField: null, branch, accessValidityDate });
       const fourth = await loggedGet(`/user?${qpNoEmail}`, "user.set.no-email");
       if (fourth.ok) return fourth.data;
     }
 
     // Fallback POST JSON
-    const post = await loggedPostJson(`/user`, { id, name, email: normEmail, phone, status }, { action: "set", branch }, "user.set.post");
+    const postParams = { action: "set", branch };
+    if (accessValidityDate) postParams["access-validity-date"] = accessValidityDate;
+    const post = await loggedPostJson(`/user`, { id, name, email: normEmail, phone, status }, postParams, "user.set.post");
     if (post.ok) return post.data;
 
     // If all attempts failed, throw last error object for caller to handle
@@ -216,6 +233,20 @@ export const matrixApi = {
     const qp = `action=assign;device=${encodeURIComponent(device_id)};id=${encodeURIComponent(externalUserId)}`;
     const url = `/device?${qp}`;
     const res = await loggedGet(url, "device.assign");
+    return res;
+  },
+
+  // Revoke a Matrix user's access from a specific device by its device_id
+  async revokeUserFromDevice({ device_id, externalUserId }) {
+    if (!BASE_URL || !authHeader) {
+      throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
+    }
+    if (!device_id || !externalUserId) {
+      throw new Error("matrixApi.revokeUserFromDevice requires device_id and externalUserId");
+    }
+    const qp = `action=revoke;device=${encodeURIComponent(device_id)};id=${encodeURIComponent(externalUserId)}`;
+    const url = `/device?${qp}`;
+    const res = await loggedGet(url, "device.revoke");
     return res;
   },
 
@@ -239,6 +270,25 @@ export const matrixApi = {
     ].join(";");
     const url = `/user?${qp}`;
     const res = await loggedGet(url, "user.enroll.card");
+    return res;
+  },
+
+  // Set a credential (card) on a Matrix user using card UID
+  async setCardCredential({ externalUserId, data }) {
+    if (!BASE_URL || !authHeader) {
+      throw new Error("Matrix API not configured: missing COSEC_API_BASE/COSEC_API_USER/COSEC_API_PASS");
+    }
+    if (!externalUserId) throw new Error("matrixApi.setCardCredential requires externalUserId");
+    if (!data) throw new Error("matrixApi.setCardCredential requires data (cardUid)");
+
+    const qp = [
+      `action=set-credential`,
+      `id=${encodeURIComponent(String(externalUserId))}`,
+      `credential-type=card`,
+      `data=${encodeURIComponent(String(data))}`,
+    ].join(";");
+    const url = `/user?${qp}`;
+    const res = await loggedGet(url, "user.set-credential.card");
     return res;
   },
 

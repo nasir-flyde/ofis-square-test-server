@@ -6,7 +6,7 @@ const AccessZoneSchema = new Schema(
     buildingId: { type: Schema.Types.ObjectId, ref: "Building", required: true, index: true },
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
-    accessPointIds: [{ type: Schema.Types.ObjectId, ref: "AccessPoint", index: true }],
+    matrixDevices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice", index: true }],
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     meta: { type: Schema.Types.Mixed },
   },

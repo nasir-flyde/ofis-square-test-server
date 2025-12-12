@@ -143,7 +143,11 @@ export const listMatrixUsers = async (req, res) => {
 
     const skip = (Number(page) - 1) * Number(limit);
     const [items, total] = await Promise.all([
-      MatrixUser.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+      MatrixUser.find(filter)
+        .populate('clientId', 'companyName')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
       MatrixUser.countDocuments(filter),
     ]);
 
@@ -405,7 +409,7 @@ export const enrollCardToDevice = async (req, res) => {
 
     // Resolve Matrix device_id strings and fetch per-device deviceType (Number)
     const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } })
-      .select('_id device device_id deviceType')
+      .select('_id name device_id deviceType')
       .lean();
 
     const results = [];
@@ -457,6 +461,204 @@ export const enrollCardToDevice = async (req, res) => {
   }
 };
 
+export const setCardCredential = async (req, res) => {
+  try {
+    const { id } = req.params; // MatrixUser _id
+    const { rfidCardId, cardId, deviceId: bodyDeviceId, device_id: bodyDevice_id, policyId: bodyPolicyId } = req.body || {};
+    const refId = rfidCardId || cardId;
+    if (!refId) return res.status(400).json({ success: false, message: 'rfidCardId (or cardId) is required' });
+
+    const user = await MatrixUser.findById(id).select('externalUserId policyId').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+    if (!user.externalUserId) return res.status(400).json({ success: false, message: 'Matrix user externalUserId missing' });
+
+    const card = await RFIDCard.findById(refId).select('cardUid').lean();
+    if (!card) return res.status(404).json({ success: false, message: 'RFID card not found' });
+    if (!card.cardUid) return res.status(400).json({ success: false, message: 'RFID card has no cardUid' });
+
+    const resp = await matrixApi.setCardCredential({ externalUserId: user.externalUserId, data: card.cardUid });
+    const ok = !!resp?.ok;
+    if (ok) {
+      // Resolve MatrixDevice _ids to attach to the RFID card
+      const resolvedDeviceMongoIds = [];
+      try {
+        if (bodyDeviceId) {
+          const devById = await MatrixDevice.findById(bodyDeviceId).select('_id').lean();
+          if (devById?._id) resolvedDeviceMongoIds.push(devById._id);
+        } else if (bodyDevice_id) {
+          const devByCode = await MatrixDevice.findOne({ device_id: bodyDevice_id }).select('_id').lean();
+          if (devByCode?._id) resolvedDeviceMongoIds.push(devByCode._id);
+        } else {
+          // Fallback: derive from policy (request body policyId or user's stored policyId)
+          const policyId = bodyPolicyId || user?.policyId;
+          if (policyId) {
+            const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
+            if (policy && Array.isArray(policy.accessPointIds) && policy.accessPointIds.length) {
+              const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } })
+                .select('deviceBindings')
+                .lean();
+              const deviceIdStrings = [];
+              for (const ap of accessPoints) {
+                const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+                for (const b of bindings) {
+                  if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
+                    deviceIdStrings.push(String(b.deviceId));
+                  }
+                }
+              }
+              const unique = Array.from(new Set(deviceIdStrings));
+              resolvedDeviceMongoIds.push(...unique);
+            }
+          }
+        }
+      } catch {}
+
+      try {
+        // Flag user verified and link the card to the user
+        await MatrixUser.findByIdAndUpdate(
+          id,
+          {
+            $set: { isCardCredentialVerified: true },
+            $addToSet: { cards: refId },
+          }
+        );
+        // Attach devices to the RFID card if any resolved
+        if (resolvedDeviceMongoIds.length) {
+          await RFIDCard.findByIdAndUpdate(
+            refId,
+            { $addToSet: { devices: { $each: resolvedDeviceMongoIds } } }
+          );
+        }
+      } catch {}
+
+      await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, {
+        setCardCredential: {
+          rfidCardId: String(refId),
+          devicesCount: resolvedDeviceMongoIds.length,
+        }
+      });
+    }
+    return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixUser:SetCardCredential');
+    return res.status(500).json({ success: false, message: err?.message || 'Failed to set card credential' });
+  }
+};
+
+// List Matrix devices associated to an access policy (via access points -> deviceBindings)
+export const listPolicyDevices = async (req, res) => {
+  try {
+    const { id } = req.params; // MatrixUser _id (for existence check)
+    const { policyId } = req.query || {};
+    if (!policyId) return res.status(400).json({ success: false, message: 'policyId is required' });
+
+    const user = await MatrixUser.findById(id).select('_id').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+
+    const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
+    if (!policy || !Array.isArray(policy.accessPointIds) || policy.accessPointIds.length === 0) {
+      return res.status(404).json({ success: false, message: 'Policy not found or has no access points' });
+    }
+
+    const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } }).select('deviceBindings').lean();
+    const matrixDeviceObjIds = [];
+    for (const ap of accessPoints) {
+      const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+      for (const b of bindings) {
+        if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
+          matrixDeviceObjIds.push(String(b.deviceId));
+        }
+      }
+    }
+    const uniqueIds = Array.from(new Set(matrixDeviceObjIds));
+    if (!uniqueIds.length) return res.json({ success: true, data: [] });
+
+    const devices = await MatrixDevice.find({ _id: { $in: uniqueIds } }).select('_id name device_id').lean();
+    return res.json({ success: true, data: devices });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixUser:ListPolicyDevices');
+    return res.status(500).json({ success: false, message: 'Failed to list policy devices' });
+  }
+};
+
+// Revoke a Matrix user's access from a selected device
+export const revokeFromDevice = async (req, res) => {
+  try {
+    const { id } = req.params; // MatrixUser _id
+    const { deviceId, device_id, rfidCardId } = req.body || {};
+    const user = await MatrixUser.findById(id).select('externalUserId').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+    if (!user.externalUserId) return res.status(400).json({ success: false, message: 'Matrix user externalUserId missing' });
+
+    let resolvedDeviceId = device_id;
+    let resolvedDeviceMongoId = null;
+    if (!resolvedDeviceId && deviceId) {
+      const dev = await MatrixDevice.findById(deviceId).select('_id device_id').lean();
+      resolvedDeviceId = dev?.device_id;
+      resolvedDeviceMongoId = dev?._id || null;
+    }
+    if (!resolvedDeviceId) return res.status(400).json({ success: false, message: 'deviceId (or device_id) is required' });
+
+    const resp = await matrixApi.revokeUserFromDevice({ device_id: resolvedDeviceId, externalUserId: user.externalUserId });
+    const ok = !!resp?.ok;
+    if (ok) {
+      // If rfidCardId provided and we resolved the device mongo id (or can resolve it), pull from RFIDCard.devices
+      try {
+        if (!resolvedDeviceMongoId && resolvedDeviceId) {
+          const d = await MatrixDevice.findOne({ device_id: resolvedDeviceId }).select('_id').lean();
+          resolvedDeviceMongoId = d?._id || null;
+        }
+        if (rfidCardId && resolvedDeviceMongoId) {
+          await RFIDCard.findByIdAndUpdate(rfidCardId, { $pull: { devices: resolvedDeviceMongoId } });
+        }
+      } catch {}
+      await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { revokeFromDevice: { device_id: resolvedDeviceId, rfidCardId: rfidCardId || null } });
+    }
+    return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixUser:RevokeFromDevice');
+    return res.status(500).json({ success: false, message: err?.message || 'Failed to revoke from device' });
+  }
+};
+
+// List devices derived from the user's RFID cards (RFIDCard.devices) with device_id and name
+export const listCardDevices = async (req, res) => {
+  try {
+    const { id } = req.params; // MatrixUser _id
+    const user = await MatrixUser.findById(id).select('cards').lean();
+    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+
+    const cardIds = Array.isArray(user.cards) ? user.cards : [];
+    if (!cardIds.length) return res.json({ success: true, data: [] });
+
+    const cards = await RFIDCard.find({ _id: { $in: cardIds } }).select('_id cardUid devices').lean();
+    const allDeviceObjIds = new Set();
+    for (const c of cards) {
+      const devs = Array.isArray(c.devices) ? c.devices : [];
+      for (const d of devs) allDeviceObjIds.add(String(d));
+    }
+
+    const deviceIdList = Array.from(allDeviceObjIds);
+    if (!deviceIdList.length) return res.json({ success: true, data: [] });
+
+    const devices = await MatrixDevice.find({ _id: { $in: deviceIdList } }).select('_id name device_id').lean();
+    // Build rows associating device with each card that references it
+    const deviceMap = new Map(devices.map(d => [String(d._id), d]));
+    const rows = [];
+    for (const c of cards) {
+      const devs = Array.isArray(c.devices) ? c.devices : [];
+      for (const did of devs) {
+        const d = deviceMap.get(String(did));
+        if (d) rows.push({ _id: d._id, name: d.name, device_id: d.device_id, rfidCardId: c._id, cardUid: c.cardUid });
+      }
+    }
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixUser:ListCardDevices');
+    return res.status(500).json({ success: false, message: 'Failed to list card devices' });
+  }
+};
+
 export default {
   createMatrixUser,
   listMatrixUsers,
@@ -470,4 +672,8 @@ export default {
   addAccessHistory,
   assignToDevice,
   enrollCardToDevice,
+  listPolicyDevices,
+  revokeFromDevice,
+  setCardCredential,
+  listCardDevices,
 };

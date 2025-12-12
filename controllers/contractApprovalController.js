@@ -318,6 +318,7 @@ export const finalApprove = async (req, res) => {
                   email: m.email || undefined,
                   phone: m.phone || undefined,
                   status: "active",
+                  contractEndDate: contract.endDate || undefined,
                 });
               } catch (apiErr) {
                 console.warn(
@@ -382,6 +383,7 @@ export const finalApprove = async (req, res) => {
                   phone: m.phone || undefined,
                   status: "active",
                   source: "AUTO_CONTRACT_FINAL_APPROVE",
+                  contractEndDate: contract.endDate || undefined,
                 },
               });
 
