@@ -5,6 +5,7 @@ import Client from "../models/clientModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import mongoose from "mongoose";
 
 export const createMember = async (req, res) => {
   try {
@@ -123,6 +124,15 @@ export const getMembers = async (req, res) => {
 
 export const getMemberById = async (req, res) => {
   try {
+    // Validate ObjectId for param-based access to avoid CastError
+    if (req.params?.id && !mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid member ID format",
+        details: { id: req.params.id }
+      });
+    }
+
     const member = await Member.findById(req.params.id)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
@@ -141,6 +151,15 @@ export const getMemberById = async (req, res) => {
 // Update member
 export const updateMember = async (req, res) => {
   try {
+    // Validate ObjectId for param-based access to avoid CastError
+    if (req.params?.id && !mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid member ID format",
+        details: { id: req.params.id }
+      });
+    }
+
     const id = req.params.id;
     const updateData = req.body || {};
 
@@ -187,6 +206,15 @@ export const updateMember = async (req, res) => {
 // Delete member
 export const deleteMember = async (req, res) => {
   try {
+    // Validate ObjectId for param-based access to avoid CastError
+    if (req.params?.id && !mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid member ID format",
+        details: { id: req.params.id }
+      });
+    }
+
     const id = req.params.id;
     const member = await Member.findByIdAndDelete(id);
 
@@ -216,6 +244,15 @@ export const deleteMember = async (req, res) => {
 export const getMemberProfile = async (req, res) => {
   try {
     const memberId = req.memberId || req.member?._id || req.user?.memberId || req.params.id;
+
+    // Validate ObjectId for param-based access to avoid CastError
+    if (req.params?.id && !mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid member ID format",
+        details: { id: req.params.id }
+      });
+    }
 
     if (!memberId) {
       console.log('No memberId found in request');
