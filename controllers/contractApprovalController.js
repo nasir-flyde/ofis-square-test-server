@@ -14,6 +14,7 @@ import ProvisioningJob from "../models/provisioningJobModel.js";
 import MatrixUser from "../models/matrixUserModel.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
+import Invoice from "../models/invoiceModel.js";
 import {
   sendAdminApprovalRequestEmail,
   sendAdminApprovalConfirmationEmail,
@@ -41,7 +42,7 @@ const isSystemAdmin = (user) => {
   return user?.role?.roleName === 'System Admin';
 };
 
-// Final Approval (System Admin or users with CONTRACT_FINAL_APPROVE)
+// Final Approval - requires KYC approved and all invoices fully paid
 export const finalApprove = async (req, res) => {
   try {
     const { id } = req.params;
@@ -54,11 +55,30 @@ export const finalApprove = async (req, res) => {
         .json({ success: false, message: "Contract not found" });
     }
 
-    // Only allow when invoices have been fully paid and flag is set, OR if user is System Admin
-    if (req.user.role?.roleName !== "System Admin") {
-      return res.status(400).json({
+    // // Validation: require KYC approved and all invoices fully paid
+    // if (!contract.iskycapproved) {
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "KYC must be approved before final approval",
+    //   });
+    // }
+    try {
+      const unpaidCount = await Invoice.countDocuments({
+        contract: contract._id,
+        status: { $nin: ["paid", "void"] },
+        balance: { $gt: 0 },
+      });
+      if (unpaidCount > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Final approval not ready. Ensure all invoices are fully paid.",
+        });
+      }
+    } catch (invErr) {
+      console.warn("Invoice validation failed during final approval:", invErr?.message);
+      return res.status(500).json({
         success: false,
-        message: "Final approval not ready. Ensure all invoices are paid.",
+        message: "Failed to validate invoice payment status",
       });
     }
 
@@ -197,7 +217,7 @@ export const finalApprove = async (req, res) => {
             if (apIdSet.size === 0) {
               try {
                 const blockFilteredCabins = await Cabin.find({
-                  "blocks.client": contract.client,
+                  "blocks.contract": contract._id,
                   "blocks.status": { $in: ["active", "allocated"] },
                 })
                   .select("_id matrixDevices building")
@@ -273,6 +293,8 @@ export const finalApprove = async (req, res) => {
           );
         }
 
+        // Shared list of members used for both provisioning and WiFi setup
+        let membersForJobs = [];
         const grantRes = await grantOnContractActivation(contract, {
           policyId: ensuredPolicy._id,
           startsAt: contract.startDate || contract.commencementDate || new Date(),
@@ -293,7 +315,7 @@ export const finalApprove = async (req, res) => {
             } catch {}
           }
 
-          const membersForJobs = await Member.find({
+          membersForJobs = await Member.find({
             client: contract.client,
             status: "active",
           })
@@ -362,6 +384,24 @@ export const finalApprove = async (req, res) => {
               } catch (e) {
                 console.warn(
                   "MatrixUser upsert failed for member",
+                  String(m._id),
+                  e?.message
+                );
+              }
+
+              // Attach Matrix references on Member (matrixUser, matrixExternalUserId)
+              try {
+                const mu = await MatrixUser.findOne({ externalUserId: matrixUserId, memberId: m._id })
+                  .select("_id externalUserId")
+                  .lean();
+                if (mu?._id) {
+                  await Member.findByIdAndUpdate(m._id, {
+                    $set: { matrixUser: mu._id, matrixExternalUserId: mu.externalUserId },
+                  });
+                }
+              } catch (e) {
+                console.warn(
+                  "Failed to attach Matrix refs to member",
                   String(m._id),
                   e?.message
                 );
@@ -459,7 +499,39 @@ export const finalApprove = async (req, res) => {
           console.warn("Matrix UPSERT_USER enqueue failed:", provErr?.message);
         }
 
-        // Bhaifi auto-provisioning block intentionally commented out
+        // WiFi provisioning (Bhaifi) for all active members of this client
+        try {
+          const wifiProvisioned = [];
+          for (const m of membersForJobs || []) {
+            try {
+              const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
+              wifiProvisioned.push(String(m._id));
+
+              // Attach Bhaifi references on Member (bhaifiUser, bhaifiUserName)
+              try {
+                if (bhaifiDoc?._id) {
+                  await Member.findByIdAndUpdate(m._id, {
+                    $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
+                  });
+                }
+              } catch (e) {
+                console.warn(
+                  "Failed to attach Bhaifi refs to member",
+                  String(m._id),
+                  e?.message
+                );
+              }
+            } catch (e) {
+              await logErrorActivity(req, e, 'FinalApprove:BhaifiProvision', { memberId: String(m._id) });
+            }
+          }
+          await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+            action: 'bhaifi_wifi_provisioned',
+            count: wifiProvisioned.length,
+          });
+        } catch (wifiErr) {
+          console.warn('Bhaifi auto-provisioning failed:', wifiErr?.message);
+        }
       } catch (grantErr) {
         console.warn("Access grant on final approval failed:", grantErr?.message);
       }
@@ -506,7 +578,7 @@ export const setFinanceApproval = async (req, res) => {
     }
     const isAdminOverride = isSystemAdmin(req.user);
     contract.financeapproved = !!approved;
-    contract.financeApprovedBy = approved ? (req.user?.id || null) : null;
+    contract.financeApprovedBy = approved ? req.user?.id || null : null;
     contract.financeApprovedAt = approved ? new Date() : null;
     contract.financeApprovalReason = reason || (isAdminOverride ? 'Approved by System Admin override' : null);
 

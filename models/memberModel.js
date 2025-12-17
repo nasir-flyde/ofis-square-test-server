@@ -15,10 +15,18 @@ const memberSchema = new Schema(
     desk: { type: Schema.Types.ObjectId, ref: "Desk", default: null, index: true },
     user: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
     allowedUsingCredits: { type: Boolean, default: true, index: true },
+    // Provider integrations (primary refs and denormalized identifiers)
+    matrixUser: { type: Schema.Types.ObjectId, ref: "MatrixUser", default: null, index: true },
+    matrixExternalUserId: { type: String, trim: true },
+    bhaifiUser: { type: Schema.Types.ObjectId, ref: "BhaifiUser", default: null, index: true },
+    bhaifiUserName: { type: String, trim: true },
   },
   { timestamps: true, collection: "members" }
 );
 
 memberSchema.index({ phone: 1 }, { sparse: true });
+// Quick lookup indexes for denormalized provider identifiers
+memberSchema.index({ matrixExternalUserId: 1 }, { sparse: true });
+memberSchema.index({ bhaifiUserName: 1 }, { sparse: true });
 
 export default mongoose.model("Member", memberSchema);

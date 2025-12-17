@@ -47,6 +47,7 @@ import accessEventsRoutes from "./accessEvents.js";
 import provisioningJobsRoutes from "./provisioningJobs.js";
 import matrixUsersRoutes from "./matrixUsers.js";
 import enrollmentDetails from "./enrollmentDetails.js"
+import memberIntegrationsRoutes from "./memberIntegrations.js";
 
 const router = express.Router();
 
@@ -75,6 +76,7 @@ router.use("/tickets", ticketsRoutes);
 router.use("/ticket-categories", ticketCategoriesRoutes);
 router.use("/wallet", walletRoutes);
 router.use("/members", memberRoutes);
+router.use("/members/integrations", memberIntegrationsRoutes);
 router.use("/member-portal", memberPortalRoutes);
 router.use("/users", userRoutes);
 router.use("/community", communityRoutes);

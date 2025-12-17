@@ -1,4 +1,5 @@
 import Contract from "../models/contractModel.js";
+import Client from "../models/clientModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import { createInvoiceFromContract } from "../services/invoiceService.js";
@@ -89,6 +90,13 @@ export const createBySales = async (req, res) => {
       lastActionBy: req.user?._id || undefined,
       lastActionAt: new Date(),
     });
+
+    // Ensure client's building is set to the selected building
+    try {
+      await Client.findByIdAndUpdate(client, { building }, { new: true });
+    } catch (e) {
+      console.warn("Failed to update client building on sales create:", e?.message);
+    }
 
     await logContractActivity(req, "CREATE", contract._id, client, {
       action: "sales_created",

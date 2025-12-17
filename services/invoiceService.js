@@ -14,8 +14,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
   const {
     issueOn = "activation",
     prorate = true,
-    dueDays = 7,
-    taxRate = 18
+    dueDays = 7
   } = options;
 
   try {
@@ -50,7 +49,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     let subtotal = 0;
 
     if (contract.monthlyRent > 0) {
-      const rentItem = calculateProratedRent(contract, prorate, taxRate);
+      const rentItem = calculateProratedRent(contract, prorate);
       items.push({
         description: rentItem.description,
         quantity: 1,
@@ -60,12 +59,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       subtotal += rentItem.total;
     }
 
-    const taxableAmount = items.reduce((sum, item) => {
-      if (item.description.toLowerCase().includes("rent")) return sum + item.amount;
-      return sum;
-    }, 0);
-    const taxes = taxRate > 0 ? [{ name: "GST", rate: taxRate, amount: round2(taxableAmount * (taxRate / 100)) }] : [];
-    const taxTotal = taxes.reduce((s, t) => s + t.amount, 0);
+    const taxTotal = 0;
     const total = round2(subtotal + taxTotal);
 
     // Create invoice payload
@@ -94,7 +88,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       })),
       
       sub_total: round2(subtotal),
-      tax_total: taxes.reduce((s, t) => s + t.amount, 0),
+      tax_total: taxTotal,
       total,
       amount_paid: 0,
       balance: total,
@@ -169,7 +163,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
 /**
  * Calculate prorated rent for the first month
  */
-function calculateProratedRent(contract, prorate, taxRate) {
+function calculateProratedRent(contract, prorate) {
   const startDate = new Date(contract.startDate);
   const monthlyRent = contract.monthlyRent;
   
