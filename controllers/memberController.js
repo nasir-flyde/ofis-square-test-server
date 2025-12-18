@@ -365,6 +365,15 @@ export const getMemberProfile = async (req, res) => {
       .sort({ startDate: -1 })
       .limit(20);
 
+    const allEvents = await Event.find({
+      status: { $in: ['published', 'completed'] }
+    })
+      .populate('category', 'name color')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name')
+      .sort({ startDate: -1 })
+      .limit(50);
+
     // Build profile response
     const profile = {
       member: {
@@ -453,39 +462,23 @@ export const getMemberProfile = async (req, res) => {
         }))
       },
       events: {
+        all: {
+          total: allEvents.length,
+          events: allEvents.map(event => {
+            const obj = event.toObject({ virtuals: true });
+            const memberIdStr = String(memberId);
+            obj.userHasRSVP = Array.isArray(event.rsvps) && event.rsvps.some(id => String(id) === memberIdStr);
+            obj.userHasAttended = Array.isArray(event.attendance) && event.attendance.some(id => String(id) === memberIdStr);
+            return obj;
+          })
+        },
         rsvps: {
           total: rsvpEvents.length,
-          events: rsvpEvents.map(event => ({
-            id: event._id,
-            title: event.title,
-            description: event.description,
-            category: event.category,
-            startDate: event.startDate,
-            endDate: event.endDate,
-            location: event.location,
-            capacity: event.capacity,
-            rsvpCount: event.rsvpCount,
-            creditsRequired: event.creditsRequired,
-            status: event.status,
-            thumbnail: event.thumbnail,
-            mainImage: event.mainImage
-          }))
+          events: rsvpEvents.map(event => event.toObject({ virtuals: true }))
         },
         attended: {
           total: attendedEvents.length,
-          events: attendedEvents.map(event => ({
-            id: event._id,
-            title: event.title,
-            description: event.description,
-            category: event.category,
-            startDate: event.startDate,
-            endDate: event.endDate,
-            location: event.location,
-            creditsRequired: event.creditsRequired,
-            status: event.status,
-            thumbnail: event.thumbnail,
-            mainImage: event.mainImage
-          }))
+          events: attendedEvents.map(event => event.toObject({ virtuals: true }))
         }
       }
     };
