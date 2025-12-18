@@ -4,41 +4,51 @@ dotenv.config();
 
 const SMS_API_KEY = process.env.SMSWAALE_API_KEY || 'nPc9tXq6w8CeJims';
 const SMS_SENDER_ID = process.env.SMSWAALE_SENDER_ID || 'EXPROS';
-const SMS_BASE_URL = 'http://sms.smswaale.com/V2/http-api-post.php';
+const SMS_BASE_URL = 'http://sms.smswaale.com/V2/http-api.php';
 
 export const SendSMS = async ({ phone, message }) => {
+  // Validate inputs
+  if (!phone || !message) {
+    throw new Error('Phone number and message are required');
+  }
+
+  // Clean and validate phone number to 10 digits
+  const cleanPhone = phone.toString().replace(/\D/g, '');
+  if (cleanPhone.length !== 10) {
+    throw new Error(`Invalid phone number format: ${phone}`);
+  }
+
+  const params = {
+    apikey: SMS_API_KEY,
+    senderid: SMS_SENDER_ID,
+    number: `91${cleanPhone}`,
+    message: message.trim(),
+    format: 'json',
+  };
+
+  // Optional debug log with masked key
+  // console.log('📤 SMS Params:', { ...params, apikey: '***hidden***' });
+
   try {
-    const normalizedPhone = phone.replace(/\D/g, '');
-    
-    // For domestic SMS in India, use 10-digit number without country code
-    const phoneNumber = normalizedPhone.startsWith('91') 
-      ? normalizedPhone.substring(2) 
-      : normalizedPhone;
-
-    const payload = {
-      apikey: SMS_API_KEY,
-      senderid: SMS_SENDER_ID,
-      number: phoneNumber,
-      message: message
-    };
-
-    const response = await axios.post(SMS_BASE_URL, payload, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
+    const response = await axios.get(SMS_BASE_URL, {
+      params,
+      timeout: 10000,
     });
 
-    if (response.data && (response.data.status === 'OK' || response.status === 200)) {
-      console.log('SMS sent successfully:', response.data);
-      return { success: true, data: response.data };
-    } else {
-      console.error('SMS API error:', response.data);
-      throw new Error(response.data?.message || 'SMS sending failed');
+    // console.log('📱 SMS API Response:', response.data);
+
+    if (response.data?.status === 'success' || response.data?.status === 'OK') {
+      return {
+        success: true,
+        data: response.data,
+        phone: cleanPhone,
+      };
     }
+
+    throw new Error(`SMS API returned error: ${JSON.stringify(response.data)}`);
   } catch (error) {
-    console.error('SMS service error:', error);
-    throw new Error(`Failed to send SMS: ${error.message}`);
+    // console.error('❌ SMS sending failed:', { phone: cleanPhone, error: error.message, response: error.response?.data });
+    throw new Error(`Failed to send SMS to ${cleanPhone}: ${error.message}`);
   }
 };
 
