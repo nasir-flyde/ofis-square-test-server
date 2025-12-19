@@ -12,6 +12,7 @@ const {
   publishEvent,
   getEvents,
   getEvent,
+  getEventRsvps,
   rsvpEvent,
   cancelRsvp,
   markAttendance,
@@ -34,6 +35,7 @@ router.delete('/:id', authMiddleware, deleteEvent);
 // Public/Member routes
 router.get('/', getEvents); // Public - can filter by status=published
 router.get('/:id', getEvent); // Public - single event details
+router.get('/:id/rsvps', authMiddleware, getEventRsvps); // Admin - enriched RSVPs
 
 // RSVP routes (allow member tokens and client tokens with memberId in body)
 router.post('/:id/rsvp', universalMiddleware, rsvpEvent);

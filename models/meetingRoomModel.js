@@ -45,7 +45,10 @@ const meetingRoomSchema = new Schema(
     building: { type: Schema.Types.ObjectId, ref: "Building", index: true },
     name: { type: String, required: true, trim: true },
     capacity: { type: Number, required: true },
-    amenities: { type: [String], default: [] },
+    amenities: {
+      type: [{ type: Schema.Types.ObjectId, ref: "CabinAmenity" }],
+      default: []
+    },
     images: { type: [String], default: [] },
     pricing: { type: pricingSchema, default: () => ({}) },
     availability: { type: availabilitySchema, default: () => ({}) },

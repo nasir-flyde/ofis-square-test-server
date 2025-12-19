@@ -48,6 +48,7 @@ import provisioningJobsRoutes from "./provisioningJobs.js";
 import matrixUsersRoutes from "./matrixUsers.js";
 import enrollmentDetails from "./enrollmentDetails.js"
 import memberIntegrationsRoutes from "./memberIntegrations.js";
+import searchRoutes from "./search.js";
 
 const router = express.Router();
 
@@ -100,4 +101,5 @@ router.use("/matrix-devices", matrixDevicesRoutes);
 router.use("/bhaifi", bhaifiRoutes);
 router.use("/matrix-users", matrixUsersRoutes);
 router.use("/enrollment-details", enrollmentDetails)
+router.use("/search", searchRoutes);
 export default router;

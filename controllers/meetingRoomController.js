@@ -73,6 +73,8 @@ export const listRooms = async (req, res) => {
 
     const meetingRooms = await MeetingRoom.find(filter)
       .populate('building', 'name address city')
+      .populate('amenities', 'name icon iconUrl')
+      .populate('matrixDevices', 'name device_id externalDeviceId')
       .sort({ createdAt: -1 });
 
     // Manual logging removed - handled by middleware for non-GET requests only
@@ -93,11 +95,10 @@ export const getRoomById = async (req, res) => {
   try {
     const id = req.params.id;
     const oldMeetingRoom = await MeetingRoom.findById(id);
-    const meetingRoom = await MeetingRoom.findByIdAndUpdate(
-      id,
-      req.body,
-      { new: true, runValidators: true }
-    ).populate('building', 'name address city');
+    const meetingRoom = await MeetingRoom.findById(id)
+      .populate('building', 'name address city')
+      .populate('amenities', 'name icon iconUrl')
+      .populate('matrixDevices', 'name device_id externalDeviceId');
 
     if (!meetingRoom) {
       return res.status(404).json({

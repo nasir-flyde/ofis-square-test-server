@@ -390,6 +390,15 @@ export const inviteVisitor = async (req, res) => {
 
     await visitorDoc.save();
 
+    // Attach visitor to day pass visitors array
+    try {
+      const current = Array.isArray(dayPass.visitors) ? dayPass.visitors : [];
+      dayPass.visitors = [...current, visitorDoc._id];
+      await dayPass.save();
+    } catch (e) {
+      console.warn("Failed to append visitor to day pass visitors array:", e?.message || e);
+    }
+
     // TODO: Send invitation email with QR code similar to visitor system
     
     res.json({

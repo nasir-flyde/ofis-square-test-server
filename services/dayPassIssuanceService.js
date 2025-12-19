@@ -130,6 +130,11 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
 
     await visitor.save({ session });
 
+    // Attach visitor to day pass visitors array
+    const current = Array.isArray(dayPass.visitors) ? dayPass.visitors : [];
+    dayPass.visitors = [...current, visitor._id];
+    // Note: DayPass save is called by caller after this helper; no extra save needed here
+
     console.log(`Created visitor record for self booking: ${customerDetails.name} on ${visitDate.toDateString()}`);
   } catch (error) {
     console.error("Error creating visitor for self booking:", error);

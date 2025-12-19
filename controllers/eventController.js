@@ -16,8 +16,7 @@ const createEvent = async (req, res) => {
       startDate,
       endDate,
       location,
-      capacity,
-      creditsRequired
+      capacity
     } = req.body;
 
     // Validate required fields
@@ -118,7 +117,6 @@ const createEvent = async (req, res) => {
         address: location?.address || undefined
       },
       capacity: capacity || 0,
-      creditsRequired: creditsRequired || 0,
       thumbnail: thumbnailUrl,
       mainImage: mainImageUrl,
       createdBy: req.user.id,
@@ -145,6 +143,55 @@ const createEvent = async (req, res) => {
       message: 'Failed to create event',
       error: error.message
     });
+  }
+};
+
+// List RSVPs with enriched member details for an event (Admin)
+const getEventRsvps = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const event = await Event.findById(id)
+      .populate({
+        path: 'rsvps',
+        select: 'firstName lastName email phone companyName role client',
+        populate: { path: 'client', select: 'name' }
+      })
+      .select('title startDate endDate capacity rsvps');
+
+    if (!event) {
+      return res.status(404).json({ success: false, message: 'Event not found' });
+    }
+
+    const rsvps = (event.rsvps || []).map((m) => ({
+      id: m._id,
+      firstName: m.firstName || '',
+      lastName: m.lastName || '',
+      name: [m.firstName, m.lastName].filter(Boolean).join(' ').trim() || undefined,
+      email: m.email || '',
+      phone: m.phone || '',
+      companyName: m.companyName || '',
+      role: m.role || '',
+      client: m.client ? { id: m.client._id, name: m.client.name } : null,
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        event: {
+          id: event._id,
+          title: event.title,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          capacity: event.capacity,
+          rsvpCount: rsvps.length,
+        },
+        rsvps,
+      },
+    });
+  } catch (error) {
+    console.error('Get event RSVPs error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch RSVPs', error: error.message });
   }
 };
 
@@ -291,8 +338,8 @@ const getEvent = async (req, res) => {
       .populate('location.building', 'name address')
       .populate('location.room', 'name capacity')
       .populate('createdBy', 'name email')
-      .populate('rsvps', 'name email phone')
-      .populate('attendance', 'name email phone');
+      .populate('rsvps', 'firstName lastName email phone')
+      .populate('attendance', 'firstName lastName email phone');
 
     if (!event) {
       return res.status(404).json({
@@ -730,7 +777,7 @@ const updateEvent = async (req, res) => {
       };
     }
 
-    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'creditsRequired', 'thumbnail', 'mainImage'];
+    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'thumbnail', 'mainImage'];
     allowedUpdates.forEach(field => {
       if (cleanedUpdates[field] !== undefined) {
         event[field] = cleanedUpdates[field];
@@ -747,7 +794,6 @@ const updateEvent = async (req, res) => {
         startDate: oldData.startDate,
         endDate: oldData.endDate,
         capacity: oldData.capacity,
-        creditsRequired: oldData.creditsRequired,
         category: oldData.category,
         location: oldData.location,
         status: oldData.status
@@ -758,7 +804,6 @@ const updateEvent = async (req, res) => {
         startDate: event.startDate,
         endDate: event.endDate,
         capacity: event.capacity,
-        creditsRequired: event.creditsRequired,
         category: event.category,
         location: event.location,
         status: event.status
@@ -830,6 +875,7 @@ export default {
   publishEvent,
   getEvents,
   getEvent,
+  getEventRsvps,
   rsvpEvent,
   cancelRsvp,
   markAttendance,

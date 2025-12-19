@@ -20,8 +20,7 @@ const EventSchema = new Schema({
   capacity: { type: Number, default: 0 }, // 0 = unlimited
   rsvps: [{ type: Schema.Types.ObjectId, ref: "Member" }],
   attendance: [{ type: Schema.Types.ObjectId, ref: "Member" }],
-
-  creditsRequired: { type: Number, default: 0 }, 
+ 
   status: { type: String, enum: ["draft", "published", "completed", "cancelled"], default: "draft" },
 
   // Image fields

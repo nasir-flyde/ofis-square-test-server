@@ -22,6 +22,8 @@ const dayPassSchema = new Schema(
     expiresAt: { type: Date, required: true },
     price: { type: Number, required: true },
     currency: { type: String },
+    // Linked visitors (history of visitor records associated with this pass)
+    visitors: [{ type: Schema.Types.ObjectId, ref: "Visitor" }],
     // Status and lifecycle
     status: {
       type: String,

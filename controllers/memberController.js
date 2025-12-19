@@ -6,6 +6,13 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import mongoose from "mongoose";
+import MatrixUser from "../models/matrixUserModel.js";
+import ProvisioningJob from "../models/provisioningJobModel.js";
+import { matrixApi } from "../utils/matrixApi.js";
+import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
+import AccessPolicy from "../models/accessPolicyModel.js";
+import AccessPoint from "../models/accessPointModel.js";
+import MatrixDevice from "../models/matrixDeviceModel.js";
 
 export const createMember = async (req, res) => {
   try {
@@ -73,6 +80,168 @@ export const createMember = async (req, res) => {
       status: 'active',
       user: createdUserId
     });
+
+    // Auto-provision Matrix COSEC user and Bhaifi WiFi user (best-effort, non-blocking)
+    try {
+      // Resolve a building for context if client has one
+      let buildingIdForJobs = null;
+      if (clientId) {
+        try {
+          const cli = await Client.findById(clientId).select('building').lean();
+          buildingIdForJobs = cli?.building || null;
+        } catch {}
+      }
+
+      // MATRIX: create/upsert user, attach to member, enqueue job
+      try {
+        let matrixUserId;
+        try {
+          const random6 = Math.floor(100000 + Math.random() * 900000);
+          matrixUserId = `MEM${random6}`;
+          await matrixApi.createUser({
+            id: matrixUserId,
+            name: name || undefined,
+            email: email || undefined,
+            phone: phone || undefined,
+            status: "active",
+          });
+        } catch (apiErr) {
+          console.warn("Matrix createUser failed (createMember)", String(member._id), apiErr?.message);
+          if (!matrixUserId) {
+            const fallbackRand = Math.floor(100000 + Math.random() * 900000);
+            matrixUserId = `MEM${fallbackRand}`;
+          }
+        }
+
+        try {
+          await MatrixUser.findOneAndUpdate(
+            { externalUserId: matrixUserId },
+            {
+              $setOnInsert: {
+                externalUserId: matrixUserId,
+                name: name || email || phone || 'Unnamed',
+                email: email || undefined,
+                phone: phone || undefined,
+                status: 'active',
+              },
+              $set: {
+                buildingId: buildingIdForJobs || undefined,
+                clientId: clientId || undefined,
+                memberId: member._id,
+              },
+            },
+            { upsert: true, new: true }
+          );
+        } catch (e) {
+          console.warn("MatrixUser upsert failed (createMember)", String(member._id), e?.message);
+        }
+
+        try {
+          const mu = await MatrixUser.findOne({ externalUserId: matrixUserId, memberId: member._id })
+            .select("_id externalUserId")
+            .lean();
+          if (mu?._id) {
+            await Member.findByIdAndUpdate(member._id, {
+              $set: { matrixUser: mu._id, matrixExternalUserId: mu.externalUserId },
+            });
+          }
+        } catch (e) {
+          console.warn("Failed to attach Matrix refs to member (createMember)", String(member._id), e?.message);
+        }
+
+        try {
+          await ProvisioningJob.create({
+            vendor: 'MATRIX_COSEC',
+            jobType: 'UPSERT_USER',
+            buildingId: buildingIdForJobs || null,
+            memberId: member._id,
+            payload: {
+              externalUserId: matrixUserId,
+              name: name || undefined,
+              email: email || undefined,
+              phone: phone || undefined,
+              status: 'active',
+              source: 'AUTO_MEMBER_CREATE',
+            },
+          });
+        } catch (e) {
+          console.warn("Failed to enqueue Matrix provisioning job (createMember)", String(member._id), e?.message);
+        }
+
+        // Mirror device assignment from finalApprove: assign Matrix user to devices from default access policy for building
+        try {
+          if (buildingIdForJobs) {
+            // Find a default/appropriate access policy for this building
+            const policyDoc = await AccessPolicy.findOne({
+              $or: [
+                { buildingId: buildingIdForJobs, isDefaultForBuilding: true },
+                { buildingId: buildingIdForJobs }
+              ]
+            }).select('accessPointIds').lean();
+
+            if (policyDoc?.accessPointIds?.length) {
+              const aps = await AccessPoint.find({ _id: { $in: policyDoc.accessPointIds } })
+                .select('deviceBindings')
+                .lean();
+              const devObjIds = [];
+              for (const ap of aps) {
+                const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+                for (const b of bindings) {
+                  if (b?.vendor === 'MATRIX_COSEC' && b?.deviceId) {
+                    devObjIds.push(String(b.deviceId));
+                  }
+                }
+              }
+              const uniqueDevObjIds = Array.from(new Set(devObjIds));
+              if (uniqueDevObjIds.length) {
+                const devs = await MatrixDevice.find({ _id: { $in: uniqueDevObjIds } })
+                  .select('device_id')
+                  .lean();
+                let assignedCount = 0;
+                for (const d of devs) {
+                  const device_id = d?.device_id;
+                  if (!device_id) continue;
+                  try {
+                    const assignRes = await matrixApi.assignUserToDevice({ device_id, externalUserId: matrixUserId });
+                    if (assignRes?.ok) assignedCount += 1;
+                  } catch (e) {
+                    await logErrorActivity(req, e, 'CreateMember:DeviceAssign', { memberId: member._id, externalUserId: matrixUserId, device_id });
+                  }
+                }
+                if (assignedCount > 0) {
+                  await MatrixUser.findOneAndUpdate(
+                    { externalUserId: matrixUserId },
+                    { $set: { isDeviceAssigned: true, isEnrolled: true } }
+                  );
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('CreateMember device assignment failed:', e?.message);
+        }
+      } catch (e) {
+        console.warn("Matrix provisioning flow failed (createMember)", String(member._id), e?.message);
+      }
+
+      // BHAIFI: provision WiFi user and attach refs on member
+      try {
+        const bhaifiDoc = await ensureBhaifiForMember({ memberId: member._id });
+        if (bhaifiDoc?._id) {
+          try {
+            await Member.findByIdAndUpdate(member._id, {
+              $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
+            });
+          } catch (e) {
+            console.warn("Failed to attach Bhaifi refs to member (createMember)", String(member._id), e?.message);
+          }
+        }
+      } catch (e) {
+        console.warn('Bhaifi auto-provisioning failed (createMember):', e?.message);
+      }
+    } catch (integrationErr) {
+      console.warn('Member integration provisioning encountered errors:', integrationErr?.message);
+    }
 
     // Log activity
     await logCRUDActivity(req, 'CREATE', 'Member', member._id, null, {
