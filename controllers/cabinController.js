@@ -6,6 +6,8 @@ import Desk from "../models/deskModel.js";
 import imagekit from "../utils/imageKit.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import csv from "csv-parser";
+import { Readable } from "stream";
 
 export const getCabins = async (req, res) => {
   try {
@@ -676,6 +678,205 @@ export const exportMasterFile = async (req, res) => {
     });
   } catch (error) {
     console.error('Error exporting master file:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const importCabinsFromCSV = async (req, res) => {
+  try {
+    const file = req.file;
+    const dryRun = String(req.query?.dryRun ?? req.body?.dryRun ?? 'false').toLowerCase() === 'true';
+    if (!file) return res.status(400).json({ success: false, message: 'CSV file is required (field name: file)' });
+
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      try {
+        const stream = Readable.from(file.buffer);
+        stream
+          .pipe(csv())
+          .on('data', (data) => rows.push(data))
+          .on('end', resolve)
+          .on('error', reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    const CabinAmenity = (await import("../models/cabinAmenityModel.js")).default;
+    const allAmenities = await CabinAmenity.find({ isActive: true }).select('name').lean();
+    const amenityNameToId = new Map(allAmenities.map(a => [String(a.name).trim().toLowerCase(), String(a._id)]));
+
+    const toNumber = (v) => {
+      if (v === undefined || v === null || v === '') return undefined;
+      const n = Number(String(v).trim());
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const norm = (s) => (s === undefined || s === null ? '' : String(s).trim());
+    const parseAmenities = (obj) => {
+      const fromCombined = norm(obj.amenities);
+      let list = [];
+      if (fromCombined) list = fromCombined.split(/[;,]/).map(x => x.trim()).filter(Boolean);
+      // amenity1..amenity10 support
+      for (let i = 1; i <= 10; i++) {
+        const key = `amenity${i}`;
+        if (obj[key]) list.push(norm(obj[key]));
+      }
+      const ids = [];
+      const missing = [];
+      list.forEach(name => {
+        const id = amenityNameToId.get(name.toLowerCase());
+        if (id) ids.push(id);
+        else missing.push(name);
+      });
+      return { ids, missing };
+    };
+
+    const perRow = [];
+    let createdCount = 0;
+    let validCount = 0;
+    let invalidCount = 0;
+
+    // Preload buildings map by name (lowercase) for quick lookup
+    const buildings = await Building.find().select('name').lean();
+    const buildingNameToId = new Map(buildings.map(b => [String(b.name).trim().toLowerCase(), String(b._id)]));
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx];
+      const errors = [];
+      const originalRow = { ...r };
+
+      const buildingIdInput = norm(r.buildingId) || undefined;
+      const buildingName = norm(r.buildingName);
+      let buildingId = buildingIdInput;
+      if (!buildingId) {
+        if (!buildingName) errors.push('buildingName is required (or provide buildingId)');
+        else {
+          const mapped = buildingNameToId.get(buildingName.toLowerCase());
+          if (!mapped) errors.push(`Unknown building name: ${buildingName}`);
+          else buildingId = mapped;
+        }
+      }
+
+      const number = norm(r.cabinNumber);
+      if (!number) errors.push('cabinNumber is required');
+
+      const type = norm(r.type) || 'private';
+      const capacity = toNumber(r.capacity);
+      if (!capacity || capacity <= 0) errors.push('capacity must be a positive number');
+      const floor = toNumber(r.floor) ?? 0;
+      const status = norm(r.status) || 'available';
+      const category = norm(r.category) || undefined;
+      const sizeSqFt = toNumber(r.sizeSqFt);
+      const pricing = toNumber(r.pricing);
+      const { ids: amenityIds, missing: missingAmenityNames } = parseAmenities(r);
+      if (missingAmenityNames.length) {
+        errors.push(`Unknown amenities: ${missingAmenityNames.join(', ')}`);
+      }
+
+      if (!errors.length) {
+        // Check duplicates within building
+        const dup = await Cabin.findOne({ building: buildingId, number }).lean();
+        if (dup) errors.push('Cabin number already exists in this building');
+      }
+
+      if (errors.length) {
+        invalidCount++;
+        perRow.push({ index: idx + 1, success: false, errors, originalRow });
+        continue;
+      }
+
+      validCount++;
+
+      if (dryRun) {
+        perRow.push({
+          index: idx + 1,
+          success: true,
+          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length },
+          originalRow
+        });
+        continue;
+      }
+
+      // Create the cabin and desks
+      try {
+        const cabin = await Cabin.create({
+          building: buildingId,
+          floor,
+          number,
+          type,
+          capacity,
+          status,
+          category,
+          sizeSqFt,
+          amenities: amenityIds,
+          images: [],
+          pricing,
+        });
+        const deskDocs = [];
+        const deskCount = Math.max(1, Number(capacity || 1));
+        for (let i = 1; i <= deskCount; i++) {
+          const deskNumber = `${number}-D${i}`;
+          deskDocs.push({ building: buildingId, cabin: cabin._id, number: deskNumber });
+        }
+        const createdDesks = await Desk.insertMany(deskDocs);
+        cabin.desks = createdDesks.map((d) => d._id);
+        await cabin.save();
+
+        await logCRUDActivity(req, 'CREATE', 'Cabin', cabin._id, null, {
+          imported: true,
+          building: buildingId,
+          number,
+          type,
+          capacity,
+          floor,
+          status,
+          category,
+          sizeSqFt,
+          amenities: amenityIds.length,
+          pricing,
+        });
+
+        createdCount++;
+        perRow.push({ index: idx + 1, success: true, id: cabin._id, originalRow });
+      } catch (e) {
+        invalidCount++;
+        perRow.push({ index: idx + 1, success: false, errors: [e.message || 'Failed to create cabin'], originalRow });
+      }
+    }
+
+    const summary = {
+      totalRows: rows.length,
+      validRows: validCount,
+      invalidRows: invalidCount,
+      created: dryRun ? 0 : createdCount,
+    };
+    return res.json({
+      success: true,
+      dryRun,
+      counts: { total: rows.length, valid: validCount, invalid: invalidCount, created: dryRun ? 0 : createdCount },
+      summary,
+      canImport: dryRun ? validCount > 0 : undefined,
+      results: perRow,
+    });
+  } catch (error) {
+    await logErrorActivity(req, 'CREATE', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Download sample CSV for cabin import
+export const downloadSampleCSV = async (_req, res) => {
+  try {
+    const header = [
+      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities'
+    ];
+    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard'];
+    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard'];
+    const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="cabins_import_sample.csv"');
+    return res.send(csvText);
+  } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -6,6 +6,7 @@ import { createInvoiceFromContract } from "../services/invoiceService.js";
 import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
 import { grantOnContractActivation, enforceAccessByInvoices } from "../services/accessService.js";
+import { sendAdminApprovalRequestEmail, sendLegalReviewRequestEmail } from "../utils/contractEmailService.js";
 
 // Compute stage for custom flow
 export const getCustomWorkflowStatus = (contract) => {
@@ -52,6 +53,7 @@ export const createBySales = async (req, res) => {
       commencementDate,
       terms,
       termsandconditions,
+      kycDocuments: kycFromBody,
     } = req.body || {};
 
     if (!client || !building || !startDate || !endDate || !capacity || monthlyRent === undefined) {
@@ -67,6 +69,117 @@ export const createBySales = async (req, res) => {
       return Math.max(0, months);
     };
     const derivedDurationMonths = calcMonths(startDate, endDate);
+
+    // Prepare KYC documents to attach (from body or from client record)
+    const KYC_DOC_TYPES = [
+      'addressProof',
+      'boardResolutionOrLetterOfAuthority',
+      'photoIdAndAddressProofOfSignatory',
+      'certificateOfIncorporation',
+      'businessLicenseGST',
+      'panCard',
+      'tanNo',
+      'moa',
+      'aoa',
+    ];
+
+    const mapClientKycToContract = (clientKyc) => {
+      const out = {};
+      let count = 0;
+      const files = clientKyc?.files;
+
+      const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const normalizedMap = KYC_DOC_TYPES.reduce((acc, key) => {
+        acc[normalize(key)] = key; // e.g., pancard -> panCard
+        return acc;
+      }, {});
+
+      const inferDocTypeFromName = (name) => {
+        const n = String(name || '').toLowerCase();
+        if (/\bpan\b|pan.?card/.test(n)) return 'panCard';
+        if (/\bgst\b/.test(n)) return 'businessLicenseGST';
+        if (/\btan\b/.test(n)) return 'tanNo';
+        if (/\bmoa\b/.test(n)) return 'moa';
+        if (/\baoa\b/.test(n)) return 'aoa';
+        if (/incorporation|\bcin\b/.test(n)) return 'certificateOfIncorporation';
+        if (/board|resolution|authority/.test(n)) return 'boardResolutionOrLetterOfAuthority';
+        if (/signatory/.test(n) && /(photo|id|address)/.test(n)) return 'photoIdAndAddressProofOfSignatory';
+        if (/address.*proof|aadhaar|aadhar/.test(n)) return 'addressProof';
+        return null;
+      };
+
+      if (files && typeof files === 'object') {
+        Object.entries(files).forEach(([rawKey, arr]) => {
+          const first = Array.isArray(arr) ? arr[0] : null;
+          if (!first?.url) return;
+
+          let target = null;
+          const normKey = normalize(rawKey); // e.g., pan_card -> pancard
+          if (normalizedMap[normKey]) {
+            target = normalizedMap[normKey];
+          } else {
+            target = inferDocTypeFromName(first.originalname || first.name || first.fileName || rawKey);
+          }
+
+          if (target && !out[target]) {
+            out[target] = {
+              fileName: first.originalname || first.name || first.fileName || target,
+              fileUrl: first.url,
+              approvedBy: null,
+              approved: false,
+              uploadedAt: new Date(),
+            };
+            count += 1;
+          }
+        });
+      }
+      return { out, count };
+    };
+
+    // Prefer KYC from request body if provided; otherwise build from client's stored KYC
+    let kycDocsToAttach = undefined;
+    let kycCount = 0;
+    if (kycFromBody && typeof kycFromBody === 'object') {
+      // Support Mixed format coming from Client (kycDocuments.files)
+      if (kycFromBody.files && typeof kycFromBody.files === 'object') {
+        const { out, count } = mapClientKycToContract(kycFromBody);
+        if (count > 0) {
+          kycDocsToAttach = out;
+          kycCount = count;
+        }
+      } else {
+        // Support direct per-document format
+        const temp = {};
+        KYC_DOC_TYPES.forEach((dt) => {
+          const d = kycFromBody[dt];
+          if (d?.fileUrl) {
+            temp[dt] = {
+              fileName: d.fileName || dt,
+              fileUrl: d.fileUrl,
+              approvedBy: null,
+              approved: !!d.approved,
+              uploadedAt: d.uploadedAt ? new Date(d.uploadedAt) : new Date(),
+            };
+            kycCount += 1;
+          }
+        });
+        if (kycCount > 0) kycDocsToAttach = temp;
+      }
+    } else {
+      try {
+        const clientDoc = await Client.findById(client).select('kycDocuments');
+        if (clientDoc?.kycDocuments) {
+          const { out, count } = mapClientKycToContract(clientDoc.kycDocuments);
+          if (count > 0) {
+            kycDocsToAttach = out;
+            kycCount = count;
+          }
+        }
+      } catch (e) {
+        // Non-blocking: continue without KYC
+        console.warn('createBySales: failed to map client KYC:', e?.message || e);
+      }
+    }
 
     const contract = await Contract.create({
       client,
@@ -89,6 +202,7 @@ export const createBySales = async (req, res) => {
       createdBy: req.user?._id || undefined,
       lastActionBy: req.user?._id || undefined,
       lastActionAt: new Date(),
+      ...(kycDocsToAttach ? { kycDocuments: kycDocsToAttach, iskycuploaded: true } : {}),
     });
 
     // Ensure client's building is set to the selected building
@@ -100,6 +214,7 @@ export const createBySales = async (req, res) => {
 
     await logContractActivity(req, "CREATE", contract._id, client, {
       action: "sales_created",
+      kycDocumentsAttached: kycCount,
     });
 
     return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id } });
@@ -155,6 +270,21 @@ export const salesSeniorUpdateAndApprove = async (req, res) => {
       notes,
     });
 
+    // If approved by Sales Senior, notify Legal Team to review and finalize
+    if (approve) {
+      try {
+        const populatedForEmail = await Contract.findById(id)
+          .populate("client", "companyName email")
+          .populate("building", "name");
+        const emailResult = await sendLegalReviewRequestEmail(populatedForEmail || contract);
+        if (!emailResult?.success) {
+          console.warn("Legal review request email failed:", emailResult?.error || emailResult);
+        }
+      } catch (emailErr) {
+        console.warn("Failed to send legal review request email:", emailErr?.message || emailErr);
+      }
+    }
+
     return res.json({ success: true, message: approve ? "Approved by Sales Senior" : "Updated by Sales Senior" });
   } catch (err) {
     console.error("salesSeniorUpdateAndApprove error:", err);
@@ -204,6 +334,19 @@ export const legalUploadDocument = async (req, res) => {
       action: "legal_uploaded",
       fileName: file.originalname,
     });
+
+    // Notify System Admins to review and approve the contract
+    try {
+      const populatedForEmail = await Contract.findById(id)
+        .populate("client", "companyName email")
+        .populate("building", "name");
+      const emailResult = await sendAdminApprovalRequestEmail(populatedForEmail || contract);
+      if (!emailResult?.success) {
+        console.warn("Admin approval request email failed:", emailResult?.error || emailResult);
+      }
+    } catch (emailErr) {
+      console.warn("Failed to send admin approval request email:", emailErr?.message || emailErr);
+    }
 
     return res.json({ success: true, message: "Document uploaded", data: { fileUrl: contract.fileUrl } });
   } catch (err) {

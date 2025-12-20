@@ -13,13 +13,26 @@ import {
   blockCabin,
   releaseCabinBlock,
   listCabinBlocks,
-  allocateCabinFromBlock
+  allocateCabinFromBlock,
+  importCabinsFromCSV,
+  downloadSampleCSV,
 } from "../controllers/cabinController.js";
+import multer from "multer";
 
 const router = express.Router();
 
+// Multer for CSV upload (memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
+
 // Export master file (must be before /:id route)
 router.get("/export/master", exportMasterFile);
+
+// CSV Import: sample download and import endpoint
+router.get("/import/sample", downloadSampleCSV);
+router.post("/import", authMiddleware, upload.single('file'), importCabinsFromCSV);
 
 // List Cabins (filters: building, floor, status, type)
 router.get("/", getCabins);

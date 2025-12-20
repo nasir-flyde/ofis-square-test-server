@@ -356,7 +356,7 @@ export const sendClientReviewRequestEmail = async (contract, clientEmail) => {
     console.log('Contract ID:', contract._id);
     console.log('Client email:', clientEmail);
     
-    const subject = `📄 Contract Ready for Your Review - Ofis Square`;
+    const subject = `Contract Ready for Your Review - Ofis Square`;
     
     const html = `
       <!DOCTYPE html>
@@ -435,7 +435,7 @@ export const sendClientFeedbackAlertEmail = async (contract, feedback) => {
     console.log('Found stakeholders:', stakeholders.length);
     const recipients = stakeholders.map(u => u.email);
     
-    const subject = `💬 Client Feedback Received - Contract #${contract._id.toString().slice(-6)}`;
+    const subject = `Client Feedback Received - Contract #${contract._id.toString().slice(-6)}`;
     
     const html = `
       <!DOCTYPE html>
@@ -502,7 +502,7 @@ export const sendLegalReviewRequestEmail = async (contract) => {
     console.log('Found legal team members:', legalTeam.length);
     const recipients = legalTeam.map(u => u.email);
     
-    const subject = `⚖️ New Contract for Legal Review - #${contract._id.toString().slice(-6)}`;
+    const subject = `New Contract for Legal Review - #${contract._id.toString().slice(-6)}`;
     
     const html = `
       <!DOCTYPE html>
