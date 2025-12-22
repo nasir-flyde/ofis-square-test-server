@@ -1,5 +1,35 @@
 import mongoose from "mongoose";
 
+// Minimal file metadata for KYC uploads
+const fileMetaSchema = new mongoose.Schema(
+  {
+    fieldname: { type: String, trim: true },
+    originalname: { type: String, trim: true },
+    url: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+// Structured KYC documents schema
+const kycDocumentsSchema = new mongoose.Schema(
+  {
+    // Map of arrays keyed by document type (e.g., panCard, addressProof)
+    files: { type: Map, of: [fileMetaSchema], default: undefined },
+
+    // Document-specific reference numbers/IDs
+    panNumber: { type: String, trim: true, default: undefined },
+    addressProofNumber: { type: String, trim: true, default: undefined },
+    signatoryIdNumber: { type: String, trim: true, default: undefined },
+    gstin: { type: String, trim: true, default: undefined },
+    tan: { type: String, trim: true, default: undefined },
+    cin: { type: String, trim: true, default: undefined },
+    resolutionRefNumber: { type: String, trim: true, default: undefined },
+    moaRegistrationNumber: { type: String, trim: true, default: undefined },
+    aoaRegistrationNumber: { type: String, trim: true, default: undefined },
+  },
+  { _id: false }
+);
+
 const clientSchema = new mongoose.Schema(
   {
     // Basic company info
@@ -95,11 +125,20 @@ const clientSchema = new mongoose.Schema(
       enum: ["none", "pending", "verified", "rejected"],
       default: "none",
     },
-    kycDocuments: { type: mongoose.Schema.Types.Mixed, default: null },
+    kycDocuments: { type: kycDocumentsSchema, default: null },
     kycRejectionReason: { type: String, default: undefined },
     isClientApproved: { type: Boolean, default: false, index: true },
     ownerUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", index: true, default: null },
+
+    // Late fee policy override (client-specific)
+    lateFeePolicy: {
+      enabled: { type: Boolean, default: undefined },
+      reason: { type: String, default: undefined },
+      gracePeriodDays: { type: Number, default: undefined, min: 0 },
+      customFormula: { type: String, default: undefined },
+      variables: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    },
   },
   {
     timestamps: true,

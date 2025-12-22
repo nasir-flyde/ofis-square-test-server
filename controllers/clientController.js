@@ -37,15 +37,11 @@ export const createClient = async (req, res) => {
             fileName: f.originalname || `${Date.now()}_${f.fieldname}`,
             folder,
           });
+          // Store only minimal fields as requested
           const entry = {
             fieldname: f.fieldname,
             originalname: f.originalname,
-            mimetype: f.mimetype,
-            size: f.size,
             url: result?.url,
-            fileId: result?.fileId,
-            name: result.name,
-            filePath: result.filePath,
           };
           if (!uploadsByField[f.fieldname]) uploadsByField[f.fieldname] = [];
           uploadsByField[f.fieldname].push(entry);
@@ -148,8 +144,26 @@ export const createClient = async (req, res) => {
       building: body.building ?? body.buildingId ?? undefined,
     };
 
-    // KYC Documents
-    const kycDocuments = Object.keys(uploadsByField).length > 0 ? { files: uploadsByField } : undefined;
+    // KYC Documents: include minimal files and per-document numbers
+    const kycDocNumbers = {
+      panNumber: body.panNumber ?? body.pan_number ?? undefined,
+      addressProofNumber: body.addressProofNumber ?? body.address_proof_number ?? undefined,
+      signatoryIdNumber: body.signatoryIdNumber ?? body.signatory_id_number ?? undefined,
+      gstin: body.gstin ?? body.gst_in ?? undefined,
+      tan: body.tan ?? body.tanNo ?? undefined,
+      cin: body.cin ?? undefined,
+      resolutionRefNumber: body.resolutionRefNumber ?? undefined,
+      moaRegistrationNumber: body.moaRegistrationNumber ?? undefined,
+      aoaRegistrationNumber: body.aoaRegistrationNumber ?? undefined,
+    };
+    const hasKycNumbers = Object.values(kycDocNumbers).some(v => v !== undefined && v !== null && String(v).trim() !== '');
+    const hasKycFiles = Object.keys(uploadsByField).length > 0;
+    const kycDocuments = (hasKycFiles || hasKycNumbers)
+      ? {
+          ...(hasKycFiles ? { files: uploadsByField } : {}),
+          ...(hasKycNumbers ? kycDocNumbers : {}),
+        }
+      : undefined;
 
     // Merge all sections into payload
     const payload = {
@@ -790,12 +804,7 @@ export const submitKycDocuments = async (req, res) => {
         const entry = {
           fieldname: f.fieldname,
           originalname: f.originalname,
-          mimetype: f.mimetype,
-          size: f.size,
           url: result?.url,
-          fileId: result?.fileId,
-          name: result.name,
-          filePath: result.filePath,
         };
         if (!uploadsByField[f.fieldname]) uploadsByField[f.fieldname] = [];
         uploadsByField[f.fieldname].push(entry);
@@ -803,9 +812,23 @@ export const submitKycDocuments = async (req, res) => {
     );
 
     // Merge body-provided KYC data and uploaded file URLs
+    // Merge KYC numbers (if provided) and minimal file arrays
+    const kycDocNumbers2 = {
+      panNumber: req.body?.panNumber ?? req.body?.pan_number ?? undefined,
+      addressProofNumber: req.body?.addressProofNumber ?? req.body?.address_proof_number ?? undefined,
+      signatoryIdNumber: req.body?.signatoryIdNumber ?? req.body?.signatory_id_number ?? undefined,
+      gstin: req.body?.gstin ?? req.body?.gst_in ?? undefined,
+      tan: req.body?.tan ?? req.body?.tanNo ?? undefined,
+      cin: req.body?.cin ?? undefined,
+      resolutionRefNumber: req.body?.resolutionRefNumber ?? undefined,
+      moaRegistrationNumber: req.body?.moaRegistrationNumber ?? undefined,
+      aoaRegistrationNumber: req.body?.aoaRegistrationNumber ?? undefined,
+    };
+    const hasKycNumbers2 = Object.values(kycDocNumbers2).some(v => v !== undefined && v !== null && String(v).trim() !== '');
     const mergedKyc = {
-      ...(kyc_documents ?? req.body?.kycDocuments ?? {}),
+      ...((kyc_documents ?? req.body?.kycDocuments) || {}),
       ...(Object.keys(uploadsByField).length ? { files: uploadsByField } : {}),
+      ...(hasKycNumbers2 ? kycDocNumbers2 : {}),
     };
 
     const updated = await Client.findByIdAndUpdate(

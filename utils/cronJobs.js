@@ -23,7 +23,8 @@ const scheduleNoShowUpdates = () => {
 };
 
 const scheduleMonthlyInvoices = () => {
-  cron.schedule('0 2 1 * *', async () => {
+  // Run daily; per-building logic inside the service decides whether today is the generation day
+  cron.schedule('21 17 * * *', async () => {
     try {
       console.log('Running monthly invoice generation job...');
       const result = await createMonthlyInvoices();
@@ -36,7 +37,7 @@ const scheduleMonthlyInvoices = () => {
     timezone: "Asia/Kolkata"
   });
   
-  console.log('Monthly invoice generation cron job scheduled for 1st of every month at 2 AM');
+  console.log('Monthly invoice generation cron job scheduled daily at 12:02 AM (IST)');
 };
 
 const scheduleZohoTokenRefresh = () => {
@@ -57,7 +58,6 @@ const scheduleZohoTokenRefresh = () => {
 
   console.log('Zoho token refresh cron job scheduled for every 10 minutes');
 };
-
 const scheduleAccessEnforcement = () => {
   // Run every 2 minutes
   cron.schedule('*/3600 * * * *', async () => {
@@ -85,6 +85,5 @@ const scheduleAccessEnforcement = () => {
 
   console.log('Hourly access enforcement cron job scheduled for minute 0 of every hour');
 };
-
 
 export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement };

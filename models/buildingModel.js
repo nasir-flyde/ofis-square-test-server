@@ -44,6 +44,30 @@ const BuildingSchema = new Schema(
       min: 0,
       default: 500
     },
+    draftInvoiceGeneration: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    draftInvoiceDay: {
+      type: Number,
+      min: 1,
+      max: 31,
+      default: 25
+    },
+    draftInvoiceDueDay: {
+      type: Number,
+      min: 1,
+      max: 31,
+      default: 7
+    },
+    // Late fee policy (per-building defaults)
+    lateFeePolicy: {
+      enabled: { type: Boolean, default: false },
+      gracePeriodDays: { type: Number, default: 0, min: 0 },
+      customFormula: { type: String, default: undefined },
+      variables: { type: Schema.Types.Mixed, default: undefined },
+    },
     photos: [{
       category: { type: String, required: true, trim: true },
       imageUrl: { type: String, required: true },

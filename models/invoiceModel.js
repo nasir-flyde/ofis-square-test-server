@@ -30,13 +30,40 @@ const invoiceSchema = new mongoose.Schema(
     contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract" },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building" },
     cabin: { type: mongoose.Schema.Types.ObjectId, ref: "Cabin" },
+    // Optional link to SecurityDeposit entity for deposit invoices
+    deposit: { type: mongoose.Schema.Types.ObjectId, ref: "SecurityDeposit", index: true },
     invoice_number: { type: String }, // Our internal invoice number (local sequence)
     reference_number: { type: String },
     source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
-    type: { type: String, enum: ["regular", "credit_monthly"], default: "regular" },
+    type: { 
+      type: String, 
+      enum: [
+        "regular",
+        "credit_monthly",
+        "credit_purchase",
+        "security_deposit",
+        "rent",
+        "service",
+        "adjustment",
+        "late_fee"
+      ], 
+      default: "regular" 
+    },
     category: { 
       type: String, 
-      enum: ["general", "day_pass", "meeting_room", "printing", "amenities", "other", "exceeded_credits", "custom_services"],
+      enum: [
+        "general",
+        "day_pass",
+        "meeting_room",
+        "printing",
+        "amenities",
+        "other",
+        "exceeded_credits",
+        "custom_services",
+        "onboarding",
+        "monthly",
+        "exit"
+      ],
       default: "general"
     },
     date: { type: Date, default: Date.now },
@@ -67,6 +94,10 @@ const invoiceSchema = new mongoose.Schema(
       enum: ["draft", "sent", "partially_paid", "paid", "issued", "overdue", "void"],
       default: "draft",
     },
+    // Prevent pushing provisional late fee invoices to Zoho
+    push_to_zoho: { type: Boolean, default: true },
+
+    // Zoho fields
     zoho_invoice_id: { type: String, index: true },
     zoho_invoice_number: { type: String },
     zoho_status: { type: String },
@@ -108,6 +139,21 @@ const invoiceSchema = new mongoose.Schema(
     sent_at: { type: Date },
     paid_at: { type: Date },
     payment_id: { type: String },
+
+    // Provisional Late Fee subdocument (local only)
+    late_fee: {
+      original_invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", index: true },
+      period_year: { type: Number },
+      period_month: { type: Number },
+      days: { type: Number },
+      amount: { type: Number },
+      rate_per_day: { type: Number },
+      variables_snapshot: { type: mongoose.Schema.Types.Mixed },
+      formula_snapshot: { type: String },
+      status: { type: String, enum: ["pending_merge", "merged", "void"], default: "pending_merge" },
+      merged_into_invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", index: true },
+      merged_at: { type: Date }
+    }
   },
   { timestamps: true }
 );
@@ -123,6 +169,15 @@ invoiceSchema.index(
     partialFilterExpression: { type: "credit_monthly" },
     name: "unique_credit_monthly_invoice_by_category"
   }
+);
+
+// Ensure single invoice per deposit
+invoiceSchema.index({ deposit: 1 }, { unique: true, sparse: true, name: "unique_invoice_per_deposit" });
+
+// Ensure unique provisional late fee invoice per original invoice and month
+invoiceSchema.index(
+  { "late_fee.original_invoice": 1, "late_fee.period_year": 1, "late_fee.period_month": 1, type: 1 },
+  { unique: true, partialFilterExpression: { type: "late_fee" }, name: "unique_late_fee_per_invoice_month" }
 );
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);

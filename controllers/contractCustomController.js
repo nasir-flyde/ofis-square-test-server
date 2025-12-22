@@ -83,6 +83,19 @@ export const createBySales = async (req, res) => {
       'aoa',
     ];
 
+    // Map each KYC doc type to its unique field name key
+    const DOC_FIELD_KEY_MAP = {
+      addressProof: 'addressProofNumber',
+      boardResolutionOrLetterOfAuthority: 'resolutionRefNumber',
+      photoIdAndAddressProofOfSignatory: 'signatoryIdNumber',
+      certificateOfIncorporation: 'cin',
+      businessLicenseGST: 'gstin',
+      panCard: 'panNumber',
+      tanNo: 'tan',
+      moa: 'moaRegistrationNumber',
+      aoa: 'aoaRegistrationNumber',
+    };
+
     const mapClientKycToContract = (clientKyc) => {
       const out = {};
       let count = 0;
@@ -108,6 +121,19 @@ export const createBySales = async (req, res) => {
         return null;
       };
 
+      const resolveFieldValue = (target, sourceObj) => {
+        try {
+          const src = sourceObj || clientKyc;
+          const fieldKey = DOC_FIELD_KEY_MAP[target];
+          if (!src || typeof src !== 'object' || !fieldKey) return undefined;
+          // Possible shapes: src[target][fieldKey], src[fieldKey], src.values[fieldKey]
+          if (src[target] && typeof src[target] === 'object' && src[target][fieldKey]) return src[target][fieldKey];
+          if (src[fieldKey]) return src[fieldKey];
+          if (src.values && typeof src.values === 'object' && src.values[fieldKey]) return src.values[fieldKey];
+        } catch (_) { /* ignore */ }
+        return undefined;
+      };
+
       if (files && typeof files === 'object') {
         Object.entries(files).forEach(([rawKey, arr]) => {
           const first = Array.isArray(arr) ? arr[0] : null;
@@ -129,6 +155,12 @@ export const createBySales = async (req, res) => {
               approved: false,
               uploadedAt: new Date(),
             };
+            // Attach unique field value if present on clientKyc
+            const fv = resolveFieldValue(target, clientKyc);
+            if (fv) {
+              const fk = DOC_FIELD_KEY_MAP[target];
+              out[target][fk] = fv;
+            }
             count += 1;
           }
         });
@@ -160,6 +192,12 @@ export const createBySales = async (req, res) => {
               approved: !!d.approved,
               uploadedAt: d.uploadedAt ? new Date(d.uploadedAt) : new Date(),
             };
+            // Attach unique field value if available in body
+            const fk = DOC_FIELD_KEY_MAP[dt];
+            const fv = (d && d[fk]) || kycFromBody[fk] || (kycFromBody.values && kycFromBody.values[fk]) || undefined;
+            if (fk && fv) {
+              temp[dt][fk] = fv;
+            }
             kycCount += 1;
           }
         });

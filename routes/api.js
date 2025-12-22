@@ -49,6 +49,7 @@ import matrixUsersRoutes from "./matrixUsers.js";
 import enrollmentDetails from "./enrollmentDetails.js"
 import memberIntegrationsRoutes from "./memberIntegrations.js";
 import searchRoutes from "./search.js";
+import securityDepositsRoutes from "./securityDeposits.js";
 
 const router = express.Router();
 
@@ -102,4 +103,5 @@ router.use("/bhaifi", bhaifiRoutes);
 router.use("/matrix-users", matrixUsersRoutes);
 router.use("/enrollment-details", enrollmentDetails)
 router.use("/search", searchRoutes);
+router.use("/security-deposits", securityDepositsRoutes);
 export default router;

@@ -15,31 +15,40 @@ import crypto from 'crypto';
 import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import LoggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
+import { applyPaymentToDeposit } from "./securityDepositController.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
   const invoice = await Invoice.findById(invoiceId);
   if (!invoice) throw new Error("Invoice not found");
 
-  const amountPaid = Math.max(0, Number(invoice.amountPaid || 0) + Number(deltaAmount || 0));
-  invoice.amountPaid = Math.round(amountPaid * 100) / 100;
-  const balanceDue = Math.max(0, Number(invoice.total || 0) - invoice.amountPaid);
-  invoice.balanceDue = Math.round(balanceDue * 100) / 100;
+  // Use snake_case fields as per invoiceModel, and mirror to camelCase for compatibility
+  const prevPaid = Number(invoice.amount_paid || 0);
+  const newPaid = Math.max(0, Math.round((prevPaid + Number(deltaAmount || 0)) * 100) / 100);
+  invoice.amount_paid = newPaid; // primary
+  invoice.amountPaid = newPaid;  // mirror for legacy consumers
 
-  if (invoice.balanceDue === 0) {
+  const total = Number(invoice.total || 0);
+  const newBalance = Math.max(0, Math.round((total - newPaid) * 100) / 100);
+  invoice.balance = newBalance;   // primary
+  invoice.balanceDue = newBalance; // mirror for legacy consumers
+
+  // Update status
+  if (newBalance === 0) {
     invoice.status = "paid";
+    invoice.paid_at = invoice.paid_at || new Date();
   } else if (invoice.status !== "void") {
-    // keep overdue if already overdue, else issued
     const now = new Date();
-    if (invoice.dueDate && now > new Date(invoice.dueDate)) {
+    const due = invoice.due_date ? new Date(invoice.due_date) : null;
+    if (due && now > due) {
       invoice.status = "overdue";
-    } else if (invoice.status === "draft") {
-      invoice.status = "issued";
-    } else if (!invoice.status || invoice.status === "issued") {
-      invoice.status = "issued";
+    } else {
+      // If a payment has been made but balance remains, mark partially_paid; otherwise issued
+      invoice.status = newPaid > 0 ? "partially_paid" : (invoice.status === "draft" ? "issued" : (invoice.status || "issued"));
     }
   }
 
+  invoice.last_payment_date = new Date();
   await invoice.save();
   return invoice;
 }
@@ -61,10 +70,29 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: "Payment client does not match invoice client" });
     }
 
+    // Normalize payment type to match Payment enum
+    const typeMap = {
+      'cash': 'Cash',
+      'bank transfer': 'Bank Transfer',
+      'banktransfer': 'BankTransfer',
+      'upi': 'UPI',
+      'card': 'Card',
+      'creditcard': 'CreditCard',
+      'credits': 'Credits',
+      'debitcard': 'DebitCard',
+      'cheque': 'Cheque',
+      'online gateway': 'Online Gateway',
+      'paypal': 'PayPal',
+      'razorpay': 'Razorpay',
+      'stripe': 'Stripe',
+      'other': 'Other',
+    };
+    const normalizedType = type ? (typeMap[String(type).trim().toLowerCase()] || type) : undefined;
+
     const payment = await Payment.create({
       invoice: invoiceId,
       client: client || invoice.client,
-      type: type || undefined, // defaults to schema default
+      type: normalizedType || undefined, // defaults to schema default
       referenceNumber: referenceNumber || undefined,
       paymentGatewayRef: paymentGatewayRef || undefined,
       amount: Number(amount),
@@ -76,12 +104,14 @@ export const createPayment = async (req, res) => {
     });
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
+    // Update linked security deposit if this is a deposit invoice
+    try { await applyPaymentToDeposit(invoiceId, Number(amount)); } catch (_) {}
 
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_MADE', 'Payment', payment._id, {
       invoiceId,
       amount: Number(amount),
-      paymentType: type,
+      paymentType: normalizedType,
       referenceNumber
     });
 
@@ -105,6 +135,8 @@ export const deletePayment = async (req, res) => {
       const invoiceExists = await Invoice.findById(payment.invoice).select('_id');
       if (invoiceExists) {
         await applyInvoicePayment(payment.invoice, -Number(payment.amount || 0));
+        // Reverse deposit applied amount as well
+        try { await applyPaymentToDeposit(payment.invoice, -Number(payment.amount || 0)); } catch (_) {}
       }
     } catch (_) {
     }
@@ -140,7 +172,7 @@ export const getPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(filter)
-      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amount_paid balance due_date status")
       .populate("client", "companyName contactPerson phone email")
       .sort({ paymentDate: -1, createdAt: -1 });
 
@@ -156,7 +188,7 @@ export const getPaymentById = async (req, res) => {
   try {
     const { id } = req.params;
     const payment = await Payment.findById(id)
-      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate")
+      .populate("invoice", "invoice_number total amount_paid balance due_date status")
       .populate("client", "companyName contactPerson phone email");
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     return res.json({ success: true, data: payment });
@@ -185,7 +217,7 @@ export const getClientPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(query)
-      .populate("invoice", "invoice_number total amountPaid balanceDue status dueDate building cabin")
+      .populate("invoice", "invoice_number total amount_paid balance due_date status building cabin")
       .sort({ paymentDate: -1, createdAt: -1 })
       .limit(Number(limit))
       .skip((Number(page) - 1) * Number(limit));
@@ -559,6 +591,8 @@ export const recordCustomerPayment = async (req, res) => {
     // Update local invoice balances
     for (const inv of invoices) {
       await updateInvoiceAfterZohoPayment(inv.invoiceId, inv.amount_applied);
+      // Mirror to deposit if linked to a deposit invoice
+      try { await applyPaymentToDeposit(inv.invoiceId, inv.amount_applied); } catch (_) {}
     }
 
     // If invoices belong to contracts, when all invoices for a contract are paid

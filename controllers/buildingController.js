@@ -6,6 +6,9 @@ export const createBuilding = async (req, res) => {
   try {
     const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink } = req.body || {};
 
+// Update per-building invoice settings (draft invoice schedule and late fee policy)
+
+
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
     }
@@ -322,6 +325,92 @@ export const activateBuilding = async (req, res) => {
   } catch (error) {
     console.error("Error activating building:", error);
     await logErrorActivity(req, error, 'Activate Building');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+export const updateBuildingInvoiceSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      draftInvoiceGeneration,
+      draftInvoiceDay,
+      draftInvoiceDueDay,
+      lateFeePolicy
+    } = req.body || {};
+
+    const building = await Building.findById(id);
+    if (!building) {
+      return res.status(404).json({ success: false, message: "Building not found" });
+    }
+
+    // Build update payload with validation
+    const updatePayload = {};
+
+    if (typeof draftInvoiceGeneration === 'boolean') {
+      updatePayload.draftInvoiceGeneration = draftInvoiceGeneration;
+    }
+
+    if (draftInvoiceDay !== undefined) {
+      const day = Number(draftInvoiceDay);
+      if (!Number.isFinite(day) || day < 1 || day > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDay must be a number between 1 and 31" });
+      }
+      updatePayload.draftInvoiceDay = day;
+    }
+
+    if (draftInvoiceDueDay !== undefined) {
+      const dueDay = Number(draftInvoiceDueDay);
+      if (!Number.isFinite(dueDay) || dueDay < 1 || dueDay > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDueDay must be a number between 1 and 31" });
+      }
+      updatePayload.draftInvoiceDueDay = dueDay;
+    }
+
+    if (lateFeePolicy !== undefined) {
+      const policy = lateFeePolicy || {};
+      const enabled = policy.enabled === undefined ? building.lateFeePolicy?.enabled : Boolean(policy.enabled);
+      const grace = policy.gracePeriodDays === undefined ? building.lateFeePolicy?.gracePeriodDays : Number(policy.gracePeriodDays);
+      const customFormula = policy.customFormula === undefined ? building.lateFeePolicy?.customFormula : policy.customFormula;
+      const variables = policy.variables === undefined ? building.lateFeePolicy?.variables : policy.variables;
+
+      if (grace !== undefined && (!Number.isFinite(grace) || grace < 0)) {
+        return res.status(400).json({ success: false, message: "lateFeePolicy.gracePeriodDays must be a non-negative number" });
+      }
+
+      updatePayload.lateFeePolicy = {
+        enabled,
+        gracePeriodDays: grace ?? 0,
+        customFormula: customFormula || undefined,
+        variables: variables || undefined,
+      };
+    }
+
+    const before = building.toObject();
+    Object.assign(building, updatePayload);
+    await building.save();
+
+    // Log activity
+    await logCRUDActivity(
+      req,
+      'UPDATE',
+      'Building',
+      id,
+      { before, after: building.toObject(), fields: Object.keys(updatePayload) },
+      { buildingName: building.name, updatedFields: Object.keys(updatePayload) }
+    );
+
+    // If lateFeePolicy was updated, trigger background recompute for last month provisional fees
+    try {
+      if (updatePayload.lateFeePolicy) {
+        // Fire and forget; don't block response
+        recomputeLateFeesForBuilding(id).catch(() => {});
+      }
+    } catch (_) {}
+
+    return res.json({ success: true, message: "Invoice settings updated", data: building });
+  } catch (error) {
+    console.error("updateBuildingInvoiceSettings error:", error);
+    await logErrorActivity(req, error, 'Update Building Invoice Settings');
     return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -277,6 +277,7 @@ const contractSchema = new mongoose.Schema(
       addressProof: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        addressProofNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -284,6 +285,7 @@ const contractSchema = new mongoose.Schema(
       boardResolutionOrLetterOfAuthority: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        resolutionRefNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -291,6 +293,7 @@ const contractSchema = new mongoose.Schema(
       photoIdAndAddressProofOfSignatory: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        signatoryIdNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -298,6 +301,7 @@ const contractSchema = new mongoose.Schema(
       certificateOfIncorporation: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        cin: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -305,6 +309,7 @@ const contractSchema = new mongoose.Schema(
       businessLicenseGST: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        gstin: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -312,6 +317,7 @@ const contractSchema = new mongoose.Schema(
       panCard: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        panNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -319,6 +325,7 @@ const contractSchema = new mongoose.Schema(
       tanNo: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        tan: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -326,6 +333,7 @@ const contractSchema = new mongoose.Schema(
       moa: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        moaRegistrationNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }
@@ -333,6 +341,7 @@ const contractSchema = new mongoose.Schema(
       aoa: {
         fileName: { type: String, trim: true },
         fileUrl: { type: String, trim: true },
+        aoaRegistrationNumber: { type: String, trim: true },
         approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         approved: { type: Boolean, default: false },
         uploadedAt: { type: Date, default: Date.now }

@@ -7,7 +7,6 @@ import { getValidAccessToken } from "../utils/zohoTokenManager.js";
 import axios from "axios";
 import { logCRUDActivity, logPaymentActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
-
 import PdfPrinter from "pdfmake";
 import getInvoiceTemplate from "./invoiceTemplate.js";
 import {
@@ -20,6 +19,7 @@ import {
   sendZohoInvoiceEmail,
   findOrCreateContactFromClient,
 } from "../utils/zohoBooks.js";
+import { applyPaymentToDeposit } from "./securityDepositController.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
@@ -674,6 +674,9 @@ export const recordInvoicePayment = async (req, res) => {
     invoice.paymentId = payment?.payment_id || invoice.paymentId;
     await invoice.save();
 
+    // Update linked security deposit if this is a deposit invoice
+    try { await applyPaymentToDeposit(id, Number(amount)); } catch (_) {}
+
     // If this invoice is linked to a contract, check if all invoices for that contract are paid
     try {
       if (invoice.contract) {
@@ -771,6 +774,8 @@ export const zohoWebhook = async (req, res) => {
             invoice.paid_at = new Date();
           }
           await invoice.save();
+          // Update deposit mirror
+          try { await applyPaymentToDeposit(invoice._id, amount); } catch (_) {}
         }
       }
     }
