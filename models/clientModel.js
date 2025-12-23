@@ -1,31 +1,16 @@
 import mongoose from "mongoose";
 
-// Minimal file metadata for KYC uploads
-const fileMetaSchema = new mongoose.Schema(
+// New DocumentEntity-backed KYC items (normalized)
+const kycDocumentItemSchema = new mongoose.Schema(
   {
-    fieldname: { type: String, trim: true },
-    originalname: { type: String, trim: true },
+    document: { type: mongoose.Schema.Types.ObjectId, ref: "DocumentEntity", default: null },
+    fieldName: { type: String, trim: true }, // e.g., panCard, addressProof
+    fileName: { type: String, trim: true },
     url: { type: String, trim: true },
-  },
-  { _id: false }
-);
-
-// Structured KYC documents schema
-const kycDocumentsSchema = new mongoose.Schema(
-  {
-    // Map of arrays keyed by document type (e.g., panCard, addressProof)
-    files: { type: Map, of: [fileMetaSchema], default: undefined },
-
-    // Document-specific reference numbers/IDs
-    panNumber: { type: String, trim: true, default: undefined },
-    addressProofNumber: { type: String, trim: true, default: undefined },
-    signatoryIdNumber: { type: String, trim: true, default: undefined },
-    gstin: { type: String, trim: true, default: undefined },
-    tan: { type: String, trim: true, default: undefined },
-    cin: { type: String, trim: true, default: undefined },
-    resolutionRefNumber: { type: String, trim: true, default: undefined },
-    moaRegistrationNumber: { type: String, trim: true, default: undefined },
-    aoaRegistrationNumber: { type: String, trim: true, default: undefined },
+    number: { type: String, trim: true }, // e.g., PAN number, GSTIN, CIN, etc.
+    approved: { type: Boolean, default: false },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    uploadedAt: { type: Date, default: Date.now },
   },
   { _id: false }
 );
@@ -125,7 +110,8 @@ const clientSchema = new mongoose.Schema(
       enum: ["none", "pending", "verified", "rejected"],
       default: "none",
     },
-    kycDocuments: { type: kycDocumentsSchema, default: null },
+    // Normalized KYC documents using DocumentEntity references
+    kycDocumentItems: { type: [kycDocumentItemSchema], default: [] },
     kycRejectionReason: { type: String, default: undefined },
     isClientApproved: { type: Boolean, default: false, index: true },
     ownerUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true, default: null },

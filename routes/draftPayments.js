@@ -1,5 +1,7 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
+import checkPermission from "../middlewares/checkPermission.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import upload from "../middlewares/multer.js";
 import {
   createDraftPayment,
@@ -12,10 +14,36 @@ import {
 const router = express.Router();
 
 // All authenticated users can access draft payments (role-based restrictions in controller)
-router.post("/", authMiddleware, upload.array('screenshots', 5), createDraftPayment);
-router.get("/", authMiddleware, getDraftPayments);
-router.get("/:id", authMiddleware, getDraftPaymentById);
-router.post("/:id/approve", authMiddleware, approveDraftPayment);
-router.post("/:id/reject", authMiddleware, rejectDraftPayment);
+router.post(
+  "/",
+  authMiddleware,
+  checkPermission(PERMISSIONS.DRAFT_PAYMENT_CREATE),
+  upload.array('screenshots', 5),
+  createDraftPayment
+);
+router.get(
+  "/",
+  authMiddleware,
+  checkPermission(PERMISSIONS.DRAFT_PAYMENT_READ),
+  getDraftPayments
+);
+router.get(
+  "/:id",
+  authMiddleware,
+  checkPermission(PERMISSIONS.DRAFT_PAYMENT_READ),
+  getDraftPaymentById
+);
+router.post(
+  "/:id/approve",
+  authMiddleware,
+  checkPermission(PERMISSIONS.DRAFT_PAYMENT_APPROVE),
+  approveDraftPayment
+);
+router.post(
+  "/:id/reject",
+  authMiddleware,
+  checkPermission(PERMISSIONS.DRAFT_PAYMENT_REJECT),
+  rejectDraftPayment
+);
 
 export default router;

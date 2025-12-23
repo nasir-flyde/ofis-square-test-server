@@ -802,3 +802,26 @@ export async function findZohoItemByName(itemName) {
     return null;
   }
 }
+
+export async function markZohoInvoiceAsSent(invoiceId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/invoices/${invoiceId}/status/sent?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+      },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg = data?.message || `Zoho API error (mark as sent)`;
+      console.error("❌ Error marking Zoho invoice as sent:", errMsg);
+      throw new Error(errMsg);
+    }
+    return data;
+  } catch (err) {
+    console.error("❌ Error in markZohoInvoiceAsSent:", err.message);
+    throw err;
+  }
+}

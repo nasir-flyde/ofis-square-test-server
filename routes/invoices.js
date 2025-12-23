@@ -22,6 +22,7 @@ import {
   getInvoicePayments,
   sendInvoiceViaEmail,
   markInvoiceAsPaid,
+  markInvoiceAsSent,
   uploadEInvoice,
 } from "../controllers/invoiceController.js";
 import multer from "multer";
@@ -39,7 +40,19 @@ router.patch("/:id/status", authMiddleware, checkPermission(PERMISSIONS.INVOICE_
 
 // Zoho Books integration - Finance Senior only
 router.post("/:id/push-zoho", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), pushInvoiceToZoho);
+// Allow creators to push only as draft
+router.post(
+  "/:id/push-zoho-draft",
+  authMiddleware,
+  checkPermission(PERMISSIONS.INVOICE_CREATE),
+  (req, res) => {
+    req.body = req.body || {};
+    req.body.sendStatus = 'draft';
+    return pushInvoiceToZoho(req, res);
+  }
+);
 router.post("/:id/send", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), sendInvoiceEmail);
+router.post("/:id/mark-sent", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), markInvoiceAsSent);
 router.post("/:id/sync", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), syncInvoiceFromZoho);
 router.get("/:id/pdf", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoicePdf);
 router.get("/:id/zoho-links", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoiceZohoLinks);

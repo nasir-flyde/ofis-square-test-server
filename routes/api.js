@@ -46,10 +46,11 @@ import rfidCardsRoutes from "./rfidCards.js";
 import accessEventsRoutes from "./accessEvents.js";
 import provisioningJobsRoutes from "./provisioningJobs.js";
 import matrixUsersRoutes from "./matrixUsers.js";
-import enrollmentDetails from "./enrollmentDetails.js"
+import enrollmentDetails from "./enrollmentDetails.js";
 import memberIntegrationsRoutes from "./memberIntegrations.js";
 import searchRoutes from "./search.js";
 import securityDepositsRoutes from "./securityDeposits.js";
+import documentEntitiesRoutes from "./documentEntities.js";
 
 const router = express.Router();
 
@@ -101,7 +102,8 @@ router.use("/provisioning-jobs", provisioningJobsRoutes);
 router.use("/matrix-devices", matrixDevicesRoutes);
 router.use("/bhaifi", bhaifiRoutes);
 router.use("/matrix-users", matrixUsersRoutes);
-router.use("/enrollment-details", enrollmentDetails)
+router.use("/enrollment-details", enrollmentDetails);
 router.use("/search", searchRoutes);
 router.use("/security-deposits", securityDepositsRoutes);
+router.use("/document-entities", documentEntitiesRoutes);
 export default router;

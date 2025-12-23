@@ -18,6 +18,7 @@ import {
   recordZohoPayment,
   sendZohoInvoiceEmail,
   findOrCreateContactFromClient,
+  markZohoInvoiceAsSent,
 } from "../utils/zohoBooks.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 
@@ -251,13 +252,15 @@ export const pushInvoiceToZoho = async (req, res) => {
     const { id } = req.params;
     const { sendStatus } = req.body; // 'draft' or 'sent'
     
-    // Role-based restriction: Only Finance Senior can push to Zoho
+    // Role-based restriction: Only Finance Senior can push as 'sent'
     const userRole = req.userRole?.roleName || "";
-    if (userRole !== "System Admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Only Finance Senior users can push invoices to Zoho Books. Please contact your Finance Senior."
-      });
+    if (sendStatus === 'sent') {
+      if (userRole !== "System Admin") {
+        return res.status(403).json({
+          success: false,
+          message: "Only Finance Senior users can send invoices in Zoho Books. Please contact your Finance Senior."
+        });
+      }
     }
     
     const invoice = await Invoice.findById(id).populate("client");
@@ -1273,6 +1276,67 @@ export const markInvoiceAsPaid = async (req, res) => {
     return res.json({ success: true, data: invoice, payment, message: "Payment recorded successfully" });
   } catch (error) {
     await logErrorActivity(req, error, "Mark Invoice as Paid");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/invoices/:id/mark-sent
+export const markInvoiceAsSent = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Permission is handled at route level (INVOICE_SEND)
+    const invoice = await Invoice.findById(id).populate("client");
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    // Ensure invoice is synced to Zoho first
+    let client = invoice.client || (invoice.client && (await Client.findById(invoice.client)));
+    if (!invoice.zoho_invoice_id) {
+      if (!client) return res.status(400).json({ success: false, message: "Invoice has no linked client" });
+
+      // Ensure Zoho contact exists
+      if (!client.zohoBooksContactId) {
+        try {
+          const contactId = await findOrCreateContactFromClient(client);
+          if (!contactId) {
+            return res.status(400).json({ success: false, message: "Failed to create Zoho contact for client" });
+          }
+          client.zohoBooksContactId = contactId;
+          await client.save();
+        } catch (e) {
+          return res.status(400).json({ success: false, message: `Zoho contact error: ${e.message}` });
+        }
+      }
+
+      // Push local invoice to Zoho as draft
+      try {
+        const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
+        const zohoId = zohoResp?.invoice?.invoice_id;
+        if (!zohoId) {
+          return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
+        }
+        invoice.zoho_invoice_id = zohoId;
+        invoice.zoho_invoice_number = zohoResp?.invoice?.invoice_number || invoice.zoho_invoice_number;
+        invoice.zoho_status = zohoResp?.invoice?.status || invoice.zoho_status || "draft";
+        await invoice.save();
+      } catch (e) {
+        return res.status(400).json({ success: false, message: `Failed to push invoice to Zoho: ${e.message}` });
+      }
+    }
+
+    // Mark the Zoho invoice as sent without emailing
+    try {
+      await markZohoInvoiceAsSent(invoice.zoho_invoice_id);
+      invoice.status = "sent";
+      invoice.zoho_status = "sent";
+      invoice.sent_at = new Date();
+      await invoice.save();
+      return res.json({ success: true, data: invoice });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: `Failed to mark as sent in Zoho: ${e.message}` });
+    }
+  } catch (error) {
+    await logErrorActivity(req, error, "Mark Invoice As Sent");
     return res.status(500).json({ success: false, message: error.message });
   }
 };

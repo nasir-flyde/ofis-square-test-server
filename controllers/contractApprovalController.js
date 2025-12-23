@@ -24,6 +24,7 @@ import {
   sendContractSentForSignatureEmail,
   sendContractSignedEmail
 } from "../utils/contractEmailService.js";
+import DocumentEntity from "../models/documentEntityModel.js";
 
 const checkWorkflowPrerequisites = (contract, requiredFlags, isSystemAdmin = false) => {
   if (isSystemAdmin) return []; // Bypass all checks for System Admin
@@ -612,20 +613,15 @@ export const setFinanceApproval = async (req, res) => {
   }
 };
 
-// Allowed KYC document types as per Contract.kycDocuments schema
-const KYC_DOC_TYPES = [
-  'addressProof',
-  'boardResolutionOrLetterOfAuthority',
-  'photoIdAndAddressProofOfSignatory',
-  'certificateOfIncorporation',
-  'businessLicenseGST',
-  'panCard',
-  'tanNo',
-  'moa',
-  'aoa'
-];
+// Helper to load active KYC document entities
+const getKycDocEntities = async () => {
+  const docs = await DocumentEntity.find({
+    isActive: true,
+  }).select("_id fieldName name required entityType").lean();
+  const byField = new Map(docs.map((d) => [d.fieldName, d]));
+  return { list: docs, byField };
+};
 
-// Approve KYC (only marks approval, upload is separate)
 export const approveKYC = async (req, res) => {
   try {
     const { id } = req.params;
@@ -635,13 +631,59 @@ export const approveKYC = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Contract not found' });
     }
 
-    // Ensure at least one KYC document is uploaded before global approval
-    const anyUploaded = KYC_DOC_TYPES.some(dt => contract.kycDocuments?.[dt]?.fileUrl);
-    if (!contract.iskycuploaded || !anyUploaded) {
-      return res.status(400).json({ success: false, message: 'KYC documents must be uploaded before approval' });
+    // Evaluate only required docs; optional (required: false) must not block approval
+    const requiredDocs = await DocumentEntity.find({
+      isActive: true,
+      required: true,
+      entityType: { $in: ['contract', 'both'] },
+    }).select('_id fieldName name').lean();
+
+    const items = Array.isArray(contract.kycDocumentItems) ? contract.kycDocumentItems : [];
+
+    if (requiredDocs.length > 0) {
+      // Ensure at least one KYC document is uploaded when there are required docs
+      const anyUploaded = items.some(i => !!i.url);
+      if (!contract.iskycuploaded || !anyUploaded) {
+        return res.status(400).json({ success: false, message: 'KYC documents must be uploaded before approval' });
+      }
+
+      const missing = [];
+
+      // Approve any required doc items that are uploaded but not yet approved
+      for (const rd of requiredDocs) {
+        const hasItem = items.find((it) => {
+          const matchesById = it.document && String(it.document) === String(rd._id);
+          const matchesByField = it.fieldName && it.fieldName === rd.fieldName;
+          return (matchesById || matchesByField) && !!it.url;
+        });
+        if (!hasItem) {
+          missing.push(rd.name || rd.fieldName || String(rd._id));
+        }
+      }
+
+      if (missing.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Missing required KYC documents: ${missing.join(', ')}`,
+          missingRequired: missing,
+        });
+      }
+
+      // Auto-mark uploaded required items as approved to align with pre-save hook logic
+      contract.kycDocumentItems = items.map((it) => {
+        const isRequired = requiredDocs.some((rd) => {
+          const matchesById = it.document && String(it.document) === String(rd._id);
+          const matchesByField = it.fieldName && it.fieldName === rd.fieldName;
+          return matchesById || matchesByField;
+        });
+        if (isRequired && it.url && !it.approved) {
+          return { ...it, approved: true, approvedBy: req.user?.id || null };
+        }
+        return it;
+      });
     }
 
-    // Mark KYC as approved
+    // Mark KYC as approved (pre-save hook will also verify required approvals)
     contract.iskycapproved = true;
     contract.kycApprovedAt = new Date();
     contract.kycApprovedBy = req.user?.id || null;
@@ -651,7 +693,7 @@ export const approveKYC = async (req, res) => {
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       action: 'kyc_approved',
       approvedBy: req.user?.id || null,
-      documentsCount: contract.kycDocuments?.length || 0,
+      documentsCount: Array.isArray(contract.kycDocumentItems) ? contract.kycDocumentItems.length : 0,
     });
 
     return res.json({
@@ -665,13 +707,13 @@ export const approveKYC = async (req, res) => {
   }
 };
 
-// Upload a specific KYC document by type (structured fields)
 export const uploadKYCDocumentByType = async (req, res) => {
   try {
     const { id, docType } = req.params;
     const file = req.file;
 
-    if (!KYC_DOC_TYPES.includes(docType)) {
+    const { byField } = await getKycDocEntities();
+    if (!byField.has(docType)) {
       return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
     }
     if (!file) {
@@ -690,14 +732,21 @@ export const uploadKYCDocumentByType = async (req, res) => {
       useUniqueFileName: true
     });
 
-    contract.kycDocuments = contract.kycDocuments || {};
-    contract.kycDocuments[docType] = {
+    const entity = byField.get(docType);
+    const items = Array.isArray(contract.kycDocumentItems) ? contract.kycDocumentItems : [];
+    const idx = items.findIndex(it => (it.document && String(it.document) === String(entity._id)) || it.fieldName === docType);
+    const newItem = {
+      document: entity._id,
+      fieldName: docType,
       fileName: file.originalname,
-      fileUrl: uploadResponse.url,
-      approvedBy: null,
+      url: uploadResponse.url,
       approved: false,
-      uploadedAt: new Date()
+      approvedBy: null,
+      uploadedAt: new Date(),
     };
+    if (idx >= 0) items[idx] = { ...items[idx], ...newItem };
+    else items.push(newItem);
+    contract.kycDocumentItems = items;
     contract.iskycuploaded = true;
     // Reset global approval if any doc changes
     contract.iskycapproved = false;
@@ -722,11 +771,11 @@ export const uploadKYCDocumentByType = async (req, res) => {
   }
 };
 
-// Approve a specific KYC document by type
 export const approveKYCDocumentByType = async (req, res) => {
   try {
     const { id, docType } = req.params;
-    if (!KYC_DOC_TYPES.includes(docType)) {
+    const { byField } = await getKycDocEntities();
+    if (!byField.has(docType)) {
       return res.status(400).json({ success: false, message: 'Invalid KYC document type' });
     }
 
@@ -735,13 +784,16 @@ export const approveKYCDocumentByType = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Contract not found' });
     }
 
-    const doc = contract.kycDocuments?.[docType];
-    if (!doc || !doc.fileUrl) {
+    const entity = byField.get(docType);
+    const item = (contract.kycDocumentItems || []).find(it => (it.document && String(it.document) === String(entity._id)) || it.fieldName === docType);
+    if (!item || !item.url) {
       return res.status(400).json({ success: false, message: 'Document not uploaded yet' });
     }
 
-    contract.kycDocuments[docType].approved = true;
-    contract.kycDocuments[docType].approvedBy = req.user?.id || null;
+    contract.kycDocumentItems = (contract.kycDocumentItems || []).map(it => {
+      const matches = (it.document && String(it.document) === String(entity._id)) || it.fieldName === docType;
+      return matches ? { ...it, approved: true, approvedBy: req.user?.id || null } : it;
+    });
     await contract.save(); // pre-save hook will set iskycapproved when all docs approved
 
     await logContractActivity(req, 'UPDATE', id, contract.client, {
@@ -757,9 +809,6 @@ export const approveKYCDocumentByType = async (req, res) => {
   }
 };
 
-// Bulk upload multiple KYC documents by type in a single request
-// Accepts multipart/form-data with field name 'documents' (multiple files) and a matching 'docTypes' array.
-// docTypes can be provided as JSON string (e.g., ["panCard","addressProof"]) or comma-separated string, or as repeated fields.
 export const bulkUploadKYCDocumentsByType = async (req, res) => {
   try {
     const { id } = req.params;
@@ -787,8 +836,9 @@ export const bulkUploadKYCDocumentsByType = async (req, res) => {
     }
 
     // Validate all docTypes
+    const { byField } = await getKycDocEntities();
     for (const dt of docTypes) {
-      if (!KYC_DOC_TYPES.includes(dt)) {
+      if (!byField.has(dt)) {
         return res.status(400).json({ success: false, message: `Invalid KYC document type: ${dt}` });
       }
     }
@@ -798,7 +848,7 @@ export const bulkUploadKYCDocumentsByType = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Contract not found' });
     }
 
-    contract.kycDocuments = contract.kycDocuments || {};
+    contract.kycDocumentItems = contract.kycDocumentItems || [];
 
     const results = [];
     for (let i = 0; i < files.length; i++) {
@@ -812,14 +862,19 @@ export const bulkUploadKYCDocumentsByType = async (req, res) => {
         useUniqueFileName: true
       });
 
-      contract.kycDocuments[docType] = {
+      const entity = byField.get(docType);
+      const idx = contract.kycDocumentItems.findIndex(it => (it.document && String(it.document) === String(entity._id)) || it.fieldName === docType);
+      const newItem = {
+        document: entity._id,
+        fieldName: docType,
         fileName: file.originalname,
-        fileUrl: uploadResponse.url,
-        fileId: uploadResponse.fileId,
+        url: uploadResponse.url,
         approved: false,
         approvedBy: null,
-        uploadedAt: new Date()
+        uploadedAt: new Date(),
       };
+      if (idx >= 0) contract.kycDocumentItems[idx] = { ...contract.kycDocumentItems[idx], ...newItem };
+      else contract.kycDocumentItems.push(newItem);
 
       results.push({ docType, fileUrl: uploadResponse.url });
     }
@@ -850,8 +905,6 @@ export const bulkUploadKYCDocumentsByType = async (req, res) => {
   }
 };
 
-// Bulk approve multiple KYC document types in one request
-// Body: { docTypes: ["panCard","addressProof" ] } OR { all: true } to approve all uploaded docs
 export const bulkApproveKYCDocumentsByType = async (req, res) => {
   try {
     const { id } = req.params;
@@ -866,7 +919,7 @@ export const bulkApproveKYCDocumentsByType = async (req, res) => {
       if (!contractForScan) {
         return res.status(404).json({ success: false, message: 'Contract not found' });
       }
-      docTypes = KYC_DOC_TYPES.filter(dt => contractForScan.kycDocuments?.[dt]?.fileUrl);
+      docTypes = (contractForScan.kycDocumentItems || []).filter(i => i.url).map(i => i.fieldName).filter(Boolean);
     } else if (Array.isArray(docTypesRaw)) {
       docTypes = docTypesRaw;
     } else if (typeof docTypesRaw === 'string') {
@@ -882,8 +935,9 @@ export const bulkApproveKYCDocumentsByType = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No docTypes provided' });
     }
 
+    const { byField } = await getKycDocEntities();
     for (const dt of docTypes) {
-      if (!KYC_DOC_TYPES.includes(dt)) {
+      if (!byField.has(dt)) {
         return res.status(400).json({ success: false, message: `Invalid KYC document type: ${dt}` });
       }
     }
@@ -893,18 +947,18 @@ export const bulkApproveKYCDocumentsByType = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Contract not found' });
     }
 
-    contract.kycDocuments = contract.kycDocuments || {};
     const approvedDocTypes = [];
     const skipped = [];
 
     for (const dt of docTypes) {
-      const doc = contract.kycDocuments?.[dt];
-      if (!doc || !doc.fileUrl) {
+      const item = (contract.kycDocumentItems || []).find(it => it.fieldName === dt || (it.document && byField.get(dt) && String(it.document) === String(byField.get(dt)._id)));
+      if (!item || !item.url) {
         skipped.push({ docType: dt, reason: 'Document not uploaded' });
         continue;
       }
-      contract.kycDocuments[dt].approved = true;
-      contract.kycDocuments[dt].approvedBy = req.user?.id || null;
+      contract.kycDocumentItems = (contract.kycDocumentItems || []).map(it => (it.fieldName === dt || (it.document && byField.get(dt) && String(it.document) === String(byField.get(dt)._id)))
+        ? { ...it, approved: true, approvedBy: req.user?.id || null }
+        : it);
       approvedDocTypes.push(dt);
     }
 

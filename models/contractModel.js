@@ -1,4 +1,20 @@
 import mongoose from "mongoose";
+import DocumentEntity from "./documentEntityModel.js";
+
+// Normalized KYC Document item referencing DocumentEntity
+const kycDocumentItemSchema = new mongoose.Schema(
+  {
+    document: { type: mongoose.Schema.Types.ObjectId, ref: "DocumentEntity", default: null },
+    fieldName: { type: String, trim: true },
+    fileName: { type: String, trim: true },
+    url: { type: String, trim: true },
+    number: { type: String, trim: true },
+    approved: { type: Boolean, default: false },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    uploadedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 const contractSchema = new mongoose.Schema(
   {
@@ -272,81 +288,8 @@ const contractSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    // Additional fields for approval workflow
-    kycDocuments: {
-      addressProof: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        addressProofNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      boardResolutionOrLetterOfAuthority: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        resolutionRefNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      photoIdAndAddressProofOfSignatory: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        signatoryIdNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      certificateOfIncorporation: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        cin: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      businessLicenseGST: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        gstin: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      panCard: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        panNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      tanNo: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        tan: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      moa: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        moaRegistrationNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      },
-      aoa: {
-        fileName: { type: String, trim: true },
-        fileUrl: { type: String, trim: true },
-        aoaRegistrationNumber: { type: String, trim: true },
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        approved: { type: Boolean, default: false },
-        uploadedAt: { type: Date, default: Date.now }
-      }
-    },
+    // Normalized KYC documents only (legacy kycDocuments removed)
+    kycDocumentItems: { type: [kycDocumentItemSchema], default: [] },
     kycApprovedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -535,27 +478,34 @@ const contractSchema = new mongoose.Schema(
   }
 );
 
-// Middleware to automatically update iskycapproved when all KYC documents are approved
-contractSchema.pre('save', function(next) {
-  const allDocumentsApproved =
-    this.kycDocuments.addressProof?.approved &&
-    this.kycDocuments.boardResolutionOrLetterOfAuthority?.approved &&
-    this.kycDocuments.photoIdAndAddressProofOfSignatory?.approved &&
-    this.kycDocuments.certificateOfIncorporation?.approved &&
-    this.kycDocuments.businessLicenseGST?.approved &&
-    this.kycDocuments.panCard?.approved &&
-    this.kycDocuments.tanNo?.approved &&
-    this.kycDocuments.moa?.approved &&
-    this.kycDocuments.aoa?.approved;
+// Middleware to automatically update iskycapproved using normalized KYC items
+contractSchema.pre('save', async function(next) {
+  try {
+    const requiredDocs = await DocumentEntity.find({
+      isActive: true,
+      required: true,
+    }).select("_id fieldName").lean();
 
-  if (allDocumentsApproved) {
-    this.iskycapproved = true;
-  } else {
-    this.iskycapproved = false;
+    if (!Array.isArray(requiredDocs) || requiredDocs.length === 0) {
+      // No required docs configured; do not change iskycapproved here.
+      // This allows explicit approval via controller to set it to true when desired.
+      return next();
+    }
+
+    const items = Array.isArray(this.kycDocumentItems) ? this.kycDocumentItems : [];
+    const allApproved = requiredDocs.every((d) => {
+      return items.some((it) => {
+        const matchesById = it.document && String(it.document) === String(d._id);
+        const matchesByField = it.fieldName && it.fieldName === d.fieldName;
+        return (matchesById || matchesByField) && it.url && it.approved === true;
+      });
+    });
+    this.iskycapproved = allApproved;
+    next();
+  } catch (e) {
+    console.warn("Contract pre-save KYC approval check failed:", e?.message);
+    next();
   }
-
-  next();
 });
 
 export default mongoose.model("Contract", contractSchema);
-

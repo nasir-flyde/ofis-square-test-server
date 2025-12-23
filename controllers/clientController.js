@@ -17,17 +17,16 @@ import { createContact } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
 import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
+import DocumentEntity from "../models/documentEntityModel.js";
 
 export const createClient = async (req, res) => {
   try {
     const body = req.body || {};
 
-
-    
     // Handle file uploads for KYC documents
     const files = Array.isArray(req.files) ? req.files : [];
     const uploadsByField = {};
-    
+
     if (files.length > 0) {
       await Promise.all(
         files.map(async (f) => {
@@ -48,7 +47,55 @@ export const createClient = async (req, res) => {
         })
       );
     }
-    
+
+    try {
+      console.log('createClient: files count =', files.length, 'file fields =', Array.isArray(files) ? files.map(f => f.fieldname) : []);
+      console.log('createClient: uploadsByField keys =', Object.keys(uploadsByField || {}));
+      console.log('createClient: sample body keys (first 20) =', Object.keys(req.body || {}).slice(0,20));
+    } catch (_) {}
+
+    // Build normalized KYC document items from uploaded files
+    let kycDocumentItems = [];
+    try {
+      const entities = await DocumentEntity.find({ isActive: true })
+        .select('_id fieldName required')
+        .lean();
+      const byField = new Map(entities.map(e => [e.fieldName, e]));
+      for (const [fieldName, arr] of Object.entries(uploadsByField)) {
+        const ent = byField.get(fieldName) || null; // fallback if not defined yet in DocumentEntity
+        for (const f of arr) {
+          kycDocumentItems.push({
+            document: ent ? ent._id : null,
+            fieldName,
+            fileName: f.originalname,
+            url: f.url,
+            number: (req.body && req.body[fieldName]) ? req.body[fieldName] : undefined,
+            approved: false,
+            uploadedAt: new Date(),
+          });
+        }
+      }
+      // Fallback: if numbers exist in body for known fields but no files were captured for them, still create items with number-only
+      for (const ent of entities) {
+        const key = ent.fieldName;
+        const val = (req.body && req.body[key]) ? String(req.body[key]).trim() : '';
+        const alreadyHasFile = Array.isArray(uploadsByField[key]) && uploadsByField[key].length > 0;
+        const alreadyAdded = kycDocumentItems.some(it => it.fieldName === key);
+        if (!alreadyHasFile && !alreadyAdded && val) {
+          kycDocumentItems.push({
+            document: ent._id,
+            fieldName: key,
+            number: val,
+            approved: false,
+            uploadedAt: new Date(),
+          });
+        }
+      }
+      try { console.log('createClient: built kycDocumentItems count =', kycDocumentItems.length); } catch (_) {}
+    } catch (e) {
+      console.warn('createClient: failed to map KYC items via DocumentEntity:', e?.message || e);
+    }
+
     // Basic company info
     const basicInfo = {
       companyName: body.companyName ?? body.company_name ?? undefined,
@@ -80,7 +127,7 @@ export const createClient = async (req, res) => {
     // Address details - handle nested objects with proper field mapping
     let billingAddress = body.billingAddress ?? body.billing_address ?? undefined;
     let shippingAddress = body.shippingAddress ?? body.shipping_address ?? undefined;
-    
+
     // Parse if they come as JSON strings (from FormData)
     if (typeof billingAddress === 'string') {
       try { billingAddress = JSON.parse(billingAddress); } catch (e) { billingAddress = undefined; }
@@ -88,7 +135,7 @@ export const createClient = async (req, res) => {
     if (typeof shippingAddress === 'string') {
       try { shippingAddress = JSON.parse(shippingAddress); } catch (e) { shippingAddress = undefined; }
     }
-    
+
     const addressDetails = {
       billingAddress,
       shippingAddress,
@@ -101,7 +148,7 @@ export const createClient = async (req, res) => {
         contactPersons = [];
       }
     }
-    
+
     if (Array.isArray(contactPersons)) {
       contactPersons = contactPersons.map(person => ({
         salutation: person.salutation ?? undefined,
@@ -144,27 +191,6 @@ export const createClient = async (req, res) => {
       building: body.building ?? body.buildingId ?? undefined,
     };
 
-    // KYC Documents: include minimal files and per-document numbers
-    const kycDocNumbers = {
-      panNumber: body.panNumber ?? body.pan_number ?? undefined,
-      addressProofNumber: body.addressProofNumber ?? body.address_proof_number ?? undefined,
-      signatoryIdNumber: body.signatoryIdNumber ?? body.signatory_id_number ?? undefined,
-      gstin: body.gstin ?? body.gst_in ?? undefined,
-      tan: body.tan ?? body.tanNo ?? undefined,
-      cin: body.cin ?? undefined,
-      resolutionRefNumber: body.resolutionRefNumber ?? undefined,
-      moaRegistrationNumber: body.moaRegistrationNumber ?? undefined,
-      aoaRegistrationNumber: body.aoaRegistrationNumber ?? undefined,
-    };
-    const hasKycNumbers = Object.values(kycDocNumbers).some(v => v !== undefined && v !== null && String(v).trim() !== '');
-    const hasKycFiles = Object.keys(uploadsByField).length > 0;
-    const kycDocuments = (hasKycFiles || hasKycNumbers)
-      ? {
-          ...(hasKycFiles ? { files: uploadsByField } : {}),
-          ...(hasKycNumbers ? kycDocNumbers : {}),
-        }
-      : undefined;
-
     // Merge all sections into payload
     const payload = {
       ...basicInfo,
@@ -174,9 +200,9 @@ export const createClient = async (req, res) => {
       ...taxDetails,
       ...zohoDetails,
       ...statusDetails,
-      ...(kycDocuments ? { kycDocuments } : {}),
+      ...(kycDocumentItems && kycDocumentItems.length ? { kycDocumentItems } : {}),
     };
-    
+
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
     const client = await Client.create(payload);
@@ -797,7 +823,7 @@ export const submitKycDocuments = async (req, res) => {
       files.map(async (f) => {
         const folder = process.env.IMAGEKIT_KYC_FOLDER || "/ofis-square/kyc";
         const result = await imagekit.upload({
-          file: f.buffer, // Buffer supported by SDK
+          file: f.buffer,
           fileName: f.originalname || `${Date.now()}_${f.fieldname}`,
           folder,
         });
@@ -811,35 +837,37 @@ export const submitKycDocuments = async (req, res) => {
       })
     );
 
-    // Merge body-provided KYC data and uploaded file URLs
-    // Merge KYC numbers (if provided) and minimal file arrays
-    const kycDocNumbers2 = {
-      panNumber: req.body?.panNumber ?? req.body?.pan_number ?? undefined,
-      addressProofNumber: req.body?.addressProofNumber ?? req.body?.address_proof_number ?? undefined,
-      signatoryIdNumber: req.body?.signatoryIdNumber ?? req.body?.signatory_id_number ?? undefined,
-      gstin: req.body?.gstin ?? req.body?.gst_in ?? undefined,
-      tan: req.body?.tan ?? req.body?.tanNo ?? undefined,
-      cin: req.body?.cin ?? undefined,
-      resolutionRefNumber: req.body?.resolutionRefNumber ?? undefined,
-      moaRegistrationNumber: req.body?.moaRegistrationNumber ?? undefined,
-      aoaRegistrationNumber: req.body?.aoaRegistrationNumber ?? undefined,
-    };
-    const hasKycNumbers2 = Object.values(kycDocNumbers2).some(v => v !== undefined && v !== null && String(v).trim() !== '');
-    const mergedKyc = {
-      ...((kyc_documents ?? req.body?.kycDocuments) || {}),
-      ...(Object.keys(uploadsByField).length ? { files: uploadsByField } : {}),
-      ...(hasKycNumbers2 ? kycDocNumbers2 : {}),
-    };
+    // Load all active document entities (entityType denotes group like Individual/Proprietorship)
+    const docEntities = await DocumentEntity.find({ isActive: true })
+      .select("_id fieldName entityType required")
+      .lean();
+    const docByField = new Map(docEntities.map((d) => [d.fieldName, d]));
+
+    // Build normalized items from uploaded files. For any fieldName, also take number from req.body[fieldName] if present
+    const newItems = [];
+    for (const [fieldName, arr] of Object.entries(uploadsByField)) {
+      const ent = docByField.get(fieldName) || null;
+      for (const f of arr) {
+        newItems.push({
+          document: ent ? ent._id : null,
+          fieldName,
+          fileName: f.originalname,
+          url: f.url,
+          number: req.body?.[fieldName] || undefined,
+          approved: false,
+          uploadedAt: new Date(),
+        });
+      }
+    }
 
     const updated = await Client.findByIdAndUpdate(
       id,
-      { $set: { kycDocuments: mergedKyc, kycStatus: "verified" } },
+      { $set: { kycStatus: "verified" }, $push: { kycDocumentItems: { $each: newItems } } },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: "Client not found" });
-    
+
     console.log(`KYC documents submitted for client ${id}, status set to verified`);
-    // Business event: KYC submitted
     await logBusinessEvent({
       req,
       action: 'KYC_SUBMITTED',
@@ -849,8 +877,8 @@ export const submitKycDocuments = async (req, res) => {
         filesUploaded: Object.values(uploadsByField || {}).reduce((acc, arr) => acc + (arr?.length || 0), 0),
       }
     });
-    return res.json({ 
-      message: "KYC documents submitted successfully. Awaiting verification.", 
+    return res.json({
+      message: "KYC documents submitted successfully. Awaiting verification.",
       client: updated,
       nextStep: "verification"
     });
@@ -864,14 +892,14 @@ export const verifyKyc = async (req, res) => {
   try {
     const { id } = req.params;
     const { buildingId, capacity = 4, monthlyRent } = req.body || {};
-    
+
     const client = await Client.findById(id);
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Update KYC status to verified
     const updated = await Client.findByIdAndUpdate(
-      id, 
-      { $set: { kycStatus: "verified" } }, 
+      id,
+      { $set: { kycStatus: "verified" } },
       { new: true }
     );
 
@@ -880,7 +908,7 @@ export const verifyKyc = async (req, res) => {
     try {
       const Contract = (await import("../models/contractModel.js")).default;
       const Building = (await import("../models/buildingModel.js")).default;
-      
+
       // Get default building if not specified
       let targetBuildingId = buildingId;
       if (!targetBuildingId && updated.building) {
@@ -891,11 +919,11 @@ export const verifyKyc = async (req, res) => {
         const defaultBuilding = await Building.findOne({ status: "active" });
         targetBuildingId = defaultBuilding?._id;
       }
-      
+
       if (targetBuildingId) {
         const building = await Building.findById(targetBuildingId);
         const calculatedRent = monthlyRent || (building?.pricing ? building.pricing * capacity : 15000);
-        
+
         const contract = await Contract.create({
           client: id,
           building: targetBuildingId,
@@ -906,12 +934,12 @@ export const verifyKyc = async (req, res) => {
           status: "draft",
           fileUrl: "placeholder",
         });
-        
+
         contractId = contract._id;
-        
+
         // Update client with building reference
         await Client.findByIdAndUpdate(id, { building: targetBuildingId });
-        
+
         console.log(`Auto-created contract ${contractId} for verified client ${id}`);
 
         // Business event: contract draft created post KYC verification
@@ -938,8 +966,8 @@ export const verifyKyc = async (req, res) => {
       details: { contractId }
     });
 
-    return res.json({ 
-      message: "KYC verified successfully", 
+    return res.json({
+      message: "KYC verified successfully",
       client: updated,
       contractId,
       nextStep: contractId ? "contract_review" : "manual_contract_creation"
@@ -960,7 +988,7 @@ export const rejectKyc = async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: "Client not found" });
-    
+
     // Business event: KYC rejected
     await logBusinessEvent({
       req,
@@ -1028,7 +1056,7 @@ export const getClientDashboard = async (req, res) => {
 
     // Format recent activity
     const recentActivity = [];
-    
+
     recentInvoices.forEach(invoice => {
       recentActivity.push({
         type: 'invoice',
@@ -1234,7 +1262,7 @@ export const approveClientContract = async (req, res) => {
   try {
     const { id } = req.params;
     const clientId = req.clientId;
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
@@ -1275,10 +1303,10 @@ export const approveClientContract = async (req, res) => {
       }
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Contract approved successfully",
-      data: contract 
+      data: contract
     });
   } catch (err) {
     console.error("approveClientContract error:", err);
@@ -1354,7 +1382,7 @@ export const submitClientContractFeedback = async (req, res) => {
     const { id } = req.params;
     const feedback = req.body?.feedback || req.body;
     const clientId = req.clientId;
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
@@ -1391,7 +1419,7 @@ export const submitClientContractFeedback = async (req, res) => {
             fileName: fileName,
             folder: "/contracts/client-feedback"
           });
-          
+
           uploadedFiles.push({
             fileName: file.originalname,
             fileUrl: uploadResponse.url,
@@ -1407,7 +1435,7 @@ export const submitClientContractFeedback = async (req, res) => {
     // Update contract with feedback
     contract.clientFeedback = feedback;
     contract.clientFeedbackAt = new Date();
-    
+
     // Add uploaded files to feedback attachments
     if (uploadedFiles.length > 0) {
       if (!contract.clientFeedbackAttachments) {
@@ -1415,11 +1443,11 @@ export const submitClientContractFeedback = async (req, res) => {
       }
       contract.clientFeedbackAttachments.push(...uploadedFiles);
     }
-    
+
     // Add to comments array
     if (!contract.comments) contract.comments = [];
-    const attachmentInfo = uploadedFiles.length > 0 
-      ? ` (${uploadedFiles.length} attachment${uploadedFiles.length > 1 ? 's' : ''})` 
+    const attachmentInfo = uploadedFiles.length > 0
+      ? ` (${uploadedFiles.length} attachment${uploadedFiles.length > 1 ? 's' : ''})`
       : '';
     contract.comments.push({
       type: 'client',
@@ -1493,10 +1521,10 @@ export const submitClientContractFeedback = async (req, res) => {
       .populate('building', 'name');
     await sendClientFeedbackAlertEmail(populatedContract, feedback);
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Feedback submitted successfully",
-      data: contract 
+      data: contract
     });
   } catch (err) {
     console.error("submitClientContractFeedback error:", err);
@@ -1555,7 +1583,7 @@ export const createClientTicket = async (req, res) => {
     }
 
     const { subject, description, priority = "low", category, images } = req.body || {};
-    
+
     if (!subject || !description) {
       return res.status(400).json({ error: "Subject and description are required" });
     }
@@ -1634,7 +1662,7 @@ export const createClientMember = async (req, res) => {
     }
 
     const { firstName, lastName, email, phone, role, password } = req.body || {};
-    
+
     if (!firstName) {
       return res.status(400).json({ error: "firstName is required" });
     }
@@ -1646,11 +1674,11 @@ export const createClientMember = async (req, res) => {
       try {
         // Find member role with specific ID
         const memberRole = await Role.findById("68bfc2b86ecb1276d721bf71");
-        
+
         if (memberRole) {
           const rawPassword = '123456';
           // Remove password encryption - store as plain text
-          
+
           const user = await User.create({
             name: `${firstName} ${lastName || ''}`.trim(),
             email: email,
@@ -1693,7 +1721,7 @@ export const updateClientMember = async (req, res) => {
   try {
     const clientId = req.clientId;
     const { id } = req.params;
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
@@ -1732,13 +1760,13 @@ export const deleteClientMember = async (req, res) => {
   try {
     const clientId = req.clientId;
     const { id } = req.params;
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
     const member = await Member.findOneAndDelete({ _id: id, client: clientId });
-    
+
     if (!member) {
       return res.status(404).json({ error: "Member not found" });
     }
@@ -1765,9 +1793,9 @@ export const getClientAvailableDesks = async (req, res) => {
     if (!allocatedCabin) {
       return res.status(404).json({ error: "No cabin allocated to this client" });
     }
-    const activeContract = await Contract.findOne({ 
-      client: clientId, 
-      status: 'active' 
+    const activeContract = await Contract.findOne({
+      client: clientId,
+      status: 'active'
     }).sort({ createdAt: -1 });
 
     const contractCapacity = activeContract?.capacity || 0;
@@ -1775,9 +1803,9 @@ export const getClientAvailableDesks = async (req, res) => {
       .populate('building', 'name')
       .populate('cabin', 'number floor')
       .sort({ number: 1 });
-    const allocatedDesksCount = await Member.countDocuments({ 
-      client: clientId, 
-      desk: { $ne: null } 
+    const allocatedDesksCount = await Member.countDocuments({
+      client: clientId,
+      desk: { $ne: null }
     });
 
     const availableDesks = allDesks.filter(desk => desk.status === 'available');
@@ -1808,7 +1836,7 @@ export const allocateDeskToMember = async (req, res) => {
   try {
     const clientId = req.clientId;
     const { memberId, deskId } = req.body || {};
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
@@ -1818,9 +1846,9 @@ export const allocateDeskToMember = async (req, res) => {
     }
 
     // Get client's active contract to check capacity
-    const activeContract = await Contract.findOne({ 
-      client: clientId, 
-      status: 'active' 
+    const activeContract = await Contract.findOne({
+      client: clientId,
+      status: 'active'
     }).sort({ createdAt: -1 });
 
     if (!activeContract) {
@@ -1830,15 +1858,15 @@ export const allocateDeskToMember = async (req, res) => {
     const contractCapacity = activeContract.capacity || 0;
 
     // Count currently allocated desks for this client
-    const allocatedDesksCount = await Member.countDocuments({ 
-      client: clientId, 
-      desk: { $ne: null } 
+    const allocatedDesksCount = await Member.countDocuments({
+      client: clientId,
+      desk: { $ne: null }
     });
 
     // Check if allocation would exceed contract capacity
     if (allocatedDesksCount >= contractCapacity) {
-      return res.status(400).json({ 
-        error: `Cannot allocate more desks. Contract capacity is ${contractCapacity} and ${allocatedDesksCount} desks are already allocated.` 
+      return res.status(400).json({
+        error: `Cannot allocate more desks. Contract capacity is ${contractCapacity} and ${allocatedDesksCount} desks are already allocated.`
       });
     }
 
@@ -1879,10 +1907,10 @@ export const allocateDeskToMember = async (req, res) => {
     member.desk = desk._id;
     await member.save();
 
-    return res.json({ 
-      success: true, 
-      message: "Desk allocated to member successfully", 
-      data: { member, desk, remainingCapacity: contractCapacity - allocatedDesksCount - 1 } 
+    return res.json({
+      success: true,
+      message: "Desk allocated to member successfully",
+      data: { member, desk, remainingCapacity: contractCapacity - allocatedDesksCount - 1 }
     });
   } catch (err) {
     console.error("allocateDeskToMember error:", err);
@@ -1895,7 +1923,7 @@ export const releaseDeskFromMember = async (req, res) => {
   try {
     const clientId = req.clientId;
     const { memberId } = req.body || {};
-    
+
     if (!clientId) {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
@@ -1925,10 +1953,10 @@ export const releaseDeskFromMember = async (req, res) => {
     member.desk = null;
     await member.save();
 
-    return res.json({ 
-      success: true, 
-      message: "Desk released from member successfully", 
-      data: { member, desk } 
+    return res.json({
+      success: true,
+      message: "Desk released from member successfully",
+      data: { member, desk }
     });
   } catch (err) {
     console.error("releaseDeskFromMember error:", err);
@@ -1948,12 +1976,12 @@ export const getClientCreditManagement = async (req, res) => {
 
     // Get client credit wallet
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
-    
+
     // Build transaction query
     const transactionQuery = { client: clientId };
     if (type && type !== 'all') transactionQuery.type = type;
     if (member && member !== 'all') transactionQuery.member = member;
-    
+
     if (startDate || endDate) {
       transactionQuery.createdAt = {};
       if (startDate) transactionQuery.createdAt.$gte = new Date(startDate);
@@ -1985,12 +2013,12 @@ export const getClientCreditManagement = async (req, res) => {
 
     // Get top spending members
     const topSpenders = await CreditTransaction.aggregate([
-      { 
-        $match: { 
+      {
+        $match: {
           client: new mongoose.Types.ObjectId(clientId),
           type: 'consume',
           member: { $ne: null }
-        } 
+        }
       },
       {
         $group: {
@@ -2018,11 +2046,11 @@ export const getClientCreditManagement = async (req, res) => {
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
     const monthlyTrend = await CreditTransaction.aggregate([
-      { 
-        $match: { 
+      {
+        $match: {
           client: new mongoose.Types.ObjectId(clientId),
           createdAt: { $gte: sixMonthsAgo }
-        } 
+        }
       },
       {
         $group: {
@@ -2102,8 +2130,8 @@ export const updateCurrentClientProfile = async (req, res) => {
 
     // Validate required fields
     if (!companyName || !contactPerson || !email || !phone) {
-      return res.status(400).json({ 
-        error: "Company name, contact person, email, and phone are required" 
+      return res.status(400).json({
+        error: "Company name, contact person, email, and phone are required"
       });
     }
 
@@ -2128,10 +2156,10 @@ export const updateCurrentClientProfile = async (req, res) => {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Profile updated successfully",
-      data: updatedClient 
+      data: updatedClient
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -2161,23 +2189,23 @@ export const getOnboardingStatus = async (req, res) => {
       clientId: client._id,
       clientName: client.companyName,
       isClientApproved: client.isClientApproved || false,
-      
+
       // Contract check
       hasContract: !!contract,
       contractId: contract?._id || null,
       contractStatus: contract?.status || null,
       contractFileUrl: contract?.fileUrl || null,
-      
+
       // Security deposit check
       securityDepositPaid: client.isSecurityPaid || false,
       securityDepositAmount: client.securityDeposit?.amount || contract?.securityDeposit?.amount || 0,
       securityDepositPaidAt: contract?.securityDepositPaidAt || null,
-      
+
       // KYC check
       kycStatus: client.kycStatus || "none",
       kycDocuments: client.kycDocuments || null,
       hasKycDocuments: !!client.kycDocuments,
-      
+
       // Overall readiness checks
       checks: {
         hasActiveContract: contract?.status === "active",
@@ -2188,7 +2216,7 @@ export const getOnboardingStatus = async (req, res) => {
     };
 
     // Calculate if all checks pass
-    const allChecksPassed = 
+    const allChecksPassed =
       status.checks.hasActiveContract &&
       status.checks.hasContractFile &&
       status.checks.securityDepositPaid &&
@@ -2212,9 +2240,9 @@ export const approveOnboarding = async (req, res) => {
     // Check if user has System Admin role
     const userRole = req.user?.role?.roleName || req.user?.role?.name;
     if (userRole !== "System Admin") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Access denied. Only System Admin can approve onboarding." 
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Only System Admin can approve onboarding."
       });
     }
 
@@ -2225,9 +2253,9 @@ export const approveOnboarding = async (req, res) => {
 
     // Check if already approved
     if (client.isClientApproved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Client is already approved for onboarding" 
+      return res.status(400).json({
+        success: false,
+        message: "Client is already approved for onboarding"
       });
     }
 
@@ -2238,7 +2266,7 @@ export const approveOnboarding = async (req, res) => {
 
     // Validate all preconditions
     const errors = [];
-    
+
     if (!contract) {
       errors.push("No contract found for this client");
     } else {

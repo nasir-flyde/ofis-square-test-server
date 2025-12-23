@@ -53,7 +53,7 @@ export const createBySales = async (req, res) => {
       commencementDate,
       terms,
       termsandconditions,
-      kycDocuments: kycFromBody,
+      kycDocumentItems: kycItemsFromBody,
     } = req.body || {};
 
     if (!client || !building || !startDate || !endDate || !capacity || monthlyRent === undefined) {
@@ -70,154 +70,41 @@ export const createBySales = async (req, res) => {
     };
     const derivedDurationMonths = calcMonths(startDate, endDate);
 
-    // Prepare KYC documents to attach (from body or from client record)
-    const KYC_DOC_TYPES = [
-      'addressProof',
-      'boardResolutionOrLetterOfAuthority',
-      'photoIdAndAddressProofOfSignatory',
-      'certificateOfIncorporation',
-      'businessLicenseGST',
-      'panCard',
-      'tanNo',
-      'moa',
-      'aoa',
-    ];
-
-    // Map each KYC doc type to its unique field name key
-    const DOC_FIELD_KEY_MAP = {
-      addressProof: 'addressProofNumber',
-      boardResolutionOrLetterOfAuthority: 'resolutionRefNumber',
-      photoIdAndAddressProofOfSignatory: 'signatoryIdNumber',
-      certificateOfIncorporation: 'cin',
-      businessLicenseGST: 'gstin',
-      panCard: 'panNumber',
-      tanNo: 'tan',
-      moa: 'moaRegistrationNumber',
-      aoa: 'aoaRegistrationNumber',
-    };
-
-    const mapClientKycToContract = (clientKyc) => {
-      const out = {};
-      let count = 0;
-      const files = clientKyc?.files;
-
-      const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-      const normalizedMap = KYC_DOC_TYPES.reduce((acc, key) => {
-        acc[normalize(key)] = key; // e.g., pancard -> panCard
-        return acc;
-      }, {});
-
-      const inferDocTypeFromName = (name) => {
-        const n = String(name || '').toLowerCase();
-        if (/\bpan\b|pan.?card/.test(n)) return 'panCard';
-        if (/\bgst\b/.test(n)) return 'businessLicenseGST';
-        if (/\btan\b/.test(n)) return 'tanNo';
-        if (/\bmoa\b/.test(n)) return 'moa';
-        if (/\baoa\b/.test(n)) return 'aoa';
-        if (/incorporation|\bcin\b/.test(n)) return 'certificateOfIncorporation';
-        if (/board|resolution|authority/.test(n)) return 'boardResolutionOrLetterOfAuthority';
-        if (/signatory/.test(n) && /(photo|id|address)/.test(n)) return 'photoIdAndAddressProofOfSignatory';
-        if (/address.*proof|aadhaar|aadhar/.test(n)) return 'addressProof';
-        return null;
-      };
-
-      const resolveFieldValue = (target, sourceObj) => {
-        try {
-          const src = sourceObj || clientKyc;
-          const fieldKey = DOC_FIELD_KEY_MAP[target];
-          if (!src || typeof src !== 'object' || !fieldKey) return undefined;
-          // Possible shapes: src[target][fieldKey], src[fieldKey], src.values[fieldKey]
-          if (src[target] && typeof src[target] === 'object' && src[target][fieldKey]) return src[target][fieldKey];
-          if (src[fieldKey]) return src[fieldKey];
-          if (src.values && typeof src.values === 'object' && src.values[fieldKey]) return src.values[fieldKey];
-        } catch (_) { /* ignore */ }
-        return undefined;
-      };
-
-      if (files && typeof files === 'object') {
-        Object.entries(files).forEach(([rawKey, arr]) => {
-          const first = Array.isArray(arr) ? arr[0] : null;
-          if (!first?.url) return;
-
-          let target = null;
-          const normKey = normalize(rawKey); // e.g., pan_card -> pancard
-          if (normalizedMap[normKey]) {
-            target = normalizedMap[normKey];
-          } else {
-            target = inferDocTypeFromName(first.originalname || first.name || first.fileName || rawKey);
-          }
-
-          if (target && !out[target]) {
-            out[target] = {
-              fileName: first.originalname || first.name || first.fileName || target,
-              fileUrl: first.url,
-              approvedBy: null,
-              approved: false,
-              uploadedAt: new Date(),
-            };
-            // Attach unique field value if present on clientKyc
-            const fv = resolveFieldValue(target, clientKyc);
-            if (fv) {
-              const fk = DOC_FIELD_KEY_MAP[target];
-              out[target][fk] = fv;
-            }
-            count += 1;
-          }
-        });
-      }
-      return { out, count };
-    };
-
-    // Prefer KYC from request body if provided; otherwise build from client's stored KYC
-    let kycDocsToAttach = undefined;
-    let kycCount = 0;
-    if (kycFromBody && typeof kycFromBody === 'object') {
-      // Support Mixed format coming from Client (kycDocuments.files)
-      if (kycFromBody.files && typeof kycFromBody.files === 'object') {
-        const { out, count } = mapClientKycToContract(kycFromBody);
-        if (count > 0) {
-          kycDocsToAttach = out;
-          kycCount = count;
-        }
-      } else {
-        // Support direct per-document format
-        const temp = {};
-        KYC_DOC_TYPES.forEach((dt) => {
-          const d = kycFromBody[dt];
-          if (d?.fileUrl) {
-            temp[dt] = {
-              fileName: d.fileName || dt,
-              fileUrl: d.fileUrl,
-              approvedBy: null,
-              approved: !!d.approved,
-              uploadedAt: d.uploadedAt ? new Date(d.uploadedAt) : new Date(),
-            };
-            // Attach unique field value if available in body
-            const fk = DOC_FIELD_KEY_MAP[dt];
-            const fv = (d && d[fk]) || kycFromBody[fk] || (kycFromBody.values && kycFromBody.values[fk]) || undefined;
-            if (fk && fv) {
-              temp[dt][fk] = fv;
-            }
-            kycCount += 1;
-          }
-        });
-        if (kycCount > 0) kycDocsToAttach = temp;
-      }
+    // Prepare normalized KYC items to attach on contract
+    let kycItemsToAttach = [];
+    if (Array.isArray(kycItemsFromBody) && kycItemsFromBody.length > 0) {
+      kycItemsToAttach = kycItemsFromBody
+        .filter((it) => it && (it.fieldName || it.url))
+        .map((it) => ({
+          document: it.document || null,
+          fieldName: it.fieldName || undefined,
+          fileName: it.fileName || undefined,
+          url: it.url || undefined,
+          number: it.number || undefined,
+          approved: false,
+          approvedBy: null,
+          uploadedAt: it.uploadedAt ? new Date(it.uploadedAt) : new Date(),
+        }));
     } else {
       try {
-        const clientDoc = await Client.findById(client).select('kycDocuments');
-        if (clientDoc?.kycDocuments) {
-          const { out, count } = mapClientKycToContract(clientDoc.kycDocuments);
-          if (count > 0) {
-            kycDocsToAttach = out;
-            kycCount = count;
-          }
+        const clientDoc = await Client.findById(client).select('kycDocumentItems');
+        if (Array.isArray(clientDoc?.kycDocumentItems) && clientDoc.kycDocumentItems.length > 0) {
+          kycItemsToAttach = clientDoc.kycDocumentItems.map((it) => ({
+            document: it.document || null,
+            fieldName: it.fieldName,
+            fileName: it.fileName,
+            url: it.url,
+            number: it.number,
+            approved: false,
+            approvedBy: null,
+            uploadedAt: it.uploadedAt ? new Date(it.uploadedAt) : new Date(),
+          }));
         }
       } catch (e) {
-        // Non-blocking: continue without KYC
-        console.warn('createBySales: failed to map client KYC:', e?.message || e);
+        console.warn('createBySales: failed to copy client kycDocumentItems:', e?.message || e);
       }
     }
+    const kycCount = Array.isArray(kycItemsToAttach) ? kycItemsToAttach.length : 0;
 
     const contract = await Contract.create({
       client,
@@ -226,6 +113,9 @@ export const createBySales = async (req, res) => {
       endDate,
       capacity,
       monthlyRent,
+      // Set defaults when commercials are created by Sales (can be overridden by body)
+      initialCredits: (req.body && Number.isInteger(req.body.initialCredits)) ? req.body.initialCredits : 10,
+      allocated_credits: (req.body && Number.isInteger(req.body.allocated_credits)) ? req.body.allocated_credits : 10,
       // Commencement date should be same as start date
       commencementDate: startDate,
       terms: terms || undefined,
@@ -240,7 +130,7 @@ export const createBySales = async (req, res) => {
       createdBy: req.user?._id || undefined,
       lastActionBy: req.user?._id || undefined,
       lastActionAt: new Date(),
-      ...(kycDocsToAttach ? { kycDocuments: kycDocsToAttach, iskycuploaded: true } : {}),
+      ...(kycCount > 0 ? { kycDocumentItems: kycItemsToAttach, iskycuploaded: true } : {}),
     });
 
     // Ensure client's building is set to the selected building
@@ -252,7 +142,7 @@ export const createBySales = async (req, res) => {
 
     await logContractActivity(req, "CREATE", contract._id, client, {
       action: "sales_created",
-      kycDocumentsAttached: kycCount,
+      kycItemsAttached: kycCount,
     });
 
     return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id } });
