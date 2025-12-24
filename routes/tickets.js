@@ -16,7 +16,7 @@ import upload from "../middlewares/multer.js";
 const router = express.Router();
 
 router.get("/", getAllTickets);
-router.post("/", upload.array('images', 5), createTicket);
+router.post("/", upload.any(), createTicket);
 router.get("/stats", getTicketStats);
 router.get("/staff/:userId", getStaffTickets);
 router.get("/member/my-tickets", universalAuthMiddleware, getTicketsByMember); 

@@ -8,7 +8,7 @@ const CabinSchema = new Schema(
     floor: { type: Number },
     number: { type: String, required: true, trim: true, index: true },
     // Cabin type is now fixed to 'cabin' (Desks are a separate model)
-    type: { type: String, enum: ["cabin","private","shared"], default: "cabin", index: true },
+    type: { type: String,default: "cabin", index: true },
     capacity: { type: Number, default: 1 },
 
     // Category and classification

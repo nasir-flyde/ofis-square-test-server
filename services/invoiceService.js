@@ -39,11 +39,23 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
 
 
     const issueDate = new Date(contract.startDate);
-    // Set due date to 2nd of next month
+    // Set due date based on building.draftInvoiceDueDay (day-of-month), defaulting to 7
     const startDate = new Date(contract.startDate);
-    const dueDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 2); // 2nd of next month
+    let buildingDueDay = 7;
+    try {
+      const bDoc = await Building.findById(contract.building._id).select('draftInvoiceDueDay');
+      if (bDoc && Number(bDoc.draftInvoiceDueDay) > 0) {
+        buildingDueDay = Number(bDoc.draftInvoiceDueDay);
+      }
+    } catch (e) {
+      console.warn('Failed to load building.draftInvoiceDueDay, using default 7:', e?.message || e);
+    }
+    const firstOfNextMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1);
+    const daysInNextMonth = new Date(firstOfNextMonth.getFullYear(), firstOfNextMonth.getMonth() + 1, 0).getDate();
+    const dueDay = Math.max(1, Math.min(buildingDueDay, daysInNextMonth));
+    const dueDate = new Date(firstOfNextMonth.getFullYear(), firstOfNextMonth.getMonth(), dueDay);
     
-    console.log(`Invoice dates - Issue: ${issueDate.toISOString().slice(0, 10)}, Due: ${dueDate.toISOString().slice(0, 10)}`);
+    console.log(`Invoice dates - Issue: ${issueDate.toISOString().slice(0, 10)}, Due: ${dueDate.toISOString().slice(0, 10)} (dueDay=${buildingDueDay})`);
 
     const items = [];
     let subtotal = 0;
@@ -100,8 +112,9 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       exchange_rate: 1,
       gst_treatment: "business_gst", // Default for business clients
       place_of_supply: "MH", // Default to Maharashtra, should be configurable
-      payment_terms: 7, // 7 days payment terms
-      payment_terms_label: "Net 7",
+      // Compute payment terms from issue->due difference
+      payment_terms: Math.max(0, Math.round((dueDate - issueDate) / (1000 * 60 * 60 * 24))),
+      payment_terms_label: `Net ${Math.max(0, Math.round((dueDate - issueDate) / (1000 * 60 * 60 * 24)))}`,
       
       // Client address mapping (if available)
       ...(contract.client.billingAddress && {

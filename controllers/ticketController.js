@@ -76,15 +76,18 @@ export const createTicket = async (req, res) => {
       try {
         for (const file of req.files) {
           const fileName = `ticket_${Date.now()}_${file.originalname}`;
+          // Convert buffer to base64 string for ImageKit upload for maximum compatibility
+          const base64 = file.buffer?.toString("base64");
           const uploadResponse = await imagekit.upload({
-            file: file.buffer,
-            fileName: fileName,
-            folder: "/tickets"
+            file: base64 || file.buffer,
+            fileName,
+            folder: "/tickets",
+            useUniqueFileName: true,
           });
           imageUrls.push(uploadResponse.url);
         }
       } catch (uploadError) {
-        console.error("ImageKit upload error:", uploadError);
+        console.error("ImageKit upload error (files):", uploadError);
         return res.status(500).json({ 
           success: false,
           error: "Failed to upload images",
@@ -93,11 +96,54 @@ export const createTicket = async (req, res) => {
       }
     }
 
+    // Also support images sent via body (either URLs or base64 data URLs)
+    try {
+      let bodyImagesRaw = req.body?.images;
+      let bodyImages = [];
+      if (bodyImagesRaw) {
+        if (Array.isArray(bodyImagesRaw)) {
+          bodyImages = bodyImagesRaw;
+        } else if (typeof bodyImagesRaw === "string") {
+          // Try to parse JSON array first; fallback to comma-separated list
+          try {
+            const parsed = JSON.parse(bodyImagesRaw);
+            if (Array.isArray(parsed)) bodyImages = parsed;
+            else bodyImages = String(bodyImagesRaw).split(",").map(s => s.trim()).filter(Boolean);
+          } catch {
+            bodyImages = String(bodyImagesRaw).split(",").map(s => s.trim()).filter(Boolean);
+          }
+        }
+      }
+
+      for (const img of bodyImages) {
+        if (!img) continue;
+        if (typeof img === "string" && img.startsWith("data:")) {
+          // Base64 data URL provided - upload to ImageKit
+          try {
+            const uploadResponse = await imagekit.upload({
+              file: img,
+              fileName: `ticket_${Date.now()}.jpg`,
+              folder: "/tickets",
+              useUniqueFileName: true,
+            });
+            imageUrls.push(uploadResponse.url);
+          } catch (uploadError) {
+            console.warn("ImageKit upload error (base64 body image):", uploadError?.message || uploadError);
+          }
+        } else if (typeof img === "string") {
+          // Direct URL provided - store as-is
+          imageUrls.push(img);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to process body images:", e?.message || e);
+    }
+
     let ticketData = {
       ...req.body,
       status: req.body.status || "open",
       latestUpdate: req.body.latestUpdate || `Ticket created`,
-      images: imageUrls.length > 0 ? imageUrls : (req.body.images || [])
+      images: imageUrls,
     };
 
     // Optional user authentication logic - only apply if req.user exists

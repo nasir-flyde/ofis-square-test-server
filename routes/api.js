@@ -20,7 +20,6 @@ import meetingBookingsRoutes from "./meetingBookings.js";
 import dayPassesRoutes from "./dayPasses.js";
 import visitorsRoutes from "./visitors.js";
 import ticketsRoutes from "./tickets.js";
-import meRoutes from "./me.js";
 import ticketCategoriesRoutes from "./ticketCategories.js";
 import walletRoutes from "./wallet.js";
 import memberRoutes from "./members.js";
@@ -51,6 +50,8 @@ import memberIntegrationsRoutes from "./memberIntegrations.js";
 import searchRoutes from "./search.js";
 import securityDepositsRoutes from "./securityDeposits.js";
 import documentEntitiesRoutes from "./documentEntities.js";
+import dashboardRoutes from "./dashboard.js";
+import meRoutes from "./me.js";
 
 const router = express.Router();
 
@@ -106,4 +107,5 @@ router.use("/enrollment-details", enrollmentDetails);
 router.use("/search", searchRoutes);
 router.use("/security-deposits", securityDepositsRoutes);
 router.use("/document-entities", documentEntitiesRoutes);
+router.use("/dashboard", dashboardRoutes);
 export default router;

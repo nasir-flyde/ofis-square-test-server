@@ -91,6 +91,7 @@ export const createBooking = async (req, res) => {
       room: roomId, 
       member, 
       memberId, 
+      client, 
       paymentMethod, 
       idempotencyKey, 
       visitors,
@@ -105,18 +106,29 @@ export const createBooking = async (req, res) => {
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
 
-    // Get memberId from middleware or request body
-    const currentMemberId = req.memberId || memberId;
-    if (!currentMemberId) {
-      return res.status(400).json({ success: false, message: "memberId is required" });
+    // Determine member/client context (admin flow may not have a member)
+    const currentMemberId = req.memberId || memberId || null;
+    let clientId = null;
+    let memberDoc = null;
+    if (currentMemberId) {
+      // Validate member and derive client from member
+      memberDoc = await Member.findById(currentMemberId).populate('client');
+      if (!memberDoc) {
+        return res.status(404).json({ success: false, message: "Member not found" });
+      }
+      clientId = memberDoc.client?._id;
+    } else {
+      // Admin/community flow: allow booking with a client only
+      const clientFromBody = client;
+      if (!clientFromBody) {
+        return res.status(400).json({ success: false, message: "client or memberId is required" });
+      }
+      const clientDoc = await Client.findById(clientFromBody).select('_id');
+      if (!clientDoc) {
+        return res.status(404).json({ success: false, message: "Client not found" });
+      }
+      clientId = clientDoc._id;
     }
-
-    // Get member and client info
-    const memberDoc = await Member.findById(currentMemberId).populate('client');
-    if (!memberDoc) {
-      return res.status(404).json({ success: false, message: "Member not found" });
-    }
-    const clientId = memberDoc.client._id;
 
     const room = await MeetingRoom.findById(roomId);
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
@@ -138,6 +150,10 @@ export const createBooking = async (req, res) => {
     let bookingStatus = "booked";
 
     if (paymentMethod === "credits") {
+      // Credits can only be used with a valid member context
+      if (!currentMemberId) {
+        return res.status(400).json({ success: false, code: "MEMBER_REQUIRED_FOR_CREDITS", message: "memberId is required when paying with credits" });
+      }
       if (!idempotencyKey) {
         return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
       }
@@ -219,7 +235,7 @@ export const createBooking = async (req, res) => {
 
     const booking = await MeetingBooking.create({
       room: roomId,
-      member: currentMemberId,
+      member: currentMemberId || undefined,
       client: clientId || undefined,
       visitors: Array.isArray(visitors) ? visitors : undefined,
       start: new Date(start),
@@ -288,7 +304,7 @@ export const createBooking = async (req, res) => {
 // List bookings with filters
 export const listBookings = async (req, res) => {
   try {
-    const { room, member, status, from, to } = req.query || {};
+    const { room, member, status, from, to, buildingId, building } = req.query || {};
     const filter = {};
     if (room) filter.room = room;
     if (member) filter.member = member;
@@ -299,8 +315,20 @@ export const listBookings = async (req, res) => {
       if (to) filter.start.$lte = new Date(to);
     }
 
+    // If buildingId/building is provided (from community admin), scope bookings to rooms in that building
+    const bId = buildingId || building;
+    if (bId && !room) {
+      try {
+        const roomsInBuilding = await MeetingRoom.find({ building: bId }).select('_id').lean();
+        const roomIds = roomsInBuilding.map(r => r._id);
+        filter.room = { $in: roomIds };
+      } catch (err) {
+        return res.json({ success: true, data: [] });
+      }
+    }
+
     const bookings = await MeetingBooking.find(filter)
-      .populate("room", "name capacity amenities")
+      .populate("room", "name capacity amenities building")
       .populate("member", "firstName lastName email phone companyName")
       .populate("visitors", "name email phone company")
       .sort({ start: 1 });
@@ -458,7 +486,7 @@ export const getBookingsByMember = async (req, res) => {
     const filter = { member: memberId };
     if (status) filter.status = status;
     if (from || to) {
-      filter.start = {};
+      filter.start = filter.start || {};
       if (from) filter.start.$gte = new Date(from);
       if (to) filter.start.$lte = new Date(to);
     }
