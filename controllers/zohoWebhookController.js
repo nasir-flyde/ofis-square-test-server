@@ -356,28 +356,32 @@ async function updateContractStatus(contract, eventData) {
             }
 
             if (client.zohoBooksContactId) {
-              // Push invoice to Zoho Books
-              console.log(`Pushing invoice ${invoice._id} to Zoho Books...`);
-              const zohoResp = await createZohoInvoiceFromLocal(
-                populatedInvoice.toObject(), 
-                client.toObject ? client.toObject() : client
-              );
-              
-              const zohoId = zohoResp?.invoice?.invoice_id;
-              const zohoNumber = zohoResp?.invoice?.invoice_number;
-              
-              if (zohoId) {
-                populatedInvoice.zoho_invoice_id = zohoId;
-                populatedInvoice.zoho_invoice_number = zohoNumber || populatedInvoice.zoho_invoice_number;
-                populatedInvoice.source = populatedInvoice.source || "zoho";
-                populatedInvoice.status = 'sent'; // Mark as sent since contract is signed
-                populatedInvoice.sent_at = new Date();
-                await populatedInvoice.save();
-                
-                console.log(`✅ Invoice ${invoice._id} pushed to Zoho Books (ID: ${zohoId}, Number: ${zohoNumber})`);
-                actionTaken += "_pushed_to_zoho";
+              if (populatedInvoice.zoho_invoice_id) {
+                console.log(`ℹ️ Invoice ${invoice._id} already linked to Zoho (ID: ${populatedInvoice.zoho_invoice_id}), skipping re-push`);
               } else {
-                console.error(`❌ Zoho Books did not return invoice_id for invoice ${invoice._id}`);
+                // Push invoice to Zoho Books
+                console.log(`Pushing invoice ${invoice._id} to Zoho Books...`);
+                const zohoResp = await createZohoInvoiceFromLocal(
+                  populatedInvoice.toObject(), 
+                  client.toObject ? client.toObject() : client
+                );
+                
+                const zohoId = zohoResp?.invoice?.invoice_id;
+                const zohoNumber = zohoResp?.invoice?.invoice_number;
+                
+                if (zohoId) {
+                  populatedInvoice.zoho_invoice_id = zohoId;
+                  populatedInvoice.zoho_invoice_number = zohoNumber || populatedInvoice.zoho_invoice_number;
+                  populatedInvoice.source = populatedInvoice.source || "zoho";
+                  populatedInvoice.status = 'sent'; // Mark as sent since contract is signed
+                  populatedInvoice.sent_at = new Date();
+                  await populatedInvoice.save();
+                  
+                  console.log(`✅ Invoice ${invoice._id} pushed to Zoho Books (ID: ${zohoId}, Number: ${zohoNumber})`);
+                  actionTaken += "_pushed_to_zoho";
+                } else {
+                  console.error(`❌ Zoho Books did not return invoice_id for invoice ${invoice._id}`);
+                }
               }
             }
           }
