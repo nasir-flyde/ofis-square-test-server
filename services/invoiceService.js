@@ -28,8 +28,9 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     const startEnd = getBillingPeriodRange(contract.startDate, contract.endDate);
     const existingInvoice = await Invoice.findOne({ 
       contract: contractId,
-      "billingPeriod.start": startEnd.start,
-      "billingPeriod.end": startEnd.end
+      type: 'regular',
+      "billing_period.start": startEnd.start,
+      "billing_period.end": startEnd.end
     });
 
     if (existingInvoice) {
@@ -181,7 +182,7 @@ function calculateProratedRent(contract, prorate) {
   const monthlyRent = contract.monthlyRent;
   
   let total = monthlyRent;
-  let description = `Monthly Rent - ${startDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}`;
+  let description = `Monthly Subscription - ${startDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}`;
   let prorationData = { enabled: false };
 
   if (prorate) {
