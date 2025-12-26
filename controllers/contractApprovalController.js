@@ -66,6 +66,7 @@ export const finalApprove = async (req, res) => {
     try {
       const unpaidCount = await Invoice.countDocuments({
         contract: contract._id,
+        type: 'regular',
         status: { $nin: ["paid", "void"] },
         balance: { $gt: 0 },
       });

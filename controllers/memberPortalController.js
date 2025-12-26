@@ -4,6 +4,7 @@ import MeetingBooking from "../models/meetingBookingModel.js";
 import Notification from "../models/notificationModel.js";
 import Event from "../models/eventModel.js";
 import Announcement from "../models/announcementModel.js";
+import imagekit from "../utils/imageKit.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -235,10 +236,25 @@ export const getMyTickets = async (req, res) => {
   try {
     const { page = 1, limit = 20, status, priority } = req.query;
     
-    const filter = { 
-      createdBy: req.memberId,
-      client: req.clientId 
-    };
+    // Detect role via universalAuthVerify/memberMiddleware
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+
+    // Build filter based on role
+    let filter;
+    if (roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients') {
+      // Client role: all tickets created by members that belong to this client
+      filter = {
+        client: req.clientId,
+        createdBy: { $exists: true, $ne: null }
+      };
+    } else {
+      // Member role: only this member's tickets
+      filter = { 
+        createdBy: req.memberId,
+        client: req.clientId 
+      };
+    }
     
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
@@ -277,7 +293,7 @@ export const getMyTickets = async (req, res) => {
 // Create a new ticket
 export const createMyTicket = async (req, res) => {
   try {
-    const { subject, description, priority = "low", category, images = [] } = req.body;
+    const { subject, description, priority = "low" } = req.body;
 
     if (!subject || !description) {
       return res.status(400).json({ success: false, message: "Subject and description are required" });
@@ -289,25 +305,100 @@ export const createMyTicket = async (req, res) => {
       return res.status(400).json({ success: false, message: "Member client or building not found. Please contact admin." });
     }
 
+    // Collect image URLs from uploaded files (if any)
+    const imageUrls = [];
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          const fileName = `ticket_${Date.now()}_${file.originalname}`;
+          const base64 = file.buffer?.toString("base64");
+          const uploadResponse = await imagekit.upload({
+            file: base64 || file.buffer,
+            fileName,
+            folder: "/tickets",
+            useUniqueFileName: true,
+          });
+          imageUrls.push(uploadResponse.url);
+        }
+      } catch (uploadError) {
+        console.error("ImageKit upload error (files):", uploadError);
+        return res.status(500).json({ 
+          success: false,
+          message: "Failed to upload images",
+          error: uploadError.message 
+        });
+      }
+    }
+
+    // Also support images sent via body (either URLs or base64 data URLs)
+    try {
+      let bodyImagesRaw = req.body?.images;
+      let bodyImages = [];
+      if (bodyImagesRaw) {
+        if (Array.isArray(bodyImagesRaw)) {
+          bodyImages = bodyImagesRaw;
+        } else if (typeof bodyImagesRaw === "string") {
+          try {
+            const parsed = JSON.parse(bodyImagesRaw);
+            if (Array.isArray(parsed)) bodyImages = parsed;
+            else bodyImages = String(bodyImagesRaw).split(",").map(s => s.trim()).filter(Boolean);
+          } catch {
+            bodyImages = String(bodyImagesRaw).split(",").map(s => s.trim()).filter(Boolean);
+          }
+        }
+      }
+
+      for (const img of bodyImages) {
+        if (!img) continue;
+        if (typeof img === "string" && img.startsWith("data:")) {
+          try {
+            const uploadResponse = await imagekit.upload({
+              file: img,
+              fileName: `ticket_${Date.now()}.jpg`,
+              folder: "/tickets",
+              useUniqueFileName: true,
+            });
+            imageUrls.push(uploadResponse.url);
+          } catch (uploadError) {
+            console.warn("ImageKit upload error (base64 body image):", uploadError?.message || uploadError);
+          }
+        } else if (typeof img === "string") {
+          imageUrls.push(img);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to process body images:", e?.message || e);
+    }
+
+    // Normalize category from various possible field encodings in multipart
+    let categoryObj = req.body?.category;
+    if (typeof categoryObj === 'string') {
+      try { categoryObj = JSON.parse(categoryObj); } catch { categoryObj = { }; }
+    }
+    const categoryId = categoryObj?.categoryId || req.body['category[categoryId]'] || req.body['category.categoryId'];
+    const subCategory = categoryObj?.subCategory || req.body['category[subCategory]'] || req.body['category.subCategory'] || "";
+
     const ticketData = {
       subject: subject.trim(),
       description: description.trim(),
       priority,
-      images,
+      images: imageUrls,
       createdBy: req.memberId,
       client: req.clientId,
-      building: member.client.building
+      building: member.client.building,
+      status: "open",
+      latestUpdate: "Ticket created"
     };
 
-    if (category && category.categoryId) {
+    if (categoryId) {
       ticketData.category = {
-        categoryId: category.categoryId,
-        subCategory: category.subCategory || ""
+        categoryId,
+        subCategory
       };
     }
 
     const ticket = await Ticket.create(ticketData);
-    
+
     // Populate the created ticket for response
     const populatedTicket = await Ticket.findById(ticket._id)
       .populate('category.categoryId', 'name');

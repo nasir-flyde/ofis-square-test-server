@@ -44,7 +44,8 @@ export const createCabin = async (req, res) => {
       sizeSqFt,
       amenities,
       images,
-      pricing
+      pricing,
+      matrixDeviceIds
     } = req.body || {};
 
     if (!building || !number || !type) {
@@ -93,6 +94,30 @@ export const createCabin = async (req, res) => {
       }
     }
 
+    // Validate and set matrix devices, if provided
+    let matrixDevicesToSet = [];
+    if (matrixDeviceIds !== undefined) {
+      const ids = Array.isArray(matrixDeviceIds) ? matrixDeviceIds : [];
+      if (ids.length > 0) {
+        const devices = await MatrixDevice.find({ _id: { $in: ids } }).select('_id buildingId status').lean();
+        const targetBuildingId = String(building);
+        const foundIds = new Set(devices.map(d => String(d._id)));
+        const missing = ids.map(String).filter(x => !foundIds.has(x));
+        if (missing.length) {
+          return res.status(400).json({ success: false, message: `Unknown matrix devices: ${missing.join(', ')}` });
+        }
+        const invalid = devices.filter(d => String(d.buildingId) !== targetBuildingId);
+        if (invalid.length) {
+          return res.status(400).json({ success: false, message: 'Matrix devices must belong to the same building as the cabin' });
+        }
+        const inactive = devices.filter(d => d.status !== 'active');
+        if (inactive.length) {
+          return res.status(400).json({ success: false, message: 'Matrix devices must be active' });
+        }
+      }
+      matrixDevicesToSet = ids;
+    }
+
     const cabin = await Cabin.create({ 
       building, 
       floor, 
@@ -103,7 +128,8 @@ export const createCabin = async (req, res) => {
       sizeSqFt,
       amenities,
       images: processedImages,
-      pricing
+      pricing,
+      matrixDevices: matrixDevicesToSet
     });
     const deskCount = Math.max(1, Number(capacity || 1));
     const deskDocs = [];
@@ -135,7 +161,8 @@ export const createCabin = async (req, res) => {
       sizeSqFt,
       amenities: amenities?.length || 0,
       images: processedImages?.length || 0,
-      pricing
+      pricing,
+      matrixDevices: matrixDevicesToSet?.length || 0
     });
 
     return res.status(201).json({ success: true, data: cabin });
@@ -202,7 +229,8 @@ export const getCabinById = async (req, res) => {
       .populate("allocatedTo", "companyName contactPerson phone email")
       .populate("contract", "startDate endDate status")
       .populate("desks", "number status allocatedAt releasedAt")
-      .populate("amenities", "name icon iconUrl description");
+      .populate("amenities", "name icon iconUrl description")
+      .populate("matrixDevices", "name deviceType status");
     
     if (!cabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });

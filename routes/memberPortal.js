@@ -15,12 +15,14 @@ import {
 
 const router = express.Router();
 
-// All routes require member authentication
+// Allow clients and members to fetch tickets via universal auth
+router.get("/me/tickets", universalMiddleware, getMyTickets);
+
+// All other routes require member authentication
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 router.get("/me", getMyProfile);
-router.get("/me/tickets",universalMiddleware, getMyTickets);
-router.post("/me/tickets", upload.array('images', 5), createMyTicket);
+router.post("/me/tickets", upload.any(), createMyTicket);
 router.get("/me/bookings", getMyBookings);
 router.get("/me/notifications", getMyNotifications);
 router.post("/me/notifications/:id/read", markNotificationRead);
