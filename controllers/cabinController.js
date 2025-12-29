@@ -801,6 +801,19 @@ export const importCabinsFromCSV = async (req, res) => {
         errors.push(`Unknown amenities: ${missingAmenityNames.join(', ')}`);
       }
 
+      // Optional Matrix Device fields from CSV
+      const deviceIdRaw = norm(r.deviceId || r.device_id || r["device id"] || r["Device ID"] || r.device);
+      const deviceTypeRaw = norm(r.deviceType || r["device type"] || r["Device Type"]);
+      let deviceType = toNumber(deviceTypeRaw);
+      if (deviceIdRaw) {
+        // default deviceType to 16 if not provided
+        if (deviceType === undefined) deviceType = 16;
+        const allowedTypes = new Set([1, 16, 17]);
+        if (!allowedTypes.has(deviceType)) {
+          errors.push(`Invalid deviceType: ${deviceType}. Allowed: 1, 16, 17`);
+        }
+      }
+
       if (!errors.length) {
         // Check duplicates within building
         const dup = await Cabin.findOne({ building: buildingId, number }).lean();
@@ -819,7 +832,7 @@ export const importCabinsFromCSV = async (req, res) => {
         perRow.push({
           index: idx + 1,
           success: true,
-          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length },
+          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length, deviceId: deviceIdRaw || null, deviceType: deviceIdRaw ? deviceType : undefined },
           originalRow
         });
         continue;
@@ -850,6 +863,45 @@ export const importCabinsFromCSV = async (req, res) => {
         cabin.desks = createdDesks.map((d) => d._id);
         await cabin.save();
 
+        // If device details provided, create or link MatrixDevice and attach to cabin
+        if (deviceIdRaw) {
+          const numericDevice = toNumber(deviceIdRaw);
+          let deviceDoc = await MatrixDevice.findOne({
+            $or: [
+              { device_id: deviceIdRaw },
+              ...(numericDevice !== undefined ? [{ device: numericDevice }] : [])
+            ]
+          });
+
+          if (!deviceDoc) {
+            deviceDoc = await MatrixDevice.create({
+              buildingId: buildingId,
+              name: `Cabin ${number} Device`,
+              vendor: 'MATRIX_COSEC',
+              deviceType: deviceType ?? 16,
+              direction: 'BIDIRECTIONAL',
+              device_id: deviceIdRaw,
+              device: numericDevice,
+              status: 'Active',
+              location: { floor }
+            });
+          } else {
+            let needSave = false;
+            if (String(deviceDoc.buildingId || '') !== String(buildingId)) {
+              deviceDoc.buildingId = buildingId;
+              needSave = true;
+            }
+            if (deviceType !== undefined && deviceDoc.deviceType !== deviceType) {
+              deviceDoc.deviceType = deviceType;
+              needSave = true;
+            }
+            if (needSave) await deviceDoc.save();
+          }
+
+          cabin.matrixDevices = Array.from(new Set([...(cabin.matrixDevices || []), deviceDoc._id]));
+          await cabin.save();
+        }
+
         await logCRUDActivity(req, 'CREATE', 'Cabin', cabin._id, null, {
           imported: true,
           building: buildingId,
@@ -862,6 +914,7 @@ export const importCabinsFromCSV = async (req, res) => {
           sizeSqFt,
           amenities: amenityIds.length,
           pricing,
+          matrixDevices: (cabin.matrixDevices || []).length,
         });
 
         createdCount++;
@@ -896,10 +949,11 @@ export const importCabinsFromCSV = async (req, res) => {
 export const downloadSampleCSV = async (_req, res) => {
   try {
     const header = [
-      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities'
+      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities','deviceId','deviceType'
     ];
-    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard'];
-    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard'];
+    // deviceType is optional during import and defaults to 16 if omitted. Provide 16 in sample for clarity.
+    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','10001','16'];
+    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','10002','16'];
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="cabins_import_sample.csv"');

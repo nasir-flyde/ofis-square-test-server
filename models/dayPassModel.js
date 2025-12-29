@@ -10,11 +10,6 @@ const dayPassSchema = new Schema(
     building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
     bundle: { type: Schema.Types.ObjectId, ref: "DayPassBundle", default: null }, // null for single passes
     
-    // Host information (can be Member, Client, or Guest)
-    hostMember: { type: Schema.Types.ObjectId, ref: "Member", default: null },
-    hostClient: { type: Schema.Types.ObjectId, ref: "Client", default: null },
-    hostGuest: { type: Schema.Types.ObjectId, ref: "Guest", default: null },
-    
     // Pass details
     date: { type: Date, default: null },
     visitDate: { type: Date, default: null }, 
