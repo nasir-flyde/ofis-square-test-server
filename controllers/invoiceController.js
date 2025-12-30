@@ -20,7 +20,7 @@ import {
   findOrCreateContactFromClient,
   markZohoInvoiceAsSent,
 } from "../utils/zohoBooks.js";
-import { applyPaymentToDeposit } from "./securityDepositController.js";
+import Building from "../models/buildingModel.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
@@ -66,6 +66,16 @@ function computeTotals(payload) {
   };
 }
 
+// Helper to round TDS by building setting
+function roundByMode(value, mode) {
+  const n = Number(value) || 0;
+  const m = mode || 'nearest';
+  if (m === 'none') return n;
+  if (m === 'up') return Math.ceil(n);
+  if (m === 'down') return Math.floor(n);
+  return Math.round(n);
+}
+
 export const createInvoice = async (req, res) => {
   try {
     const body = req.body || {};
@@ -97,12 +107,56 @@ export const createInvoice = async (req, res) => {
     const localInvoiceNumber = body.localInvoiceNumber || (await generateLocalInvoiceNumber());
     const totals = computeTotals(body);
 
+    // Determine building for TDS: prefer contract.building, then client.building, then body.building
+    let buildingId = undefined;
+    if (contractDoc?.building) buildingId = contractDoc.building;
+    else if (clientDoc?.building) buildingId = clientDoc.building;
+    else if (body.building) buildingId = body.building;
+
+    // Fetch TDS settings if we have a building
+    let buildingTds = null;
+    if (buildingId) {
+      try {
+        const bDoc = await Building.findById(buildingId).select('tdsSettings');
+        buildingTds = bDoc?.tdsSettings || null;
+      } catch (_) {}
+    }
+
+    // Compute TDS if enabled for sales/both
+    let withholdingTaxes = [];
+    let tdsAmount = 0;
+    let tdsRate = 0;
+    let tdsSection = undefined;
+    let tdsCalcBase = 'before_tax';
+    let tdsRoundMode = 'nearest';
+    if (buildingTds && buildingTds.enabled && ['sales','both'].includes(buildingTds.applyOn || 'sales')) {
+      // Taxable base = subtotal - discount
+      const taxableBase = Math.max(0, Number(totals.subtotal) - Number(totals.discount?.amount || 0));
+      const taxTotal = Number(totals.taxes?.reduce?.((s, t) => s + (t.amount || 0), 0) || (totals.tax_total || 0));
+      const base = (buildingTds.calculationBase || 'before_tax') === 'after_tax' ? (taxableBase + taxTotal) : taxableBase;
+      tdsRate = Number(buildingTds.defaultRatePercent || 0);
+      tdsSection = buildingTds.defaultSection || 'OTHER';
+      tdsCalcBase = buildingTds.calculationBase || 'before_tax';
+      tdsRoundMode = buildingTds.roundOffMode || 'nearest';
+      const rawTds = base * (tdsRate / 100);
+      tdsAmount = roundByMode(rawTds, tdsRoundMode);
+      if (tdsAmount > 0) {
+        const tax_name = (buildingTds?.integration?.zohoBooks?.withholdingTaxName) || tdsSection;
+        withholdingTaxes.push({ 
+          tax_name, 
+          tax_percentage: tdsRate,
+          tax_amount: Math.round(Number(tdsAmount || 0) * 100) / 100
+        });
+      }
+    }
+
     // Create invoice data using same structure as createInvoiceFromContract
     const invoiceData = {
       // Updated field names to match new schema
       invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
+      building: buildingId || undefined,
       date: issueDate ? new Date(issueDate) : new Date(),
       due_date: dueDate ? new Date(dueDate) : undefined,
       billing_period: {
@@ -125,7 +179,11 @@ export const createInvoice = async (req, res) => {
       tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
       amount_paid: totals.amountPaid,
-      balance: totals.balanceDue,
+      balance: (() => {
+        const gross = Number(totals.total || 0);
+        const net = Math.max(0, gross - (tdsAmount || 0));
+        return Math.round(net * 100) / 100;
+      })(),
       status: invoiceStatus,
       notes: notes || "Manual invoice creation",
       currency_code: "INR",
@@ -148,6 +206,15 @@ export const createInvoice = async (req, res) => {
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: clientDoc.gstNo,
       ...(meta ? { meta } : {}),
+      // Withholding taxes (TDS) if computed
+      ...((withholdingTaxes.length) ? {
+        ...(buildingTds?.integration?.zohoBooks?.enabled === false ? {} : { withholding_taxes: withholdingTaxes }),
+        tds_amount: Number(tdsAmount) || 0,
+        tds_section: tdsSection,
+        tds_rate_percent: tdsRate,
+        tds_calculation_base: tdsCalcBase,
+        tds_round_mode: tdsRoundMode,
+      } : {}),
     };
 
     const invoice = await Invoice.create(invoiceData);

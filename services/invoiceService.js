@@ -43,13 +43,16 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     // Set due date based on building.draftInvoiceDueDay (day-of-month), defaulting to 7
     const startDate = new Date(contract.startDate);
     let buildingDueDay = 7;
+    // Also fetch TDS settings
+    let buildingTds = null;
     try {
-      const bDoc = await Building.findById(contract.building._id).select('draftInvoiceDueDay');
+      const bDoc = await Building.findById(contract.building._id).select('draftInvoiceDueDay tdsSettings');
       if (bDoc && Number(bDoc.draftInvoiceDueDay) > 0) {
         buildingDueDay = Number(bDoc.draftInvoiceDueDay);
       }
+      buildingTds = bDoc?.tdsSettings || null;
     } catch (e) {
-      console.warn('Failed to load building.draftInvoiceDueDay, using default 7:', e?.message || e);
+      console.warn('Failed to load building invoice settings, using defaults:', e?.message || e);
     }
     const firstOfNextMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1);
     const daysInNextMonth = new Date(firstOfNextMonth.getFullYear(), firstOfNextMonth.getMonth() + 1, 0).getDate();
@@ -74,6 +77,32 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
 
     const taxTotal = 0;
     const total = round2(subtotal + taxTotal);
+
+    // Apply TDS (withholding tax) if enabled on building for sales/both
+    let withholdingTaxes = [];
+    let tdsAmount = 0;
+    let tdsRate = 0;
+    let tdsSection = undefined;
+    let tdsCalcBase = 'before_tax';
+    let tdsRoundMode = 'nearest';
+    if (buildingTds && buildingTds.enabled && ['sales','both'].includes(buildingTds.applyOn || 'sales')) {
+      const base = (buildingTds.calculationBase || 'before_tax') === 'after_tax' ? (subtotal + taxTotal) : subtotal;
+      tdsRate = Number(buildingTds.defaultRatePercent || 0);
+      tdsSection = buildingTds.defaultSection || 'OTHER';
+      tdsCalcBase = buildingTds.calculationBase || 'before_tax';
+      tdsRoundMode = buildingTds.roundOffMode || 'nearest';
+      const rawTds = base * (tdsRate / 100);
+      tdsAmount = roundByMode(rawTds, tdsRoundMode);
+      if (tdsAmount > 0) {
+        const tax_name = (buildingTds?.integration?.zohoBooks?.withholdingTaxName) || tdsSection;
+        withholdingTaxes.push({
+          tax_id: undefined,
+          tax_name,
+          tax_percentage: tdsRate,
+          tax_amount: round2(tdsAmount)
+        });
+      }
+    }
 
     // Create invoice payload
     const invoiceNumber = await generateLocalInvoiceNumber();
@@ -104,7 +133,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       tax_total: taxTotal,
       total,
       amount_paid: 0,
-      balance: total,
+      balance: round2(Math.max(0, total - (tdsAmount || 0))),
       status: "draft", // Start as draft for Zoho compatibility
       notes: `Auto-created from contract (${issueOn})`,
       
@@ -132,7 +161,18 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       
       // Map customer for Zoho integration
       customer_id: contract.client.zohoBooksContactId, // Will be populated when client is synced to Zoho
-      gst_no: contract.client.gstNo
+      gst_no: contract.client.gstNo,
+      // Withholding taxes (TDS) if computed
+      ...(withholdingTaxes.length ? {
+        // Send to Zoho only if integration flag is enabled (default true when undefined)
+        ...(buildingTds?.integration?.zohoBooks?.enabled === false ? {} : { withholding_taxes: withholdingTaxes }),
+        // Always keep local TDS meta for reporting
+        tds_amount: round2(tdsAmount),
+        tds_section: tdsSection,
+        tds_rate_percent: tdsRate,
+        tds_calculation_base: tdsCalcBase,
+        tds_round_mode: tdsRoundMode,
+      } : {})
     };
 
     const invoice = await Invoice.create(invoiceData);
@@ -408,6 +448,16 @@ export const previewCreditPurchaseInvoice = async (clientId, credits, options = 
 };
 
 function round2(n) { return Math.round(n * 100) / 100; }
+
+// Helper to round TDS value per building settings
+function roundByMode(value, mode) {
+  const n = Number(value) || 0;
+  const m = mode || 'nearest';
+  if (m === 'none') return n;
+  if (m === 'up') return Math.ceil(n);
+  if (m === 'down') return Math.floor(n);
+  return Math.round(n);
+}
 
 export default { 
   createInvoiceFromContract, 

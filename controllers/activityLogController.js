@@ -17,7 +17,9 @@ const getAllActivityLogs = async (req, res) => {
       endDate,
       search,
       sortBy = 'createdAt',
-      sortOrder = 'desc'
+      sortOrder = 'desc',
+      category,
+      parkingType
     } = req.query;
 
     // Build filter object
@@ -27,8 +29,12 @@ const getAllActivityLogs = async (req, res) => {
     if (userRole) filter.userRole = new RegExp(userRole, 'i');
     if (action) filter.action = action;
     if (entity) filter.entity = entity;
+    if (category) filter['metadata.category'] = category;
+    if (parkingType) filter['metadata.parkingType'] = parkingType;
     if (entityId) filter.entityId = entityId;
     if (status) filter.status = status;
+    if (category) filter['metadata.category'] = category;
+    if (parkingType) filter['metadata.parkingType'] = parkingType;
 
     // Date range filter
     if (startDate || endDate) {
@@ -359,6 +365,8 @@ const exportActivityLogs = async (req, res) => {
       userRole,
       action,
       entity,
+      category,
+      parkingType,
       startDate,
       endDate,
       format = 'csv'

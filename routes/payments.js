@@ -1,5 +1,6 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
+import upload from "../middlewares/multer.js";
 import {
   createPayment,
   getPayments,
@@ -21,7 +22,15 @@ const router = express.Router();
 router.get("/", authMiddleware, getPayments);
 
 // Create a payment (updates related invoice totals)
-router.post("/", authMiddleware, createPayment);
+router.post(
+  "/",
+  authMiddleware,
+  upload.fields([
+    { name: 'screenshots', maxCount: 5 },
+    { name: 'images', maxCount: 5 }
+  ]),
+  createPayment
+);
 
 // Get payment by ID
 router.get("/:id", authMiddleware, getPaymentById);

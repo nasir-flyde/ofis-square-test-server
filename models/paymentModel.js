@@ -45,7 +45,7 @@ const paymentSchema = new mongoose.Schema(
     bankName: { type: String, trim: true },
     accountNumber: { type: String, trim: true },
     notes: { type: String, trim: true },
-    screenshots: [{ type: String }],
+    images: [{ type: String }],
 
     customer_id: { type: String, index: true },
     zoho_payment_id: { type: String, index: true },

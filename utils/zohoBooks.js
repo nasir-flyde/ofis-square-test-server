@@ -294,6 +294,20 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
+      // Pass withholding taxes (TDS) if present on the invoice (array of {tax_name, tax_percentage, tax_id?, tax_amount?})
+      ...(Array.isArray(invoiceDoc.withholding_taxes) && invoiceDoc.withholding_taxes.length > 0
+        ? {
+            withholding_taxes: invoiceDoc.withholding_taxes.map((t) => {
+              const out = {
+                tax_name: t.tax_name,
+                tax_percentage: Number(t.tax_percentage || 0),
+              };
+              if (t.tax_id) out.tax_id = t.tax_id;
+              if (t.tax_amount !== undefined) out.tax_amount = Number(t.tax_amount || 0);
+              return out;
+            }),
+          }
+        : {}),
     };
 
     const headers = {

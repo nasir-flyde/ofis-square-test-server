@@ -103,6 +103,12 @@ const clientSchema = new mongoose.Schema(
     },
     isSecurityPaid: { type: Boolean, default: false },
 
+    // Parking details (synced from contract on final approval)
+    parkingSpaces: {
+      noOf2WheelerParking: { type: Number, default: 0 },
+      noOf4WheelerParking: { type: Number, default: 0 },
+    },
+
     // Status & ownership
     companyDetailsComplete: { type: Boolean, default: false },
     kycStatus: {

@@ -38,6 +38,16 @@ const contractSchema = new mongoose.Schema(
         message: "Initial credits must be an integer"
       }
     },
+    // Separate printer credits allocation for this contract
+    printerCredits: {
+      type: Number,
+      default: 0,
+      min: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: "Printer credits must be an integer"
+      }
+    },
     creditValueAtSignup: {
       type: Number,
       default: null,
@@ -212,6 +222,7 @@ const contractSchema = new mongoose.Schema(
         "pending_admin_approval",
         "admin_approved",
         "admin_rejected",
+        "sales_senior_rejected",
         "sent_to_client",
         "client_approved",
         "client_feedback_pending",

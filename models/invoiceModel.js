@@ -81,6 +81,21 @@ const invoiceSchema = new mongoose.Schema(
     discount: { type: Number, default: 0 },
     discount_type: { type: String, enum: ["entity_level", "item_level"], default: "entity_level" },
     tax_total: { type: Number, default: 0 },
+    // Withholding taxes (TDS) captured at invoice level for India
+    // Aligns with Zoho Books 'withholding_taxes' structure
+    withholding_taxes: [new mongoose.Schema({
+      tax_id: { type: String },
+      tax_name: { type: String },
+      tax_percentage: { type: Number },
+      tax_amount: { type: Number },
+    }, { _id: false })],
+    // Convenience/meta fields for local reporting
+    tds_amount: { type: Number, default: 0 },
+    tds_section: { type: String },
+    tds_rate_percent: { type: Number },
+    tds_calculation_base: { type: String, enum: ["before_tax", "after_tax"], default: "before_tax" },
+    tds_round_mode: { type: String, enum: ["none", "nearest", "up", "down"], default: "nearest" },
+    tds_notes: { type: String },
     total: { type: Number, default: 0 },
     balance: { type: Number, default: 0 },
     amount_paid: { type: Number, default: 0 },

@@ -6,12 +6,14 @@ import { PERMISSIONS } from "../constants/permissions.js";
 import {
   createBySales,
   salesSeniorUpdateAndApprove,
+  salesSeniorReject,
   legalUploadDocument,
   adminApproveCustom,
   sendToClientForSignature,
   clientFeedbackAction,
   clientApproveAndSign,
   getWorkflowStatus,
+  salesEditCommercials,
 } from "../controllers/contractCustomController.js";
 
 const router = express.Router();
@@ -30,6 +32,15 @@ router.post(
   createBySales
 );
 
+// Sales edits commercials on an existing contract
+router.put(
+  "/:id/sales/edit-commercials",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_SALES_CREATE),
+  salesEditCommercials
+);
+
 // Sales Senior updates and approves
 router.put(
   "/:id/senior/update-and-approve",
@@ -37,6 +48,15 @@ router.put(
   populateUserRole,
   requirePermission(PERMISSIONS.CONTRACT_SALES_SENIOR_APPROVE),
   salesSeniorUpdateAndApprove
+);
+
+// Sales Senior rejects
+router.post(
+  "/:id/senior/reject",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_SALES_SENIOR_APPROVE),
+  salesSeniorReject
 );
 
 // Legal uploads final contract document (uses existing fileUrl)

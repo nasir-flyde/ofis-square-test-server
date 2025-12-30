@@ -39,6 +39,13 @@ const securityDepositSchema = new mongoose.Schema(
     amount_refunded: { type: Number, default: 0, min: 0 },
     amount_forfeited: { type: Number, default: 0, min: 0 },
 
+    // SD Note artifacts
+    sdNoteUrl: { type: String },
+    sdNoteGeneratedAt: { type: Date },
+    sdNoteMeta: { type: mongoose.Schema.Types.Mixed },
+
+    images: [{ type: String }],
+
     notes: { type: String, trim: true },
   },
   {

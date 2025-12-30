@@ -54,6 +54,7 @@ export const createBySales = async (req, res) => {
       terms,
       termsandconditions,
       kycDocumentItems: kycItemsFromBody,
+      printerCredits,
     } = req.body || {};
 
     if (!client || !building || !startDate || !endDate || !capacity || monthlyRent === undefined) {
@@ -113,6 +114,7 @@ export const createBySales = async (req, res) => {
       endDate,
       capacity,
       monthlyRent,
+      ...(Number.isInteger(printerCredits) && printerCredits >= 0 ? { printerCredits } : {}),
       // Set defaults when commercials are created by Sales (can be overridden by body)
       initialCredits: (req.body && Number.isInteger(req.body.initialCredits)) ? req.body.initialCredits : 10,
       allocated_credits: (req.body && Number.isInteger(req.body.allocated_credits)) ? req.body.allocated_credits : 10,
@@ -150,6 +152,98 @@ export const createBySales = async (req, res) => {
     console.error("createBySales error:", err);
     await logErrorActivity(req, err, "Custom Flow: Sales Create");
     return res.status(500).json({ success: false, message: "Failed to create contract" });
+  }
+};
+
+// Sales edits commercials on an existing contract (resets flow to pushed)
+export const salesEditCommercials = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      client,
+      building,
+      startDate,
+      endDate,
+      capacity,
+      monthlyRent,
+      terms,
+      termsandconditions,
+      printerCredits,
+    } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    // Update allowed fields
+    if (client) contract.client = client;
+    if (building) contract.building = building;
+    if (startDate) contract.startDate = startDate;
+    if (endDate) contract.endDate = endDate;
+    if (typeof capacity !== 'undefined') contract.capacity = capacity;
+    if (typeof monthlyRent !== 'undefined') contract.monthlyRent = monthlyRent;
+    if (typeof terms !== 'undefined') contract.terms = terms;
+    if (Array.isArray(termsandconditions)) contract.termsandconditions = termsandconditions;
+    if (Number.isInteger(printerCredits) && printerCredits >= 0) contract.printerCredits = printerCredits;
+
+    // Recompute duration months if dates provided
+    try {
+      if (contract.startDate && contract.endDate) {
+        const sd = new Date(contract.startDate);
+        const ed = new Date(contract.endDate);
+        let months = (ed.getFullYear() - sd.getFullYear()) * 12 + (ed.getMonth() - sd.getMonth());
+        if (ed.getDate() >= sd.getDate()) months += 1;
+        contract.durationMonths = Math.max(0, months);
+        // Commencement date should mirror start date
+        contract.commencementDate = contract.startDate;
+        // Default lock-in to duration (can be changed later)
+        contract.lockInPeriodMonths = contract.durationMonths;
+      }
+    } catch (_) {}
+
+    // Reset approvals and legal state to force the workflow again
+    contract.salesSeniorApproved = false;
+    contract.salesSeniorApprovedBy = null;
+    contract.salesSeniorApprovedAt = null;
+    contract.salesSeniorApprovalNotes = null;
+
+    contract.adminapproved = false;
+    contract.clientapproved = false;
+    contract.isclientsigned = false;
+    contract.iscontractsentforsignature = false;
+
+    // Clear legal upload markers; keep fileUrl placeholder to enforce re-upload
+    contract.fileUrl = "placeholder";
+    contract.legalUploadedAt = null;
+    contract.legalUploadedBy = null;
+    contract.legalUploadNotes = null;
+
+    // Clear admin rejection markers if any
+    contract.adminRejectedBy = null;
+    contract.adminRejectedAt = null;
+    contract.adminRejectionReason = undefined;
+
+    // Clear senior rejection markers if any (re-submission)
+    contract.rejectedBy = null;
+    contract.rejectedAt = null;
+    contract.rejectionReason = undefined;
+
+    // Reset status back to pushed for senior review
+    contract.status = "pushed";
+
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "sales_updated_commercials",
+    });
+
+    return res.json({ success: true, message: "Commercials updated and resubmitted for Sales Senior review" });
+  } catch (err) {
+    console.error("salesEditCommercials error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Sales Edit Commercials");
+    return res.status(500).json({ success: false, message: "Failed to update commercials" });
   }
 };
 
@@ -218,6 +312,59 @@ export const salesSeniorUpdateAndApprove = async (req, res) => {
     console.error("salesSeniorUpdateAndApprove error:", err);
     await logErrorActivity(req, err, "Custom Flow: Sales Senior Update/Approve");
     return res.status(500).json({ success: false, message: "Failed to update/approve" });
+  }
+};
+
+// Sales Senior rejects with mandatory note
+export const salesSeniorReject = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body || {};
+
+    if (!notes || !String(notes).trim()) {
+      return res.status(400).json({ success: false, message: "Rejection note is required" });
+    }
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    if (contract.salesSeniorApproved) {
+      return res.status(400).json({ success: false, message: "Already approved by Sales Senior; cannot reject" });
+    }
+
+    // Optional: allow reject only when pending Sales Senior approval
+    if ((contract.status || "").toLowerCase() !== "pushed") {
+      return res.status(400).json({ success: false, message: "Only contracts pending Sales Senior approval (status: pushed) can be rejected" });
+    }
+
+    // Clear any previous approval markers just in case
+    contract.salesSeniorApproved = false;
+    contract.salesSeniorApprovedBy = null;
+    contract.salesSeniorApprovedAt = null;
+    contract.salesSeniorApprovalNotes = null;
+
+    // Mark rejection
+    contract.rejectedBy = req.user?._id || null;
+    contract.rejectedAt = new Date();
+    contract.rejectionReason = String(notes).trim();
+
+    // Update status and audit
+    contract.status = "sales_senior_rejected";
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "sales_senior_rejected",
+      notes: String(notes).trim(),
+    });
+
+    return res.json({ success: true, message: "Rejected by Sales Senior" });
+  } catch (err) {
+    console.error("salesSeniorReject error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Sales Senior Reject");
+    return res.status(500).json({ success: false, message: "Failed to reject" });
   }
 };
 
@@ -358,6 +505,22 @@ export const adminApproveCustom = async (req, res) => {
       }
     } catch (grantErr) {
       console.warn("Access grant on admin approval failed:", grantErr?.message);
+    }
+
+    // Printer credits wallet updates are handled at final approval stage
+    if (contract.isfinalapproval) {
+      try {
+        const targetClient = contract.client;
+        if (targetClient) {
+          await ClientCreditWallet.findOneAndUpdate(
+            { client: targetClient },
+            { $set: { printerBalance: contract.printerCredits } },
+            { new: true, upsert: true }
+          );
+        }
+      } catch (walletErr) {
+        console.warn("adminApproveCustom: failed to update printerBalance:", walletErr?.message || walletErr);
+      }
     }
 
     return res.json({ success: true, message: "Admin approved contract" });

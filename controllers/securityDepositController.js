@@ -3,9 +3,12 @@ import SecurityDeposit from "../models/securityDepositModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
+import Payment from "../models/paymentModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
+import { generateSecurityDepositNote } from "../services/securityDepositNoteService.js";
+import imagekit from "../utils/imageKit.js";
 
 function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
@@ -79,6 +82,41 @@ export const getDepositById = async (req, res) => {
     return res.json({ success: true, data: dep });
   } catch (error) {
     await logErrorActivity(req, error, 'Get SecurityDeposit');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const listDeposits = async (req, res) => {
+  try {
+    const { client, contract, status, building, limit = 50, sort } = req.query || {};
+    const filter = {};
+    if (client) filter.client = client;
+    if (contract) filter.contract = contract;
+    if (status) filter.status = status;
+    if (building) filter.building = building;
+
+    // Default sort: newest first
+    let sortObj = { createdAt: -1 };
+    if (sort) {
+      // Accept formats: 'createdAt:desc' or '-createdAt'
+      if (sort.includes(':')) {
+        const [field, dir] = sort.split(':');
+        sortObj = { [field]: dir === 'asc' ? 1 : -1 };
+      } else if (sort.startsWith('-')) {
+        sortObj = { [sort.slice(1)]: -1 };
+      } else {
+        sortObj = { [sort]: 1 };
+      }
+    }
+
+    const docs = await SecurityDeposit.find(filter)
+      .populate('invoice_id', 'invoice_number total amount_paid balance status due_date')
+      .sort(sortObj)
+      .limit(Math.max(1, Math.min(Number(limit) || 50, 200)));
+
+    return res.json({ success: true, data: docs });
+  } catch (error) {
+    await logErrorActivity(req, error, 'List SecurityDeposits');
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -267,7 +305,33 @@ export const closeDeposit = async (req, res) => {
   }
 };
 
-// Internal helper: update deposit on payment application
+// Manually (re)generate Security Deposit Note PDF and upload to ImageKit
+export const generateDepositNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { forceRegenerate = false, dynamicValues = [] } = req.body || {};
+    const dep = await SecurityDeposit.findById(id);
+    if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
+
+    const result = await generateSecurityDepositNote(id, {
+      signer: {
+        name: req.user?.name || req.user?.fullName || req.user?.email,
+        email: req.user?.email,
+        phone: req.user?.phone,
+        designation: req.user?.role || req.user?.designation,
+      },
+      dynamicValues,
+      force: Boolean(forceRegenerate),
+    });
+
+    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', id, null, { action: 'GENERATE_SD_NOTE', url: result?.url });
+    return res.json({ success: true, data: { url: result?.url } });
+  } catch (error) {
+    await logErrorActivity(req, error, 'Generate SecurityDeposit Note');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const applyPaymentToDeposit = async (invoiceId, amountApplied) => {
   try {
     const inv = await Invoice.findById(invoiceId).select('_id deposit');
@@ -285,9 +349,102 @@ export const applyPaymentToDeposit = async (invoiceId, amountApplied) => {
     if (!dep.paid_date) dep.paid_date = new Date();
     dep.status = recomputeStatus(dep);
     await dep.save();
+
+    // SD Note generation policy:
+    // - If a note already exists, any payment change on the SD invoice regenerates and REPLACES the URL (force = true)
+    // - If no note exists yet, generate it when the deposit becomes fully PAID
+    try {
+      if (dep.sdNoteUrl) {
+        await generateSecurityDepositNote(dep._id, {
+          signer: { name: 'System' },
+          dynamicValues: [],
+          force: true,
+        });
+      } else if (dep.status === 'PAID') {
+        await generateSecurityDepositNote(dep._id, {
+          signer: { name: 'System' },
+          dynamicValues: [],
+          force: false,
+        });
+      }
+    } catch (_) { /* non-blocking */ }
+
     return dep;
   } catch (e) {
     // Non-blocking
     return null;
+  }
+};
+
+// POST /api/security-deposits/:id/images
+// Upload images/screenshots and attach their URLs to the deposit.images array
+export const uploadDepositImages = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const dep = await SecurityDeposit.findById(id);
+    if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
+
+    const folder = process.env.IMAGEKIT_SECURITY_DEPOSIT_FOLDER || "/ofis-square/security-deposits";
+    const files = [
+      ...(Array.isArray(req?.files?.images) ? req.files.images : []),
+      ...(Array.isArray(req?.files?.screenshots) ? req.files.screenshots : []),
+    ];
+
+    if (!files.length) {
+      return res.status(400).json({ success: false, message: 'No files provided' });
+    }
+
+    const uploads = files.map(async (file) => {
+      const result = await imagekit.upload({
+        file: file.buffer,
+        fileName: `security_deposit_${Date.now()}_${file.originalname}`,
+        folder,
+      });
+      return result.url;
+    });
+    const urls = await Promise.all(uploads);
+
+    dep.images = [...(dep.images || []), ...urls];
+    await dep.save();
+
+    // Also attach these URLs to the latest related Payment (single- or multi-invoice payments)
+    try {
+      // Collect invoice ids related to this deposit
+      let invoiceIds = [];
+      if (dep.invoice_id) {
+        invoiceIds = [dep.invoice_id];
+      } else {
+        const invs = await Invoice.find({ deposit: dep._id }).select('_id');
+        invoiceIds = invs.map((i) => i._id);
+      }
+
+      if (invoiceIds.length > 0) {
+        const latestPayment = await Payment.findOne({
+          $or: [
+            { invoice: { $in: invoiceIds } },
+            { 'invoices.invoice': { $in: invoiceIds } },
+          ],
+        })
+          .sort({ createdAt: -1 })
+          .select('images');
+
+        if (latestPayment) {
+          const existing = Array.isArray(latestPayment.images) ? latestPayment.images : [];
+          const merged = Array.from(new Set([...(existing || []), ...urls]));
+          if (merged.length !== existing.length) {
+            latestPayment.images = merged;
+            await latestPayment.save();
+          }
+        }
+      }
+    } catch (e) {
+      // non-blocking
+    }
+
+    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', dep._id, null, { action: 'ADD_IMAGES', count: urls.length });
+    return res.json({ success: true, data: { images: dep.images, added: urls } });
+  } catch (error) {
+    await logErrorActivity(req, error, 'Upload SecurityDeposit Images');
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

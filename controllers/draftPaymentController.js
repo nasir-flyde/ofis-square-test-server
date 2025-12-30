@@ -157,7 +157,7 @@ export const approveDraftPayment = async (req, res) => {
         paymentDate: draft.paymentDate,
         currency: draft.currency || undefined,
         notes: draft.notes || undefined,
-        screenshots: draft.screenshots || [], // Transfer screenshots from draft
+        images: draft.screenshots || [], // Save draft screenshots as images
       },
     ], { session });
 

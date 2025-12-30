@@ -4,7 +4,7 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings } = req.body || {};
 
 // Update per-building invoice settings (draft invoice schedule and late fee policy)
 
@@ -58,6 +58,37 @@ export const createBuilding = async (req, res) => {
       openSpacePricing: req.body.openSpacePricing || 500,
       businessMapLink
     };
+
+    // Attach sanitized TDS settings if provided
+    if (tdsSettings && typeof tdsSettings === 'object') {
+      const sanitizedTds = {};
+      if (typeof tdsSettings.enabled === 'boolean') sanitizedTds.enabled = tdsSettings.enabled;
+      if (['sales', 'purchases', 'both'].includes(tdsSettings.applyOn)) sanitizedTds.applyOn = tdsSettings.applyOn;
+      if (['before_tax', 'after_tax'].includes(tdsSettings.calculationBase)) sanitizedTds.calculationBase = tdsSettings.calculationBase;
+      if (['194C', '194H', '194I', '194J', '194Q', 'OTHER'].includes(tdsSettings.defaultSection)) sanitizedTds.defaultSection = tdsSettings.defaultSection;
+      if (tdsSettings.defaultRatePercent !== undefined) {
+        const r = Number(tdsSettings.defaultRatePercent);
+        if (Number.isFinite(r) && r >= 0 && r <= 100) sanitizedTds.defaultRatePercent = r;
+      }
+      if (tdsSettings.thresholdAnnualAmount !== undefined) {
+        const th = Number(tdsSettings.thresholdAnnualAmount);
+        if (Number.isFinite(th) && th >= 0) sanitizedTds.thresholdAnnualAmount = th;
+      }
+      if (['none', 'nearest', 'up', 'down'].includes(tdsSettings.roundOffMode)) sanitizedTds.roundOffMode = tdsSettings.roundOffMode;
+      if (typeof tdsSettings.notes === 'string') sanitizedTds.notes = tdsSettings.notes;
+      if (tdsSettings.integration && typeof tdsSettings.integration === 'object') {
+        sanitizedTds.integration = {};
+        if (tdsSettings.integration.zohoBooks && typeof tdsSettings.integration.zohoBooks === 'object') {
+          sanitizedTds.integration.zohoBooks = {};
+          if (typeof tdsSettings.integration.zohoBooks.enabled === 'boolean') sanitizedTds.integration.zohoBooks.enabled = tdsSettings.integration.zohoBooks.enabled;
+          if (typeof tdsSettings.integration.zohoBooks.withholdingTaxName === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxName = tdsSettings.integration.zohoBooks.withholdingTaxName;
+          if (['before_tax', 'after_tax'].includes(tdsSettings.integration.zohoBooks.computeOn)) sanitizedTds.integration.zohoBooks.computeOn = tdsSettings.integration.zohoBooks.computeOn;
+        }
+      }
+      if (Object.keys(sanitizedTds).length > 0) {
+        buildingData.tdsSettings = sanitizedTds;
+      }
+    }
 
     // Add coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
@@ -124,7 +155,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -184,6 +215,41 @@ export const updateBuilding = async (req, res) => {
       };
     }
 
+    // Update TDS settings if provided
+    if (tdsSettings !== undefined) {
+      const sanitizedTds = {};
+      if (typeof tdsSettings?.enabled === 'boolean') sanitizedTds.enabled = tdsSettings.enabled;
+      if (['sales', 'purchases', 'both'].includes(tdsSettings?.applyOn)) sanitizedTds.applyOn = tdsSettings.applyOn;
+      if (['before_tax', 'after_tax'].includes(tdsSettings?.calculationBase)) sanitizedTds.calculationBase = tdsSettings.calculationBase;
+      if (['194C', '194H', '194I', '194J', '194Q', 'OTHER'].includes(tdsSettings?.defaultSection)) sanitizedTds.defaultSection = tdsSettings.defaultSection;
+      if (tdsSettings?.defaultRatePercent !== undefined) {
+        const r = Number(tdsSettings.defaultRatePercent);
+        if (!Number.isFinite(r) || r < 0 || r > 100) {
+          return res.status(400).json({ success: false, message: "tdsSettings.defaultRatePercent must be 0-100" });
+        }
+        sanitizedTds.defaultRatePercent = r;
+      }
+      if (tdsSettings?.thresholdAnnualAmount !== undefined) {
+        const th = Number(tdsSettings.thresholdAnnualAmount);
+        if (!Number.isFinite(th) || th < 0) {
+          return res.status(400).json({ success: false, message: "tdsSettings.thresholdAnnualAmount must be a non-negative number" });
+        }
+        sanitizedTds.thresholdAnnualAmount = th;
+      }
+      if (['none', 'nearest', 'up', 'down'].includes(tdsSettings?.roundOffMode)) sanitizedTds.roundOffMode = tdsSettings.roundOffMode;
+      if (typeof tdsSettings?.notes === 'string') sanitizedTds.notes = tdsSettings.notes;
+      if (tdsSettings?.integration && typeof tdsSettings.integration === 'object') {
+        sanitizedTds.integration = {};
+        if (tdsSettings.integration.zohoBooks && typeof tdsSettings.integration.zohoBooks === 'object') {
+          sanitizedTds.integration.zohoBooks = {};
+          if (typeof tdsSettings.integration.zohoBooks.enabled === 'boolean') sanitizedTds.integration.zohoBooks.enabled = tdsSettings.integration.zohoBooks.enabled;
+          if (typeof tdsSettings.integration.zohoBooks.withholdingTaxName === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxName = tdsSettings.integration.zohoBooks.withholdingTaxName;
+          if (['before_tax', 'after_tax'].includes(tdsSettings.integration.zohoBooks.computeOn)) sanitizedTds.integration.zohoBooks.computeOn = tdsSettings.integration.zohoBooks.computeOn;
+        }
+      }
+      updatePayload.tdsSettings = sanitizedTds;
+    }
+
     const building = await Building.findByIdAndUpdate(
       id,
       updatePayload,
@@ -198,10 +264,10 @@ export const updateBuilding = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });

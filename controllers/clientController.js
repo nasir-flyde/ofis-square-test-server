@@ -775,8 +775,38 @@ export const updateClient = async (req, res) => {
       try { payload.contactPersons = JSON.parse(payload.contactPersons); } catch (_) { delete payload.contactPersons; }
     }
 
+    // Normalize parkingSpaces: accept nested object or top-level fields
+    if (typeof payload.parkingSpaces === 'string') {
+      try { payload.parkingSpaces = JSON.parse(payload.parkingSpaces); } catch (_) { delete payload.parkingSpaces; }
+    }
+    const hasTopLevelTwo = Object.prototype.hasOwnProperty.call(payload, 'noOf2WheelerParking');
+    const hasTopLevelFour = Object.prototype.hasOwnProperty.call(payload, 'noOf4WheelerParking');
+    if (hasTopLevelTwo || hasTopLevelFour) {
+      payload.parkingSpaces = {
+        ...(payload.parkingSpaces || {}),
+        noOf2WheelerParking: hasTopLevelTwo
+          ? Number(payload.noOf2WheelerParking)
+          : Number(payload.parkingSpaces?.noOf2WheelerParking),
+        noOf4WheelerParking: hasTopLevelFour
+          ? Number(payload.noOf4WheelerParking)
+          : Number(payload.parkingSpaces?.noOf4WheelerParking),
+      };
+    }
+    if (payload.parkingSpaces && typeof payload.parkingSpaces === 'object') {
+      const two = Number(payload.parkingSpaces.noOf2WheelerParking);
+      const four = Number(payload.parkingSpaces.noOf4WheelerParking);
+      payload.parkingSpaces.noOf2WheelerParking = Number.isFinite(two) && two >= 0 ? two : 0;
+      payload.parkingSpaces.noOf4WheelerParking = Number.isFinite(four) && four >= 0 ? four : 0;
+    }
+    // Clean up any top-level aliases to avoid unintended schema casting
+    delete payload.noOf2WheelerParking;
+    delete payload.noOf4WheelerParking;
+
     // Remove undefined to avoid unintentionally unsetting fields
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+    // Fetch existing to compute diffs for parking-specific logs
+    const existingClient = await Client.findById(id).select('parkingSpaces');
 
     const updated = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!updated) return res.status(404).json({ error: "Client not found" });
@@ -785,6 +815,50 @@ export const updateClient = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Client', id, null, {
       updatedFields: Object.keys(payload)
     });
+
+    // Parking-specific logs by type (two-wheeler / four-wheeler)
+    try {
+      if (payload.parkingSpaces) {
+        const oldTwo = Number(existingClient?.parkingSpaces?.noOf2WheelerParking) || 0;
+        const newTwo = Number(updated?.parkingSpaces?.noOf2WheelerParking) || 0;
+        if (oldTwo !== newTwo) {
+          await logActivity({
+            req,
+            action: 'UPDATE',
+            entity: 'Client',
+            entityId: updated._id,
+            description: 'Parking updated (Two-wheeler)',
+            metadata: {
+              category: 'parking',
+              parkingType: 'two_wheeler',
+              oldValue: oldTwo,
+              newValue: newTwo,
+              source: 'client_edit',
+            },
+          });
+        }
+        const oldFour = Number(existingClient?.parkingSpaces?.noOf4WheelerParking) || 0;
+        const newFour = Number(updated?.parkingSpaces?.noOf4WheelerParking) || 0;
+        if (oldFour !== newFour) {
+          await logActivity({
+            req,
+            action: 'UPDATE',
+            entity: 'Client',
+            entityId: updated._id,
+            description: 'Parking updated (Four-wheeler)',
+            metadata: {
+              category: 'parking',
+              parkingType: 'four_wheeler',
+              oldValue: oldFour,
+              newValue: newFour,
+              source: 'client_edit',
+            },
+          });
+        }
+      }
+    } catch (logErr) {
+      console.warn('updateClient: parking logs failed:', logErr?.message || logErr);
+    }
     return res.json({ message: "Client updated", client: updated });
   } catch (err) {
     console.error("updateClient error:", err);

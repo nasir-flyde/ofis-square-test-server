@@ -24,6 +24,23 @@ const clientCreditWalletSchema = new mongoose.Schema({
     default: 500, // INR per credit
     min: 0
   },
+  // Separate printer credits tracking
+  printerBalance: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0,
+    validate: {
+      validator: Number.isInteger,
+      message: "Printer balance must be an integer"
+    }
+  },
+  printerCreditValue: {
+    type: Number,
+    required: true,
+    default: 1, // default unit value per printer credit (configurable)
+    min: 0
+  },
   currency: {
     type: String,
     default: "INR",

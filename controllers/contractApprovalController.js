@@ -25,6 +25,7 @@ import {
   sendContractSignedEmail
 } from "../utils/contractEmailService.js";
 import DocumentEntity from "../models/documentEntityModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 
 const checkWorkflowPrerequisites = (contract, requiredFlags, isSystemAdmin = false) => {
   if (isSystemAdmin) return []; // Bypass all checks for System Admin
@@ -85,6 +86,7 @@ export const finalApprove = async (req, res) => {
     }
 
     // Set final approval metadata
+    const wasAlreadyFinal = !!contract.isfinalapproval;
     contract.finalApprovedBy = approved ? req.user?.id || null : null;
     contract.finalApprovedAt = approved ? new Date() : null;
     contract.finalApprovalReason = reason || null;
@@ -104,6 +106,67 @@ export const finalApprove = async (req, res) => {
 
     // On final approval, ensure default access policy and grant access, then enforce invoice-based access
     if (approved) {
+      // Add allocated credits to client's wallet (general + printer) at final approval only (first time)
+      try {
+        if (!wasAlreadyFinal) {
+          const inc = {};
+          const initial = Number.isInteger(contract.initialCredits) && contract.initialCredits > 0 ? contract.initialCredits : 0;
+          const printer = Number.isInteger(contract.printerCredits) && contract.printerCredits > 0 ? contract.printerCredits : 0;
+          if (initial > 0) inc.balance = initial;
+          if (printer > 0) inc.printerBalance = printer;
+          if (Object.keys(inc).length > 0) {
+            await ClientCreditWallet.findOneAndUpdate(
+              { client: contract.client },
+              {
+                $setOnInsert: {
+                  balance: 0,
+                  creditValue: 500,
+                  currency: "INR",
+                  status: "active",
+                  printerBalance: 0,
+                  printerCreditValue: 1,
+                },
+                $inc: inc,
+              },
+              { new: true, upsert: true }
+            );
+            await logContractActivity(req, "UPDATE", id, contract.client, {
+              action: "wallet_credited_on_final_approval",
+              addedBalance: initial || 0,
+              addedPrinterBalance: printer || 0,
+            });
+          }
+        }
+      } catch (walletErr) {
+        console.warn("finalApprove: failed to update client wallet:", walletErr?.message || walletErr);
+      }
+
+      // Sync parking spaces from contract to client
+      try {
+        const two = Number(contract?.parkingSpaces?.noOf2WheelerParking) || 0;
+        const four = Number(contract?.parkingSpaces?.noOf4WheelerParking) || 0;
+        await Client.findByIdAndUpdate(
+          contract.client,
+          { $set: { 'parkingSpaces.noOf2WheelerParking': two, 'parkingSpaces.noOf4WheelerParking': four } },
+          { new: true }
+        );
+        // Log per parking type with category for filtering
+        await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+          category: 'parking',
+          parkingType: 'two_wheeler',
+          action: 'client_parking_updated_from_contract',
+          newValue: two,
+        });
+        await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+          category: 'parking',
+          parkingType: 'four_wheeler',
+          action: 'client_parking_updated_from_contract',
+          newValue: four,
+        });
+      } catch (e) {
+        console.warn('Failed to sync client parking info on final approval:', e?.message);
+      }
+
       let ensuredPolicy = null;
 
       // 1. Ensure default access policy for this contract
@@ -126,8 +189,6 @@ export const finalApprove = async (req, res) => {
           policyErr?.message
         );
       }
-
-      // 2. Fallback + grant + provisioning (wrapped in single try/catch)
       try {
         // Fallback: create default building-scoped policy directly if not available
         if (!ensuredPolicy?._id) {

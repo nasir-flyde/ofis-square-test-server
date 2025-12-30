@@ -16,6 +16,7 @@ import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/
 import LoggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
+import imagekit from "../utils/imageKit.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -56,7 +57,7 @@ async function applyInvoicePayment(invoiceId, deltaAmount) {
 // POST /api/payments
 export const createPayment = async (req, res) => {
   try {
-    const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, paymentGatewayRef, currency, notes, bankName, accountNumber } = req.body || {};
+    const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, paymentGatewayRef, currency, notes, bankName, accountNumber, screenshots: bodyScreenshots } = req.body || {};
 
     if (!invoiceId) return res.status(400).json({ success: false, message: "invoice is required" });
     if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: "amount must be > 0" });
@@ -89,6 +90,51 @@ export const createPayment = async (req, res) => {
     };
     const normalizedType = type ? (typeMap[String(type).trim().toLowerCase()] || type) : undefined;
 
+    // Handle file uploads to ImageKit for screenshots and images
+    let uploadedScreenshotUrls = [];
+    let uploadedImageUrls = [];
+    const folder = process.env.IMAGEKIT_PAYMENT_FOLDER || "/ofis-square/payments";
+    try {
+      // When using upload.fields, req.files is an object: { screenshots: [..], images: [..] }
+      const screenshotsFiles = Array.isArray(req?.files?.screenshots) ? req.files.screenshots : [];
+      const imagesFiles = Array.isArray(req?.files?.images) ? req.files.images : [];
+
+      if (screenshotsFiles.length > 0) {
+        const uploads = screenshotsFiles.map(async (file) => {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `payment_screenshot_${Date.now()}_${file.originalname}`,
+            folder,
+          });
+          return result.url;
+        });
+        uploadedScreenshotUrls = await Promise.all(uploads);
+      }
+
+      if (imagesFiles.length > 0) {
+        const uploads = imagesFiles.map(async (file) => {
+          const result = await imagekit.upload({
+            file: file.buffer,
+            fileName: `payment_image_${Date.now()}_${file.originalname}`,
+            folder,
+          });
+          return result.url;
+        });
+        uploadedImageUrls = await Promise.all(uploads);
+      }
+    } catch (uploadErr) {
+      await logErrorActivity(req, uploadErr, 'Upload Payment Images');
+      return res.status(500).json({ success: false, message: `Failed to upload images: ${uploadErr.message}` });
+    }
+
+    // Also support screenshots provided as URLs/base64 array in body (fallback) and map to images only
+    const payloadScreenshotUrls = Array.isArray(bodyScreenshots) ? bodyScreenshots : [];
+    const allImageUrls = [
+      ...uploadedImageUrls,
+      ...uploadedScreenshotUrls,
+      ...payloadScreenshotUrls,
+    ].filter(Boolean);
+
     const payment = await Payment.create({
       invoice: invoiceId,
       client: client || invoice.client,
@@ -101,6 +147,7 @@ export const createPayment = async (req, res) => {
       notes: notes || undefined,
       bankName: bankName || undefined,
       accountNumber: accountNumber || undefined,
+      images: allImageUrls.length ? allImageUrls : undefined,
     });
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
