@@ -1525,11 +1525,95 @@ export const handleRazorpayWebhook = async (req, res) => {
              if (isMeeting && bookingId) {
                const booking = await MeetingBooking.findById(bookingId).populate('invoice');
                if (booking) {
-                 // Record payment against invoice if available
-                 const paidAmountInr = Math.round(Number(amount || 0)) / 100;
-                 if (booking.invoice?._id && paidAmountInr > 0) {
-                   try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
-                 }
+               // Record payment against invoice and create Payment (idempotent)
+const paidAmountInr = Math.round(Number(amount || 0)) / 100;
+const rzpPaymentId = payload?.payment?.entity?.id || pl?.id || null;
+
+if (booking.invoice?._id && paidAmountInr > 0) {
+  // 1) Idempotency: avoid duplicate Payment for the same Razorpay payment id
+  let existing = null;
+  if (rzpPaymentId) {
+    existing = await Payment.findOne({ paymentGatewayRef: rzpPaymentId });
+  }
+
+  // 2) Create local Payment if not existing
+  let paymentDoc = existing;
+  if (!paymentDoc) {
+    try {
+      paymentDoc = await Payment.create({
+        invoice: booking.invoice._id,
+        client: booking.client || undefined,
+        type: 'Razorpay',
+        paymentGatewayRef: rzpPaymentId || undefined,
+        amount: paidAmountInr,
+        paymentDate: new Date(),
+        currency: 'INR',
+        notes: `Razorpay ${event} • meeting_booking:${bookingId}`,
+        source: 'webhook'
+      });
+    } catch (pcErr) {
+      console.error('Failed to create local Payment from webhook:', pcErr?.message || pcErr);
+    }
+  }
+
+  // 3) Update local invoice totals/status
+  try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
+
+  // 4) Zoho push: ensure Zoho invoice exists, then record a Customer Payment
+  try {
+    // Load client to access zohoBooksContactId
+    const clientDoc = booking.client ? await Client.findById(booking.client) : null;
+    if (clientDoc?.zohoBooksContactId) {
+      // Create Zoho invoice if missing
+      if (!booking.invoice.zoho_invoice_id) {
+        try {
+          const created = await createZohoInvoiceFromLocal(booking.invoice.toObject(), clientDoc.toObject());
+          const inv = created?.invoice || created;
+          if (inv?.invoice_id) {
+            booking.invoice.zoho_invoice_id = inv.invoice_id;
+            booking.invoice.zoho_invoice_number = inv.invoice_number;
+            booking.invoice.zoho_status = inv.status || inv.status_formatted;
+            booking.invoice.zoho_pdf_url = inv.pdf_url;
+            booking.invoice.invoice_url = inv.invoice_url;
+            await booking.invoice.save();
+          }
+        } catch (e) {
+          console.warn('Zoho invoice creation failed (webhook path):', e?.message || e);
+        }
+      }
+
+      // Record customer payment in Zoho
+      if (booking.invoice.zoho_invoice_id) {
+        try {
+          const zohoPayload = {
+            customer_id: clientDoc.zohoBooksContactId,
+            payment_mode: 'Razorpay',
+            amount: paidAmountInr,
+            date: new Date().toISOString().slice(0,10),
+            invoices: [{ invoice_id: booking.invoice.zoho_invoice_id, amount_applied: paidAmountInr }],
+            reference_number: rzpPaymentId || pl?.id,
+            description: `Meeting booking payment (${bookingId})`
+          };
+
+          const zohoResp = await recordZohoPayment(booking.invoice.zoho_invoice_id, zohoPayload);
+          const zp = zohoResp?.payment || zohoResp;
+          if (paymentDoc && zp?.payment_id) {
+            paymentDoc.zoho_payment_id = zp.payment_id;
+            paymentDoc.payment_number = zp.payment_number;
+            paymentDoc.zoho_status = zp.status;
+            paymentDoc.raw_zoho_response = zohoResp;
+            paymentDoc.source = 'zoho_books';
+            await paymentDoc.save();
+          }
+        } catch (ze) {
+          console.error('Zoho payment record failed (webhook path):', ze?.message || ze);
+        }
+      }
+    }
+  } catch (syncErr) {
+    console.error('Webhook Zoho sync error:', syncErr?.message || syncErr);
+  }
+}
                  // Update booking status to booked if payment was pending
                  if (booking.status === 'payment_pending') {
                    booking.status = 'booked';
