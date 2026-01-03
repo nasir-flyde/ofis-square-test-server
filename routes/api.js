@@ -52,6 +52,7 @@ import securityDepositsRoutes from "./securityDeposits.js";
 import documentEntitiesRoutes from "./documentEntities.js";
 import dashboardRoutes from "./dashboard.js";
 import meRoutes from "./me.js";
+import zohoBooksRoutes from "./zohoBooks.js";
 
 const router = express.Router();
 
@@ -108,4 +109,5 @@ router.use("/search", searchRoutes);
 router.use("/security-deposits", securityDepositsRoutes);
 router.use("/document-entities", documentEntitiesRoutes);
 router.use("/dashboard", dashboardRoutes);
+router.use("/zoho-books", zohoBooksRoutes);
 export default router;

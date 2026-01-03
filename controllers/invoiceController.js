@@ -24,9 +24,12 @@ import Building from "../models/buildingModel.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
-  const items = (payload.items || []).map((it) => {
+  const srcItems = Array.isArray(payload.items) && payload.items.length > 0
+    ? payload.items
+    : (Array.isArray(payload.line_items) ? payload.line_items : []);
+  const items = srcItems.map((it) => {
     const quantity = Number(it.quantity || 0);
-    const unitPrice = Number(it.unitPrice || 0);
+    const unitPrice = Number(it.unitPrice || it.rate || 0);
     const amount = Math.round(quantity * unitPrice * 100) / 100;
     return { description: it.description, quantity, unitPrice, amount };
   });
@@ -66,16 +69,6 @@ function computeTotals(payload) {
   };
 }
 
-// Helper to round TDS by building setting
-function roundByMode(value, mode) {
-  const n = Number(value) || 0;
-  const m = mode || 'nearest';
-  if (m === 'none') return n;
-  if (m === 'up') return Math.ceil(n);
-  if (m === 'down') return Math.floor(n);
-  return Math.round(n);
-}
-
 export const createInvoice = async (req, res) => {
   try {
     const body = req.body || {};
@@ -113,46 +106,8 @@ export const createInvoice = async (req, res) => {
     else if (clientDoc?.building) buildingId = clientDoc.building;
     else if (body.building) buildingId = body.building;
 
-    // Fetch TDS settings if we have a building
-    let buildingTds = null;
-    if (buildingId) {
-      try {
-        const bDoc = await Building.findById(buildingId).select('tdsSettings');
-        buildingTds = bDoc?.tdsSettings || null;
-      } catch (_) {}
-    }
-
-    // Compute TDS if enabled for sales/both
-    let withholdingTaxes = [];
-    let tdsAmount = 0;
-    let tdsRate = 0;
-    let tdsSection = undefined;
-    let tdsCalcBase = 'before_tax';
-    let tdsRoundMode = 'nearest';
-    if (buildingTds && buildingTds.enabled && ['sales','both'].includes(buildingTds.applyOn || 'sales')) {
-      // Taxable base = subtotal - discount
-      const taxableBase = Math.max(0, Number(totals.subtotal) - Number(totals.discount?.amount || 0));
-      const taxTotal = Number(totals.taxes?.reduce?.((s, t) => s + (t.amount || 0), 0) || (totals.tax_total || 0));
-      const base = (buildingTds.calculationBase || 'before_tax') === 'after_tax' ? (taxableBase + taxTotal) : taxableBase;
-      tdsRate = Number(buildingTds.defaultRatePercent || 0);
-      tdsSection = buildingTds.defaultSection || 'OTHER';
-      tdsCalcBase = buildingTds.calculationBase || 'before_tax';
-      tdsRoundMode = buildingTds.roundOffMode || 'nearest';
-      const rawTds = base * (tdsRate / 100);
-      tdsAmount = roundByMode(rawTds, tdsRoundMode);
-      if (tdsAmount > 0) {
-        const tax_name = (buildingTds?.integration?.zohoBooks?.withholdingTaxName) || tdsSection;
-        withholdingTaxes.push({ 
-          tax_name, 
-          tax_percentage: tdsRate,
-          tax_amount: Math.round(Number(tdsAmount || 0) * 100) / 100
-        });
-      }
-    }
-
     // Create invoice data using same structure as createInvoiceFromContract
     const invoiceData = {
-      // Updated field names to match new schema
       invoice_number: localInvoiceNumber,
       client,
       contract: contract || undefined,
@@ -179,11 +134,7 @@ export const createInvoice = async (req, res) => {
       tax_total: totals.taxes.reduce((sum, t) => sum + t.amount, 0),
       total: totals.total,
       amount_paid: totals.amountPaid,
-      balance: (() => {
-        const gross = Number(totals.total || 0);
-        const net = Math.max(0, gross - (tdsAmount || 0));
-        return Math.round(net * 100) / 100;
-      })(),
+      balance: Math.max(0, Number(totals.total || 0) - Number(totals.amountPaid || 0)),
       status: invoiceStatus,
       notes: notes || "Manual invoice creation",
       currency_code: "INR",
@@ -206,15 +157,6 @@ export const createInvoice = async (req, res) => {
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: clientDoc.gstNo,
       ...(meta ? { meta } : {}),
-      // Withholding taxes (TDS) if computed
-      ...((withholdingTaxes.length) ? {
-        ...(buildingTds?.integration?.zohoBooks?.enabled === false ? {} : { withholding_taxes: withholdingTaxes }),
-        tds_amount: Number(tdsAmount) || 0,
-        tds_section: tdsSection,
-        tds_rate_percent: tdsRate,
-        tds_calculation_base: tdsCalcBase,
-        tds_round_mode: tdsRoundMode,
-      } : {}),
     };
 
     const invoice = await Invoice.create(invoiceData);
@@ -727,21 +669,48 @@ export const getInvoiceZohoLinks = async (req, res) => {
 export const recordInvoicePayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, date, payment_mode, reference_number } = req.body || {};
+    const { amount, date, payment_mode, reference_number, tax_deducted, tax_amount_withheld } = req.body || {};
     if (!amount) return res.status(400).json({ success: false, message: "amount is required" });
+    const withheld = Boolean(tax_deducted) ? Number(tax_amount_withheld || 0) : 0;
+    if (withheld < 0) return res.status(400).json({ success: false, message: "tax_amount_withheld must be >= 0" });
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
 
-    const payment = await recordZohoPayment(invoice.zoho_invoice_id, { amount, date, payment_mode, reference_number });
-    invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(amount);
-    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+    // Create local payment record first (single-invoice mode)
+    const payment = await Payment.create({
+      invoice: id,
+      client: invoice.client,
+      amount: Number(amount),
+      paymentDate: date ? new Date(date) : new Date(),
+      type: payment_mode || "Bank Transfer",
+      referenceNumber: reference_number || `PAY-${Date.now()}`,
+      source: "manual",
+      invoices: [{ invoice: id, amount_applied: Number(amount), tax_deducted: Boolean(tax_deducted), tax_amount_withheld: withheld }],
+      tax_deducted: Boolean(tax_deducted),
+      tax_amount_withheld: withheld,
+      tax_amount_withheld_total: withheld,
+      applied_total: Number(amount),
+      unused_amount: 0,
+    });
+
+    // Push only cash amount to Zoho Books
+    const zohoResp = await recordZohoPayment(invoice.zoho_invoice_id, { amount, date, payment_mode, reference_number });
+    if (zohoResp?.payment?.payment_id) {
+      payment.zoho_payment_id = zohoResp.payment.payment_id;
+      payment.payment_number = zohoResp.payment.payment_number;
+      payment.zoho_status = zohoResp.payment.status;
+      await payment.save();
+    }
+
+    // Update invoice totals: cash applied + withheld reduce balance
+    invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + Number(amount));
+    invoice.tax_withheld_total = Math.max(0, Number(invoice.tax_withheld_total || 0) + Number(withheld));
+    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0) - Number(invoice.tax_withheld_total || 0));
     if (invoice.balance === 0) {
       invoice.status = "paid";
       invoice.paid_at = new Date();
     }
-
-    invoice.paymentId = payment?.payment_id || invoice.paymentId;
     await invoice.save();
 
     // Update linked security deposit if this is a deposit invoice
@@ -765,13 +734,15 @@ export const recordInvoicePayment = async (req, res) => {
 
     // Log payment activity
     await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {
-      paymentId: payment?.payment_id,
-      amount,
+      paymentId: payment?._id,
+      amount, // cash applied
+      tax_deducted: Boolean(tax_deducted),
+      tax_amount_withheld: withheld,
       paymentMode: payment_mode,
       referenceNumber: reference_number,
     });
 
-    return res.json({ success: true, data: invoice, zoho: payment });
+    return res.json({ success: true, data: invoice, payment, zoho: zohoResp });
   } catch (error) {
     await logErrorActivity(req, error, "Record Invoice Payment");
     return res.status(500).json({ success: false, message: error.message, details: error.response });
@@ -812,6 +783,13 @@ export const zohoWebhook = async (req, res) => {
             amount_paid: data.invoice.amount_paid || 0,
             status: data.invoice.status === "paid" ? "paid" : "issued",
             currency_code: data.invoice.currency_code || "INR",
+            exchange_rate: 1,
+            gst_treatment: data.invoice.gst_treatment || "business_gst",
+            place_of_supply: data.invoice.place_of_supply || "MH",
+            payment_terms: data.invoice.payment_terms || 7,
+            payment_terms_label: data.invoice.payment_terms_label || "Net 7",
+            customer_id: data.invoice.customer_id,
+            gst_no: data.invoice.gst_no,
             notes: data.invoice.notes || "",
             line_items: (data.invoice.line_items || []).map((item) => ({
               description: item.description || item.name,
@@ -838,7 +816,8 @@ export const zohoWebhook = async (req, res) => {
         const invoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
         if (invoice) {
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + amount);
-          invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+          // Recompute balance including any locally tracked withheld tax
+          invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0) - Number(invoice.tax_withheld_total || 0));
           if (invoice.balance === 0) {
             invoice.status = "paid";
             invoice.paid_at = new Date();
@@ -1193,14 +1172,9 @@ export const consolidateInvoices = async (req, res) => {
           if (sendEmail && client.email) {
             try {
               await sendZohoInvoiceEmail(invoiceData.invoice_id, {
-                to: client.email,
+                to_mail_ids: [client.email],
                 subject: `Consolidated Invoice ${consolidatedInvoiceNumber}`,
-                body: `Dear ${client.contactPerson || client.companyName},\n\nPlease find attached your consolidated invoice for ${new Date(
-                  year,
-                  month - 1
-                ).toLocaleString("default", { month: "long", year: "numeric" })}.\n\nThis invoice consolidates the following original invoices: ${consolidatedInvoiceNumbers.join(
-                  ", "
-                )}\n\nThank you for your business.`,
+                body: 'Please find attached your consolidated invoice.'
               });
 
               consolidatedInvoice.sent_at = new Date();
@@ -1301,7 +1275,9 @@ export const sendInvoiceViaEmail = async (req, res) => {
 export const markInvoiceAsPaid = async (req, res) => {
   try {
     const { id } = req.params;
-    const { paymentDate, paymentMode, referenceNumber, amount } = req.body;
+    const { paymentDate, paymentMode, referenceNumber, amount, tax_deducted, tax_amount_withheld } = req.body;
+    const withheld = Boolean(tax_deducted) ? Number(tax_amount_withheld || 0) : 0;
+    if (withheld < 0) return res.status(400).json({ success: false, message: "tax_amount_withheld must be >= 0" });
 
     const invoice = await Invoice.findById(id);
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
@@ -1317,12 +1293,17 @@ export const markInvoiceAsPaid = async (req, res) => {
       referenceNumber: referenceNumber || `PAY-${Date.now()}`,
       paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
       notes: "Payment recorded from invoice details",
-      source: "manual"
+      source: "manual",
+      invoices: [{ invoice: id, amount_applied: Number(paymentAmount), tax_deducted: Boolean(tax_deducted), tax_amount_withheld: withheld }],
+      tax_deducted: Boolean(tax_deducted),
+      tax_amount_withheld: withheld,
+      tax_amount_withheld_total: withheld,
     });
 
     // Update invoice
-    invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(paymentAmount);
-    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0));
+    invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + Number(paymentAmount));
+    invoice.tax_withheld_total = Math.max(0, Number(invoice.tax_withheld_total || 0) + Number(withheld));
+    invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0) - Number(invoice.tax_withheld_total || 0));
     
     if (invoice.balance === 0) {
       invoice.status = "paid";
@@ -1336,6 +1317,8 @@ export const markInvoiceAsPaid = async (req, res) => {
     await logPaymentActivity(req, "PAYMENT_MADE", "Invoice", invoice._id, {
       paymentId: payment._id,
       amount: paymentAmount,
+      tax_deducted: Boolean(tax_deducted),
+      tax_amount_withheld: withheld,
       paymentMode,
       referenceNumber,
     });

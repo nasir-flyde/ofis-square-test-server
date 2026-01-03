@@ -19,7 +19,7 @@ const meetingRoomPricingSchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: "INR" // Informational for display
+    default: "INR"
   },
   active: {
     type: Boolean,

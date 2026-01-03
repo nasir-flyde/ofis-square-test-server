@@ -13,10 +13,11 @@ import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceServ
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
 import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
-import LoggedRazorpay from "../utils/loggedRazorpay.js";
+import loggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
+import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice } from "../utils/zohoBooks.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -303,15 +304,18 @@ const generateIdempotencyKey = (payload) => {
 };
 
 // Helper: update invoice balance after Zoho payment
-async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied) {
+// Now supports withheldDelta (local tax withheld by payer) in addition to cash amountApplied
+async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied, withheldDelta = 0) {
   const invoice = await Invoice.findById(invoiceId);
   if (!invoice) return;
 
   const newAmountPaid = Math.max(0, Number(invoice.amount_paid || 0) + Number(amountApplied));
-  const newBalance = Math.max(0, Number(invoice.total || 0) - newAmountPaid);
+  const newWithheld = Math.max(0, Number(invoice.tax_withheld_total || 0) + Number(withheldDelta || 0));
+  const newBalance = Math.max(0, Number(invoice.total || 0) - newAmountPaid - newWithheld);
   
   invoice.amount_paid = newAmountPaid;
   invoice.balance = newBalance;
+  invoice.tax_withheld_total = newWithheld;
   
   // Update status based on balance
   if (newBalance === 0) {
@@ -326,6 +330,22 @@ async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied) {
   invoice.last_payment_date = new Date();
   await invoice.save();
   return invoice;
+}
+
+// Helper: sanitize Zoho address fields to avoid length violations
+function sanitizeZohoAddress(addr) {
+  if (!addr || typeof addr !== 'object') return undefined;
+  const clip = (s, max) => (typeof s === 'string' ? s.slice(0, max) : undefined);
+  return {
+    attention: clip(addr.attention, 50),
+    address: clip(addr.address, 100),
+    street2: clip(addr.street2, 100),
+    city: clip(addr.city, 50),
+    state: clip(addr.state, 50),
+    zip: clip(addr.zip, 20),
+    country: clip(addr.country, 50),
+    phone: clip(addr.phone, 30),
+  };
 }
 
 async function createInvoiceInZoho(invoice, client) {
@@ -358,7 +378,7 @@ async function createInvoiceInZoho(invoice, client) {
       unit: item.unit || 'nos',
       tax_percentage: item.tax_percentage || 18
     })),
-
+    
     // Totals
     sub_total: invoice.sub_total || 0,
     discount: invoice.discount || 0,
@@ -377,14 +397,14 @@ async function createInvoiceInZoho(invoice, client) {
     is_inclusive_tax: invoice.is_inclusive_tax || false
   };
 
-  // Add billing address if available
+  // Add billing address if available (sanitized to Zoho limits)
   if (invoice.billing_address && Object.keys(invoice.billing_address).length > 0) {
-    zohoInvoicePayload.billing_address = invoice.billing_address;
+    zohoInvoicePayload.billing_address = sanitizeZohoAddress(invoice.billing_address);
   }
 
-  // Add shipping address if available
+  // Add shipping address if available (sanitized to Zoho limits)
   if (invoice.shipping_address && Object.keys(invoice.shipping_address).length > 0) {
-    zohoInvoicePayload.shipping_address = invoice.shipping_address;
+    zohoInvoicePayload.shipping_address = sanitizeZohoAddress(invoice.shipping_address);
   }
 
   // Call Zoho Books API to create invoice
@@ -441,11 +461,8 @@ export const recordCustomerPayment = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!clientId || !invoices || !Array.isArray(invoices) || invoices.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Client ID and invoices array are required'
-      });
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'Client ID is required' });
     }
 
     if (!amount || !date) {
@@ -456,11 +473,19 @@ export const recordCustomerPayment = async (req, res) => {
     }
 
     // Validate amount allocation
-    const totalAllocated = invoices.reduce((sum, inv) => sum + Number(inv.amount_applied), 0);
-    if (Math.abs(totalAllocated - Number(amount)) > 0.01) {
+    const safeInvoices = (Array.isArray(invoices) ? invoices : []).map((inv) => ({
+      invoiceId: inv.invoiceId,
+      amount_applied: Number(inv.amount_applied || 0),
+      tax_deducted: Boolean(inv.tax_deducted || false),
+      tax_amount_withheld: Number(inv.tax_amount_withheld || 0),
+    }));
+    const totalAllocated = safeInvoices.reduce((sum, inv) => sum + Number(inv.amount_applied), 0);
+    const paymentAmountNum = Number(amount);
+    // Allow totalAllocated <= amount (excess overpayment will be stored as extra credits)
+    if ((totalAllocated - paymentAmountNum) > 0.01) {
       return res.status(400).json({
         success: false,
-        message: `Total allocated amount (${totalAllocated}) must equal payment amount (${amount})`
+        message: `Total allocated amount (${totalAllocated}) cannot exceed payment amount (${amount})`
       });
     }
 
@@ -481,10 +506,10 @@ export const recordCustomerPayment = async (req, res) => {
     }
 
     // Fetch and validate invoices
-    const invoiceIds = invoices.map(inv => inv.invoiceId);
+    const invoiceIds = safeInvoices.map(inv => inv.invoiceId);
     const dbInvoices = await Invoice.find({ _id: { $in: invoiceIds } });
     
-    if (dbInvoices.length !== invoices.length) {
+    if (dbInvoices.length !== safeInvoices.length) {
       return res.status(404).json({
         success: false,
         message: 'One or more invoices not found'
@@ -498,6 +523,26 @@ export const recordCustomerPayment = async (req, res) => {
         success: false,
         message: 'All invoices must belong to the same client'
       });
+    }
+
+    // Additional preflight: validate against Zoho's current balance to avoid API rejection if local data is stale
+    for (const paymentInv of safeInvoices) {
+      const dbInvoice = dbInvoices.find(inv => inv._id.toString() === paymentInv.invoiceId);
+      if (!dbInvoice?.zoho_invoice_id) continue; // if not synced yet, it will be created below
+      try {
+        const zohoInv = await getZohoInvoice(dbInvoice.zoho_invoice_id);
+        const zohoOutstanding = Number(
+          (zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0
+        );
+        if (Number(paymentInv.amount_applied) > (zohoOutstanding + 0.01)) {
+          return res.status(400).json({
+            success: false,
+            message: `Allocation ₹${paymentInv.amount_applied} exceeds Zoho balance ₹${zohoOutstanding} for invoice ${dbInvoice.invoice_number}. Please refresh and try again.`
+          });
+        }
+      } catch (_) {
+        // Non-blocking if Zoho fetch fails; let main flow proceed to either create invoice in Zoho or error there
+      }
     }
 
     // Auto-create invoices in Zoho Books if they don't have zoho_invoice_id
@@ -518,38 +563,75 @@ export const recordCustomerPayment = async (req, res) => {
       }
     }
 
-    // Validate payment amounts don't exceed outstanding balances
-    for (const paymentInv of invoices) {
+    // Validate payment amounts don't exceed outstanding balances (consider withheld in same operation)
+    for (const paymentInv of safeInvoices) {
       const dbInvoice = dbInvoices.find(inv => inv._id.toString() === paymentInv.invoiceId);
-      const outstanding = dbInvoice.balance || dbInvoice.total;
-      if (Number(paymentInv.amount_applied) > outstanding) {
+      const outstanding = Number(dbInvoice.balance || dbInvoice.total || 0);
+      const withheldReq = paymentInv.tax_deducted ? Number(paymentInv.tax_amount_withheld || 0) : 0;
+      if (withheldReq < 0) {
+        return res.status(400).json({ success: false, message: `Withheld amount must be >= 0 for invoice ${dbInvoice.invoice_number}` });
+      }
+      if (Number(paymentInv.amount_applied) + withheldReq > outstanding + 0.01) {
         return res.status(400).json({
           success: false,
-          message: `Payment amount (${paymentInv.amount_applied}) exceeds outstanding balance (${outstanding}) for invoice ${dbInvoice.invoice_number}`
+          message: `Cash + Withheld (₹${Number(paymentInv.amount_applied) + withheldReq}) exceeds outstanding (₹${outstanding}) for invoice ${dbInvoice.invoice_number}`
         });
       }
     }
 
-    // Prepare Zoho Books payload
+    // Build adjusted allocations: cap each by Zoho's current outstanding and local outstanding (consider withheld)
+    const adjustedAllocations = [];
+    const allowedByLocalId = new Map(); // local invoiceId -> allowed amount
+    const withheldByLocalId = new Map(); // track withheld specified per invoice
+    for (const inv of safeInvoices) {
+      const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === inv.invoiceId);
+      if (!dbInvoice) continue;
+      let requested = Number(inv.amount_applied) || 0;
+      let localOutstanding = Number(dbInvoice.balance || dbInvoice.total || 0);
+      const withheldReq = inv.tax_deducted ? Number(inv.tax_amount_withheld || 0) : 0;
+      let zohoOutstanding = localOutstanding;
+      if (dbInvoice.zoho_invoice_id) {
+        try {
+          const zInv = await getZohoInvoice(dbInvoice.zoho_invoice_id);
+          const zBal = Number(zInv?.balance || zInv?.balance_due || zInv?.outstanding || 0);
+          if (!Number.isNaN(zBal)) zohoOutstanding = zBal;
+        } catch (_) {
+          // Non-blocking if Zoho fetch fails, continue with localOutstanding
+        }
+      }
+      // ensure cash + withheld <= local outstanding
+      const maxCashConsideringWithheld = Math.max(0, localOutstanding - withheldReq);
+      const allowed = Math.max(0, Math.min(requested, maxCashConsideringWithheld, zohoOutstanding));
+      if (allowed > 0.009) {
+        adjustedAllocations.push({ invoice_id: dbInvoice.zoho_invoice_id, amount_applied: Math.round(allowed * 100) / 100 });
+        allowedByLocalId.set(inv.invoiceId, Math.round(allowed * 100) / 100);
+        withheldByLocalId.set(inv.invoiceId, Math.max(0, withheldReq));
+      } else {
+        // If nothing can be applied, we skip adding this invoice to the Zoho payload
+        allowedByLocalId.set(inv.invoiceId, 0);
+        withheldByLocalId.set(inv.invoiceId, Math.max(0, withheldReq));
+      }
+    }
+
+    // Prepare Zoho Books payload using adjusted allocations; remainder (if any) becomes unused in Zoho
     const zohoPayload = {
       customer_id: client.zohoBooksContactId,
       payment_mode,
-      amount: Number(amount),
+      amount: paymentAmountNum,
       date,
-      invoices: invoices.map(inv => {
-        const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === inv.invoiceId);
-        return {
-          invoice_id: dbInvoice.zoho_invoice_id,
-          amount_applied: Number(inv.amount_applied)
-        };
-      }),
+      invoices: adjustedAllocations,
       reference_number: reference_number || '',
-      description: description || `Payment for ${invoices.length} invoice(s)`
+      description: description || `Payment for ${safeInvoices.length} invoice(s)`
     };
 
     if (deposit_to_account_id) {
       zohoPayload.deposit_to_account_id = deposit_to_account_id;
     }
+
+    try {
+      console.log("[recordCustomerPayment] Zoho payload amount:", zohoPayload.amount);
+      console.log("[recordCustomerPayment] Zoho payload invoices:", (zohoPayload.invoices || []).map(i => ({ invoice_id: i.invoice_id, amount_applied: i.amount_applied })));
+    } catch (_) {}
 
     // Generate idempotency key
     const idempotencyKey = generateIdempotencyKey(zohoPayload);
@@ -577,6 +659,10 @@ export const recordCustomerPayment = async (req, res) => {
 
     // Call Zoho Books API
     const zohoUrl = `${getBooksBaseUrl()}/customerpayments?organization_id=${orgId}`;
+    try {
+      console.log('[recordCustomerPayment] POST URL:', zohoUrl);
+      console.log('[recordCustomerPayment] Full payload:', JSON.stringify(zohoPayload, null, 2));
+    } catch (_) {}
     const zohoResponse = await fetch(zohoUrl, {
       method: 'POST',
       headers: {
@@ -597,23 +683,40 @@ export const recordCustomerPayment = async (req, res) => {
       });
     }
 
-    // Create local payment record
+    // Compute applied_total and unused_amount using Zoho response when available
+    const zohoPayment = zohoData.payment || {};
+    const totalAllocatedRounded = Math.round(totalAllocated * 100) / 100;
+    const appliedTotal = (typeof zohoPayment.applied_amount === 'number')
+      ? Number(zohoPayment.applied_amount)
+      : totalAllocatedRounded;
+    const unusedAmount = (typeof zohoPayment.unused_amount === 'number')
+      ? Number(zohoPayment.unused_amount)
+      : Math.max(0, Math.round((paymentAmountNum - appliedTotal) * 100) / 100);
+
+    // Create local payment record (mirror adjusted allocations to keep in sync with Zoho)
     const paymentData = {
       client: clientId,
-      invoices: invoices.map(inv => {
+      invoices: safeInvoices.map(inv => {
         const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === inv.invoiceId);
-        return {
+        const allowed = Number(allowedByLocalId.get(inv.invoiceId) || 0);
+        const withheld = Number(withheldByLocalId.get(inv.invoiceId) || 0);
+        return (allowed > 0.009 || withheld > 0.009) ? {
           invoice: inv.invoiceId,
-          amount_applied: Number(inv.amount_applied),
-          zoho_invoice_id: dbInvoice.zoho_invoice_id
-        };
-      }),
+          amount_applied: allowed,
+          tax_deducted: inv.tax_deducted || false,
+          tax_amount_withheld: withheld,
+          zoho_invoice_id: dbInvoice?.zoho_invoice_id
+        } : null;
+      }).filter(Boolean),
       type: payment_mode,
-      amount: Number(amount),
+      amount: paymentAmountNum,
       paymentDate: new Date(date),
       referenceNumber: reference_number,
       notes: description,
       currency: 'INR',
+      applied_total: appliedTotal,
+      unused_amount: unusedAmount,
+      tax_amount_withheld_total: safeInvoices.reduce((s, inv) => s + (inv.tax_deducted ? Number(inv.tax_amount_withheld || 0) : 0), 0),
       
       // Zoho Books fields
       customer_id: client.zohoBooksContactId,
@@ -629,17 +732,20 @@ export const recordCustomerPayment = async (req, res) => {
     };
 
     // Handle single invoice case (backward compatibility)
-    if (invoices.length === 1) {
-      paymentData.invoice = invoices[0].invoiceId;
+    if (safeInvoices.length === 1) {
+      paymentData.invoice = safeInvoices[0].invoiceId;
     }
 
     const payment = await Payment.create(paymentData);
 
     // Update local invoice balances
-    for (const inv of invoices) {
-      await updateInvoiceAfterZohoPayment(inv.invoiceId, inv.amount_applied);
-      // Mirror to deposit if linked to a deposit invoice
-      try { await applyPaymentToDeposit(inv.invoiceId, inv.amount_applied); } catch (_) {}
+    for (const inv of safeInvoices) {
+      const allowed = Number(allowedByLocalId.get(inv.invoiceId) || 0);
+      const withheld = Number(withheldByLocalId.get(inv.invoiceId) || 0);
+      if (allowed > 0.009 || withheld > 0.009) {
+        await updateInvoiceAfterZohoPayment(inv.invoiceId, allowed, withheld);
+        try { if (allowed > 0.009) await applyPaymentToDeposit(inv.invoiceId, allowed); } catch (_) {}
+      }
     }
 
     // If invoices belong to contracts, when all invoices for a contract are paid
@@ -664,13 +770,21 @@ export const recordCustomerPayment = async (req, res) => {
       // Non-blocking
     }
 
+    // Increment client's extra_credits by the unused amount (excess payment)
+    if (unusedAmount > 0) {
+      try {
+        await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: unusedAmount } });
+      } catch (_) {}
+    }
+
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
       zohoPaymentId: zohoData.payment?.payment_id,
       clientId,
-      amount: Number(amount),
-      invoiceCount: invoices.length,
-      paymentMode: payment_mode
+      amount: paymentAmountNum,
+      invoiceCount: safeInvoices.length,
+      paymentMode: payment_mode,
+      tax_amount_withheld_total: paymentData.tax_amount_withheld_total,
     });
 
     return res.status(201).json({
@@ -851,7 +965,7 @@ export const createRazorpayOrder = async (req, res) => {
     
     const response = {
       success: true,
-      razorpayKey: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
+      razorpayKey: process.env.RAZORPAY_KEY_ID,
       amount: amount * 100,
       currency: "INR",
       item,
@@ -870,6 +984,98 @@ export const createRazorpayOrder = async (req, res) => {
     res.status(500).json(errorResponse);
   }
 };
+
+// Create a shareable Razorpay Payment Link for a meeting booking
+export const createRazorpayPaymentLink = async (req, res) => {
+  try {
+    const { meetingBookingId } = req.body || {};
+
+    if (!meetingBookingId) {
+      return res.status(400).json({ success: false, message: 'meetingBookingId is required' });
+    }
+
+    const booking = await MeetingBooking.findById(meetingBookingId).populate('invoice');
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    if (booking.discountStatus === 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Discount approval pending; cannot generate payment link yet',
+      });
+    }
+
+    if (booking.status !== 'payment_pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot generate payment link when booking status is ${booking.status}`,
+      });
+    }
+
+    // Amount calculation
+    let amount = 0;
+    if (booking.invoice && typeof booking.invoice.total === 'number') {
+      amount = Number(booking.invoice.total);
+    } else {
+      const dailyRate = booking.room?.pricing?.dailyRate || 500;
+      const totals = computeInvoiceTotals(dailyRate, booking.appliedDiscountPercent || 0);
+      amount = Number(totals.total);
+    }
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid amount for booking' });
+    }
+
+    // Razorpay-compliant payload
+    const linkData = {
+      amount: Math.round(amount * 100),
+      currency: 'INR',
+      description: `Meeting Room - ${booking.room?.name || 'Booking'}`,
+      reference_id: `meeting_booking_${booking._id}`,
+      notes: {
+        type: 'meeting_booking',
+        meetingBookingId: String(booking._id),
+        ...(booking.invoice?._id && { invoiceId: String(booking.invoice._id) }),
+      },
+    };
+
+    // OPTIONAL: add customer only if all values exist
+    if (booking.customerName && booking.customerEmail && booking.customerPhone) {
+      linkData.customer = {
+        name: booking.customerName,
+        email: booking.customerEmail,
+        contact: booking.customerPhone,
+      };
+    }
+
+    const result = await loggedRazorpay.createPaymentLink(linkData, {
+      userId: req.user?.id || null,
+      relatedEntity: 'MeetingBooking',
+      relatedEntityId: String(booking._id),
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        id: result.id,
+        short_url: result.short_url,
+        status: result.status,
+      },
+    });
+  } catch (error) {
+    console.error('createRazorpayPaymentLink error:', error);
+    await logErrorActivity(req, error, 'Create Razorpay Payment Link');
+
+    const msg =
+      (error?.message || '').toLowerCase().includes('authentication failed')
+        ? 'Razorpay authentication failed. Please ensure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are configured on the server.'
+        : error?.message || 'Failed to create payment link';
+
+    return res.status(500).json({ success: false, message: msg });
+  }
+};
+
 
 // Handle Razorpay payment success
 export const handleRazorpaySuccess = async (req, res) => {
@@ -1252,11 +1458,10 @@ export const handleRazorpayWebhook = async (req, res) => {
   try {
     const { event, payload } = req.body;
     
-    // Use logged Razorpay for webhook signature verification
-    const loggedRazorpay = new LoggedRazorpay();
+    // Use logged Razorpay for webhook signature verification (singleton instance)
     const isValidSignature = await loggedRazorpay.verifyWebhookSignature(
       JSON.stringify(req.body),
-      req.headers['x-razorpay-signature']
+      req.headers['x-razorpay-signature'] || req.headers['x-razorpay-signature'.toLowerCase()] || '',
     );
     
     if (!isValidSignature) {
@@ -1280,6 +1485,41 @@ export const handleRazorpayWebhook = async (req, res) => {
         
         // TODO: Implement automatic day pass status update based on payment ID
         // This would require storing payment ID during order creation
+      }
+    }
+    
+    if (event && payload) {
+      try {
+        // Handle Payment Link success
+        if (String(event).startsWith('payment_link.')) {
+          const pl = payload?.payment_link?.entity;
+          if (pl && pl.status === 'paid') {
+            const notes = pl.notes || {};
+            const ref = pl.reference_id || '';
+            const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
+            const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
+            const invoiceId = notes?.invoiceId;
+            const amount = (typeof pl.amount === 'number' ? pl.amount : pl.amount_paid) || 0; // in paise
+          
+            if (isMeeting && bookingId) {
+              const booking = await MeetingBooking.findById(bookingId).populate('invoice');
+              if (booking) {
+                // Record payment against invoice if available
+                const paidAmountInr = Math.round(Number(amount || 0)) / 100;
+                if (booking.invoice?._id && paidAmountInr > 0) {
+                  try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
+                }
+                // Update booking status to booked if payment was pending
+                if (booking.status === 'payment_pending') {
+                  booking.status = 'booked';
+                  await booking.save();
+                }
+              }
+            }
+          }
+        }
+      } catch (eh) {
+        console.error('Webhook post-processing error:', eh);
       }
     }
     
@@ -1632,5 +1872,331 @@ export const getClientCreditBalance = async (req, res) => {
   } catch (error) {
     console.error("getClientCreditBalance error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const refundExcessPayment = async (req, res) => {
+  try {
+    const { id } = req.params; // local Payment _id
+    const { amount, date, mode, reference_number, notes } = req.body || {};
+
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: "amount must be > 0" });
+    }
+
+    const payment = await Payment.findById(id).populate("client");
+    if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
+    if (!payment.zoho_payment_id) return res.status(400).json({ success: false, message: "Payment not synced to Zoho yet" });
+
+    const refundAmount = Number(amount);
+    if (refundAmount > Number(payment.unused_amount || 0)) {
+      return res.status(400).json({ success: false, message: `Refund amount (${refundAmount}) exceeds unused amount (${payment.unused_amount || 0})` });
+    }
+
+    // Refund via Zoho Books
+    const refundPayload = {
+      amount: refundAmount,
+      date: date ? new Date(date).toISOString().slice(0,10) : new Date().toISOString().slice(0,10),
+      mode: mode || "BankTransfer",
+      reference_number: reference_number || undefined,
+      description: notes || undefined,
+    };
+
+    const zohoRefund = await refundZohoExcessPayment(payment.zoho_payment_id, refundPayload);
+
+    // Update local payment and client extra_credits
+    payment.unused_amount = Math.max(0, Math.round(((payment.unused_amount || 0) - refundAmount) * 100) / 100);
+    payment.refunds = payment.refunds || [];
+    payment.refunds.push({
+      amount: refundAmount,
+      date: date ? new Date(date) : new Date(),
+      mode: refundPayload.mode,
+      reference_number: refundPayload.reference_number,
+      zoho_refund_id: zohoRefund?.refund?.refund_id || undefined,
+      notes: notes || undefined,
+    });
+    await payment.save();
+
+    if (payment.client?._id) {
+      try { await Client.findByIdAndUpdate(payment.client._id, { $inc: { extra_credits: -refundAmount } }); } catch (_) {}
+    }
+
+    await logPaymentActivity(req, 'PAYMENT_REFUND', 'Payment', payment._id, {
+      refundAmount,
+      zohoPaymentId: payment.zoho_payment_id,
+      zohoRefundId: zohoRefund?.refund?.refund_id,
+    });
+
+    return res.json({ success: true, data: { payment, zoho_refund: zohoRefund } });
+  } catch (error) {
+    await logErrorActivity(req, error, 'Refund Excess Payment');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const applyExcessPaymentToInvoice = async (req, res) => {
+  try {
+    const { id } = req.params; // local Payment _id
+    const { invoiceId, amount } = req.body || {};
+
+    if (!invoiceId) return res.status(400).json({ success: false, message: "invoiceId is required" });
+    if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: "amount must be > 0" });
+
+    const allocAmount = Math.round(Number(amount) * 100) / 100;
+
+    const payment = await Payment.findById(id).populate("client");
+    if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
+    if (!payment.zoho_payment_id) return res.status(400).json({ success: false, message: "Payment not synced to Zoho yet" });
+
+    if (allocAmount > Number(payment.unused_amount || 0)) {
+      return res.status(400).json({ success: false, message: `Allocation amount (${allocAmount}) exceeds payment unused amount (${payment.unused_amount || 0})` });
+    }
+
+    const invoice = await Invoice.findById(invoiceId).populate('client');
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    // Ensure invoice belongs to same client (handle populated or ObjectId refs)
+    const invoiceClientId = invoice?.client?._id
+      ? invoice.client._id.toString()
+      : (invoice?.client && typeof invoice.client.toString === 'function' ? invoice.client.toString() : null);
+    const paymentClientId = payment?.client?._id
+      ? payment.client._id.toString()
+      : (payment?.client && typeof payment.client.toString === 'function' ? payment.client.toString() : null);
+    if (invoiceClientId && paymentClientId && invoiceClientId !== paymentClientId) {
+      return res.status(400).json({ success: false, message: "Invoice does not belong to the payment's client" });
+    }
+
+    // Ensure Zoho invoice exists
+    let zohoInvoiceId = invoice.zoho_invoice_id;
+    if (!zohoInvoiceId) {
+      return res.status(400).json({ success: false, message: "Invoice is not synced to Zoho. Please sync the invoice to Zoho before applying credits." });
+    }
+
+    // Determine outstanding using both local and Zoho (cap by Zoho's live balance)
+    const localOutstanding = Number(invoice.balance || invoice.total || 0);
+    let zohoOutstanding = localOutstanding;
+    try {
+      const zohoInv = await getZohoInvoice(zohoInvoiceId);
+      zohoOutstanding = Number(
+        (zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0
+      );
+    } catch (_) {}
+
+    let need = Math.max(0, Math.min(localOutstanding, zohoOutstanding));
+    if (need < 0.01) {
+      return res.json({ success: true, data: { invoiceId, allocated: 0, leftover: 0, allocations: [] } });
+    }
+
+    // Find all client payments with unused_amount > 0 (FIFO)
+    const payments = await Payment.find({ client: paymentClientId, unused_amount: { $gt: 0 } }).sort({ createdAt: 1 });
+
+    let totalAllocated = 0;
+    const allocations = [];
+
+    for (const pay of payments) {
+      if (need < 0.01) break;
+      const payUnused = Number(pay.unused_amount || 0);
+      if (payUnused <= 0.009) continue;
+      if (!pay.zoho_payment_id) continue; // only apply from Zoho-synced payments
+
+      // Fetch current Zoho payment allocations
+      let existingAllocations = [];
+      try {
+        const zohoPayment = await getZohoCustomerPayment(pay.zoho_payment_id);
+        existingAllocations = (zohoPayment?.invoices || zohoPayment?.invoice_payments || []).map(ip => ({
+          invoice_id: ip.invoice_id,
+          amount_applied: Number(ip.amount_applied || ip.applied_amount || 0)
+        }));
+      } catch (_) {}
+
+      const alloc = Math.min(need, payUnused);
+      if (alloc <= 0.009) continue;
+
+      // Only update the selected invoice in Zoho payload (do not include other invoices)
+      const prevForTarget = (existingAllocations.find(a => a.invoice_id === zohoInvoiceId)?.amount_applied) || 0;
+      const newInvoices = [{ invoice_id: zohoInvoiceId, amount_applied: Math.round((prevForTarget + alloc) * 100) / 100 }];
+
+      // Debug: log the payload that will be sent to Zoho
+      try {
+        console.log('[applyExcessPaymentToInvoice] payment:', pay.zoho_payment_id);
+        console.log('[applyExcessPaymentToInvoice] PUT payload:', JSON.stringify({ invoices: newInvoices }, null, 2));
+      } catch (_) {}
+
+      // Update Zoho payment allocations
+      await updateZohoCustomerPayment(pay.zoho_payment_id, { invoices: newInvoices });
+
+      // Update local payment aggregates and attach invoice allocation line
+      pay.applied_total = Math.round(((Number(pay.applied_total || 0) + alloc)) * 100) / 100;
+      pay.unused_amount = Math.max(0, Math.round(((Number(pay.unused_amount || 0) - alloc)) * 100) / 100);
+      try {
+        const invIdStr = invoiceId.toString();
+        const existing = pay.invoices?.find?.((pi) => {
+          const piId = (pi?.invoice && typeof pi.invoice.toString === 'function') ? pi.invoice.toString() : String(pi?.invoice || '');
+          return piId === invIdStr;
+        });
+        if (existing) {
+          existing.amount_applied = Math.round((Number(existing.amount_applied || 0) + alloc) * 100) / 100;
+          if (!existing.zoho_invoice_id) existing.zoho_invoice_id = zohoInvoiceId;
+        } else {
+          pay.invoices = pay.invoices || [];
+          pay.invoices.push({ invoice: invoiceId, amount_applied: alloc, zoho_invoice_id: zohoInvoiceId });
+        }
+      } catch (_) {}
+      await pay.save();
+
+      // Update client extra_credits down by alloc
+      try { await Client.findByIdAndUpdate(paymentClientId, { $inc: { extra_credits: -alloc } }); } catch (_) {}
+
+      // Update local invoice
+      await updateInvoiceAfterZohoPayment(invoiceId, alloc);
+      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) {}
+
+      totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
+      need = Math.max(0, Math.round((need - alloc) * 100) / 100);
+      allocations.push({ paymentId: String(pay._id), zoho_payment_id: pay.zoho_payment_id, allocated: alloc });
+
+      // Activity log
+      try {
+        await logPaymentActivity(req, 'PAYMENT_ALLOCATION', 'Payment', pay._id, {
+          allocatedToInvoiceId: invoiceId,
+          allocatedAmount: alloc,
+          zohoPaymentId: pay.zoho_payment_id,
+          zohoInvoiceId,
+          mode: 'apply_all_credits'
+        });
+      } catch (_) {}
+    }
+
+    const leftover = Math.max(0, Math.round(need * 100) / 100);
+    return res.json({ success: true, data: { invoiceId, allocated: totalAllocated, leftover, allocations } });
+
+  } catch (error) {
+    await logErrorActivity(req, error, 'Apply Excess Payment to Invoice');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/payments/credits/apply-to-invoice
+// Body: { clientId, invoiceId }
+export const applyAllCreditsToInvoice = async (req, res) => {
+  try {
+    const { clientId, invoiceId } = req.body || {};
+
+    if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
+    if (!invoiceId) return res.status(400).json({ success: false, message: 'invoiceId is required' });
+
+    const invoice = await Invoice.findById(invoiceId).populate('client');
+    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
+    const invClientId = invoice?.client?._id ? String(invoice.client._id) : String(invoice.client);
+    if (String(invClientId) !== String(clientId)) {
+      return res.status(400).json({ success: false, message: 'Invoice does not belong to the provided client' });
+    }
+
+    const zohoInvoiceId = invoice.zoho_invoice_id;
+    if (!zohoInvoiceId) {
+      return res.status(400).json({ success: false, message: 'Invoice is not synced to Zoho. Please sync the invoice to Zoho before applying credits.' });
+    }
+
+    // Determine outstanding using both local and Zoho (cap by Zoho's live balance)
+    const localOutstanding = Number(invoice.balance || invoice.total || 0);
+    let zohoOutstanding = localOutstanding;
+    try {
+      const zohoInv = await getZohoInvoice(zohoInvoiceId);
+      zohoOutstanding = Number(
+        (zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0
+      );
+    } catch (_) {}
+
+    let need = Math.max(0, Math.min(localOutstanding, zohoOutstanding));
+    if (need < 0.01) {
+      return res.json({ success: true, data: { invoiceId, allocated: 0, leftover: 0, allocations: [] } });
+    }
+
+    // Find all client payments with unused_amount > 0 (FIFO)
+    const payments = await Payment.find({ client: clientId, unused_amount: { $gt: 0 } }).sort({ createdAt: 1 });
+
+    let totalAllocated = 0;
+    const allocations = [];
+
+    for (const pay of payments) {
+      if (need < 0.01) break;
+      const payUnused = Number(pay.unused_amount || 0);
+      if (payUnused <= 0.009) continue;
+      if (!pay.zoho_payment_id) continue; // only apply from Zoho-synced payments
+
+      // Fetch current Zoho payment allocations
+      let existingAllocations = [];
+      try {
+        const zohoPayment = await getZohoCustomerPayment(pay.zoho_payment_id);
+        existingAllocations = (zohoPayment?.invoices || zohoPayment?.invoice_payments || []).map(ip => ({
+          invoice_id: ip.invoice_id,
+          amount_applied: Number(ip.amount_applied || ip.applied_amount || 0)
+        }));
+      } catch (_) {}
+
+      const alloc = Math.min(need, payUnused);
+      if (alloc <= 0.009) continue;
+
+      // Only update the selected invoice in Zoho payload (do not include other invoices)
+      const prevForTarget = (existingAllocations.find(a => a.invoice_id === zohoInvoiceId)?.amount_applied) || 0;
+      const newInvoices = [{ invoice_id: zohoInvoiceId, amount_applied: Math.round((prevForTarget + alloc) * 100) / 100 }];
+
+      // Debug: log the payload that will be sent to Zoho
+      try {
+        console.log('[applyAllCreditsToInvoice] payment:', pay.zoho_payment_id);
+        console.log('[applyAllCreditsToInvoice] PUT payload:', JSON.stringify({ invoices: newInvoices }, null, 2));
+      } catch (_) {}
+
+      // Update Zoho payment allocations
+      await updateZohoCustomerPayment(pay.zoho_payment_id, { invoices: newInvoices });
+
+      // Update local payment aggregates and attach invoice allocation line
+      pay.applied_total = Math.round(((Number(pay.applied_total || 0) + alloc)) * 100) / 100;
+      pay.unused_amount = Math.max(0, Math.round(((Number(pay.unused_amount || 0) - alloc)) * 100) / 100);
+      try {
+        const invIdStr = invoiceId.toString();
+        const existing = pay.invoices?.find?.((pi) => {
+          const piId = (pi?.invoice && typeof pi.invoice.toString === 'function') ? pi.invoice.toString() : String(pi?.invoice || '');
+          return piId === invIdStr;
+        });
+        if (existing) {
+          existing.amount_applied = Math.round((Number(existing.amount_applied || 0) + alloc) * 100) / 100;
+          if (!existing.zoho_invoice_id) existing.zoho_invoice_id = zohoInvoiceId;
+        } else {
+          pay.invoices = pay.invoices || [];
+          pay.invoices.push({ invoice: invoiceId, amount_applied: alloc, zoho_invoice_id: zohoInvoiceId });
+        }
+      } catch (_) {}
+      await pay.save();
+
+      // Update client extra_credits down by alloc
+      try { await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: -alloc } }); } catch (_) {}
+
+      // Update local invoice
+      await updateInvoiceAfterZohoPayment(invoiceId, alloc);
+      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) {}
+
+      totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
+      need = Math.max(0, Math.round((need - alloc) * 100) / 100);
+      allocations.push({ paymentId: String(pay._id), zoho_payment_id: pay.zoho_payment_id, allocated: alloc });
+
+      // Activity log
+      try {
+        await logPaymentActivity(req, 'PAYMENT_ALLOCATION', 'Payment', pay._id, {
+          allocatedToInvoiceId: invoiceId,
+          allocatedAmount: alloc,
+          zohoPaymentId: pay.zoho_payment_id,
+          zohoInvoiceId,
+          mode: 'apply_all_credits'
+        });
+      } catch (_) {}
+    }
+
+    const leftover = Math.max(0, Math.round(need * 100) / 100);
+    return res.json({ success: true, data: { invoiceId, allocated: totalAllocated, leftover, allocations } });
+
+  } catch (error) {
+    await logErrorActivity(req, error, 'Apply All Credits to Invoice');
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

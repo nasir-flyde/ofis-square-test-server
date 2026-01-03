@@ -4,7 +4,7 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent } = req.body || {};
 
 // Update per-building invoice settings (draft invoice schedule and late fee policy)
 
@@ -59,6 +59,15 @@ export const createBuilding = async (req, res) => {
       businessMapLink
     };
 
+    // Building-level community discount cap (0-100)
+    if (communityDiscountMaxPercent !== undefined) {
+      const v = Number(communityDiscountMaxPercent);
+      if (!Number.isFinite(v) || v < 0 || v > 100) {
+        return res.status(400).json({ success: false, message: "communityDiscountMaxPercent must be a number between 0 and 100" });
+      }
+      buildingData.communityDiscountMaxPercent = v;
+    }
+
     // Attach sanitized TDS settings if provided
     if (tdsSettings && typeof tdsSettings === 'object') {
       const sanitizedTds = {};
@@ -82,6 +91,7 @@ export const createBuilding = async (req, res) => {
           sanitizedTds.integration.zohoBooks = {};
           if (typeof tdsSettings.integration.zohoBooks.enabled === 'boolean') sanitizedTds.integration.zohoBooks.enabled = tdsSettings.integration.zohoBooks.enabled;
           if (typeof tdsSettings.integration.zohoBooks.withholdingTaxName === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxName = tdsSettings.integration.zohoBooks.withholdingTaxName;
+          if (typeof tdsSettings.integration.zohoBooks.withholdingTaxId === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxId = tdsSettings.integration.zohoBooks.withholdingTaxId;
           if (['before_tax', 'after_tax'].includes(tdsSettings.integration.zohoBooks.computeOn)) sanitizedTds.integration.zohoBooks.computeOn = tdsSettings.integration.zohoBooks.computeOn;
         }
       }
@@ -155,7 +165,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -202,6 +212,15 @@ export const updateBuilding = async (req, res) => {
       updatePayload.photos = processedPhotos;
     }
 
+    // Update building-level community discount max percent if provided
+    if (communityDiscountMaxPercent !== undefined) {
+      const v = Number(communityDiscountMaxPercent);
+      if (!Number.isFinite(v) || v < 0 || v > 100) {
+        return res.status(400).json({ success: false, message: "communityDiscountMaxPercent must be a number between 0 and 100" });
+      }
+      updatePayload.communityDiscountMaxPercent = v;
+    }
+
     // Update coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
       updatePayload.coordinates = {
@@ -244,6 +263,7 @@ export const updateBuilding = async (req, res) => {
           sanitizedTds.integration.zohoBooks = {};
           if (typeof tdsSettings.integration.zohoBooks.enabled === 'boolean') sanitizedTds.integration.zohoBooks.enabled = tdsSettings.integration.zohoBooks.enabled;
           if (typeof tdsSettings.integration.zohoBooks.withholdingTaxName === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxName = tdsSettings.integration.zohoBooks.withholdingTaxName;
+          if (typeof tdsSettings.integration.zohoBooks.withholdingTaxId === 'string') sanitizedTds.integration.zohoBooks.withholdingTaxId = tdsSettings.integration.zohoBooks.withholdingTaxId;
           if (['before_tax', 'after_tax'].includes(tdsSettings.integration.zohoBooks.computeOn)) sanitizedTds.integration.zohoBooks.computeOn = tdsSettings.integration.zohoBooks.computeOn;
         }
       }
@@ -264,10 +284,10 @@ export const updateBuilding = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });

@@ -843,7 +843,37 @@ export const updateContract = async (req, res) => {
     };
 
     const updated = await Contract.findByIdAndUpdate(id, updateData, { new: true });
-    
+
+    // If parkingSpaces were updated on the contract, sync them to the linked Client record as well
+    try {
+      if (parkingSpaces && updated?.client) {
+        const two = Number(parkingSpaces?.noOf2WheelerParking) || 0;
+        const four = Number(parkingSpaces?.noOf4WheelerParking) || 0;
+        await Client.findByIdAndUpdate(
+          updated.client,
+          { $set: { 'parkingSpaces.noOf2WheelerParking': two, 'parkingSpaces.noOf4WheelerParking': four } },
+          { new: true }
+        );
+        // Log per parking type with category for filtering
+        await logContractActivity(req, 'UPDATE', id, updated.client, {
+          category: 'parking',
+          parkingType: 'two_wheeler',
+          action: 'client_parking_updated_from_contract_edit',
+          oldValue: undefined, // not tracked here
+          newValue: two,
+        });
+        await logContractActivity(req, 'UPDATE', id, updated.client, {
+          category: 'parking',
+          parkingType: 'four_wheeler',
+          action: 'client_parking_updated_from_contract_edit',
+          oldValue: undefined, // not tracked here
+          newValue: four,
+        });
+      }
+    } catch (syncErr) {
+      console.warn('updateContract: failed to sync client parking:', syncErr?.message || syncErr);
+    }
+
     // Auto-generate and upload contract PDF after update
     try {
       const populatedContract = await Contract.findById(id)

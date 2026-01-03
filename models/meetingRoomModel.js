@@ -71,6 +71,8 @@ const meetingRoomSchema = new Schema(
     reservedSlots: { type: [reservedSlotSchema], default: [] },
     isBookingClosed: { type: Boolean, default: false },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
+    // Optional room-level discount cap used for community flows
+    communityMaxDiscountPercent: { type: Number, min: 0, max: 100, default: 0 },
   },
   { timestamps: true, collection: "meeting_rooms" }
 );

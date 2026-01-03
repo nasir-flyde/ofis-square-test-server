@@ -169,6 +169,49 @@ class LoggedRazorpay {
   }
 
   /**
+   * Create a Payment Link (shareable URL)
+   */
+  async createPaymentLink(linkData, { userId = null, clientId = null, relatedEntity = null, relatedEntityId = null } = {}) {
+    const loggedFetch = apiLogger.createLoggedFetch({
+      service: this.service,
+      operation: 'create_payment_link',
+      userId,
+      clientId,
+      relatedEntity,
+      relatedEntityId,
+      maxAttempts: 3,
+      retryCondition: (response) => {
+        if (response?.status >= 500) return true;
+        if (response?.status === 429) return true;
+        return false;
+      }
+    });
+
+    try {
+      const auth = Buffer.from(`${this.keyId}:${this.keySecret}`).toString('base64');
+      
+      const response = await loggedFetch(`${this.baseUrl}/payment_links`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(linkData)
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error?.description || result.message || 'Razorpay API error');
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Razorpay create payment link error:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Verify webhook signature
    */
   verifyWebhookSignature(body, signature, secret = null) {

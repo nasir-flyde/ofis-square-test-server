@@ -95,6 +95,9 @@ const clientSchema = new mongoose.Schema(
     pricebookId: { type: String, trim: true, default: undefined },
     currencyId: { type: String, trim: true, default: undefined },
 
+    // Extra credits (excess payments not yet applied to any invoice)
+    extra_credits: { type: Number, default: 0 },
+
     // Security deposit details
     securityDeposit: {
       type: { type: String, trim: true, default: undefined },

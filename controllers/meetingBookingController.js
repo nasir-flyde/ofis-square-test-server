@@ -7,6 +7,7 @@ import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import WalletService from "../services/walletService.js";
 import Visitor from "../models/visitorModel.js";
+import Building from "../models/buildingModel.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -26,12 +27,50 @@ function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+// Compute discounted totals (GST is 0 for meeting rooms per current logic)
+function computeInvoiceTotals(baseAmount, percent) {
+  const pct = Math.max(0, Math.min(100, Number(percent || 0)));
+  const discountAmount = Math.max(0, Math.round((Number(baseAmount || 0) * pct) / 100));
+  const sub_total = Math.max(0, Number(baseAmount || 0) - discountAmount);
+  return {
+    discountAmount,
+    sub_total,
+    tax_total: 0,
+    total: sub_total,
+  };
+}
+
+// Resolve discount cap based on flag and available configs
+async function resolveDiscountCap({ room, pricing, usingDefaultBuildingDiscount }) {
+  const defaultCap = Number(process.env.MEETING_DISCOUNT_DEFAULT_CAP_PERCENT || 10);
+  let buildingCap;
+  try {
+    if (room?.building) {
+      const b = await Building.findById(room.building).select('communityDiscountMaxPercent').lean();
+      buildingCap = b?.communityDiscountMaxPercent;
+    }
+  } catch (e) {
+    buildingCap = undefined;
+  }
+
+  if (usingDefaultBuildingDiscount === true) {
+    return typeof buildingCap === 'number' ? buildingCap : defaultCap;
+  }
+
+  const roomCap = room?.communityMaxDiscountPercent;
+  if (typeof roomCap === 'number') return roomCap;
+  if (typeof buildingCap === 'number') return buildingCap;
+  return defaultCap;
+}
+
 async function checkAvailability(room, start, end) {
   if (!room || !start || !end) return { ok: false, reason: "Missing room or times" };
   if (!(start instanceof Date)) start = new Date(start);
   if (!(end instanceof Date)) end = new Date(end);
   if (isNaN(start) || isNaN(end)) return { ok: false, reason: "Invalid dates" };
   if (end <= start) return { ok: false, reason: "End must be after start" };
+
+
 
   if (room.status !== "active") return { ok: false, reason: "Room inactive" };
 
@@ -100,7 +139,9 @@ export const createBooking = async (req, res) => {
       amenitiesRequested, 
       currency, 
       amount, 
-      notes 
+      notes,
+      discount, // { percent, reason }
+      usingDefaultBuildingDiscount // boolean
     } = req.body || {};
     
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
@@ -148,6 +189,39 @@ export const createBooking = async (req, res) => {
     let paymentDetails = {};
     let invoice = null;
     let bookingStatus = "booked";
+    // Discount state
+    let discountStatus = "none";
+    let appliedDiscountPercent = 0;
+    let discountAmount = 0;
+    let requestedDiscountPercent;
+    let requestedReason;
+    let requestedBy = req.user?.id || undefined;
+    const hasDiscountRequest = discount && typeof discount === 'object' && discount.percent != null;
+
+    // Resolve cap early if a discount is requested and not paying with credits
+    let discountCap;
+    if (hasDiscountRequest) {
+      // Reject discount with credits
+      if (paymentMethod === "credits") {
+        return res.status(400).json({ success: false, code: "DISCOUNT_NOT_ALLOWED_WITH_CREDITS", message: "Discounts are not applicable when paying with credits" });
+      }
+      try {
+        discountCap = await resolveDiscountCap({ room, pricing, usingDefaultBuildingDiscount });
+      } catch (e) {
+        discountCap = Number(process.env.MEETING_DISCOUNT_DEFAULT_CAP_PERCENT || 10);
+      }
+      requestedDiscountPercent = Number(discount.percent);
+      requestedReason = discount.reason;
+      if (requestedDiscountPercent <= discountCap) {
+        // immediate apply
+        const totals = computeInvoiceTotals(dailyRate, requestedDiscountPercent);
+        appliedDiscountPercent = requestedDiscountPercent;
+        discountAmount = totals.discountAmount;
+        discountStatus = "approved";
+      } else {
+        discountStatus = "pending";
+      }
+    }
 
     if (paymentMethod === "credits") {
       // Credits can only be used with a valid member context
@@ -197,34 +271,42 @@ export const createBooking = async (req, res) => {
     } else if (paymentMethod === "cash") {
       // Cash payment - create invoice and set payment_pending status
       bookingStatus = "payment_pending";
-      
-      if (clientId) {
-        invoice = new Invoice({
-          client: clientId,
-          type: "regular",
-          category: "meeting_room",
-          invoice_number: `MR-${Date.now()}`,
-          line_items: [{
-            description: `Meeting Room - ${room.name} (Daily)`,
-            quantity: 1,
-            unitPrice: dailyRate,
-            amount: dailyRate,
-            rate: dailyRate
-          }],
-          sub_total: dailyRate,
-          tax_total: 0,
-          total: dailyRate,
-          status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-        });
 
-        await invoice.save();
+      if (discountStatus === "pending") {
+        // Skip invoice creation; wait for approval
+        paymentDetails = { method: "cash" };
+      } else {
+        // Apply approved or no discount
+        const totals = computeInvoiceTotals(dailyRate, appliedDiscountPercent || 0);
+        if (clientId) {
+          invoice = new Invoice({
+            client: clientId,
+            type: "regular",
+            category: "meeting_room",
+            invoice_number: `MR-${Date.now()}`,
+            line_items: [{
+              description: `Meeting Room - ${room.name} (Daily)`,
+              quantity: 1,
+              unitPrice: dailyRate,
+              amount: dailyRate, // show gross amount in line item
+              rate: dailyRate
+            }],
+            sub_total: dailyRate, // gross amount
+            discount: totals.discountAmount || 0,
+            tax_total: totals.tax_total,
+            total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+            status: "draft",
+            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+          });
+
+          await invoice.save();
+        }
+
+        paymentDetails = { 
+          method: "cash", 
+          amount: (invoice?.total ?? totals.total)
+        };
       }
-
-      paymentDetails = { 
-        method: "cash", 
-        amount: dailyRate 
-      };
     } else {
       // Other payment methods
       paymentDetails = { 
@@ -246,6 +328,14 @@ export const createBooking = async (req, res) => {
       currency: currency || undefined,
       notes: notes || undefined,
       invoice: invoice?._id || undefined,
+      // discount fields
+      usingDefaultBuildingDiscount: !!usingDefaultBuildingDiscount,
+      discountStatus,
+      requestedDiscountPercent: requestedDiscountPercent,
+      requestedBy: discountStatus === 'pending' ? requestedBy : undefined,
+      requestedReason: discountStatus === 'pending' ? requestedReason : undefined,
+      appliedDiscountPercent: appliedDiscountPercent || 0,
+      discountAmount: discountAmount || 0,
     });
 
     // Add reserved slot to meeting room
@@ -283,10 +373,10 @@ export const createBooking = async (req, res) => {
     if (invoice) {
       responseData.invoice = invoice;
     }
-    if (paymentMethod === 'cash') {
+    if (paymentMethod === 'cash' && discountStatus !== 'pending') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
-        amount: dailyRate * 100, // Convert to paise (no GST)
+        amount: (paymentDetails.amount || dailyRate) * 100, // Convert to paise (no GST)
         currency: "INR",
         name: "Ofis Square",
         description: `Meeting Room - ${room.name}`,
@@ -646,6 +736,267 @@ export const utilizationReport = async (req, res) => {
     const data = result?.[0] || { byDay: [], peakHour: [] };
     return res.json({ success: true, data });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Request or update discount on an existing booking
+export const requestDiscount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { percent, reason, usingDefaultBuildingDiscount } = req.body || {};
+    if (!id) return res.status(400).json({ success: false, message: "booking id is required" });
+    if (percent == null) return res.status(400).json({ success: false, message: "percent is required" });
+
+    const booking = await MeetingBooking.findById(id).populate('room');
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found" });
+    if (["cancelled", "completed"].includes(booking.status)) {
+      return res.status(400).json({ success: false, message: `Cannot request discount for a ${booking.status} booking` });
+    }
+    if (booking.payment?.method === 'credits') {
+      return res.status(400).json({ success: false, code: "DISCOUNT_NOT_ALLOWED_WITH_CREDITS", message: "Discounts are not applicable when paying with credits" });
+    }
+
+    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
+    const cap = await resolveDiscountCap({ room: booking.room, pricing, usingDefaultBuildingDiscount });
+    const requestedDiscountPercent = Number(percent);
+
+    // Within cap -> auto-apply
+    if (requestedDiscountPercent <= cap) {
+      const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
+      const totals = computeInvoiceTotals(dailyRate, requestedDiscountPercent);
+
+      booking.usingDefaultBuildingDiscount = !!usingDefaultBuildingDiscount;
+      booking.discountStatus = 'approved';
+      booking.appliedDiscountPercent = requestedDiscountPercent;
+      booking.discountAmount = totals.discountAmount;
+      booking.requestedDiscountPercent = undefined;
+      booking.requestedBy = undefined;
+      booking.requestedReason = undefined;
+
+      // Ensure invoice exists/updated
+      if (!booking.invoice && booking.client) {
+        const invoice = new Invoice({
+          client: booking.client,
+          type: 'regular',
+          category: 'meeting_room',
+          invoice_number: `MR-${Date.now()}`,
+          line_items: [{
+            description: `Meeting Room - ${booking.room.name} (Daily)`,
+            quantity: 1,
+            unitPrice: dailyRate,
+            amount: dailyRate,
+            rate: dailyRate,
+          }],
+          sub_total: dailyRate,
+          discount: totals.discountAmount || 0,
+          tax_total: totals.tax_total,
+          total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+          status: 'draft',
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        });
+        await invoice.save();
+        booking.invoice = invoice._id;
+      } else if (booking.invoice) {
+        // Update existing invoice
+        await Invoice.findByIdAndUpdate(booking.invoice, {
+          $set: {
+            line_items: [{
+              description: `Meeting Room - ${booking.room.name} (Daily)`,
+              quantity: 1,
+              unitPrice: dailyRate,
+              amount: dailyRate,
+              rate: dailyRate,
+            }],
+            sub_total: dailyRate,
+            discount: totals.discountAmount || 0,
+            tax_total: totals.tax_total,
+            total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+          }
+        });
+      }
+
+      // Booking should be payment pending (cash/card)
+      if (booking.status !== 'payment_pending') booking.status = 'payment_pending';
+      await booking.save();
+
+      const updated = await MeetingBooking.findById(id)
+        .populate('room', 'name capacity amenities')
+        .populate('invoice', 'invoice_number status total');
+      return res.json({ success: true, data: updated });
+    }
+
+    // Over cap -> mark pending
+    booking.usingDefaultBuildingDiscount = !!usingDefaultBuildingDiscount;
+    booking.discountStatus = 'pending';
+    booking.requestedDiscountPercent = requestedDiscountPercent;
+    booking.requestedBy = req.user?.id || undefined;
+    booking.requestedReason = reason;
+    await booking.save();
+
+    const updated = await MeetingBooking.findById(id)
+      .populate('room', 'name capacity amenities')
+      .populate('invoice', 'invoice_number status total');
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error('requestDiscount error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const approveDiscount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedPercent, approvalNotes } = req.body || {};
+    if (!id) return res.status(400).json({ success: false, message: 'booking id is required' });
+    const booking = await MeetingBooking.findById(id).populate('room');
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    if (booking.discountStatus !== 'pending') {
+      return res.status(400).json({ success: false, message: 'No pending discount request to approve' });
+    }
+    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
+    const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
+    const pct = Math.max(0, Math.min(100, Number(approvedPercent ?? booking.requestedDiscountPercent ?? 0)));
+    const totals = computeInvoiceTotals(dailyRate, pct);
+
+    booking.discountStatus = 'approved';
+    booking.appliedDiscountPercent = pct;
+    booking.discountAmount = totals.discountAmount;
+    booking.approvedBy = req.user?.id || undefined;
+    booking.approvalNotes = approvalNotes;
+    booking.approvedAt = new Date();
+    // clear request fields
+    booking.requestedDiscountPercent = undefined;
+    booking.requestedBy = booking.requestedBy; // keep requester for history
+    booking.requestedReason = undefined;
+
+    // Ensure invoice exists or update
+    if (!booking.invoice && booking.client) {
+      const invoice = new Invoice({
+        client: booking.client,
+        type: 'regular',
+        category: 'meeting_room',
+        invoice_number: `MR-${Date.now()}`,
+        line_items: [{
+          description: `Meeting Room - ${booking.room.name} (Daily)`,
+          quantity: 1,
+          unitPrice: dailyRate,
+          amount: dailyRate,
+          rate: dailyRate,
+        }],
+        sub_total: dailyRate,
+        discount: totals.discountAmount || 0,
+        tax_total: totals.tax_total,
+        total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+        status: 'draft',
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      await invoice.save();
+      booking.invoice = invoice._id;
+    } else if (booking.invoice) {
+      await Invoice.findByIdAndUpdate(booking.invoice, {
+        $set: {
+          line_items: [{
+            description: `Meeting Room - ${booking.room.name} (Daily)`,
+            quantity: 1,
+            unitPrice: dailyRate,
+            amount: dailyRate,
+            rate: dailyRate,
+          }],
+          sub_total: dailyRate,
+          discount: totals.discountAmount || 0,
+          tax_total: totals.tax_total,
+          total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+        }
+      });
+    }
+
+    if (booking.status !== 'payment_pending') booking.status = 'payment_pending';
+    await booking.save();
+
+    const updated = await MeetingBooking.findById(id)
+      .populate('room', 'name capacity amenities')
+      .populate('invoice', 'invoice_number status total');
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error('approveDiscount error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const rejectDiscount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvalNotes } = req.body || {};
+    if (!id) return res.status(400).json({ success: false, message: 'booking id is required' });
+    const booking = await MeetingBooking.findById(id).populate('room');
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    if (booking.discountStatus !== 'pending') {
+      return res.status(400).json({ success: false, message: 'No pending discount request to reject' });
+    }
+
+    booking.discountStatus = 'rejected';
+    booking.approvedBy = req.user?.id || undefined;
+    booking.approvalNotes = approvalNotes;
+    booking.approvedAt = new Date();
+    booking.appliedDiscountPercent = 0;
+    booking.discountAmount = 0;
+
+    // If no invoice exists yet, create base invoice so payment can proceed
+    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
+    const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
+    const totals = computeInvoiceTotals(dailyRate, 0);
+    if (!booking.invoice && booking.client) {
+      const invoice = new Invoice({
+        client: booking.client,
+        type: 'regular',
+        category: 'meeting_room',
+        invoice_number: `MR-${Date.now()}`,
+        line_items: [{
+          description: `Meeting Room - ${booking.room.name} (Daily)`,
+          quantity: 1,
+          unitPrice: dailyRate,
+          amount: dailyRate,
+          rate: dailyRate,
+        }],
+        sub_total: dailyRate,
+        discount: 0,
+        tax_total: totals.tax_total,
+        total: dailyRate,
+        status: 'draft',
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      await invoice.save();
+      booking.invoice = invoice._id;
+    }
+    if (booking.status !== 'payment_pending') booking.status = 'payment_pending';
+    await booking.save();
+
+    const updated = await MeetingBooking.findById(id)
+      .populate('room', 'name capacity amenities')
+      .populate('invoice', 'invoice_number status total');
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error('rejectDiscount error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const listDiscountRequests = async (req, res) => {
+  try {
+    const { status = 'pending', building } = req.query || {};
+    const filter = { discountStatus: status };
+    if (building) {
+      const rooms = await MeetingRoom.find({ building }).select('_id').lean();
+      filter.room = { $in: rooms.map(r => r._id) };
+    }
+    const bookings = await MeetingBooking.find(filter)
+      .populate('room', 'name capacity amenities building')
+      .populate('requestedBy', 'name email')
+      .populate('invoice', 'invoice_number status total')
+      .sort({ createdAt: -1 });
+    return res.json({ success: true, data: bookings });
+  } catch (error) {
+    console.error('listDiscountRequests error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };

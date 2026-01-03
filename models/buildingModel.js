@@ -44,6 +44,13 @@ const BuildingSchema = new Schema(
       min: 0,
       default: 500
     },
+    // Maximum discount percentage allowed for community bookings at building level
+    communityDiscountMaxPercent: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: 0
+    },
     draftInvoiceGeneration: {
       type: Boolean,
       default: false,
@@ -122,39 +129,8 @@ const BuildingSchema = new Schema(
       templateVersion: { type: Number, default: 1 },
     },
 
-    // TDS Settings (per-building)
-    // These fields let you configure default TDS behavior for invoices/bills generated for this building.
-    // Typical Indian setup: calculate on amount excluding tax, with a section like 194J @ 10%.
-    tdsSettings: {
-      enabled: { type: Boolean, default: false },
-      // Where to apply TDS by default. You can still override per-document if your app supports it.
-      applyOn: { type: String, enum: ['sales', 'purchases', 'both'], default: 'sales' },
-      // Calculation base: before_tax (excluding GST) is the standard practice for TDS.
-      calculationBase: { type: String, enum: ['before_tax', 'after_tax'], default: 'before_tax' },
-      // Common income-tax sections. Use 'OTHER' if you want a custom/less common section.
-      defaultSection: { type: String, enum: ['194C', '194H', '194I', '194J', '194Q', 'OTHER'], default: '194J' },
-      // Default TDS rate percentage applied to the base amount
-      defaultRatePercent: { type: Number, min: 0, max: 100, default: 10 },
-      // Optional annual threshold for the section; if not set, section default threshold may apply elsewhere in the system
-      thresholdAnnualAmount: { type: Number, min: 0, default: undefined },
-      // Rounding behavior for TDS amount
-      roundOffMode: { type: String, enum: ['none', 'nearest', 'up', 'down'], default: 'nearest' },
-      // Free-form notes for admins
-      notes: { type: String, default: '' },
-      // Optional integration-specific settings, e.g., Zoho Books Withholding Tax mapping
-      integration: {
-        zohoBooks: {
-          enabled: { type: Boolean, default: false },
-          // If you maintain a specific WHT name/section in Zoho Books, store it here for mapping
-          withholdingTaxName: { type: String, default: undefined },
-          // Optional account mappings (if your sync/adapter uses these IDs)
-          tdsReceivableAccountId: { type: String, default: undefined },
-          tdsPayableAccountId: { type: String, default: undefined },
-          // Ensure parity with Zoho’s compute-on config
-          computeOn: { type: String, enum: ['before_tax', 'after_tax'], default: 'before_tax' },
-        },
-      },
-    },
+    // TDS Settings removed (was previously under tdsSettings)
+    // All TDS-related configuration has been deprecated and removed from the system.
 
     status: { type: String, enum: ["draft", "active", "inactive"], default: "draft", index: true },
   },

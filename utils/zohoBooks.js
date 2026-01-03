@@ -294,21 +294,8 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
-      // Pass withholding taxes (TDS) if present on the invoice (array of {tax_name, tax_percentage, tax_id?, tax_amount?})
-      ...(Array.isArray(invoiceDoc.withholding_taxes) && invoiceDoc.withholding_taxes.length > 0
-        ? {
-            withholding_taxes: invoiceDoc.withholding_taxes.map((t) => {
-              const out = {
-                tax_name: t.tax_name,
-                tax_percentage: Number(t.tax_percentage || 0),
-              };
-              if (t.tax_id) out.tax_id = t.tax_id;
-              if (t.tax_amount !== undefined) out.tax_amount = Number(t.tax_amount || 0);
-              return out;
-            }),
-          }
-        : {}),
     };
+    // TDS (withholding) disabled: do not attach withholding_taxes to payload
 
     const headers = {
       Authorization: `Zoho-oauthtoken ${authToken}`,
@@ -341,7 +328,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       const responseText = await response.text();
       try {
         data = responseText ? JSON.parse(responseText) : {};
-      } catch (_) {
+      } catch (e) {
         data = responseText;
       }
 
@@ -359,6 +346,8 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
         console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
         throw new Error(errMsg);
       }
+
+      return data;
     } catch (err) {
       await apiLogger.logResponse({
         requestId,
@@ -370,8 +359,6 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       });
       throw err;
     }
-
-    return data;
   } catch (err) {
     console.error("❌ Error creating invoice:", err.message);
     throw err;
@@ -548,6 +535,62 @@ export async function recordZohoPayment(invoiceId, paymentData) {
     return data;
   } catch (err) {
     console.error("Error recording Zoho Payment:", err.message);
+    throw err;
+  }
+}
+
+// ===== Customer Payments helpers (apply/refund excess) =====
+export async function getZohoCustomerPayment(paymentId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/customerpayments/${paymentId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, { method: "GET", headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data?.payment || null;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho customer payment:", err.message);
+    throw err;
+  }
+}
+
+export async function updateZohoCustomerPayment(paymentId, payload) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/customerpayments/${paymentId}?organization_id=${ORG_ID}`;
+    // Debug: log exact URL and payload being sent to Zoho
+    try {
+      console.log('[Zoho:updateCustomerPayment] URL:', url);
+      console.log('[Zoho:updateCustomerPayment] Payload:', JSON.stringify(payload, null, 2));
+    } catch (_) {}
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data;
+  } catch (err) {
+    console.error("❌ Error updating Zoho customer payment:", err.message);
+    throw err;
+  }
+}
+
+export async function refundZohoExcessPayment(paymentId, refundPayload) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/customerpayments/${paymentId}/refunds?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(refundPayload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data;
+  } catch (err) {
+    console.error("❌ Error refunding Zoho excess payment:", err.message);
     throw err;
   }
 }
@@ -829,7 +872,7 @@ export async function markZohoInvoiceAsSent(invoiceId) {
     });
     const data = await res.json();
     if (!res.ok) {
-      const errMsg = data?.message || `Zoho API error (mark as sent)`;
+      const errMsg = data?.message || "Zoho API error (mark as sent)";
       console.error("❌ Error marking Zoho invoice as sent:", errMsg);
       throw new Error(errMsg);
     }
@@ -839,3 +882,22 @@ export async function markZohoInvoiceAsSent(invoiceId) {
     throw err;
   }
 }
+
+export async function getZohoTaxes() {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/settings/taxes?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho taxes:", err.message);
+    throw err;
+  }
+}
+
+// getZohoWithholdingTaxes removed (TDS disabled)

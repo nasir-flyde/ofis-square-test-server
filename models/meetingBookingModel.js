@@ -26,6 +26,17 @@ const meetingBookingSchema = new Schema(
     idempotencyKey: { type: String },
     amount: { type: Number }
   },
+    // Discount workflow
+    usingDefaultBuildingDiscount: { type: Boolean, default: false },
+    discountStatus: { type: String, enum: ["none", "pending", "approved", "rejected"], default: "none", index: true },
+    requestedDiscountPercent: { type: Number, min: 0, max: 100 },
+    requestedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    requestedReason: { type: String },
+    appliedDiscountPercent: { type: Number, min: 0, max: 100, default: 0 },
+    discountAmount: { type: Number, min: 0, default: 0 },
+    approvedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    approvalNotes: { type: String },
+    approvedAt: { type: Date },
     notes: { type: String, trim: true },
   },
   { timestamps: true, collection: "meeting_bookings" }
