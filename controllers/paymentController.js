@@ -1444,50 +1444,61 @@ export const handleRazorpaySuccess = async (req, res) => {
 
 // Razorpay webhook handler for payment status updates
 export const handleRazorpayWebhook = async (req, res) => {
-  const requestId = await apiLogger.logIncomingWebhook(
-    'razorpay',
-    'payment_webhook',
-    req.headers,
-    req.body,
-    {
-      event: req.body?.event,
-      paymentId: req.body?.payload?.payment?.entity?.id
-    }
-  );
+  // Determine raw body string for signature verification
+  const rawBody = Buffer.isBuffer(req.body)
+    ? req.body.toString('utf8')
+    : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
+
+  // Proper logging call using options object
+  const requestId = await apiLogger.logIncomingWebhook({
+    service: 'razorpay',
+    operation: 'payment_webhook',
+    method: (req.method || 'POST').toUpperCase(),
+    url: req.originalUrl || req.url || '/api/payments/razorpay/webhook',
+    headers: req.headers || {},
+    requestBody: (() => { try { return JSON.parse(rawBody); } catch { return rawBody; } })(),
+    webhookSignature: req.headers['x-razorpay-signature'] || '',
+    webhookVerified: false,
+    webhookEvent: undefined,
+    statusCode: 200,
+    responseBody: { received: true },
+    success: true,
+    userAgent: req.headers['user-agent'] || null,
+    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+  });
 
   try {
-    const { event, payload } = req.body;
+    const parsed = (() => { try { return JSON.parse(rawBody); } catch { return req.body || {}; } })();
+    const { event, payload } = parsed || {};
     
-    // Use logged Razorpay for webhook signature verification (singleton instance)
-    const isValidSignature = await loggedRazorpay.verifyWebhookSignature(
-      JSON.stringify(req.body),
-      req.headers['x-razorpay-signature'] || req.headers['x-razorpay-signature'.toLowerCase()] || '',
-    );
-    
+    // Verify signature using exact raw payload
+    const signature = req.headers['x-razorpay-signature'] || '';
+    const isValidSignature = await loggedRazorpay.verifyWebhookSignature(rawBody, signature);
+     
     if (!isValidSignature) {
       const errorResponse = { error: 'Invalid webhook signature' };
       await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
       return res.status(401).json(errorResponse);
     }
-    
+     
     console.log('Razorpay webhook received:', event);
-    
+     
     if (event === 'payment.captured' || event === 'payment.authorized') {
-      const paymentId = payload.payment?.entity?.id;
-      const amount = payload.payment?.entity?.amount;
-      
+      const paymentId = payload?.payment?.entity?.id;
+      const amount = payload?.payment?.entity?.amount;
+       
       if (paymentId && amount) {
         console.log('Webhook payment details:', {
           paymentId,
           amount: amount / 100,
-          status: payload.payment?.entity?.status
+          status: payload?.payment?.entity?.status
         });
-        
+         
         // TODO: Implement automatic day pass status update based on payment ID
         // This would require storing payment ID during order creation
       }
     }
-    
+     
     if (event && payload) {
       try {
         // Handle Payment Link success
@@ -1522,18 +1533,18 @@ export const handleRazorpayWebhook = async (req, res) => {
         console.error('Webhook post-processing error:', eh);
       }
     }
-    
+     
     const response = { status: 'received' };
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
-    
+     
     res.status(200).json(response);
   } catch (error) {
     console.error('Razorpay webhook error:', error);
     await logErrorActivity(req, error, 'Razorpay Webhook');
-    
+     
     const errorResponse = { error: 'Webhook processing failed' };
     await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
-    
+     
     res.status(500).json(errorResponse);
   }
 };

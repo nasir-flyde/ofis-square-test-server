@@ -57,7 +57,12 @@ router.post("/:id/refund-excess", authMiddleware, refundExcessPayment);
 router.post("/razorpay/create-order", createRazorpayOrder);
 router.post("/razorpay/create-payment-link", createRazorpayPaymentLink);
 router.post("/razorpay/success", handleRazorpaySuccess);
-router.post("/razorpay/webhook", handleRazorpayWebhook);
+// Use raw body so signature verification uses the exact payload Razorpay signed
+router.post(
+  "/razorpay/webhook",
+  express.raw({ type: "application/json" }),
+  handleRazorpayWebhook
+);
 
 // Credit payment routes
 router.post('/credits/pay', payWithCredits);
