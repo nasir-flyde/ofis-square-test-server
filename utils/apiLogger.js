@@ -328,7 +328,7 @@ class ApiLogger {
     return stats;
   }
 
-  async logWebhookResponse(requestId, statusCode, responseBody, success, errorMessage = null) {
+  async logWebhookResponse(requestId, statusCode, responseBody, success, errorMessage = null, extra = {}) {
     try {
       const logEntry = await ApiCallLog.findOne({ requestId });
       if (!logEntry) {
@@ -345,6 +345,14 @@ class ApiLogger {
       logEntry.responseBody = this._sanitizeResponseBody(responseBody);
       logEntry.success = success;
       logEntry.errorMessage = errorMessage;
+
+      // Optional updates for webhook verification state
+      if (typeof extra.webhookVerified === 'boolean') {
+        logEntry.webhookVerified = extra.webhookVerified;
+      }
+      if (typeof extra.webhookEvent === 'string') {
+        logEntry.webhookEvent = extra.webhookEvent;
+      }
 
       await logEntry.save();
       return logEntry;

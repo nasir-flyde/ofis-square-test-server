@@ -50,7 +50,7 @@ app.use(cors(corsOptions));
 // IMPORTANT: Register Razorpay webhook BEFORE body parsers so we get the exact raw payload
 app.post(
   "/api/payments/razorpay/webhook",
-  express.raw({ type: "application/json" }),
+  express.raw({ type: "*/*" }),
   handleRazorpayWebhook
 );
 

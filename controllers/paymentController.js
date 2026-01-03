@@ -1455,7 +1455,7 @@ export const handleRazorpayWebhook = async (req, res) => {
       );
  
    // Proper logging call using options object
-   const requestId = await apiLogger.logIncomingWebhook({
+   const logEntry = await apiLogger.logIncomingWebhook({
      service: 'razorpay',
      operation: 'payment_webhook',
      method: (req.method || 'POST').toUpperCase(),
@@ -1472,6 +1472,8 @@ export const handleRazorpayWebhook = async (req, res) => {
      ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
    });
  
+   const requestId = (logEntry && typeof logEntry === 'object') ? (logEntry.requestId || logEntry._id || '') : String(logEntry || '');
+ 
    try {
      const parsed = (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return req.body || {}; } })();
      const { event, payload } = parsed || {};
@@ -1482,7 +1484,10 @@ export const handleRazorpayWebhook = async (req, res) => {
      
      if (!isValidSignature) {
        const errorResponse = { error: 'Invalid webhook signature' };
-       await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
+       await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature', {
+         webhookVerified: false,
+         webhookEvent: event || null
+       });
        return res.status(401).json(errorResponse);
      }
      
@@ -1540,7 +1545,10 @@ export const handleRazorpayWebhook = async (req, res) => {
      }
      
      const response = { status: 'received' };
-     await apiLogger.logWebhookResponse(requestId, 200, response, true);
+     await apiLogger.logWebhookResponse(requestId, 200, response, true, null, {
+       webhookVerified: true,
+       webhookEvent: event || null
+     });
      
      res.status(200).json(response);
   } catch (error) {
@@ -1548,7 +1556,10 @@ export const handleRazorpayWebhook = async (req, res) => {
     await logErrorActivity(req, error, 'Razorpay Webhook');
      
     const errorResponse = { error: 'Webhook processing failed' };
-    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
+    await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message, {
+      webhookVerified: false,
+      webhookEvent: event || null
+    });
      
     res.status(500).json(errorResponse);
   }

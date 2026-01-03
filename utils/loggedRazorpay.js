@@ -216,7 +216,8 @@ class LoggedRazorpay {
    */
   verifyWebhookSignature(body, signature, secret = null) {
     try {
-      const webhookSecret = (secret || process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+      const rawSecret = (secret || process.env.RAZORPAY_WEBHOOK_SECRET || '');
+      const webhookSecret = rawSecret.trim().replace(/^['"]|['"]$/g, '');
       if (!webhookSecret) {
         console.warn('Razorpay webhook secret not configured');
         return false;
