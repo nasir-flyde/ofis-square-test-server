@@ -17,7 +17,7 @@ import loggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
-import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice } from "../utils/zohoBooks.js";
+import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment } from "../utils/zohoBooks.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -1810,7 +1810,7 @@ export const getMemberCreditBalance = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    }).populate('building');
+    });
 
     if (!contract) {
       return res.json({
