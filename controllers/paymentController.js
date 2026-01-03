@@ -1444,100 +1444,105 @@ export const handleRazorpaySuccess = async (req, res) => {
 
 // Razorpay webhook handler for payment status updates
 export const handleRazorpayWebhook = async (req, res) => {
-  // Determine raw body string for signature verification
-  const rawBody = Buffer.isBuffer(req.body)
-    ? req.body.toString('utf8')
-    : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
-
-  // Proper logging call using options object
-  const requestId = await apiLogger.logIncomingWebhook({
-    service: 'razorpay',
-    operation: 'payment_webhook',
-    method: (req.method || 'POST').toUpperCase(),
-    url: req.originalUrl || req.url || '/api/payments/razorpay/webhook',
-    headers: req.headers || {},
-    requestBody: (() => { try { return JSON.parse(rawBody); } catch { return rawBody; } })(),
-    webhookSignature: req.headers['x-razorpay-signature'] || '',
-    webhookVerified: false,
-    webhookEvent: undefined,
-    statusCode: 200,
-    responseBody: { received: true },
-    success: true,
-    userAgent: req.headers['user-agent'] || null,
-    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
-  });
-
-  try {
-    const parsed = (() => { try { return JSON.parse(rawBody); } catch { return req.body || {}; } })();
-    const { event, payload } = parsed || {};
-    
-    // Verify signature using exact raw payload
-    const signature = req.headers['x-razorpay-signature'] || '';
-    const isValidSignature = await loggedRazorpay.verifyWebhookSignature(rawBody, signature);
+  // Determine raw Buffer for signature verification
+  const rawBuffer = Buffer.isBuffer(req.body)
+    ? req.body
+    : Buffer.from(
+        typeof req.body === 'string'
+          ? req.body
+          : JSON.stringify(req.body || {}),
+        'utf8'
+      );
+ 
+   // Proper logging call using options object
+   const requestId = await apiLogger.logIncomingWebhook({
+     service: 'razorpay',
+     operation: 'payment_webhook',
+     method: (req.method || 'POST').toUpperCase(),
+     url: req.originalUrl || req.url || '/api/payments/razorpay/webhook',
+     headers: req.headers || {},
+     requestBody: (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return rawBuffer.toString('utf8'); } })(),
+     webhookSignature: req.headers['x-razorpay-signature'] || '',
+     webhookVerified: false,
+     webhookEvent: undefined,
+     statusCode: 200,
+     responseBody: { received: true },
+     success: true,
+     userAgent: req.headers['user-agent'] || null,
+     ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+   });
+ 
+   try {
+     const parsed = (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return req.body || {}; } })();
+     const { event, payload } = parsed || {};
      
-    if (!isValidSignature) {
-      const errorResponse = { error: 'Invalid webhook signature' };
-      await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
-      return res.status(401).json(errorResponse);
-    }
+     // Verify signature using exact raw payload
+     const signature = req.headers['x-razorpay-signature'] || '';
+     const isValidSignature = await loggedRazorpay.verifyWebhookSignature(rawBuffer, signature);
      
-    console.log('Razorpay webhook received:', event);
+     if (!isValidSignature) {
+       const errorResponse = { error: 'Invalid webhook signature' };
+       await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature');
+       return res.status(401).json(errorResponse);
+     }
      
-    if (event === 'payment.captured' || event === 'payment.authorized') {
-      const paymentId = payload?.payment?.entity?.id;
-      const amount = payload?.payment?.entity?.amount;
+     console.log('Razorpay webhook received:', event);
+     
+     if (event === 'payment.captured' || event === 'payment.authorized') {
+       const paymentId = payload?.payment?.entity?.id;
+       const amount = payload?.payment?.entity?.amount;
        
-      if (paymentId && amount) {
-        console.log('Webhook payment details:', {
-          paymentId,
-          amount: amount / 100,
-          status: payload?.payment?.entity?.status
-        });
+       if (paymentId && amount) {
+         console.log('Webhook payment details:', {
+           paymentId,
+           amount: amount / 100,
+           status: payload?.payment?.entity?.status
+         });
          
-        // TODO: Implement automatic day pass status update based on payment ID
-        // This would require storing payment ID during order creation
-      }
-    }
+         // TODO: Implement automatic day pass status update based on payment ID
+         // This would require storing payment ID during order creation
+       }
+     }
      
-    if (event && payload) {
-      try {
-        // Handle Payment Link success
-        if (String(event).startsWith('payment_link.')) {
-          const pl = payload?.payment_link?.entity;
-          if (pl && pl.status === 'paid') {
-            const notes = pl.notes || {};
-            const ref = pl.reference_id || '';
-            const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
-            const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
-            const invoiceId = notes?.invoiceId;
-            const amount = (typeof pl.amount === 'number' ? pl.amount : pl.amount_paid) || 0; // in paise
+     if (event && payload) {
+       try {
+         // Handle Payment Link success
+         if (String(event).startsWith('payment_link.')) {
+           const pl = payload?.payment_link?.entity;
+           if (pl && pl.status === 'paid') {
+             const notes = pl.notes || {};
+             const ref = pl.reference_id || '';
+             const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
+             const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
+             const invoiceId = notes?.invoiceId;
+             const amount = (typeof pl.amount === 'number' ? pl.amount : pl.amount_paid) || 0; // in paise
           
-            if (isMeeting && bookingId) {
-              const booking = await MeetingBooking.findById(bookingId).populate('invoice');
-              if (booking) {
-                // Record payment against invoice if available
-                const paidAmountInr = Math.round(Number(amount || 0)) / 100;
-                if (booking.invoice?._id && paidAmountInr > 0) {
-                  try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
-                }
-                // Update booking status to booked if payment was pending
-                if (booking.status === 'payment_pending') {
-                  booking.status = 'booked';
-                  await booking.save();
-                }
-              }
-            }
-          }
-        }
-      } catch (eh) {
-        console.error('Webhook post-processing error:', eh);
-      }
-    }
+             if (isMeeting && bookingId) {
+               const booking = await MeetingBooking.findById(bookingId).populate('invoice');
+               if (booking) {
+                 // Record payment against invoice if available
+                 const paidAmountInr = Math.round(Number(amount || 0)) / 100;
+                 if (booking.invoice?._id && paidAmountInr > 0) {
+                   try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
+                 }
+                 // Update booking status to booked if payment was pending
+                 if (booking.status === 'payment_pending') {
+                   booking.status = 'booked';
+                   await booking.save();
+                 }
+               }
+             }
+           }
+         }
+       } catch (eh) {
+         console.error('Webhook post-processing error:', eh);
+       }
+     }
      
-    const response = { status: 'received' };
-    await apiLogger.logWebhookResponse(requestId, 200, response, true);
+     const response = { status: 'received' };
+     await apiLogger.logWebhookResponse(requestId, 200, response, true);
      
-    res.status(200).json(response);
+     res.status(200).json(response);
   } catch (error) {
     console.error('Razorpay webhook error:', error);
     await logErrorActivity(req, error, 'Razorpay Webhook');

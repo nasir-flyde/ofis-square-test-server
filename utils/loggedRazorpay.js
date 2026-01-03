@@ -216,7 +216,7 @@ class LoggedRazorpay {
    */
   verifyWebhookSignature(body, signature, secret = null) {
     try {
-      const webhookSecret = secret || process.env.RAZORPAY_WEBHOOK_SECRET;
+      const webhookSecret = (secret || process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
       if (!webhookSecret) {
         console.warn('Razorpay webhook secret not configured');
         return false;
@@ -227,7 +227,19 @@ class LoggedRazorpay {
         .update(body)
         .digest('hex');
 
-      return signature === expectedSignature;
+      try {
+        const received = String(signature || '').toLowerCase().trim();
+        const same = received === expectedSignature;
+        console.log('[RZP] Webhook signature check:', {
+          receivedLen: received.length,
+          expectedLen: expectedSignature.length,
+          match: same,
+          rawBodyLen: Buffer.isBuffer(body) ? body.length : (typeof body === 'string' ? body.length : -1),
+          rawBodyStart: Buffer.isBuffer(body) ? body.toString('utf8', 0, Math.min(120, body.length)) : (typeof body === 'string' ? body.slice(0, 120) : undefined)
+        });
+      } catch (_) {}
+
+      return (String(signature || '').toLowerCase().trim()) === expectedSignature;
     } catch (error) {
       console.error('Razorpay webhook signature verification error:', error);
       return false;
