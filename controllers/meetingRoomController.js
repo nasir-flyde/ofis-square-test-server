@@ -6,6 +6,9 @@ import imagekit from "../utils/imageKit.js";
 import path from "path";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 
+import csv from "csv-parser";
+import { Readable } from "stream";
+
 // Create a meeting room
 export const createRoom = async (req, res) => {
   try {
@@ -830,6 +833,242 @@ export const getAvailableRoomsByTime = async (req, res) => {
       success: false, 
       message: error.message 
     });
+  }
+};
+
+// Export master reference data and sample rows for meeting rooms
+export const exportMasterFile = async (_req, res) => {
+  try {
+    const CabinAmenity = (await import("../models/cabinAmenityModel.js")).default;
+    const [buildings, amenities] = await Promise.all([
+      Building.find().select('name').sort({ name: 1 }),
+      CabinAmenity.find({ isActive: true }).select('name').sort({ name: 1 })
+    ]);
+
+    const statuses = ['active', 'inactive'];
+    const masterData = {
+      buildings: buildings.map(b => b.name),
+      amenities: amenities.map(a => a.name),
+      statuses
+    };
+
+    const sampleRows = [];
+    if (buildings.length > 0) {
+      const buildingName = buildings[0].name;
+      const amenityNames = amenities.slice(0, 3).map(a => a.name);
+      sampleRows.push({
+        buildingName: buildingName,
+        roomName: 'Conference A',
+        capacity: '10',
+        status: 'active',
+        dailyRate: '2500',
+        amenity1: amenityNames[0] || 'WiFi',
+        amenity2: amenityNames[1] || 'Projector',
+        amenity3: amenityNames[2] || 'Whiteboard'
+      });
+      sampleRows.push({
+        buildingName: buildingName,
+        roomName: 'Board Room 1',
+        capacity: '8',
+        status: 'active',
+        dailyRate: '1800',
+        amenity1: amenityNames[0] || 'WiFi',
+        amenity2: amenityNames[1] || 'Projector'
+      });
+    } else {
+      sampleRows.push({
+        buildingName: 'Main Building',
+        roomName: 'Conference A',
+        capacity: '10',
+        status: 'active',
+        dailyRate: '2500',
+        amenity1: 'WiFi',
+        amenity2: 'Projector',
+        amenity3: 'Whiteboard'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: { masterData, sampleRows }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Download sample CSV for meeting rooms import
+export const downloadSampleCSV = async (_req, res) => {
+  try {
+    const header = ['buildingName','roomName','capacity','status','dailyRate','amenities'];
+    const sample1 = ['Main Building','Conference A','10','active','2500','WiFi;Projector;Whiteboard'];
+    const sample2 = ['Main Building','Board Room 1','8','active','1800','WiFi;Whiteboard'];
+    const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="meeting_rooms_import_sample.csv"');
+    return res.send(csvText);
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// CSV import for meeting rooms (memory upload via multer, field name: file)
+export const importMeetingRoomsFromCSV = async (req, res) => {
+  try {
+    const file = req.file;
+    const dryRun = String(req.query?.dryRun ?? req.body?.dryRun ?? 'false').toLowerCase() === 'true';
+    if (!file) return res.status(400).json({ success: false, message: 'CSV file is required (field name: file)' });
+
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      try {
+        const stream = Readable.from(file.buffer);
+        stream
+          .pipe(csv())
+          .on('data', (data) => rows.push(data))
+          .on('end', resolve)
+          .on('error', reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    const CabinAmenity = (await import("../models/cabinAmenityModel.js")).default;
+    const allAmenities = await CabinAmenity.find({ isActive: true }).select('name').lean();
+    const amenityNameToId = new Map(allAmenities.map(a => [String(a.name).trim().toLowerCase(), String(a._id)]));
+
+    const toNumber = (v) => {
+      if (v === undefined || v === null || v === '') return undefined;
+      const n = Number(String(v).trim());
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const norm = (s) => (s === undefined || s === null ? '' : String(s).trim());
+    const parseAmenities = (obj) => {
+      const fromCombined = norm(obj.amenities);
+      let list = [];
+      if (fromCombined) list = fromCombined.split(/[;,]/).map(x => x.trim()).filter(Boolean);
+      for (let i = 1; i <= 10; i++) {
+        const key = `amenity${i}`;
+        if (obj[key]) list.push(norm(obj[key]));
+      }
+      const ids = [];
+      const missing = [];
+      list.forEach(name => {
+        const id = amenityNameToId.get(name.toLowerCase());
+        if (id) ids.push(id);
+        else missing.push(name);
+      });
+      return { ids, missing };
+    };
+
+    const perRow = [];
+    let createdCount = 0;
+    let validCount = 0;
+    let invalidCount = 0;
+
+    const buildings = await Building.find().select('name').lean();
+    const buildingNameToId = new Map(buildings.map(b => [String(b.name).trim().toLowerCase(), String(b._id)]));
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx];
+      const errors = [];
+      const originalRow = { ...r };
+
+      const buildingIdInput = norm(r.buildingId) || undefined;
+      const buildingName = norm(r.buildingName);
+      let buildingId = buildingIdInput;
+      if (!buildingId) {
+        if (!buildingName) errors.push('buildingName is required (or provide buildingId)');
+        else {
+          const mapped = buildingNameToId.get(buildingName.toLowerCase());
+          if (!mapped) errors.push(`Unknown building name: ${buildingName}`);
+          else buildingId = mapped;
+        }
+      }
+
+      const roomName = norm(r.roomName) || norm(r.name);
+      if (!roomName) errors.push('roomName is required');
+
+      const capacity = toNumber(r.capacity);
+      if (!capacity || capacity <= 0) errors.push('capacity must be a positive number');
+      const status = (norm(r.status) || 'active').toLowerCase();
+      if (!['active','inactive'].includes(status)) errors.push(`Invalid status: ${status}`);
+      const dailyRate = toNumber(r.dailyRate);
+      const { ids: amenityIds, missing: missingAmenityNames } = parseAmenities(r);
+      if (missingAmenityNames.length) {
+        errors.push(`Unknown amenities: ${missingAmenityNames.join(', ')}`);
+      }
+
+      if (!errors.length) {
+        // Duplicate check within building by name
+        const dup = await MeetingRoom.findOne({ building: buildingId, name: roomName }).lean();
+        if (dup) errors.push('Meeting room name already exists in this building');
+      }
+
+      if (errors.length) {
+        invalidCount++;
+        perRow.push({ index: idx + 1, success: false, errors, originalRow });
+        continue;
+      }
+
+      validCount++;
+
+      if (dryRun) {
+        perRow.push({
+          index: idx + 1,
+          success: true,
+          preview: { building: buildingId, name: roomName, capacity, status, dailyRate, amenities: amenityIds.length },
+          originalRow
+        });
+        continue;
+      }
+
+      try {
+        const room = await MeetingRoom.create({
+          building: buildingId,
+          name: roomName,
+          capacity,
+          status,
+          pricing: dailyRate !== undefined ? { dailyRate } : undefined,
+          amenities: amenityIds,
+          images: []
+        });
+
+        await logCRUDActivity(req, 'CREATE', 'MeetingRoom', room._id, null, {
+          imported: true,
+          building: buildingId,
+          name: roomName,
+          capacity,
+          status,
+          dailyRate: dailyRate || null,
+          amenities: amenityIds.length
+        });
+
+        createdCount++;
+        perRow.push({ index: idx + 1, success: true, id: room._id, originalRow });
+      } catch (e) {
+        invalidCount++;
+        perRow.push({ index: idx + 1, success: false, errors: [e.message || 'Failed to create meeting room'], originalRow });
+      }
+    }
+
+    const summary = {
+      totalRows: rows.length,
+      validRows: validCount,
+      invalidRows: invalidCount,
+      created: dryRun ? 0 : createdCount,
+    };
+    return res.json({
+      success: true,
+      dryRun,
+      counts: { total: rows.length, valid: validCount, invalid: invalidCount, created: dryRun ? 0 : createdCount },
+      summary,
+      canImport: dryRun ? validCount > 0 : undefined,
+      results: perRow,
+    });
+  } catch (error) {
+    await logErrorActivity(req, 'CREATE', 'MeetingRoom', error.message);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 

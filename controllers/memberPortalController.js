@@ -454,27 +454,45 @@ export const getMyBookings = async (req, res) => {
 export const getMyNotifications = async (req, res) => {
   try {
     const { page = 1, limit = 20, read } = req.query;
-    
-    const filter = { 
-      member: req.memberId,
-      client: req.clientId 
-    };
-    
-    if (read !== undefined) filter.read = read === 'true';
 
-    const skip = (page - 1) * limit;
-    
+    // Detect role via universalAuthVerify/memberMiddleware
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+
+    // Build filter based on role
+    let filter = {};
+    if (roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients') {
+      // Client role: show notifications sent to the client itself and to any of its members
+      const memberIds = req.clientId
+        ? (await Member.find({ client: req.clientId }).select('_id')).map(m => m._id)
+        : [];
+      filter = {
+        $or: [
+          { 'to.clientId': req.clientId },
+          memberIds.length ? { 'to.memberId': { $in: memberIds } } : { _id: { $exists: true } } // no-op if no members
+        ]
+      };
+    } else {
+      // Member role (default): only this member's notifications within their client
+      filter = {
+        'to.memberId': req.memberId,
+        ...(req.clientId ? { 'to.clientId': req.clientId } : {})
+      };
+    }
+
+    if (read !== undefined) filter.isRead = String(read) === 'true';
+
+    const skip = (Number(page) - 1) * Number(limit);
+
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const total = await Notification.countDocuments(filter);
-    const unreadCount = await Notification.countDocuments({ 
-      member: req.memberId,
-      client: req.clientId,
-      read: false 
-    });
+
+    const unreadFilter = { ...filter, isRead: false };
+    const unreadCount = await Notification.countDocuments(unreadFilter);
 
     res.json({
       success: true,
@@ -485,7 +503,7 @@ export const getMyNotifications = async (req, res) => {
           page: parseInt(page),
           limit: parseInt(limit),
           total,
-          pages: Math.ceil(total / limit)
+          pages: Math.ceil(total / Number(limit))
         }
       }
     });
@@ -499,16 +517,35 @@ export const getMyNotifications = async (req, res) => {
 export const markNotificationRead = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+
+    let filter;
+    if (roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients') {
+      const memberIds = req.clientId
+        ? (await Member.find({ client: req.clientId }).select('_id')).map(m => m._id)
+        : [];
+      filter = {
+        _id: id,
+        $or: [
+          { 'to.clientId': req.clientId },
+          memberIds.length ? { 'to.memberId': { $in: memberIds } } : { _id: { $exists: true } }
+        ]
+      };
+    } else {
+      filter = {
+        _id: id,
+        'to.memberId': req.memberId,
+        ...(req.clientId ? { 'to.clientId': req.clientId } : {})
+      };
+    }
+
     const notification = await Notification.findOneAndUpdate(
-      { 
-        _id: id, 
-        member: req.memberId,
-        client: req.clientId 
-      },
-      { 
-        read: true, 
-        readAt: new Date() 
+      filter,
+      {
+        isRead: true,
+        readAt: new Date()
       },
       { new: true }
     );
@@ -527,21 +564,40 @@ export const markNotificationRead = async (req, res) => {
 // Mark all notifications as read
 export const markAllNotificationsRead = async (req, res) => {
   try {
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+
+    let filter;
+    if (roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients') {
+      const memberIds = req.clientId
+        ? (await Member.find({ client: req.clientId }).select('_id')).map(m => m._id)
+        : [];
+      filter = {
+        $or: [
+          { 'to.clientId': req.clientId },
+          memberIds.length ? { 'to.memberId': { $in: memberIds } } : { _id: { $exists: true } }
+        ],
+        isRead: false
+      };
+    } else {
+      filter = {
+        'to.memberId': req.memberId,
+        ...(req.clientId ? { 'to.clientId': req.clientId } : {}),
+        isRead: false
+      };
+    }
+
     const result = await Notification.updateMany(
-      { 
-        member: req.memberId,
-        client: req.clientId,
-        read: false 
-      },
-      { 
-        read: true, 
-        readAt: new Date() 
+      filter,
+      {
+        isRead: true,
+        readAt: new Date()
       }
     );
 
-    res.json({ 
-      success: true, 
-      message: `${result.modifiedCount} notifications marked as read` 
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} notifications marked as read`
     });
   } catch (err) {
     console.error("markAllNotificationsRead error:", err);

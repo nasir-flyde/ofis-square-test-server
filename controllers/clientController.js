@@ -402,30 +402,6 @@ export const createClient = async (req, res) => {
         "response:", JSON.stringify(zohoErr?.response || {}, null, 2)
       );
     }
-    try {
-      if (client.email) {
-        const name = (client.contactPerson || client.companyName || "there").trim();
-        const result = await sendNotification({
-          to: { email: client.email, clientId: client._id },
-          channels: { sms: false, email: true },
-          templateKey: 'welcome_email',
-          templateVariables: {
-            name,
-            companyName: process.env.BRAND_NAME || 'Ofis Square'
-          },
-          title: 'Welcome to Ofis Square',
-          metadata: { category: 'onboarding', tags: ['welcome', 'new_client'] },
-          source: 'system',
-          type: 'transactional'
-        });
-
-        if (result?._id) {
-          console.log(`Welcome notification queued (email) for ${client.email}`);
-        }
-      }
-    } catch (notifErr) {
-      console.error("createClient: Welcome notification failed:", notifErr?.message || notifErr);
-    }
 
     // Activity log: Client created
     await logCRUDActivity(req, 'CREATE', 'Client', client._id, null, {

@@ -26,6 +26,8 @@ import {
 } from "../utils/contractEmailService.js";
 import DocumentEntity from "../models/documentEntityModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import { sendNotification } from "../utils/notificationHelper.js";
+import Building from "../models/buildingModel.js";
 
 const checkWorkflowPrerequisites = (contract, requiredFlags, isSystemAdmin = false) => {
   if (isSystemAdmin) return []; // Bypass all checks for System Admin
@@ -64,26 +66,8 @@ export const finalApprove = async (req, res) => {
     //     message: "KYC must be approved before final approval",
     //   });
     // }
-    try {
-      const unpaidCount = await Invoice.countDocuments({
-        contract: contract._id,
-        type: 'regular',
-        status: { $nin: ["paid", "void"] },
-        balance: { $gt: 0 },
-      });
-      if (unpaidCount > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Final approval not ready. Ensure all invoices are fully paid.",
-        });
-      }
-    } catch (invErr) {
-      console.warn("Invoice validation failed during final approval:", invErr?.message);
-      return res.status(500).json({
-        success: false,
-        message: "Failed to validate invoice payment status",
-      });
-    }
+    // Skipping invoice payment status validation as per requirement
+    // Previously: enforced all regular invoices be fully paid before final approval
 
     // Set final approval metadata
     const wasAlreadyFinal = !!contract.isfinalapproval;
@@ -106,39 +90,118 @@ export const finalApprove = async (req, res) => {
 
     // On final approval, ensure default access policy and grant access, then enforce invoice-based access
     if (approved) {
-      // Add allocated credits to client's wallet (general + printer) at final approval only (first time)
+      // Add/ensure client wallet and optionally credit allocated balances
+      let createdOrUsedWalletId = null;
       try {
-        if (!wasAlreadyFinal) {
-          const inc = {};
-          const initial = Number.isInteger(contract.initialCredits) && contract.initialCredits > 0 ? contract.initialCredits : 0;
-          const printer = Number.isInteger(contract.printerCredits) && contract.printerCredits > 0 ? contract.printerCredits : 0;
-          if (initial > 0) inc.balance = initial;
-          if (printer > 0) inc.printerBalance = printer;
-          if (Object.keys(inc).length > 0) {
-            await ClientCreditWallet.findOneAndUpdate(
-              { client: contract.client },
-              {
-                $setOnInsert: {
-                  balance: 0,
-                  creditValue: 500,
-                  currency: "INR",
-                  status: "active",
-                  printerBalance: 0,
-                  printerCreditValue: 1,
-                },
-                $inc: inc,
-              },
-              { new: true, upsert: true }
+        // Pull credit configuration from the client's building (fallbacks retained)
+        let buildingCreditValue = 500;
+        let buildingPrinterCreditValue = 1;
+        try {
+          const cli = await Client.findById(contract.client)
+            .select("building")
+            .lean();
+          if (cli?.building) {
+            const b = await Building.findById(cli.building)
+              .select("creditValue printerCreditValue")
+              .lean();
+            if (typeof b?.creditValue === "number" && b.creditValue > 0) {
+              buildingCreditValue = b.creditValue;
+            }
+            if (typeof b?.printerCreditValue === "number" && b.printerCreditValue > 0) {
+              buildingPrinterCreditValue = b.printerCreditValue;
+            }
+          }
+        } catch (cfgErr) {
+          console.warn(
+            "finalApprove: failed to fetch building credit config, using defaults:",
+            cfgErr?.message
+          );
+        }
+
+        // Optional flag to force recreate wallet from scratch
+        const { recreateWallet } = req.body || {};
+
+        // Parse credits as integers (accept numeric strings), never negative
+        const parsedInitial = Math.max(0, Math.floor(Number(contract?.initialCredits) || 0));
+        const parsedPrinter = Math.max(0, Math.floor(Number(contract?.printerCredits) || 0));
+
+        const existing = await ClientCreditWallet.findOne({ client: contract.client }).lean();
+
+        if (recreateWallet) {
+          // Hard recreate: delete existing wallet and create a new one
+          try {
+            if (existing?._id) {
+              await ClientCreditWallet.deleteOne({ _id: existing._id });
+            }
+          } catch (delErr) {
+            console.warn('finalApprove: failed to delete existing wallet before recreate:', delErr?.message);
+          }
+
+          const payload = {
+            client: contract.client,
+            balance: parsedInitial,
+            printerBalance: parsedPrinter,
+            creditValue: buildingCreditValue,
+            printerCreditValue: buildingPrinterCreditValue,
+            currency: 'INR',
+            status: 'active',
+          };
+
+          const created = await ClientCreditWallet.create(payload);
+          createdOrUsedWalletId = String(created?._id || '');
+          await logContractActivity(req, "UPDATE", id, contract.client, {
+            action: "wallet_recreated_on_final_approval",
+            walletId: createdOrUsedWalletId,
+            addedBalance: parsedInitial,
+            addedPrinterBalance: parsedPrinter,
+          });
+        } else if (!existing) {
+          // Create a fresh wallet if none exists (seed credits only if first final approval)
+          const payload = {
+            client: contract.client,
+            balance: !wasAlreadyFinal ? parsedInitial : 0,
+            printerBalance: !wasAlreadyFinal ? parsedPrinter : 0,
+            creditValue: buildingCreditValue,
+            printerCreditValue: buildingPrinterCreditValue,
+            currency: 'INR',
+            status: 'active',
+          };
+          const created = await ClientCreditWallet.create(payload);
+          createdOrUsedWalletId = String(created?._id || '');
+          if (!wasAlreadyFinal && (parsedInitial > 0 || parsedPrinter > 0)) {
+            await logContractActivity(req, "UPDATE", id, contract.client, {
+              action: "wallet_created_and_credited_on_final_approval",
+              walletId: createdOrUsedWalletId,
+              addedBalance: parsedInitial,
+              addedPrinterBalance: parsedPrinter,
+            });
+          } else {
+            await logContractActivity(req, "UPDATE", id, contract.client, {
+              action: "wallet_created_on_final_approval",
+              walletId: createdOrUsedWalletId,
+            });
+          }
+        } else {
+          // Existing wallet: only credit on first final approval if amounts present
+          createdOrUsedWalletId = String(existing._id);
+          if (!wasAlreadyFinal && (parsedInitial > 0 || parsedPrinter > 0)) {
+            const inc = {};
+            if (parsedInitial > 0) inc.balance = parsedInitial;
+            if (parsedPrinter > 0) inc.printerBalance = parsedPrinter;
+            await ClientCreditWallet.updateOne(
+              { _id: existing._id },
+              { $inc: inc }
             );
             await logContractActivity(req, "UPDATE", id, contract.client, {
               action: "wallet_credited_on_final_approval",
-              addedBalance: initial || 0,
-              addedPrinterBalance: printer || 0,
+              walletId: createdOrUsedWalletId,
+              addedBalance: inc.balance || 0,
+              addedPrinterBalance: inc.printerBalance || 0,
             });
           }
         }
       } catch (walletErr) {
-        console.warn("finalApprove: failed to update client wallet:", walletErr?.message || walletErr);
+        console.warn("finalApprove: failed to ensure/update client wallet:", walletErr?.message || walletErr);
       }
 
       // Sync parking spaces from contract to client
@@ -600,6 +663,46 @@ export const finalApprove = async (req, res) => {
       }
     }
 
+    // Send onboarding welcome email to client on final approval
+    if (approved) {
+      try {
+        const clientDoc = await Client.findById(contract.client)
+          .select('email contactPerson companyName')
+          .lean();
+        if (clientDoc?.email) {
+          const subject = 'Welcome to OFIS SQUARE – Onboarding Initiated';
+          const bodyText = 'Welcome to OFIS SQUARE Coworking Space. Your onboarding process has been successfully initiated. To complete the onboarding and activate your workspace access, please complete the following steps if pending: submit your profile details, upload required KYC documents, and complete the payment process. Once all required steps are completed, your workspace access will be activated. For any assistance, please contact the OFIS SQUARE support team.\n\nTeam OFIS SQUARE';
+          const bodyHtml = `<p>Welcome to <strong>OFIS SQUARE Coworking Space</strong>.</p>
+            <p>Your onboarding process has been successfully initiated.</p>
+            <p>To complete the onboarding and activate your workspace access, please complete the following steps if pending:</p>
+            <ul>
+              <li>Submit your profile details</li>
+              <li>Upload required KYC documents</li>
+              <li>Complete the payment process</li>
+            </ul>
+            <p>Once all required steps are completed, your workspace access will be activated.</p>
+            <p>For any assistance, please contact the OFIS SQUARE support team.</p>
+            <p>Team OFIS SQUARE</p>`;
+
+          await sendNotification({
+            to: { email: clientDoc.email, clientId: contract.client },
+            channels: { email: true, sms: false },
+            content: {
+              emailSubject: subject,
+              emailHtml: bodyHtml,
+              emailText: bodyText
+            },
+            title: 'Welcome to OFIS SQUARE',
+            metadata: { category: 'onboarding', tags: ['welcome', 'onboarding_initiated'] },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      } catch (e) {
+        console.warn('finalApprove: failed to send onboarding email:', e?.message || e);
+      }
+    }
+
     return res.json({
       success: true,
       message: `Contract ${approved ? "approved" : "rejected"} successfully`,
@@ -609,6 +712,7 @@ export const finalApprove = async (req, res) => {
         finalApprovedAt: contract.finalApprovedAt,
         finalApprovalReason: contract.finalApprovalReason,
         isfinalapproval: contract.isfinalapproval,
+        walletId: createdOrUsedWalletId || null,
       },
     });
   } catch (error) {

@@ -471,51 +471,15 @@ export const getCommunityBuildingClients = async (req, res) => {
 
     const { page = 1, limit = 20, search } = req.query;
     
-    // Find clients who have members in this building or have tickets/bookings in this building
-    const filter = {
-      $or: [
-        // Clients with members in this building
-        { 
-          _id: { 
-            $in: await Member.distinct('client', { 
-              desk: { 
-                $in: await mongoose.model('Desk').distinct('_id', { building: buildingId })
-              }
-            })
-          }
-        },
-        // Clients with tickets in this building
-        {
-          _id: {
-            $in: await Ticket.distinct('client', { building: buildingId })
-          }
-        },
-        // Clients with meeting bookings in this building
-        {
-          _id: {
-            $in: await MeetingBooking.distinct('client', { 
-              room: {
-                $in: await mongoose.model('MeetingRoom').distinct('_id', { building: buildingId })
-              }
-            })
-          }
-        }
-      ]
-    };
-
+    // Return clients directly attached to this building in the Client table
+    const filter = { building: buildingId };
     if (search) {
-      filter.$and = [
-        { $or: filter.$or },
-        {
-          $or: [
-            { contactPerson: { $regex: search, $options: 'i' } },
-            { companyName: { $regex: search, $options: 'i' } },
-            { email: { $regex: search, $options: 'i' } },
-            { phone: { $regex: search, $options: 'i' } }
-          ]
-        }
+      filter.$or = [
+        { contactPerson: { $regex: search, $options: 'i' } },
+        { companyName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
       ];
-      delete filter.$or;
     }
 
     const skip = (page - 1) * limit;

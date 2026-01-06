@@ -21,6 +21,11 @@ const RFIDCardSchema = new Schema(
     // Matrix devices this card is associated with
     devices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice" }],
 
+    // Ownership & linkage
+    clientId: { type: Schema.Types.ObjectId, ref: "Client", index: true, default: null },
+    companyUserId: { type: Schema.Types.ObjectId, ref: "User", index: true, default: null },
+    currentMemberId: { type: Schema.Types.ObjectId, ref: "Member", index: true, default: null },
+
     lastSeenAt: { type: Date },
     meta: { type: Schema.Types.Mixed },
   },
@@ -28,5 +33,7 @@ const RFIDCardSchema = new Schema(
 );
 
 RFIDCardSchema.index({ buildingId: 1, status: 1 });
+RFIDCardSchema.index({ clientId: 1, status: 1 });
+RFIDCardSchema.index({ companyUserId: 1, status: 1 });
 
 export default mongoose.model("RFIDCard", RFIDCardSchema);

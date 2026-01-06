@@ -602,15 +602,22 @@ export const recordCustomerPayment = async (req, res) => {
       // ensure cash + withheld <= local outstanding
       const maxCashConsideringWithheld = Math.max(0, localOutstanding - withheldReq);
       const allowed = Math.max(0, Math.min(requested, maxCashConsideringWithheld, zohoOutstanding));
-      if (allowed > 0.009) {
-        adjustedAllocations.push({ invoice_id: dbInvoice.zoho_invoice_id, amount_applied: Math.round(allowed * 100) / 100 });
-        allowedByLocalId.set(inv.invoiceId, Math.round(allowed * 100) / 100);
-        withheldByLocalId.set(inv.invoiceId, Math.max(0, withheldReq));
-      } else {
-        // If nothing can be applied, we skip adding this invoice to the Zoho payload
-        allowedByLocalId.set(inv.invoiceId, 0);
-        withheldByLocalId.set(inv.invoiceId, Math.max(0, withheldReq));
+      const allowedRounded = Math.round(allowed * 100) / 100;
+      const withheldRounded = Math.round(Math.max(0, withheldReq) * 100) / 100;
+
+      // Build per-invoice Zoho payload; include TDS/withheld if specified
+      const payloadItem = { invoice_id: dbInvoice.zoho_invoice_id, amount_applied: allowedRounded };
+      if (withheldRounded > 0.009) {
+        payloadItem.tax_amount_withheld = withheldRounded;
       }
+
+      // Include invoice if there is either a cash application or a withheld amount
+      if (allowedRounded > 0.009 || withheldRounded > 0.009) {
+        adjustedAllocations.push(payloadItem);
+      }
+
+      allowedByLocalId.set(inv.invoiceId, allowedRounded);
+      withheldByLocalId.set(inv.invoiceId, withheldRounded);
     }
 
     // Prepare Zoho Books payload using adjusted allocations; remainder (if any) becomes unused in Zoho
@@ -630,7 +637,7 @@ export const recordCustomerPayment = async (req, res) => {
 
     try {
       console.log("[recordCustomerPayment] Zoho payload amount:", zohoPayload.amount);
-      console.log("[recordCustomerPayment] Zoho payload invoices:", (zohoPayload.invoices || []).map(i => ({ invoice_id: i.invoice_id, amount_applied: i.amount_applied })));
+      console.log("[recordCustomerPayment] Zoho payload invoices:", (zohoPayload.invoices || []).map(i => ({ invoice_id: i.invoice_id, amount_applied: i.amount_applied, tax_amount_withheld: i.tax_amount_withheld })));
     } catch (_) {}
 
     // Generate idempotency key
