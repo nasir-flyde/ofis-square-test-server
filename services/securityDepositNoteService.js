@@ -23,7 +23,9 @@ function injectPlaceholders(template, data) {
     .replace(/{{\s*signerName\s*}}/g, data.signerName || "")
     .replace(/{{\s*signerDesignation\s*}}/g, data.signerDesignation || "")
     .replace(/{{\s*signerPhone\s*}}/g, data.signerPhone || "")
-    .replace(/{{\s*signerEmail\s*}}/g, data.signerEmail || "");
+    .replace(/{{\s*signerEmail\s*}}/g, data.signerEmail || "")
+    .replace(/{{\s*signatureUrl\s*}}/g, data.signatureUrl || "")
+    .replace(/{{\s*stampUrl\s*}}/g, data.stampUrl || "");
 }
 
 function buildStructuredHtml(settings, ctx) {
@@ -61,6 +63,11 @@ function buildStructuredHtml(settings, ctx) {
     .details-table td:first-child { width: 180px; font-weight: bold; }
     .footer { margin-top: 40px; font-size: 14px; }
     .signature { margin-top: 24px; }
+    /* Added for signature + stamp images */
+    .signature-block { margin-top: 24px; position: relative; min-height: 140px; }
+    .signature-img { position: absolute; left: 0; top: 0; height: 80px; }
+    .stamp-img { position: absolute; right: 0; bottom: 0; height: 120px; opacity: 0.9; }
+    .signer-text { position: absolute; left: 0; top: 90px; }
   </style>
 </head>
 <body>
@@ -98,14 +105,18 @@ function buildStructuredHtml(settings, ctx) {
 
     <div class="footer">
       <p>Warm regards,</p>
-      <div class="signature">
-        <p>
-          <strong>${ctx.signerName || ''}</strong><br />
-          ${ctx.signerDesignation || ''}<br />
-          <strong>${ctx.companyName}</strong><br />
-          Phone: ${ctx.signerPhone || ''}<br />
-          Email: ${ctx.signerEmail || ''}
-        </p>
+      <div class="signature-block">
+        ${ctx.signatureUrl ? `<img class="signature-img" src="${ctx.signatureUrl}" alt="Signature" />` : ''}
+        ${ctx.stampUrl ? `<img class="stamp-img" src="${ctx.stampUrl}" alt="Stamp" />` : ''}
+        <div class="signer-text">
+          <p>
+            <strong>${ctx.signerName || ''}</strong><br />
+            ${ctx.signerDesignation || ''}<br />
+            <strong>${ctx.companyName}</strong><br />
+            Phone: ${ctx.signerPhone || ''}<br />
+            Email: ${ctx.signerEmail || ''}
+          </p>
+        </div>
       </div>
     </div>
   </div>
@@ -113,7 +124,7 @@ function buildStructuredHtml(settings, ctx) {
 </html>`;
 }
 
-export async function generateSecurityDepositNote(depositId, { signer = {}, dynamicValues = [], force = false } = {}) {
+export async function generateSecurityDepositNote(depositId, { signer = {}, dynamicValues = [], force = false, stampUrl, signatureUrl } = {}) {
   const dep = await SecurityDeposit.findById(depositId)
     .populate('client')
     .populate('contract')
@@ -152,6 +163,10 @@ export async function generateSecurityDepositNote(depositId, { signer = {}, dyna
   const dueDateStr = dep.due_date ? new Date(dep.due_date).toISOString().split('T')[0] : '';
   const paidDateStr = latestPaidDate ? latestPaidDate.toISOString().split('T')[0] : '';
 
+  // Defaults for signature and stamp (can be overridden via settings or function params)
+  const defaultSignatureUrl = 'https://ik.imagekit.io/8znjbhgdh/Gemini_Generated_Image_nounkwnounkwnoun.png';
+  const defaultStampUrl = 'https://ik.imagekit.io/8znjbhgdh/Gemini_Generated_Image_y7ualy7ualy7ualy%20(1).png';
+
   const ctx = {
     memberName,
     companyName,
@@ -167,6 +182,8 @@ export async function generateSecurityDepositNote(depositId, { signer = {}, dyna
     signerDesignation: signer?.designation || settings?.footerDefaults?.designation || 'Team',
     signerPhone: signer?.phone || settings?.footerDefaults?.phone || '',
     signerEmail: signer?.email || settings?.footerDefaults?.email || '',
+    signatureUrl: signatureUrl || settings.signatureUrl || defaultSignatureUrl,
+    stampUrl: stampUrl || settings.stampUrl || defaultStampUrl,
     dynamicValues: [ ...(settings.dynamicDefaults || []), ...(dynamicValues || []) ]
   };
 

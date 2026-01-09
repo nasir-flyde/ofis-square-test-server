@@ -22,6 +22,9 @@ const contractSchema = new mongoose.Schema(
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", required: true, index: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
+    // Optional billing period (can differ from contract tenure)
+    billingStartDate: { type: Date, default: null },
+    billingEndDate: { type: Date, default: null },
     commencementDate: { type: Date },
     capacity: { type: Number, required: true, min: 1 },
     monthlyRent: {
@@ -78,11 +81,7 @@ const contractSchema = new mongoose.Schema(
       min: 0
     },
     // Security deposit details
-    securityDeposit: {
-      type: { type: String, trim: true, default: undefined },
-      amount: { type: Number, default: 0, min: 0 },
-      notes: { type: String, trim: true, default: undefined },
-    },
+    securityDeposit: { type: mongoose.Schema.Types.ObjectId, ref: "SecurityDeposit", index: true, default: null },
     securityDepositPaidAt: { type: Date },
     securityDepositPaidBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -381,6 +380,10 @@ const contractSchema = new mongoose.Schema(
     },
     sentToClientAt: { type: Date },
     clientEmail: { type: String, trim: true },
+    // Tax profile (selected for this contract)
+    gst_no: { type: String, trim: true },
+    gst_treatment: { type: String, trim: true },
+    place_of_supply: { type: String, trim: true },
     // Client approval/feedback
     clientApprovedAt: { type: Date },
     clientFeedback: { type: String, trim: true },

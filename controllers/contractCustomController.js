@@ -1,12 +1,16 @@
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
+import Building from "../models/buildingModel.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
-import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { createBillingDocumentFromContract } from "../services/invoiceService.js";
 import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
 import { grantOnContractActivation, enforceAccessByInvoices } from "../services/accessService.js";
 import { sendAdminApprovalRequestEmail, sendLegalReviewRequestEmail } from "../utils/contractEmailService.js";
+import SecurityDeposit from "../models/securityDepositModel.js";
+import fetch from "node-fetch";
+import { getAccessToken } from "../utils/zohoSignAuth.js";
 
 // Compute stage for custom flow
 export const getCustomWorkflowStatus = (contract) => {
@@ -48,16 +52,32 @@ export const createBySales = async (req, res) => {
       building,
       startDate,
       endDate,
+      billingStartDate,
+      billingEndDate,
       capacity,
       monthlyRent,
-      commencementDate,
       terms,
       termsandconditions,
       kycDocumentItems: kycItemsFromBody,
       printerCredits,
+      // Extended/optional overrides
+      initialCredits,
+      legalExpenses,
+      allocationSeatsNumber,
+      parkingSpaces,
+      parkingFees,
+      lockInPeriodMonths,
+      noticePeriodDays,
+      escalation,
+      renewal,
+      fullyServicedBusinessHours,
+      cleaningAndRestorationFees,
+      freebies,
+      payAsYouGo,
+      termsAndConditionAcceptance,
     } = req.body || {};
 
-    if (!client || !building || !startDate || !endDate || !capacity || monthlyRent === undefined) {
+    if (!client || !building || !startDate || !endDate || !capacity) {
       return res.status(400).json({ success: false, message: "Missing required fields" });
     }
 
@@ -70,6 +90,11 @@ export const createBySales = async (req, res) => {
       return Math.max(0, months);
     };
     const derivedDurationMonths = calcMonths(startDate, endDate);
+
+    // Normalize termsandconditions: accept array or single object
+    const normalizedTermsAndConditions = Array.isArray(termsandconditions)
+      ? termsandconditions
+      : (termsandconditions && typeof termsandconditions === 'object' ? [termsandconditions] : undefined);
 
     // Prepare normalized KYC items to attach on contract
     let kycItemsToAttach = [];
@@ -107,27 +132,124 @@ export const createBySales = async (req, res) => {
     }
     const kycCount = Array.isArray(kycItemsToAttach) ? kycItemsToAttach.length : 0;
 
+    // Determine monthlyRent: use provided value if valid; otherwise derive from Building perSeatPricing
+    let monthlyRentToUse = null;
+    if (monthlyRent !== undefined && monthlyRent !== null && monthlyRent !== "") {
+      const mr = Number(monthlyRent);
+      if (Number.isNaN(mr) || mr < 0) {
+        return res.status(400).json({ success: false, message: "monthlyRent must be a non-negative number" });
+      }
+      monthlyRentToUse = mr;
+    } else {
+      try {
+        const buildingDoc = await Building.findById(building).select('perSeatPricing status');
+        if (!buildingDoc) {
+          return res.status(404).json({ success: false, message: "Building not found" });
+        }
+        if (buildingDoc.status && String(buildingDoc.status).toLowerCase() !== 'active') {
+          return res.status(400).json({ success: false, message: "Building is not active" });
+        }
+        if (buildingDoc.perSeatPricing == null || buildingDoc.perSeatPricing < 0) {
+          return res.status(400).json({ success: false, message: "Building per seat pricing is not configured" });
+        }
+        monthlyRentToUse = Number(buildingDoc.perSeatPricing) * Number(capacity);
+      } catch (bErr) {
+        console.warn('createBySales: failed to derive monthlyRent from building', bErr?.message || bErr);
+        return res.status(400).json({ success: false, message: "Unable to derive monthlyRent" });
+      }
+    }
+
+    // Only keep clientAcceptance if provided
+    const tcaOut = termsAndConditionAcceptance?.clientAcceptance
+      ? { clientAcceptance: termsAndConditionAcceptance.clientAcceptance }
+      : undefined;
+
+    // Resolve tax profile selection for this contract
+    let gst_no = req.body?.gst_no || req.body?.gstNo || req.body?.tax_registration_no || undefined;
+    let gst_treatment = req.body?.gst_treatment || req.body?.gstTreatment || undefined;
+    let place_of_supply = req.body?.place_of_supply || req.body?.placeOfSupply || undefined;
+
+    try {
+      // If any of the tax fields are missing, try deriving from client tax info
+      if (!gst_no || !gst_treatment || !place_of_supply) {
+        const clientForTax = await Client.findById(client).select('gstNo gstNumber gstTreatment taxInfoList billingAddress.state_code billingAddress.state');
+        if (clientForTax) {
+          const taxList = Array.isArray(clientForTax.taxInfoList) ? clientForTax.taxInfoList : [];
+          const selectedTaxRegistrationNo = req.body?.selectedTaxRegistrationNo;
+          const selectedTaxIndex = (req.body?.selectedTaxIndex !== undefined && req.body?.selectedTaxIndex !== null)
+            ? Number(req.body.selectedTaxIndex)
+            : null;
+
+          let chosenTax = null;
+          if (selectedTaxRegistrationNo) {
+            chosenTax = taxList.find((t) => t?.tax_registration_no === selectedTaxRegistrationNo) || null;
+          } else if (selectedTaxIndex !== null && !Number.isNaN(selectedTaxIndex) && taxList[selectedTaxIndex]) {
+            chosenTax = taxList[selectedTaxIndex];
+          } else {
+            chosenTax = taxList.find((t) => t?.is_primary) || taxList[0] || null;
+          }
+
+          if (!gst_no && chosenTax?.tax_registration_no) gst_no = chosenTax.tax_registration_no;
+          if (!place_of_supply && chosenTax?.place_of_supply) place_of_supply = chosenTax.place_of_supply;
+          if (!gst_treatment && clientForTax.gstTreatment) gst_treatment = clientForTax.gstTreatment;
+
+          if (!gst_no && (clientForTax.gstNo || clientForTax.gstNumber)) {
+            gst_no = clientForTax.gstNo || clientForTax.gstNumber;
+          }
+          if (!place_of_supply) {
+            place_of_supply = clientForTax?.billingAddress?.state_code || clientForTax?.billingAddress?.state || undefined;
+          }
+        }
+      }
+    } catch (taxErr) {
+      console.warn('createBySales: failed to resolve tax profile:', taxErr?.message || taxErr);
+    }
+
     const contract = await Contract.create({
       client,
       building,
       startDate,
       endDate,
+      billingStartDate: billingStartDate || startDate,
+      billingEndDate: billingEndDate || endDate,
       capacity,
-      monthlyRent,
+      monthlyRent: monthlyRentToUse,
       ...(Number.isInteger(printerCredits) && printerCredits >= 0 ? { printerCredits } : {}),
-      // Set defaults when commercials are created by Sales (can be overridden by body)
-      initialCredits: (req.body && Number.isInteger(req.body.initialCredits)) ? req.body.initialCredits : 10,
-      allocated_credits: (req.body && Number.isInteger(req.body.allocated_credits)) ? req.body.allocated_credits : 10,
+      // Optional only: do not default/grant at this stage
+      ...(Number.isInteger(initialCredits) ? { initialCredits: Number(initialCredits) } : {}),
+      ...(req.body && Number.isInteger(req.body.allocated_credits) ? { allocated_credits: req.body.allocated_credits } : {}),
       // Commencement date should be same as start date
       commencementDate: startDate,
       terms: terms || undefined,
-      termsandconditions: termsandconditions || undefined,
-      // Defaults as per new rules
+      ...(normalizedTermsAndConditions && { termsandconditions: normalizedTermsAndConditions }),
+      // Computed duration and lock-in
       durationMonths: derivedDurationMonths,
-      lockInPeriodMonths: derivedDurationMonths,
-      legalExpenses: 1200,
-      cleaningAndRestorationFees: 2000,
-      parkingFees: { twoWheeler: 1500, fourWheeler: 5000 },
+      lockInPeriodMonths: (lockInPeriodMonths !== undefined && lockInPeriodMonths !== null)
+        ? Number(lockInPeriodMonths)
+        : derivedDurationMonths,
+      // Expenses/fees
+      legalExpenses: (legalExpenses !== undefined && legalExpenses !== null) ? Number(legalExpenses) : 1200,
+      cleaningAndRestorationFees: (cleaningAndRestorationFees !== undefined && cleaningAndRestorationFees !== null)
+        ? Number(cleaningAndRestorationFees)
+        : 2000,
+      // Parking
+      ...(allocationSeatsNumber !== undefined ? { allocationSeatsNumber: Number(allocationSeatsNumber) } : {}),
+      ...(parkingSpaces ? { parkingSpaces } : {}),
+      parkingFees: {
+        twoWheeler: (parkingFees && parkingFees.twoWheeler !== undefined) ? Number(parkingFees.twoWheeler) : 1500,
+        fourWheeler: (parkingFees && parkingFees.fourWheeler !== undefined) ? Number(parkingFees.fourWheeler) : 5000,
+      },
+      ...(noticePeriodDays !== undefined ? { noticePeriodDays: Number(noticePeriodDays) } : {}),
+      ...(escalation ? { escalation } : {}),
+      ...(renewal ? { renewal } : {}),
+      ...(fullyServicedBusinessHours ? { fullyServicedBusinessHours } : {}),
+      ...(Array.isArray(freebies) ? { freebies } : {}),
+      ...(payAsYouGo ? { payAsYouGo } : {}),
+      ...(tcaOut ? { termsAndConditionAcceptance: tcaOut } : {}),
+      // Persist selected tax profile
+      ...(gst_no ? { gst_no } : {}),
+      ...(gst_treatment ? { gst_treatment } : {}),
+      ...(place_of_supply ? { place_of_supply } : {}),
       status: "pushed",
       createdBy: req.user?._id || undefined,
       lastActionBy: req.user?._id || undefined,
@@ -135,11 +257,43 @@ export const createBySales = async (req, res) => {
       ...(kycCount > 0 ? { kycDocumentItems: kycItemsToAttach, iskycuploaded: true } : {}),
     });
 
-    // Ensure client's building is set to the selected building
+    // Link existing Security Deposit if provided in payload
+    let securityDepositId = req.body?.securityDepositId || null;
+    if (securityDepositId) {
+      try {
+        const sd = await SecurityDeposit.findById(securityDepositId);
+        if (sd) {
+          // Attach to contract and ensure building linkage exists
+          sd.contract = sd.contract || contract._id;
+          sd.building = sd.building || building;
+          await sd.save();
+          contract.securityDeposit = sd._id;
+          await contract.save();
+          // Optionally also set on client (latest/current deposit ref)
+          try {
+            await Client.findByIdAndUpdate(client, { securityDeposit: sd._id }, { new: true });
+          } catch (e) {
+            console.warn("createBySales: failed to set client.securityDeposit:", e?.message || e);
+          }
+        } else {
+          console.warn("createBySales: provided securityDepositId not found:", securityDepositId);
+        }
+      } catch (e) {
+        console.warn("createBySales: failed to link securityDepositId:", e?.message || e);
+      }
+    }
+
+    // Ensure client's building is set only if not already attached
     try {
-      await Client.findByIdAndUpdate(client, { building }, { new: true });
+      const clientDoc = await Client.findById(client).select('building');
+      if (clientDoc && !clientDoc.building) {
+        await Client.findByIdAndUpdate(client, { building }, { new: true });
+        console.log(`Attached building ${building} to client ${client}`);
+      } else {
+        console.log(`Skipping client building update: already set for client ${client}`);
+      }
     } catch (e) {
-      console.warn("Failed to update client building on sales create:", e?.message);
+      console.warn("Failed to check/update client building on sales create:", e?.message);
     }
 
     await logContractActivity(req, "CREATE", contract._id, client, {
@@ -147,7 +301,7 @@ export const createBySales = async (req, res) => {
       kycItemsAttached: kycCount,
     });
 
-    return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id } });
+    return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id, securityDepositId: contract.securityDeposit || securityDepositId || null } });
   } catch (err) {
     console.error("createBySales error:", err);
     await logErrorActivity(req, err, "Custom Flow: Sales Create");
@@ -169,21 +323,75 @@ export const salesEditCommercials = async (req, res) => {
       terms,
       termsandconditions,
       printerCredits,
+      // Extended/optional overrides
+      initialCredits,
+      legalExpenses,
+      allocationSeatsNumber,
+      parkingSpaces,
+      parkingFees,
+      lockInPeriodMonths,
+      noticePeriodDays,
+      escalation,
+      renewal,
+      fullyServicedBusinessHours,
+      cleaningAndRestorationFees,
+      freebies,
+      payAsYouGo,
+      termsAndConditionAcceptance,
     } = req.body || {};
 
     const contract = await Contract.findById(id);
     if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
 
-    // Update allowed fields
+    // Track if building changed to update client record
+    const originalBuilding = String(contract.building || "");
+
+    // Update allowed fields (basic)
     if (client) contract.client = client;
     if (building) contract.building = building;
     if (startDate) contract.startDate = startDate;
     if (endDate) contract.endDate = endDate;
-    if (typeof capacity !== 'undefined') contract.capacity = capacity;
-    if (typeof monthlyRent !== 'undefined') contract.monthlyRent = monthlyRent;
+    if (typeof capacity !== 'undefined' && capacity !== null) contract.capacity = Number(capacity);
+
     if (typeof terms !== 'undefined') contract.terms = terms;
-    if (Array.isArray(termsandconditions)) contract.termsandconditions = termsandconditions;
-    if (Number.isInteger(printerCredits) && printerCredits >= 0) contract.printerCredits = printerCredits;
+    if (typeof printerCredits !== 'undefined' && Number.isInteger(printerCredits) && printerCredits >= 0) {
+      contract.printerCredits = printerCredits;
+    }
+
+    // Normalize and set termsandconditions if provided
+    if (typeof termsandconditions !== 'undefined') {
+      const normalizedTC = Array.isArray(termsandconditions)
+        ? termsandconditions
+        : (termsandconditions && typeof termsandconditions === 'object' ? [termsandconditions] : []);
+      contract.termsandconditions = normalizedTC;
+    }
+
+    // Extended fields overrides if provided
+    if (typeof initialCredits !== 'undefined' && initialCredits !== null) contract.initialCredits = Number(initialCredits);
+    if (typeof legalExpenses !== 'undefined' && legalExpenses !== null) contract.legalExpenses = Number(legalExpenses);
+    if (typeof allocationSeatsNumber !== 'undefined' && allocationSeatsNumber !== null) contract.allocationSeatsNumber = Number(allocationSeatsNumber);
+    if (parkingSpaces && typeof parkingSpaces === 'object') contract.parkingSpaces = parkingSpaces;
+    if (parkingFees && typeof parkingFees === 'object') {
+      contract.parkingFees = {
+        twoWheeler: (parkingFees.twoWheeler !== undefined && parkingFees.twoWheeler !== null) ? Number(parkingFees.twoWheeler) : (contract.parkingFees?.twoWheeler ?? 1500),
+        fourWheeler: (parkingFees.fourWheeler !== undefined && parkingFees.fourWheeler !== null) ? Number(parkingFees.fourWheeler) : (contract.parkingFees?.fourWheeler ?? 5000),
+      };
+    }
+    if (typeof noticePeriodDays !== 'undefined' && noticePeriodDays !== null) contract.noticePeriodDays = Number(noticePeriodDays);
+    if (escalation && typeof escalation === 'object') contract.escalation = escalation;
+    if (renewal && typeof renewal === 'object') contract.renewal = renewal;
+    if (fullyServicedBusinessHours && typeof fullyServicedBusinessHours === 'object') contract.fullyServicedBusinessHours = fullyServicedBusinessHours;
+    if (Array.isArray(freebies)) contract.freebies = freebies;
+    if (payAsYouGo && typeof payAsYouGo === 'object') contract.payAsYouGo = payAsYouGo;
+    if (typeof cleaningAndRestorationFees !== 'undefined' && cleaningAndRestorationFees !== null) contract.cleaningAndRestorationFees = Number(cleaningAndRestorationFees);
+
+    // Only keep clientAcceptance when updating acceptance
+    if (termsAndConditionAcceptance && typeof termsAndConditionAcceptance === 'object' && termsAndConditionAcceptance.clientAcceptance) {
+      contract.termsAndConditionAcceptance = {
+        ...(contract.termsAndConditionAcceptance || {}),
+        clientAcceptance: termsAndConditionAcceptance.clientAcceptance,
+      };
+    }
 
     // Recompute duration months if dates provided
     try {
@@ -195,10 +403,42 @@ export const salesEditCommercials = async (req, res) => {
         contract.durationMonths = Math.max(0, months);
         // Commencement date should mirror start date
         contract.commencementDate = contract.startDate;
-        // Default lock-in to duration (can be changed later)
-        contract.lockInPeriodMonths = contract.durationMonths;
+        // Lock-in can be overridden, otherwise default to duration
+        if (typeof lockInPeriodMonths !== 'undefined' && lockInPeriodMonths !== null) {
+          contract.lockInPeriodMonths = Number(lockInPeriodMonths);
+        } else {
+          contract.lockInPeriodMonths = contract.durationMonths;
+        }
       }
     } catch (_) {}
+
+    // monthlyRent: if provided, validate and set; otherwise derive from Building perSeatPricing
+    if (typeof monthlyRent !== 'undefined' && monthlyRent !== null && monthlyRent !== "") {
+      const mr = Number(monthlyRent);
+      if (Number.isNaN(mr) || mr < 0) {
+        return res.status(400).json({ success: false, message: "monthlyRent must be a non-negative number" });
+      }
+      contract.monthlyRent = mr;
+    } else {
+      try {
+        const buildingIdToUse = building || contract.building;
+        const capToUse = Number(contract.capacity) || 0;
+        const buildingDoc = await Building.findById(buildingIdToUse).select('perSeatPricing status');
+        if (!buildingDoc) {
+          return res.status(404).json({ success: false, message: "Building not found for rent derivation" });
+        }
+        if (buildingDoc.status && String(buildingDoc.status).toLowerCase() !== 'active') {
+          return res.status(400).json({ success: false, message: "Building is not active" });
+        }
+        if (buildingDoc.perSeatPricing == null || buildingDoc.perSeatPricing < 0) {
+          return res.status(400).json({ success: false, message: "Building per seat pricing is not configured" });
+        }
+        contract.monthlyRent = Number(buildingDoc.perSeatPricing) * capToUse;
+      } catch (bErr) {
+        console.warn('salesEditCommercials: failed to derive monthlyRent from building', bErr?.message || bErr);
+        return res.status(400).json({ success: false, message: "Unable to derive monthlyRent" });
+      }
+    }
 
     // Reset approvals and legal state to force the workflow again
     contract.salesSeniorApproved = false;
@@ -234,6 +474,15 @@ export const salesEditCommercials = async (req, res) => {
     contract.lastActionAt = new Date();
 
     await contract.save();
+
+    // If building changed, update client's building reference
+    try {
+      if (client && building && originalBuilding !== String(building)) {
+        await Client.findByIdAndUpdate(client, { building }, { new: true });
+      }
+    } catch (e) {
+      console.warn("Failed to update client building on sales edit:", e?.message);
+    }
 
     await logContractActivity(req, "UPDATE", id, contract.client, {
       action: "sales_updated_commercials",
@@ -640,21 +889,99 @@ export const clientApproveAndSign = async (req, res) => {
     contract.lastActionBy = req.user?._id || contract.lastActionBy;
     contract.lastActionAt = new Date();
 
+    // Try to fetch signed document from Zoho Sign (if we have a request/envelope id)
+    try {
+      const requestId = contract.zohoSignRequestId || contract.signatureEnvelopeId;
+      if (requestId) {
+        const accessToken = await getAccessToken();
+        const resp = await fetch(`https://sign.zoho.in/api/v1/requests/${requestId}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const docs = data?.requests?.document_ids || [];
+          for (const doc of docs) {
+            if (doc?.image_string) {
+              contract.fileUrl = `data:image/jpeg;base64,${doc.image_string}`;
+              break;
+            }
+          }
+        }
+      }
+    } catch (signedDocErr) {
+      console.warn("clientApproveAndSign: failed to fetch signed document:", signedDocErr?.message || signedDocErr);
+    }
+
     await contract.save();
 
     await logContractActivity(req, "UPDATE", id, contract.client, {
       action: "client_signed",
     });
+
+    // Auto-create billing document (include deposit like webhook path)
     try {
-      const invoice = await createInvoiceFromContract(contract._id, {
+      const doc = await createBillingDocumentFromContract(contract._id, {
         issueOn: "activation",
         prorate: true,
+        includeDeposit: true,
         dueDays: 7,
       });
-      console.log(`Auto-created invoice ${invoice?._id} for contract ${contract._id} via custom client approve/sign`);
-    } catch (invoiceError) {
-      console.error("Failed to auto-create invoice from custom client sign:", invoiceError);
+      if (doc?.deferred) {
+        console.log(`Activation billing deferred for contract ${contract._id}: ${doc.reason}`);
+      } else {
+        console.log(`Auto-created billing doc ${doc._id} (mode=${process.env.BILLING_MODE || 'invoice'}) for contract ${contract._id}`);
+      }
+    } catch (billingError) {
+      console.error("Failed to auto-create billing document:", billingError);
+      // Don't fail the contract activation if billing document creation fails
     }
+
+    // Ensure default access policy and grant access ONLY if final approval is true
+    let ensuredPolicy = null;
+    try {
+      const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+      ensuredPolicy = policyResult?.policy || null;
+      if (policyResult?.created || policyResult?.updated) {
+        console.log("Default access policy ensured (custom client sign):", {
+          client: String(contract.client),
+          created: policyResult.created,
+          updated: policyResult.updated,
+          policyId: ensuredPolicy?._id,
+        });
+      }
+    } catch (policyErr) {
+      console.warn("Failed to ensure default access policy on custom client sign:", policyErr?.message);
+    }
+    try {
+      if (contract.isfinalapproval) {
+        if (ensuredPolicy?._id) {
+          const grantRes = await grantOnContractActivation(contract, {
+            policyId: ensuredPolicy._id,
+            startsAt: contract.startDate || contract.commencementDate || new Date(),
+            endsAt: contract.endDate || undefined,
+            source: "AUTO_CONTRACT",
+          });
+          console.log("Access grants created on custom client sign (final approval):", grantRes);
+          try {
+            await enforceAccessByInvoices(contract.client);
+          } catch (enfErr) {
+            console.warn("enforceAccessByInvoices after custom client sign failed:", enfErr?.message);
+          }
+        } else {
+          console.warn("No default access policy available to grant access on custom client sign.");
+        }
+      } else {
+        console.log("Skipping access grants on custom client sign: isfinalapproval is not true.");
+      }
+    } catch (grantErr) {
+      console.warn("Access grant on custom client sign failed:", grantErr?.message);
+    }
+
+    // Allocate any active blocked cabins
     try {
       const allocResult = await allocateBlockedCabinsForContract(contract._id);
       console.log("Cabin allocation after custom client sign:", allocResult);

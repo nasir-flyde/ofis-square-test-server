@@ -89,9 +89,9 @@ export const finalApprove = async (req, res) => {
     });
 
     // On final approval, ensure default access policy and grant access, then enforce invoice-based access
+    let createdOrUsedWalletId = null;
     if (approved) {
       // Add/ensure client wallet and optionally credit allocated balances
-      let createdOrUsedWalletId = null;
       try {
         // Pull credit configuration from the client's building (fallbacks retained)
         let buildingCreditValue = 500;
@@ -1574,7 +1574,6 @@ export const sendForSignature = async (req, res) => {
 export const recordSecurityDeposit = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, type, notes, paidAt } = req.body || {};
 
     const contract = await Contract.findById(id);
     if (!contract) {
@@ -1584,69 +1583,35 @@ export const recordSecurityDeposit = async (req, res) => {
       });
     }
 
-    // Compute Security Deposit as 25% of (durationMonths × monthlyRent)
-    // Prefer explicit durationMonths on contract; fallback to months diff between start and end
-    const safeNumber = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
-    };
-    const monthsFromField = safeNumber(contract.durationMonths) > 0 ? safeNumber(contract.durationMonths) : null;
-    const monthsFromDates = (() => {
-      try {
-        const start = contract.startDate ? new Date(contract.startDate) : null;
-        const end = contract.endDate ? new Date(contract.endDate) : null;
-        if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return null;
-        const years = end.getFullYear() - start.getFullYear();
-        const months = end.getMonth() - start.getMonth() + years * 12;
-        return months > 0 ? months : 0;
-      } catch { return null; }
-    })();
-    const durationMonths = monthsFromField ?? monthsFromDates ?? 0;
-    const monthlyRent = safeNumber(contract.monthlyRent);
-    const computedAmountRaw = monthlyRent * durationMonths * 0.25;
-    const computedAmount = Math.round(computedAmountRaw); // round to nearest rupee
-
-    // Update security deposit information (override any client-provided amount)
+    // As per requirement: only set the boolean flag and nothing else
     contract.securitydeposited = true;
-    contract.securityDeposit = {
-      amount: computedAmount,
-      type: type || 'cash',
-      notes: notes || null
-    };
-    contract.securityDepositPaidAt = paidAt ? new Date(paidAt) : new Date();
-    contract.securityDepositRecordedBy = req.user.id;
 
     await contract.save();
 
-    // Log activity
+    // Log minimal activity
     await logContractActivity(req, 'UPDATE', id, contract.client, {
-      recordedBy: req.user.id,
-      amount: computedAmount,
-      type: type,
-      notes: notes,
-      paidAt: contract.securityDepositPaidAt,
-      action: 'security_deposit_recorded'
+      action: 'security_deposit_marked'
     });
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Security deposit recorded successfully',
+      message: 'Security deposit marked successfully',
       data: {
         workflowStage: getWorkflowStage(contract),
-        securityDeposit: contract.securityDeposit,
-        securityDepositPaidAt: contract.securityDepositPaidAt
+        securitydeposited: contract.securitydeposited,
       }
     });
 
   } catch (error) {
     console.error('Error recording security deposit:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to record security deposit',
       error: error.message
     });
   }
 };
+
 export const markClientSigned = async (req, res) => {
   try {
     const { id } = req.params;

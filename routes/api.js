@@ -54,6 +54,7 @@ import dashboardRoutes from "./dashboard.js";
 import meRoutes from "./me.js";
 import zohoBooksRoutes from "./zohoBooks.js";
 import locationsRoutes from "./locations.js";
+import estimatesRoutes from "./estimates.js";
 
 const router = express.Router();
 
@@ -112,4 +113,6 @@ router.use("/document-entities", documentEntitiesRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/zoho-books", zohoBooksRoutes);
 router.use("/locations", locationsRoutes);
+router.use("/proforma-invoices", estimatesRoutes);
+router.use("/estimates", estimatesRoutes);
 export default router;

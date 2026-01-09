@@ -15,7 +15,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { promises as fsp } from "fs";
 import puppeteer from "puppeteer";
-import { createInvoiceFromContract } from "../services/invoiceService.js";
+import { createBillingDocumentFromContract } from "../services/invoiceService.js";
 import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
 import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
@@ -103,6 +103,8 @@ export const createContract = async (req, res) => {
       creditValueAtSignup,
       contractStartDate,
       contractEndDate,
+      billingStartDate,
+      billingEndDate,
       terms,
       termsandconditions,
       
@@ -164,6 +166,8 @@ export const createContract = async (req, res) => {
 
     const start = contractStartDate ? new Date(contractStartDate) : new Date();
     const end = contractEndDate ? new Date(contractEndDate) : new Date(Date.now() + 365*24*60*60*1000);
+    const billStart = billingStartDate ? new Date(billingStartDate) : start;
+    const billEnd = billingEndDate ? new Date(billingEndDate) : end;
     // Compute duration in months between start and end (inclusive of months boundary)
     const calcMonths = (s, e) => {
       const sd = new Date(s);
@@ -187,6 +191,8 @@ export const createContract = async (req, res) => {
       building: buildingId,
       startDate: start,
       endDate: end,
+      billingStartDate: billStart,
+      billingEndDate: billEnd,
       capacity: Number(capacity),
       monthlyRent: monthlyRent,
       ...(initialCredits && { initialCredits: Number(initialCredits) }),
@@ -346,21 +352,7 @@ export const getDefaultTermsAndConditions = async (req, res) => {
             "Phrases used in the Contract Coversheet, unless repugnant to the subject or context, shall have the following meanings:",
             "Yes Month – English Calendar Month",
             "No Allocated Seats – Designated office space as described in Contract Cover Sheet and earmarked on the layout plan attached herewith;",
-            "Yes Coworking Space – Means the premises or the building or the portion of a building wherein the Allocated Seats are located",
-            "Freebies – Access to services during the Fully Serviced Business Hours to be provided by Ofis Square to the Client at the Coworking Space without any charges to the extent agreed and recorded in the Contract Coversheet which are otherwise chargeable.",
-            "Free Services – Cost of electricity (at the existing load), Access to existing air conditioning, internet services (shared bandwidth at the common areas of the Coworking Space), existing office equipment, designated common spaces, knowledge resources, pantry, cafeteria, concierge, community events, earmarked consumables, other common areas, facilities, services earmarked for free use of Client in common with other Clients at the Coworking Space, during the Fully Serviced Business Hours.",
-            "Pay As You Go Services – Access to services which may be provided by Ofis Square from time to time on a chargeable basis at the Coworking Space as mentioned in the Contract Cover Sheet.",
-            "Lock in Period – The Period for which Fixed Payments are payable by the Client irrespective of continuance of this Contract as mentioned in the Contract Coversheet.",
-            "Notice Period – Notice period to be served by the Client to bring an end to this Contract signed between the Parties.",
-            "Committed Fixed Charges – Sum Total of the Fixed Payment Payable by the Client during the entire tenure of the agreed Lock-in Period including escalations and applicable taxes thereof, without any adjustments, deductions or abatements.",
-            "Material Breach by Client – Any breach by the Client which would affect the essence of the Contract which shall include but not limited to breach of terms of this Contract, Default in payment for 2 successive Months or 3 cumulative Months in a calendar year, failure to make good any damage caused to the Coworking Space or any facilities, amenities, equipments etc.",
-            "Material Breach by Ofis Square – Any breach by the Ofis Square which would affect the essence of the Contract which shall include but not limited to breach of terms of this Contract or failure to provide Services for a period exceeding the timelines agreed herein.",
-            "Immediate Termination – Termination without needing Notice Period or any option to cure any breach.",
-            "Fully Serviced Business Hours – Period during which the services attached with the Allocated Seats are to be provided by Ofis Square as part of Fixed Payment.",
-            "Fixed Payment – The amount payable by the Client by the 7th of each Month, in advance, commencing from the month in which the Commencement Date falls and ending on the 7th of the Month in which this Contract is due to expire.",
-            "Exit Formalities – Payment of all dues; Surrender of access cards; Removal of all third party cabling and any other installations and restoration of the Allocated Seats in the original position; Inventory tally as per the inventory list shared by Ofis Square with Client on the date of commencement of Contract; Payment of applicable exit charges in case of damage, destruction, missing inventory and Cleaning and Restoration Fees payable on Exit; Complete removal of the Client and all persons from the Allocated Seats along with all goods, properties and assets brought into the Coworking Space by the Client; Upto date paid bills of third-party utilities obtained by the Client at the Coworking Space; Documents showing removal of the Coworking Space address from the records of all Statutory and other authorities including shifting of registered office (if applicable).",
-            "Interest free Refundable Security Deposit – The agreed sum as recorded in the Contract Cover Sheet which shall be held by Ofis Square until Client completes all Exit Formalities and shall be refunded by Ofis Square within 30 days after all Exit Formalities have been completed by the Client, without any interest of any manner whatsoever.",
-            "Enterprise Services – Access to Allocated Seats along with the Free Services and Pay as You Go Services."
+            "Yes Coworking Space – Means the premises or the building or the portion of a building wherein the Allocated Seats are located"
           ]
         },
         scope: {
@@ -458,7 +450,7 @@ export const getDefaultTermsAndConditions = async (req, res) => {
             "In case of Material Breach by Ofis Square, Client shall be entitled to terminate this Contract by giving 30 days notice to enable Ofis Square to cure the Material Breach; If Ofis Square fails to cure the Material Breach despite expiry of 30 days, the Client shall be entitled to thereafter end this Contract  by stopping to avail any of the Enterprise Services and completing the Exit Formalities.",
             "In case the Contract is terminated by Client during the Lock In Period due to failure of Ofis Square to cure a Material Breach despite notice having been given, then the Client would be relieved of making payment of the balance Committed Fixed Charges from the date of the Client completing the Exit Formalities. It is clarified that the Client would continue to remain liable for payment of the Fixed Payments upto the period till when the Client has utilized the services.",
             "In case of Material Breach by Client, Ofis Square shall be entitled to terminate this Contract by giving 30 days’ notice to enable Client to cure the Material Breach; If Client fails to cure the Material Breach despite expiry of 30 days, Ofis Square shall be entitled to forthwith end this Contract and become entitled to the entire balance Committed Fixed Charges, if the Lock In period has not expired and shall be entitled to take all actions including but not limited to deactivating access of the Client to the Coworking Space and the Allocated Seats.",
-            "In case of the Client  is insolvent or bankrupt, then this Contract shall be deemed to have automatically come to an end on the preceding day of order of admission of insolvency or bankruptcy proceedings without any formal notice being required to be given by either Party and the Security Deposit shall stand forfeited.",
+            "In case the Client  is insolvent or bankrupt, then this Contract shall be deemed to have automatically come to an end on the preceding day of order of admission of insolvency or bankruptcy proceedings without any formal notice being required to be given by either Party and the Security Deposit shall stand forfeited.",
             "In case the Client abandons the Coworking Space and/or starts removing its goods from the Coworking Space without prior written confirmation from Ofis Square, the same shall be deemed to be a notice of immediate termination by the Client.",
             "Upon termination of this Contract by either party and until completion of Exit Formalities by the Client, Ofis Square shall have a lien over the properties of the Client lying within the Coworking Space and Ofis Square shall be entitled to restrain removal of any goods by the Client from the Coworking Space until Exit Formalities are completed.",
             "In case the rights of Ofis Square to the Coworking Space are terminated and/or or user rights are restrained/suspended, then Ofis Square would be entitled to immediately terminate this Contract and refund the Security Deposit within 30 days from such termination subject to the Client completing all Exit Formalities.",
@@ -623,6 +615,9 @@ export const getContractById = async (req, res) => {
   }
 };
 
+// Alias: detailed view reuses getContractById response shape
+export const getContractDetailed = getContractById;
+
 // Delete a contract (admin only)
 export const deleteContract = async (req, res) => {
   try {
@@ -666,6 +661,8 @@ export const updateContract = async (req, res) => {
       securityDeposit,
       contractStartDate,
       contractEndDate,
+      billingStartDate,
+      billingEndDate,
       terms,
       termsandconditions,
       // New fields
@@ -771,6 +768,8 @@ export const updateContract = async (req, res) => {
 
     const start = contractStartDate ? new Date(contractStartDate) : existing.startDate;
     const end = contractEndDate ? new Date(contractEndDate) : existing.endDate;
+    const billStart = billingStartDate ? new Date(billingStartDate) : start;
+    const billEnd = billingEndDate ? new Date(billingEndDate) : end;
     const calcMonths = (s, e) => {
       const sd = new Date(s);
       const ed = new Date(e);
@@ -792,6 +791,8 @@ export const updateContract = async (req, res) => {
       building: buildingId,
       startDate: start,
       endDate: end,
+      billingStartDate: billStart,
+      billingEndDate: billEnd,
       capacity: Number(capacity),
       monthlyRent: monthlyRent,
       // New fields
@@ -1167,7 +1168,16 @@ export const sendForSignature = async (req, res) => {
     console.log("Document verified with ID:", documentId);
     
     // Step 3: Add recipient to document
-    await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+    const client = contract.client || {};
+    let recipient = client;
+    if (client && client.isPrimaryContactauthoritySignee === false && client.authoritySignee) {
+      const a = client.authoritySignee || {};
+      const nameParts = [a.firstName, a.lastName].filter(Boolean);
+      const recipient_name = (nameParts.join(' ').trim()) || client.contactPerson || client.companyName || 'Client';
+      const recipient_email = a.email || client.email;
+      recipient = { contactPerson: recipient_name, email: recipient_email };
+    }
+    await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
     console.log("Recipient added to document");
     
     // Step 4: Submit document for signature
@@ -1353,7 +1363,16 @@ export const uploadAndSendForSignature = async (req, res) => {
       console.log("Document verified with ID:", documentId);
       
       // Step 3: Add recipient to document
-      await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+      const client = contract.client || {};
+      let recipient = client;
+      if (client && client.isPrimaryContactauthoritySignee === false && client.authoritySignee) {
+        const a = client.authoritySignee || {};
+        const nameParts = [a.firstName, a.lastName].filter(Boolean);
+        const recipient_name = (nameParts.join(' ').trim()) || client.contactPerson || client.companyName || 'Client';
+        const recipient_email = a.email || client.email;
+        recipient = { contactPerson: recipient_name, email: recipient_email };
+      }
+      await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
       console.log("Recipient added to document");
       
       // Step 4: Submit document for signature
@@ -1459,15 +1478,19 @@ export const uploadSignedContract = async (req, res) => {
       activationMethod: 'manual_upload'
     });
     try {
-      const invoice = await createInvoiceFromContract(contract._id, {
+      const doc = await createBillingDocumentFromContract(contract._id, {
         issueOn: "activation",
         prorate: true,
         dueDays: 7
       });
-      console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id}`);
+      if (doc?.deferred) {
+        console.log(`Activation billing deferred for contract ${contract._id}: ${doc.reason}`);
+      } else {
+        console.log(`Auto-created billing doc ${doc._id} (mode=${process.env.BILLING_MODE || 'invoice'}) for contract ${contract._id}`);
+      }
     } catch (invoiceError) {
-      console.error("Failed to auto-create invoice:", invoiceError);
-      // Don't fail the contract activation if invoice creation fails
+      console.error("Failed to auto-create billing document:", invoiceError);
+      // Don't fail the contract activation if billing document creation fails
     }
 
     // Allocate any cabins that were blocked for this client upon activation
@@ -1601,15 +1624,19 @@ export const handleZohoSignWebhook = async (req, res) => {
 
         // Auto-create invoice when contract becomes active via Zoho Sign
         try {
-          const invoice = await createInvoiceFromContract(contract._id, {
+          const doc = await createBillingDocumentFromContract(contract._id, {
             issueOn: "activation",
             prorate: true,
             dueDays: 7
           });
-          console.log(`Auto-created invoice ${invoice._id} for contract ${contract._id} via Zoho Sign webhook`);
+          if (doc?.deferred) {
+            console.log(`Activation billing deferred for contract ${contract._id}: ${doc.reason}`);
+          } else {
+            console.log(`Auto-created billing doc ${doc._id} (mode=${process.env.BILLING_MODE || 'invoice'}) for contract ${contract._id} via Zoho Sign webhook`);
+          }
         } catch (invoiceError) {
-          console.error("Failed to auto-create invoice from webhook:", invoiceError);
-          // Don't fail the webhook processing if invoice creation fails
+          console.error("Failed to auto-create billing document from webhook:", invoiceError);
+          // Don't fail the webhook processing if billing document creation fails
         }
       } else if (newStatus === "draft" && request_status === "declined") {
         // Log contract decline activity
@@ -1827,7 +1854,6 @@ async function buildContractHtmlFromTemplate(contract) {
     .cd table.kv tr > td:last-child { width: 66%; }
     .cd table.kv .kv { margin: 0 0 6px 0; }
     .cd table.kv .kv:last-child { margin-bottom: 0; }
-    .cd table.kv .kv b { min-width: 160px; }
     .cd table.sig td { width: 50%; }
     /* Three-column numbered rows */
     .cd table.kv.three td.idx { width: 6%; text-align: center; font-weight: 700; }
@@ -1930,17 +1956,21 @@ async function buildContractHtmlFromTemplate(contract) {
           </tr></tbody></table>
 
           <div class="sep"></div>
-          <table class="kv three"><tbody><tr>
-            <td class="idx">5.</td>
-            <td class="key">Allocated Seats</td>
-            <td class="val">
-              Designated office space on the Coworking Space comprising of:<br/>
-              <br/>
-              <b>${escapeHtml(allocatedAddress)}</b><br/>
-              <br/>
-              Detailed final layout of the Allocated Seats is annexed hereto as Annexure A of this Contract.
-            </td>
-          </tr></tbody></table>
+          <table class="kv three">
+            <tbody>
+              <tr>
+                <td class="idx">5.</td>
+                <td class="key">Allocated Seats</td>
+                <td class="val">
+                  Designated office space on the Coworking Space comprising of:<br/>
+                  <br/>
+                  <b>${escapeHtml(allocatedAddress)}</b><br/>
+                  <br/>
+                  Detailed final layout of the Allocated Seats is annexed hereto as Annexure A of this Contract.
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <table class="kv three"><tbody><tr>
             <td class="idx">6.</td>
             <td class="key">Parking Spaces</td>
@@ -2294,7 +2324,7 @@ async function createZohoSignDocument(contract) {
 }
 
 // Helper function: Add recipient to document
-async function addRecipientToDocument(requestId, client, documentId) {
+async function addRecipientToDocument(requestId, client, documentId, options = {}) {
   // Zoho Sign expects actions under requests.actions and page_no starts at 1
   const actionData = {
     requests: {

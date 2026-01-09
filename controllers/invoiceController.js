@@ -106,6 +106,13 @@ export const createInvoice = async (req, res) => {
     else if (clientDoc?.building) buildingId = clientDoc.building;
     else if (body.building) buildingId = body.building;
 
+    // Resolve GST/tax info from request body or client's taxInfoList/client fields
+    const taxList = Array.isArray(clientDoc?.taxInfoList) ? clientDoc.taxInfoList : [];
+    const primaryTax = taxList.find((t) => t?.is_primary) || taxList[0] || null;
+    const resolvedGSTNo = body.gst_no || body.gstNo || primaryTax?.tax_registration_no || clientDoc.gstNo || clientDoc.gstNumber || undefined;
+    const resolvedPlaceOfSupply = body.place_of_supply || body.placeOfSupply || primaryTax?.place_of_supply || clientDoc?.billingAddress?.state_code || clientDoc?.billingAddress?.state || undefined;
+    const resolvedGstTreatment = body.gst_treatment || body.gstTreatment || clientDoc.gstTreatment || "business_gst";
+
     // Create invoice data using same structure as createInvoiceFromContract
     const invoiceData = {
       invoice_number: localInvoiceNumber,
@@ -139,8 +146,8 @@ export const createInvoice = async (req, res) => {
       notes: notes || "Manual invoice creation",
       currency_code: "INR",
       exchange_rate: 1,
-      gst_treatment: clientDoc.gstTreatment || "business_gst",
-      place_of_supply: "MH",
+      gst_treatment: resolvedGstTreatment,
+      place_of_supply: resolvedPlaceOfSupply,
       payment_terms: 7,
       payment_terms_label: "Net 7",
       ...(clientDoc.billingAddress && {
@@ -155,7 +162,7 @@ export const createInvoice = async (req, res) => {
         },
       }),
       customer_id: clientDoc.zohoBooksContactId,
-      gst_no: clientDoc.gstNo,
+      gst_no: resolvedGSTNo,
       ...(meta ? { meta } : {}),
     };
 

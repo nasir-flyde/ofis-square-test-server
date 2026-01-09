@@ -13,7 +13,7 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
-import { createContact } from "../utils/zohoBooks.js";
+import { createContact, updateContact, getContact } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
 import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
@@ -177,6 +177,17 @@ export const createClient = async (req, res) => {
       taxRegNo: body.taxRegNo ?? body.tax_reg_no ?? undefined,
     };
 
+    // Authority signee (local-only; will be included as contact person in Zoho if different from primary)
+    let authoritySignee = body.authoritySignee ?? body.authority_signee ?? undefined;
+    if (typeof authoritySignee === 'string') {
+      try { authoritySignee = JSON.parse(authoritySignee); } catch (_) { authoritySignee = undefined; }
+    }
+    const isPrimaryContactauthoritySignee = (typeof body.isPrimaryContactauthoritySignee !== 'undefined')
+      ? (body.isPrimaryContactauthoritySignee === true || body.isPrimaryContactauthoritySignee === 'true')
+      : (typeof body.is_primary_contact_authority_signee !== 'undefined'
+        ? (body.is_primary_contact_authority_signee === true || body.is_primary_contact_authority_signee === 'true')
+        : true);
+
     // Zoho linkage
     const zohoDetails = {
       pricebookId: body.pricebookId ?? body.pricebook_id ?? undefined,
@@ -200,6 +211,8 @@ export const createClient = async (req, res) => {
       ...taxDetails,
       ...zohoDetails,
       ...statusDetails,
+      ...(typeof isPrimaryContactauthoritySignee === 'boolean' ? { isPrimaryContactauthoritySignee } : {}),
+      ...(authoritySignee ? { authoritySignee } : {}),
       ...(kycDocumentItems && kycDocumentItems.length ? { kycDocumentItems } : {}),
     };
 
@@ -317,6 +330,27 @@ export const createClient = async (req, res) => {
             }))
           : [];
 
+        // If primary is NOT the authority signee, append authoritySignee as a non-primary contact
+        if (client?.isPrimaryContactauthoritySignee === false && client?.authoritySignee) {
+          const a = client.authoritySignee || {};
+          const mapped = {
+            salutation: a.salutation || undefined,
+            first_name: a.firstName || undefined,
+            last_name: a.lastName || undefined,
+            email: a.email || undefined,
+            phone: a.phone || undefined,
+            mobile: a.phone || undefined,
+            designation: a.designation || undefined,
+            department: a.department || undefined,
+            is_primary_contact: false,
+            enable_portal: false,
+          };
+          // Only push if it has minimally identifying info
+          if (mapped.first_name || mapped.email || mapped.phone) {
+            additionalContacts.push(mapped);
+          }
+        }
+
         // Ensure only one primary contact (prefer an explicitly marked one in additionalContacts)
         let contactPersonsForZoho = [];
         if (hasPrimaryInAdditional) {
@@ -373,6 +407,9 @@ export const createClient = async (req, res) => {
           notes: client.notes,
           billing_address: client.billingAddress,
           shipping_address: client.shippingAddress,
+          ...(client.gstNo ? { gst_no: client.gstNo } : {}),
+          ...(client.gstTreatment ? { gst_treatment: client.gstTreatment } : {}),
+          ...((body?.placeOfContact || body?.place_of_contact) ? { place_of_contact: body.placeOfContact || body.place_of_contact } : {}),
           contact_persons: contactPersonsForZoho
         };
 
@@ -477,6 +514,7 @@ export const upsertBasicDetails = async (req, res) => {
 
     const client = await Client.findByIdAndUpdate(clientId, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
+    
     // Activity log: basic details updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
@@ -585,6 +623,8 @@ export const updateTaxDetails = async (req, res) => {
       gstTreatment: req.body?.gstTreatment,
       isTaxable: req.body?.isTaxable,
       taxRegNo: req.body?.taxRegNo,
+      // accept place of supply for Zoho sync
+      placeOfContact: req.body?.placeOfContact ?? req.body?.place_of_contact,
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -596,6 +636,126 @@ export const updateTaxDetails = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
     });
+
+    // If client is linked to Zoho, push tax details to Zoho contact as well
+    try {
+      if (client.zohoBooksContactId) {
+        const zohoTaxPayload = {};
+        const topGstNo = (typeof client.gstNo === 'string' && client.gstNo.trim()) ? client.gstNo.trim() : undefined;
+        const topGstTreatment = (typeof client.gstTreatment === 'string' && client.gstTreatment.trim()) ? client.gstTreatment.trim() : undefined;
+        const incomingPlace = typeof payload.placeOfContact === 'string' && payload.placeOfContact.trim() ? payload.placeOfContact.trim() : (typeof req.body?.place_of_contact === 'string' && req.body.place_of_contact.trim() ? req.body.place_of_contact.trim() : undefined);
+
+        if (topGstNo) zohoTaxPayload.gst_no = topGstNo;
+        if (topGstTreatment) zohoTaxPayload.gst_treatment = topGstTreatment;
+
+        // Pull existing contact to merge tax_info_list
+        let existingContact = null;
+        try { existingContact = await getContact(client.zohoBooksContactId); } catch (_) {}
+        const existingList = Array.isArray(existingContact?.tax_info_list)
+          ? existingContact.tax_info_list.map((t) => ({
+              tax_info_id: t?.tax_info_id || undefined,
+              tax_registration_no: (t?.tax_registration_no || '').toString().trim(),
+              place_of_supply: (t?.place_of_supply || '').toString().trim(),
+              is_primary: Boolean(t?.is_primary)
+            })).filter(x => x.tax_registration_no && x.place_of_supply)
+          : [];
+
+        // Normalize incoming additional GST registrations
+        const incomingList = Array.isArray(req.body?.tax_info_list)
+          ? req.body.tax_info_list
+          : (Array.isArray(req.body?.taxInfoList) ? req.body.taxInfoList : []);
+        const addList = (Array.isArray(incomingList) ? incomingList : [])
+          .map((it) => ({
+            tax_info_id: undefined,
+            tax_registration_no: (it?.tax_registration_no || it?.gst_no || it?.gstNo || '').toString().trim(),
+            place_of_supply: (it?.place_of_supply || it?.place_of_contact || it?.placeOfContact || '').toString().trim(),
+            is_primary: false,
+          }))
+          .filter((it) => it.tax_registration_no && it.place_of_supply);
+
+        // Ensure top-level gst_no exists in list (as primary) with a place
+        const existingPrimary = existingList.find(t => t.is_primary) || null;
+        const inferredPrimaryPlace = incomingPlace || existingPrimary?.place_of_supply || existingContact?.place_of_contact || existingList.find(t => t.tax_registration_no === topGstNo)?.place_of_supply || undefined;
+        const primaryEntry = topGstNo ? { tax_info_id: undefined, tax_registration_no: topGstNo, place_of_supply: inferredPrimaryPlace || '', is_primary: true } : null;
+
+        // Build merged list with de-duplication (by reg + place)
+        const byKey = new Map();
+        const put = (item) => {
+          if (!item || !item.tax_registration_no || !item.place_of_supply) return;
+          const key = `${item.tax_registration_no}::${item.place_of_supply}`;
+          const prev = byKey.get(key) || {};
+          // Preserve tax_info_id if already known
+          const tax_info_id = item.tax_info_id || prev.tax_info_id;
+          byKey.set(key, { ...prev, ...item, tax_info_id, is_primary: Boolean(item.is_primary) });
+        };
+        existingList.forEach(put);
+        addList.forEach(put);
+        if (primaryEntry && primaryEntry.place_of_supply) put(primaryEntry);
+
+        let merged = Array.from(byKey.values());
+        // Decide primary: prefer topGstNo+place, else keep Zoho's primary
+        let primaryKey = null;
+        if (primaryEntry && primaryEntry.place_of_supply) {
+          primaryKey = `${primaryEntry.tax_registration_no}::${primaryEntry.place_of_supply}`;
+        } else if (existingPrimary) {
+          primaryKey = `${existingPrimary.tax_registration_no}::${existingPrimary.place_of_supply}`;
+        }
+        merged = merged.map((it) => ({ ...it, is_primary: (primaryKey && `${it.tax_registration_no}::${it.place_of_supply}` === primaryKey) }));
+
+        // If none marked primary yet but we have at least one, set the first as primary
+        if (!merged.some(m => m.is_primary) && merged.length > 0) merged[0].is_primary = true;
+
+        // Backfill top-level fields from primary selection if missing
+        const selectedPrimary = merged.find(m => m.is_primary) || null;
+        if (selectedPrimary) {
+          if (!zohoTaxPayload.gst_no) zohoTaxPayload.gst_no = selectedPrimary.tax_registration_no;
+          if (selectedPrimary.place_of_supply) zohoTaxPayload.place_of_contact = selectedPrimary.place_of_supply;
+        } else if (incomingPlace) {
+          zohoTaxPayload.place_of_contact = incomingPlace;
+        }
+
+        if (Object.keys(zohoTaxPayload).length > 0) {
+          // Enforce Zoho's common string length validations (< 100 chars per string field)
+          const clamp = (s) => (typeof s === 'string' ? s.slice(0, 100) : s);
+          if (typeof zohoTaxPayload.gst_no === 'string') zohoTaxPayload.gst_no = clamp(zohoTaxPayload.gst_no);
+          if (typeof zohoTaxPayload.gst_treatment === 'string') zohoTaxPayload.gst_treatment = clamp(zohoTaxPayload.gst_treatment);
+          if (typeof zohoTaxPayload.place_of_contact === 'string') zohoTaxPayload.place_of_contact = clamp(zohoTaxPayload.place_of_contact);
+          const finalList = merged.map(({ tax_info_id, tax_registration_no, place_of_supply, is_primary }) => ({
+            ...(tax_info_id ? { tax_info_id } : {}),
+            tax_registration_no: clamp(tax_registration_no || ''),
+            place_of_supply: clamp(place_of_supply || ''),
+            // Optional: set is_primary explicitly for the chosen primary
+            ...(is_primary ? { is_primary: true } : {}),
+          }));
+          zohoTaxPayload.tax_info_list = finalList;
+
+          // Attempt a single full update (Zoho UI does this). If it fails, fall back to base-only update.
+          try {
+            const zohoRes = await updateContact(client.zohoBooksContactId, zohoTaxPayload);
+            try { console.log('updateTaxDetails: pushed Zoho tax fields (full list with ids):', JSON.stringify(zohoTaxPayload)); } catch(_) {}
+            client.taxInfoList = finalList;
+            await client.save();
+            return res.json({ message: "Tax details updated and synced to Zoho", client, zoho: zohoRes });
+          } catch (e) {
+            console.warn('updateTaxDetails: full tax_info_list update failed, trying base-only. Reason:', e?.message || e);
+            const { tax_info_list: _drop, ...baseOnly } = zohoTaxPayload;
+            try {
+              const zohoRes2 = await updateContact(client.zohoBooksContactId, baseOnly);
+              try { console.log('updateTaxDetails: pushed Zoho base-only tax fields as fallback:', JSON.stringify(baseOnly)); } catch(_) {}
+              // Persist locally even if Zoho couldn't accept all list entries
+              client.taxInfoList = finalList;
+              await client.save();
+              return res.json({ message: "Tax details updated (Zoho accepted base fields). Multiple GSTs stored locally.", client, zoho: zohoRes2, zohoNote: 'Zoho API rejected tax_info_list; base fields applied.' });
+            } catch (e2) {
+              console.warn('updateTaxDetails: base-only update also failed:', e2?.message || e2);
+            }
+          }
+        }
+      }
+    } catch (zErr) {
+      console.warn('updateTaxDetails: Zoho contact tax sync failed:', zErr?.message || zErr);
+      // Continue without failing the request
+    }
 
     return res.json({ message: "Tax details updated", client });
   } catch (err) {
@@ -1089,14 +1249,16 @@ export const getClientDashboard = async (req, res) => {
 
     // Get recent activity (last 10 items)
     const recentInvoices = await Invoice.find({ client: clientId })
+      .populate('building', 'name')
+      .populate('cabin', 'number')
       .sort({ createdAt: -1 })
       .limit(3)
       .select('invoiceNumber status total createdAt');
 
     const recentBookings = await MeetingBooking.find({ client: clientId })
+      .populate('room', 'name')
       .sort({ createdAt: -1 })
       .limit(3)
-      .populate('room', 'name')
       .select('room status start end createdAt');
 
     const recentTickets = await Ticket.find({ client: clientId })
@@ -1171,7 +1333,7 @@ export const getClientProfile = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    const client = await Client.findById(clientId);
+    const client = await Client.findById(clientId).select('-ownerUser -kycDocuments');
     if (!client) {
       return res.status(404).json({ error: "Client not found" });
     }
@@ -2314,37 +2476,48 @@ export const approveOnboarding = async (req, res) => {
       .sort({ createdAt: -1 })
       .populate('building', 'name address city pricing');
 
-    // Validate all preconditions
-    const errors = [];
+    const status = {
+      clientId: client._id,
+      clientName: client.companyName,
+      isClientApproved: client.isClientApproved || false,
 
-    if (!contract) {
-      errors.push("No contract found for this client");
-    } else {
-      if (contract.status !== "active") {
-        errors.push(`Contract status must be 'active' (current: ${contract.status})`);
+      // Contract check
+      hasContract: !!contract,
+      contractId: contract?._id || null,
+      contractStatus: contract?.status || null,
+      contractFileUrl: contract?.fileUrl || null,
+
+      // Security deposit check
+      securityDepositPaid: client.isSecurityPaid || false,
+      securityDepositAmount: client.securityDeposit?.amount || contract?.securityDeposit?.amount || 0,
+      securityDepositPaidAt: contract?.securityDepositPaidAt || null,
+
+      // KYC check
+      kycStatus: client.kycStatus || "none",
+      kycDocuments: client.kycDocuments || null,
+      hasKycDocuments: !!client.kycDocuments,
+
+      // Overall readiness checks
+      checks: {
+        hasActiveContract: contract?.status === "active",
+        hasContractFile: !!contract?.fileUrl,
+        securityDepositPaid: client.isSecurityPaid || false,
+        kycVerified: client.kycStatus === "verified",
       }
-      if (!contract.fileUrl) {
-        errors.push("Contract file URL is missing");
-      }
-    }
+    };
 
-    if (!client.isSecurityPaid) {
-      errors.push("Security deposit has not been paid");
-    }
+    // Calculate if all checks pass
+    const allChecksPassed =
+      status.checks.hasActiveContract &&
+      status.checks.hasContractFile &&
+      status.checks.securityDepositPaid &&
+      status.checks.kycVerified;
 
-    if (client.kycStatus !== "verified") {
-      errors.push(`KYC must be verified (current: ${client.kycStatus})`);
-    }
-
-    if (!client.kycDocuments) {
-      errors.push("KYC documents are missing");
-    }
-
-    if (errors.length > 0) {
+    if (!allChecksPassed) {
       return res.status(400).json({
         success: false,
         message: "Cannot approve onboarding. Please complete all requirements.",
-        errors
+        errors: Object.keys(status.checks).filter(key => !status.checks[key])
       });
     }
 

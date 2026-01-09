@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 const securityDepositSchema = new mongoose.Schema(
   {
     client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true, index: true },
-    contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract", required: true, index: true },
+    contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract", index: true },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", index: true },
 
     agreed_amount: { type: Number, required: true, min: 0 },

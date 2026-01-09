@@ -10,6 +10,12 @@ import {
   sendContractSentForSignatureEmail,
   sendContractSignedEmail
 } from "../utils/contractEmailService.js";
+import { createBillingDocumentFromContract } from "../services/invoiceService.js";
+import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
+import { grantOnContractActivation, enforceAccessByInvoices } from "../services/accessService.js";
+import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
+import fetch from "node-fetch";
+import { getAccessToken } from "../utils/zohoSignAuth.js";
 
 // Submit contract to Legal (Sales → Legal)
 export const submitToLegal = async (req, res) => {
@@ -573,7 +579,18 @@ export const sendForESignature = async (req, res) => {
     console.log("Document verified with ID:", documentId);
     
     // Step 3: Add recipient to document
-    await loggedZohoSign.addRecipient(requestId, contract.client, documentId);
+    {
+      const client = contract.client || {};
+      let recipient = client;
+      if (client && client.isPrimaryContactauthoritySignee === false && client.authoritySignee) {
+        const a = client.authoritySignee || {};
+        const nameParts = [a.firstName, a.lastName].filter(Boolean);
+        const recipient_name = (nameParts.join(' ').trim()) || client.contactPerson || client.companyName || 'Client';
+        const recipient_email = a.email || client.email;
+        recipient = { contactPerson: recipient_name, email: recipient_email };
+      }
+      await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
+    }
     console.log("Recipient added to document");
     
     // Step 4: Submit document for signature
@@ -621,47 +638,137 @@ export const markSigned = async (req, res) => {
   try {
     const { id } = req.params;
     const { signedBy } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
-    
+
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
-    
+
     if (contract.status !== "sent_for_signature") {
       return res.status(400).json({ 
         success: false, 
         message: `Can only mark contracts sent for signature as signed. Current status: ${contract.status}` 
       });
     }
-    
-    contract.status = "signed";
+
+    // Replicate Zoho webhook activation behavior
+    contract.status = "active"; // Activate directly (same as webhook)
+    contract.isclientsigned = true;
     contract.signedAt = new Date();
     contract.signedBy = signedBy || contract.client?.companyName || "Client";
     contract.lastActionBy = req.user?._id || null;
     contract.lastActionAt = new Date();
-    
+
+    // Try to fetch signed document from Zoho Sign and attach to contract.fileUrl
+    try {
+      const requestId = contract.zohoSignRequestId || contract.signatureEnvelopeId;
+      if (requestId) {
+        const accessToken = await getAccessToken();
+        const resp = await fetch(`https://sign.zoho.in/api/v1/requests/${requestId}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Zoho-oauthtoken ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const docs = data?.requests?.document_ids || [];
+          for (const doc of docs) {
+            if (doc?.image_string) {
+              contract.fileUrl = `data:image/jpeg;base64,${doc.image_string}`;
+              break;
+            }
+          }
+        }
+      }
+    } catch (docErr) {
+      // Do not fail the flow if signed document retrieval fails
+      console.warn("markSigned: failed to fetch signed document:", docErr?.message || docErr);
+    }
+
     await contract.save();
-    
-    await logContractActivity(req, 'CONTRACT_SIGNED', id, contract.client, {
+
+    // Auto-create billing document (invoice/estimate based on BILLING_MODE)
+    try {
+      await createBillingDocumentFromContract(contract._id, {
+        issueOn: "activation",
+        prorate: true,
+        includeDeposit: true,
+        dueDays: 7,
+      });
+    } catch (billingErr) {
+      console.error("markSigned: failed to auto-create billing document:", billingErr);
+      // Continue without failing
+    }
+
+    // Ensure default access policy and grant access only if final approval is true
+    try {
+      let ensuredPolicy = null;
+      try {
+        const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+        ensuredPolicy = policyResult?.policy || null;
+      } catch (policyErr) {
+        console.warn("markSigned: failed to ensure default access policy:", policyErr?.message);
+      }
+
+      if (contract.isfinalapproval) {
+        if (ensuredPolicy?._id) {
+          try {
+            await grantOnContractActivation(contract, {
+              policyId: ensuredPolicy._id,
+              startsAt: contract.startDate || contract.commencementDate || new Date(),
+              endsAt: contract.endDate || undefined,
+              source: "AUTO_CONTRACT",
+            });
+          } catch (grantErr) {
+            console.warn("markSigned: grantOnContractActivation failed:", grantErr?.message);
+          }
+
+          // Enforce invoice gating immediately
+          try {
+            await enforceAccessByInvoices(contract.client);
+          } catch (enfErr) {
+            console.warn("markSigned: enforceAccessByInvoices failed:", enfErr?.message);
+          }
+        } else {
+          console.warn("markSigned: no ensured policy available to grant access.");
+        }
+      } else {
+        console.log("markSigned: skipping access grants as final approval is not set.");
+      }
+    } catch (accessErr) {
+      console.warn("markSigned: access provisioning step failed:", accessErr?.message);
+    }
+
+    // Allocate any active blocked cabins for this contract
+    try {
+      await allocateBlockedCabinsForContract(contract._id);
+    } catch (allocErr) {
+      console.error("markSigned: failed to allocate blocked cabins:", allocErr);
+    }
+
+    // Log activity
+    await logContractActivity(req, "CONTRACT_SIGNED", id, contract.client, {
       signedBy: signedBy,
-      previousStatus: "sent_for_signature"
+      previousStatus: "sent_for_signature",
     });
-    
+
     // Send email notification to stakeholders (Sales + Legal + Admins)
     const populatedContractForEmail = await Contract.findById(id)
-      .populate('client', 'companyName')
-      .populate('building', 'name');
+      .populate("client", "companyName")
+      .populate("building", "name");
     await sendContractSignedEmail(populatedContractForEmail);
-    
-    return res.json({ 
+
+    return res.json({
       success: true,
-      message: "Contract marked as signed",
-      contract
+      message: "Contract marked as signed and activated",
+      contract,
     });
   } catch (err) {
     console.error("markSigned error:", err);
-    await logErrorActivity(req, err, 'Mark Contract Signed');
+    await logErrorActivity(req, err, "Mark Contract Signed");
     return res.status(500).json({ success: false, message: "Failed to mark contract as signed" });
   }
 };
@@ -671,20 +778,20 @@ export const addComment = async (req, res) => {
   try {
     const { id } = req.params;
     const { message, type, mentionedUsers } = req.body || {};
-    
+
     if (!message || message.trim() === "") {
       return res.status(400).json({ 
         success: false, 
         message: "Comment message is required" 
       });
     }
-    
+
     const contract = await Contract.findById(id);
-    
+
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
-    
+
     const commentType = type || "internal";
     if (!["review", "internal", "client", "legal_only"].includes(commentType)) {
       return res.status(400).json({ 
@@ -692,15 +799,15 @@ export const addComment = async (req, res) => {
         message: "Invalid comment type. Must be: review, internal, client, or legal_only" 
       });
     }
-    
+
     // Validate legal_only access
     if (commentType === 'legal_only') {
       const User = (await import('../models/userModel.js')).default;
       const Role = (await import('../models/roleModel.js')).default;
-      
+
       const userWithRole = await User.findById(req.user?._id).populate('role', 'roleName');
       const userRole = userWithRole?.role?.roleName;
-      
+
       if (!['Legal Team', 'System Admin'].includes(userRole)) {
         return res.status(403).json({ 
           success: false, 
@@ -708,19 +815,19 @@ export const addComment = async (req, res) => {
         });
       }
     }
-    
+
     // Validate mentionedUsers if provided
     const validMentionedUsers = Array.isArray(mentionedUsers) ? mentionedUsers.filter(id => id) : [];
-    
+
     contract.comments.push({
       by: req.user?._id || null,
       type: commentType,
       message: message.trim(),
       mentionedUsers: validMentionedUsers
     });
-    
+
     await contract.save();
-    
+
     await logContractActivity(req, 'UPDATE', id, contract.client, {
       commentBy: req.user?._id,
       commentType: commentType,
@@ -728,18 +835,18 @@ export const addComment = async (req, res) => {
       mentionedUsersCount: validMentionedUsers.length,
       action: 'comment_added'
     });
-    
+
     // Send targeted email notifications
     const populatedContract = await Contract.findById(id)
       .populate('client', 'companyName')
       .populate('building', 'name');
     const addedByName = req.user?.name || 'Unknown User';
-    
+
     if (commentType === 'internal' && validMentionedUsers.length > 0) {
       // Send email only to mentioned users for internal comments
       const User = (await import('../models/userModel.js')).default;
       const mentionedUserDocs = await User.find({ _id: { $in: validMentionedUsers } }).select('name email');
-      
+
       for (const user of mentionedUserDocs) {
         try {
           await sendContractCommentEmail(populatedContract, message.trim(), addedByName, user.email, user.name);
@@ -751,14 +858,14 @@ export const addComment = async (req, res) => {
       // Send email only to legal team and admin users
       const User = (await import('../models/userModel.js')).default;
       const Role = (await import('../models/roleModel.js')).default;
-      
+
       const legalRoles = await Role.find({
         roleName: { $in: ['Legal Team', 'System Admin'] }
       }).select('_id');
-      
+
       const roleIds = legalRoles.map(r => r._id);
       const legalUsers = await User.find({ role: { $in: roleIds } }).select('name email');
-      
+
       for (const user of legalUsers) {
         try {
           await sendContractCommentEmail(populatedContract, message.trim(), addedByName, user.email, user.name);
@@ -770,12 +877,12 @@ export const addComment = async (req, res) => {
       // Send to all stakeholders for non-internal or non-mentioned comments
       await sendContractCommentEmail(populatedContract, message.trim(), addedByName);
     }
-    
+
     // Populate the comment for response
     const updatedContract = await Contract.findById(id)
       .populate('comments.by', 'name email')
       .populate('comments.mentionedUsers', 'name email');
-    
+
     return res.json({ 
       success: true,
       message: "Comment added to contract",
@@ -792,20 +899,20 @@ export const addComment = async (req, res) => {
 export const getContractsByStatus = async (req, res) => {
   try {
     const { status } = req.params;
-    
+
     const validStatuses = [
       "draft", "submitted_to_legal", "legal_reviewed", "pending_admin_approval",
       "admin_approved", "admin_rejected", "sent_to_client", "client_approved",
       "client_feedback_pending", "stamp_paper_ready", "sent_for_signature", "signed", "active"
     ];
-    
+
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
         success: false, 
         message: `Invalid status. Must be one of: ${validStatuses.join(", ")}` 
       });
     }
-    
+
     const contracts = await Contract.find({ status })
       .populate("client", "companyName email contactPerson phone")
       .populate("building", "name address pricing")
@@ -815,7 +922,7 @@ export const getContractsByStatus = async (req, res) => {
       .populate("adminApprovedBy", "name email")
       .populate("adminRejectedBy", "name email")
       .sort({ lastActionAt: -1, createdAt: -1 });
-    
+
     return res.json({ 
       success: true, 
       data: contracts,

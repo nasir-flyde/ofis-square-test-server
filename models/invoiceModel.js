@@ -172,6 +172,16 @@ invoiceSchema.index(
   }
 );
 
+// Add unique constraint for consolidated regular monthly invoices per client+building+period
+invoiceSchema.index(
+  { client: 1, building: 1, "billing_period.start": 1, "billing_period.end": 1, type: 1, category: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { type: "regular", category: "monthly" },
+    name: "unique_regular_monthly_consolidated_by_building"
+  }
+);
+
 // Ensure single invoice per deposit
 invoiceSchema.index({ deposit: 1 }, { unique: true, sparse: true, name: "unique_invoice_per_deposit" });
 

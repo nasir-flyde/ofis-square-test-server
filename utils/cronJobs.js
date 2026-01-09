@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { markNoShows } from '../controllers/visitorController.js';
-import { createMonthlyInvoices } from '../services/monthlyInvoiceService.js';
+import { createMonthlyInvoices, createMonthlyEstimates, createMonthlyEstimatesConsolidated } from '../services/monthlyInvoiceService.js';
 import { getValidAccessToken } from './zohoTokenManager.js';
 import AccessGrant from '../models/accessGrantModel.js';
 import { enforceAccessByInvoices } from '../services/accessService.js';
@@ -24,11 +24,44 @@ const scheduleNoShowUpdates = () => {
 
 const scheduleMonthlyInvoices = () => {
   // Run daily; per-building logic inside the service decides whether today is the generation day
-  cron.schedule('21 17 * * *', async () => {
+  cron.schedule('44 18 * * *', async () => {
     try {
-      console.log('Running monthly invoice generation job...');
-      const result = await createMonthlyInvoices();
-      console.log(`Monthly invoice generation completed. Created ${result.created} invoices, ${result.errors} errors.`);
+      const mode = process.env.BILLING_MODE === 'estimate' ? 'estimate' : 'invoice';
+      console.log(`Running monthly ${mode} generation job...`);
+      const result = mode === 'estimate' ? await createMonthlyEstimatesConsolidated() : await createMonthlyInvoices();
+      if (mode === 'estimate') {
+        console.log(`Monthly estimate generation completed. Created ${result.created} estimates, skipped ${result.skipped}, ${result.errors} errors.`);
+        // Detailed skip breakdown for estimates
+        if (result && Array.isArray(result.details) && result.details.length > 0) {
+          try {
+            const breakdown = {};
+            for (const d of result.details) {
+              if (d && (d.status === 'skipped' || d.status === 'exists')) {
+                const reason = d.reason || d.status || 'unknown';
+                breakdown[reason] = (breakdown[reason] || 0) + 1;
+              }
+            }
+            console.log('[Monthly Estimates] Skip breakdown by reason:', breakdown);
+
+            const samples = result.details
+              .filter(d => d && (d.status === 'skipped' || d.status === 'exists'))
+              .slice(0, 10)
+              .map(d => ({
+                group: d.group || d.contractId,
+                status: d.status,
+                reason: d.reason,
+                estimateId: d.estimateId
+              }));
+            if (samples.length) {
+              console.log('[Monthly Estimates] Sample skipped groups/contracts:', samples);
+            }
+          } catch (e) {
+            console.warn('Failed to log monthly estimate skip breakdown:', e?.message || e);
+          }
+        }
+      } else {
+        console.log(`Monthly invoice generation completed. Created ${result.created} invoices, ${result.errors} errors.`);
+      }
     } catch (error) {
       console.error('Error in monthly invoice generation job:', error);
     }
@@ -37,7 +70,7 @@ const scheduleMonthlyInvoices = () => {
     timezone: "Asia/Kolkata"
   });
   
-  console.log('Monthly invoice generation cron job scheduled daily at 12:02 AM (IST)');
+  console.log('Monthly billing cron job scheduled daily (IST)');
 };
 
 const scheduleZohoTokenRefresh = () => {

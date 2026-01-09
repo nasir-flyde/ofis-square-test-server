@@ -34,24 +34,29 @@ function recomputeStatus(dep) {
 export const createDeposit = async (req, res) => {
   try {
     const { clientId, contractId, buildingId, agreedAmount, currency = "INR", notes } = req.body || {};
-    if (!clientId || !contractId || agreedAmount == null) {
-      return res.status(400).json({ success: false, message: "clientId, contractId, agreedAmount are required" });
+    if (!clientId || agreedAmount == null) {
+      return res.status(400).json({ success: false, message: "clientId and agreedAmount are required" });
     }
-    if (!mongoose.Types.ObjectId.isValid(clientId) || !mongoose.Types.ObjectId.isValid(contractId)) {
-      return res.status(400).json({ success: false, message: "Invalid clientId or contractId" });
+    if (!mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ success: false, message: "Invalid clientId" });
+    }
+    if (contractId && !mongoose.Types.ObjectId.isValid(contractId)) {
+      return res.status(400).json({ success: false, message: "Invalid contractId" });
     }
 
-    const [client, contract] = await Promise.all([
-      Client.findById(clientId).select("_id"),
-      Contract.findById(contractId).select("_id building"),
-    ]);
+    const client = await Client.findById(clientId).select("_id");
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
-    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    let contract = null;
+    if (contractId) {
+      contract = await Contract.findById(contractId).select("_id building");
+      if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+    }
 
     const dep = await SecurityDeposit.create({
       client: client._id,
-      contract: contract._id,
-      building: buildingId || contract.building || undefined,
+      contract: contract ? contract._id : undefined,
+      building: buildingId || (contract ? contract.building : undefined) || undefined,
       agreed_amount: Number(agreedAmount),
       currency,
       status: "AGREED",
@@ -309,7 +314,7 @@ export const closeDeposit = async (req, res) => {
 export const generateDepositNote = async (req, res) => {
   try {
     const { id } = req.params;
-    const { forceRegenerate = false, dynamicValues = [] } = req.body || {};
+    const { forceRegenerate = false, dynamicValues = [], stampUrl, signatureUrl } = req.body || {};
     const dep = await SecurityDeposit.findById(id);
     if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
 
@@ -322,6 +327,9 @@ export const generateDepositNote = async (req, res) => {
       },
       dynamicValues,
       force: Boolean(forceRegenerate),
+      // Allow overriding images via request; service also has sensible defaults
+      stampUrl,
+      signatureUrl,
     });
 
     await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', id, null, { action: 'GENERATE_SD_NOTE', url: result?.url });

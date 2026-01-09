@@ -2,6 +2,7 @@ import express from "express";
 import {
   getContracts,
   getContractById,
+  getContractDetailed,
   sendForSignature,
   checkSignatureStatus,
   handleZohoSignWebhook,
@@ -60,6 +61,15 @@ router.get("/pending-approval", authMiddleware, populateUserRole, requirePermiss
 
 // Create a contract - allow all authenticated users (backend will handle approval logic)
 router.post("/", authMiddleware, populateUserRole, createContract);
+
+// Get detailed contract by ID (fully populated, comment filtered)
+router.get(
+  "/:id/detailed",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_READ),
+  getContractDetailed
+);
 
 // Get contract by ID
 router.get("/:id", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContractById);

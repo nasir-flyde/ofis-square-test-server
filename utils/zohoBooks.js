@@ -56,6 +56,8 @@ export async function createContact(payload) {
       "gst_no",
       "gst_treatment",
       "tax_reg_no",
+      "place_of_contact",
+      "tax_info_list",
       "contact_persons",
       "first_name",
       "last_name",
@@ -154,6 +156,148 @@ export async function createContact(payload) {
     return data;
   } catch (err) {
     console.error("❌ [ZohoBooks] Error creating contact:", err?.message || err);
+    throw err;
+  }
+}
+
+export async function updateContact(contactId, payload) {
+  const authToken = await getValidAccessToken();
+  const url = `${BASE_URL}/contacts/${contactId}?organization_id=${ORG_ID}`;
+  const maskedToken = authToken ? `${String(authToken).slice(0, 8)}…` : undefined;
+  const startTime = Date.now();
+
+  console.log("\n===== ZohoBooks:updateContact - Request =====");
+  console.log("URL:", url);
+  console.log("Headers:", { Authorization: `Zoho-oauthtoken ${maskedToken}`, "Content-Type": "application/json" });
+  console.log("Payload keys:", Object.keys(payload || {}));
+
+  // Reuse the same sanitizer rules as createContact
+  const sanitizeContactPayload = (p) => {
+    const allowedKeys = new Set([
+      "contact_name",
+      "company_name",
+      "email",
+      "phone",
+      "mobile",
+      "contact_type",
+      "is_customer",
+      "is_supplier",
+      "customer_sub_type",
+      "billing_address",
+      "shipping_address",
+      "website",
+      "currency_code",
+      "notes",
+      "custom_fields",
+      "legal_name",
+      "payment_terms",
+      "payment_terms_label",
+      "pan_no",
+      "gst_no",
+      "gst_treatment",
+      "tax_reg_no",
+      "place_of_contact",
+      "tax_info_list",
+      "contact_persons",
+      "first_name",
+      "last_name",
+      "designation",
+      "department",
+      "contact_salutation",
+      "twitter",
+      "facebook",
+      "credit_limit",
+      "portal_status",
+      "is_portal_enabled",
+      "currency_id",
+      "price_precision",
+      "opening_balance_amount",
+      "tds_tax_id",
+      "trader_name",
+      "udyam_reg_no",
+      "msme_type",
+      "sales_channel"
+    ]);
+    const sanitized = {};
+    const removed = [];
+    for (const [k, v] of Object.entries(p || {})) {
+      if (allowedKeys.has(k)) sanitized[k] = v; else removed.push(k);
+    }
+    if (Array.isArray(sanitized.contact_persons)) {
+      const cpAllowed = new Set([
+        "salutation",
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "mobile",
+        "designation",
+        "department",
+        "is_primary_contact",
+        "enable_portal",
+      ]);
+      sanitized.contact_persons = sanitized.contact_persons.map((cp) => {
+        const out = {};
+        if (cp && typeof cp === "object") {
+          for (const [ck, cv] of Object.entries(cp)) {
+            if (cpAllowed.has(ck)) out[ck] = cv; else removed.push(`contact_persons.${ck}`);
+          }
+        }
+        delete out.is_sms_enabled;
+        delete out.communication_preference;
+        return out;
+      });
+    }
+    if (removed.length) console.log("ZohoBooks:updateContact - stripped unsupported keys:", removed);
+    return sanitized;
+  };
+
+  try {
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(sanitizeContactPayload(payload)),
+    });
+
+    const durationMs = Date.now() - startTime;
+    const rawText = await res.text();
+    let data;
+    try { data = rawText ? JSON.parse(rawText) : {}; } catch (e) { data = { parse_error: String(e?.message || e), raw: rawText }; }
+
+    console.log("===== ZohoBooks:updateContact - Response =====");
+    console.log("HTTP:", res.status, res.statusText || "");
+    console.log("Duration(ms):", durationMs);
+    console.log("Body:", typeof data === "object" ? JSON.stringify(data, null, 2) : data);
+
+    if (!res.ok) {
+      const errMsg = data?.message || data?.code || `Zoho API error (status ${res.status})`;
+      console.error("❌ ZohoBooks:updateContact failed:", errMsg);
+      throw new Error(errMsg);
+    }
+
+    return data;
+  } catch (err) {
+    console.error("❌ [ZohoBooks] Error updating contact:", err?.message || err);
+    throw err;
+  }
+}
+
+export async function getContact(contactId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/contacts/${contactId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data?.contact || null;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho contact:", err.message);
     throw err;
   }
 }
@@ -262,14 +406,98 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
     }
     const itemsArray = invoiceDoc.line_items || items || [];
-    const line_items = itemsArray.map((it) => ({
-      name: it.name || it.description || "Item",
-      description: it.description || it.name || "Item",
-      rate: Number(it.rate || it.unitPrice || ((it.amount || it.item_total || 0) / (it.quantity || 1))),
-      quantity: Number(it.quantity || 1),
-      unit: it.unit || "nos",
-      ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
-    }));
+    // Determine a default tax percentage if line item doesn't carry one
+    const defaultTaxPercent =
+      typeof itemsArray?.[0]?.tax_percentage === 'number' && itemsArray?.[0]?.tax_percentage >= 0
+        ? Number(itemsArray[0].tax_percentage)
+        : 18; // fallback to 18% for IN region
+
+    // GST treatment influences whether we should apply a tax or exemption
+    const gstTreatment = invoiceDoc?.gst_treatment || 'business_gst';
+    const zeroTax = !defaultTaxPercent || Number(defaultTaxPercent) <= 0;
+
+    // Fetch organization taxes to map a percentage to a Zoho tax_id (or tax group id)
+    async function getZohoTaxesList() {
+      const authToken = await getValidAccessToken();
+      if (!ORG_ID) throw new Error('ZOHO_ORG_ID (or ZOHO_BOOKS_ORG_ID) is not configured');
+      const url = `${BASE_URL}/settings/taxes?organization_id=${ORG_ID}`;
+      const res = await fetch(url, { method: 'GET', headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+      const text = await res.text();
+      let data;
+      try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { parse_error: true, raw: text }; }
+      if (!res.ok) {
+        const msg = data?.message || `Failed to fetch Zoho taxes (status ${res.status})`;
+        console.warn('[ZohoBooks] getZohoTaxesList error:', msg);
+        return { taxes: [], taxgroups: [] };
+      }
+      // Standardize keys
+      const taxes = Array.isArray(data?.taxes) ? data.taxes : [];
+      const tax_groups = Array.isArray(data?.tax_groups) ? data.tax_groups : [];
+      return { taxes, taxgroups: tax_groups };
+    }
+
+    function pickTaxForRate({ taxes, taxgroups }, rate, isInterstate) {
+      if (!rate || rate <= 0) return null;
+      const norm = (v) => Number(v);
+      // Helper to check rate equality with tolerance
+      const rateEq = (r, x) => typeof r === 'number' && !Number.isNaN(r) && Math.abs(r - x) < 0.001;
+
+      // Prefer IGST (single tax) for interstate
+      if (isInterstate) {
+        const matchIgst = taxes.find((t) => {
+          const r = norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage);
+          const name = String(t?.tax_name || t?.name || '').toUpperCase();
+          return rateEq(r, rate) && (name.includes('IGST') || name.includes('INTEGRATED'));
+        });
+        if (matchIgst?.tax_id) return { kind: 'tax', id: matchIgst.tax_id };
+        // fallback to any single tax with same rate
+        const anyTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+        if (anyTax?.tax_id) return { kind: 'tax', id: anyTax.tax_id };
+        // Do not use group for interstate (Zoho expects IGST)
+        return null;
+      }
+
+      // Intrastate: prefer tax group (CGST+SGST) matching total rate
+      const matchGroup = taxgroups.find((g) => rateEq(norm(g?.tax_percentage ?? g?.rate ?? g?.tax_rate ?? g?.percentage), rate));
+      if (matchGroup?.tax_group_id) return { kind: 'group', id: matchGroup.tax_group_id };
+      // Fallback: if no group, try single tax (some orgs configure combined GST as single tax)
+      const matchTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+      if (matchTax?.tax_id) return { kind: 'tax', id: matchTax.tax_id };
+      return null;
+    }
+
+    // Only fetch/apply tax when GST treatment is business_gst AND tax rate > 0
+    let chosenTax = null;
+    if (gstTreatment === 'business_gst' && !zeroTax) {
+      const { taxes, taxgroups } = await getZohoTaxesList();
+      // Determine interstate based on org state vs place of supply
+      const orgState = (invoiceDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim().toUpperCase();
+      const pos = (invoiceDoc?.place_of_supply || '').trim().toUpperCase();
+      const isInterstate = !!(orgState && pos && orgState !== pos);
+      chosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, isInterstate);
+      try {
+        console.log('[ZohoBooks] Taxes count:', taxes?.length || 0, 'TaxGroups count:', taxgroups?.length || 0, 'DefaultTax%:', defaultTaxPercent, 'isInterstate:', isInterstate, 'ChosenTax:', chosenTax);
+      } catch (_) {}
+      if (!chosenTax) {
+        console.warn(`[ZohoBooks] No matching tax_id found for rate ${defaultTaxPercent}%. Configure taxes in Zoho Books or adjust mapping.`);
+      }
+    }
+
+    const line_items = itemsArray.map((it) => {
+      const li = {
+        name: it.name || it.description || "Item",
+        description: it.description || it.name || "Item",
+        rate: Number(it.rate || it.unitPrice || ((it.amount || it.item_total || 0) / (it.quantity || 1))),
+        quantity: Number(it.quantity || 1),
+        unit: it.unit || "nos",
+        ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
+      };
+      const perItemRate = typeof it.tax_percentage === 'number' ? Number(it.tax_percentage) : defaultTaxPercent;
+      if (gstTreatment === 'business_gst' && perItemRate > 0 && chosenTax) {
+        li.tax_id = chosenTax.id;
+      }
+      return li;
+    });
     console.log("Formatted line_items for Zoho:", JSON.stringify(line_items, null, 2));
     if (!line_items || line_items.length === 0) {
       throw new Error("Invoice must have at least one line item to create in Zoho Books");
@@ -294,6 +522,19 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
+      // GST context for India: let Zoho compute IGST vs CGST/SGST based on place_of_supply and org state
+      ...(invoiceDoc?.gst_treatment ? { gst_treatment: invoiceDoc.gst_treatment } : {}),
+      ...(invoiceDoc?.place_of_supply ? { place_of_supply: invoiceDoc.place_of_supply } : {}),
+      // Force the GST registration number to match the selected client registration for this invoice
+      ...(invoiceDoc?.gst_no ? { gst_no: invoiceDoc.gst_no } : {}),
+      // Apply common tax_id at invoice level so Zoho knows a Tax is set (only when business_gst & non-zero)
+      ...(gstTreatment === 'business_gst' && !zeroTax && chosenTax
+        ? (chosenTax.kind === 'tax' ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
+        : {}),
+      // If zero-tax or non-GST treatment, try to attach a tax_exemption_id if configured
+      ...((gstTreatment !== 'business_gst' || zeroTax) && process.env.ZOHO_TAX_EXEMPTION_ID
+        ? { tax_exemption_id: process.env.ZOHO_TAX_EXEMPTION_ID }
+        : {}),
     };
     // TDS (withholding) disabled: do not attach withholding_taxes to payload
 
@@ -886,14 +1127,20 @@ export async function markZohoInvoiceAsSent(invoiceId) {
 export async function getZohoTaxes() {
   try {
     const authToken = await getValidAccessToken();
+    if (!ORG_ID) throw new Error('ZOHO_ORG_ID (or ZOHO_BOOKS_ORG_ID) is not configured');
     const url = `${BASE_URL}/settings/taxes?organization_id=${ORG_ID}`;
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || "Zoho API error");
-    return data;
+    const res = await fetch(url, { method: 'GET', headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { parse_error: true, raw: text }; }
+    if (!res.ok) {
+      const errMsg = data?.message || `Zoho API error fetching taxes (status ${res.status})`;
+      throw new Error(errMsg);
+    }
+    // Standardize keys
+    const taxes = Array.isArray(data?.taxes) ? data.taxes : [];
+    const tax_groups = Array.isArray(data?.tax_groups) ? data.tax_groups : [];
+    return { taxes, taxgroups: tax_groups };
   } catch (err) {
     console.error("❌ Error fetching Zoho taxes:", err.message);
     throw err;
@@ -901,3 +1148,260 @@ export async function getZohoTaxes() {
 }
 
 // getZohoWithholdingTaxes removed (TDS disabled)
+
+// Public utility: fetch taxes and tax groups from Zoho Books for the configured organization
+// export async function getZohoTaxes() {
+//   const authToken = await getValidAccessToken();
+//   if (!ORG_ID) throw new Error('ZOHO_ORG_ID (or ZOHO_BOOKS_ORG_ID) is not configured');
+//   const url = `${BASE_URL}/taxes?organization_id=${ORG_ID}`;
+//   const res = await fetch(url, { method: 'GET', headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+//   const text = await res.text();
+//   let data;
+//   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { parse_error: true, raw: text }; }
+//   if (!res.ok) {
+//     const errMsg = data?.message || `Zoho API error fetching taxes (status ${res.status})`;
+//     throw new Error(errMsg);
+//   }
+//   // Standardize keys
+//   const taxes = Array.isArray(data?.taxes) ? data.taxes : [];
+//   const tax_groups = Array.isArray(data?.tax_groups) ? data.tax_groups : [];
+//   return { taxes, tax_groups };
+// }
+
+export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates?organization_id=${ORG_ID}`;
+
+    const {
+      estimate_number,
+      date,
+      expiry_date,
+      line_items = [],
+      notes = "",
+      billingPeriod,
+    } = estimateDoc || {};
+
+    const customer_id = clientDoc?.zohoBooksContactId;
+    if (!customer_id) {
+      throw new Error("Client must have a zohoBooksContactId to create estimate in Zoho Books");
+    }
+
+    const itemsArray = estimateDoc.line_items || line_items || [];
+    const defaultTaxPercent =
+      typeof itemsArray?.[0]?.tax_percentage === "number" && itemsArray?.[0]?.tax_percentage >= 0
+        ? Number(itemsArray[0].tax_percentage)
+        : 18; // default GST 18%
+
+    const gstTreatment = estimateDoc?.gst_treatment || "business_gst";
+    const zeroTax = !defaultTaxPercent || Number(defaultTaxPercent) <= 0;
+
+    // Normalize place_of_supply to valid two-letter Indian state code (e.g., MH, DL)
+    function normalizePlaceOfSupply(raw) {
+      if (!raw || typeof raw !== 'string') return null;
+      let s = raw.trim().toUpperCase();
+      if (s.includes('-')) s = s.split('-').pop();
+      s = s.replace(/[^A-Z]/g, '');
+      const VALID_CODES = new Set([
+        'AN','AP','AR','AS','BR','CH','CT','DD','DL','DN','GA','GJ','HP','HR','JH','JK','KA','KL','LA','LD','MH','ML','MN','MP','MZ','NL','OD','OR','PB','PY','RJ','SK','TN','TR','TS','UK','UP','WB'
+      ]);
+      if (VALID_CODES.has(s)) return s === 'OR' ? 'OD' : s;
+      const NAME_TO_CODE = {
+        'ANDAMAN AND NICOBAR': 'AN', 'ANDHRA PRADESH': 'AP', 'ARUNACHAL PRADESH': 'AR', 'ASSAM': 'AS', 'BIHAR': 'BR',
+        'CHANDIGARH': 'CH', 'CHHATTISGARH': 'CT', 'DADRA AND NAGAR HAVELI': 'DN', 'DAMAN AND DIU': 'DD', 'DELHI': 'DL',
+        'GOA': 'GA', 'GUJARAT': 'GJ', 'HARYANA': 'HR', 'HIMACHAL PRADESH': 'HP', 'JAMMU AND KASHMIR': 'JK', 'JHARKHAND': 'JH',
+        'KARNATAKA': 'KA', 'KERALA': 'KL', 'LADAKH': 'LA', 'LAKSHADWEEP': 'LD', 'MADHYA PRADESH': 'MP', 'MAHARASHTRA': 'MH',
+        'MANIPUR': 'MN', 'MEGHALAYA': 'ML', 'MIZORAM': 'MZ', 'NAGALAND': 'NL', 'ODISHA': 'OD', 'UTTARAKHAND': 'UK', 'PUDUCHERRY': 'PY',
+        'PUNJAB': 'PB', 'RAJASTHAN': 'RJ', 'SIKKIM': 'SK', 'TAMIL NADU': 'TN', 'TELANGANA': 'TS', 'TRIPURA': 'TR', 'UTTAR PRADESH': 'UP', 'WEST BENGAL': 'WB'
+      };
+      for (const [name, code] of Object.entries(NAME_TO_CODE)) { if (s.includes(name)) return code; }
+      return null;
+    }
+    const orgStateCode = normalizePlaceOfSupply((process.env.ZOHO_ORG_STATE_CODE || '').trim().toUpperCase());
+    let normalizedPOS = normalizePlaceOfSupply(estimateDoc?.place_of_supply);
+    if (!normalizedPOS && clientDoc) {
+      const til = Array.isArray(clientDoc.taxInfoList) ? clientDoc.taxInfoList : [];
+      const primary = til.find((t) => t.is_primary) || til[0];
+      normalizedPOS = normalizePlaceOfSupply(primary?.place_of_supply)
+        || normalizePlaceOfSupply(clientDoc?.billingAddress?.state_code)
+        || normalizePlaceOfSupply(clientDoc?.billingAddress?.state);
+    }
+
+    async function getZohoTaxesList() {
+      const authToken = await getValidAccessToken();
+      if (!ORG_ID) throw new Error("ZOHO_ORG_ID (or ZOHO_BOOKS_ORG_ID) is not configured");
+      const url = `${BASE_URL}/settings/taxes?organization_id=${ORG_ID}`;
+      const res = await fetch(url, { method: "GET", headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+      const text = await res.text();
+      let data;
+      try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { parse_error: true, raw: text }; }
+      if (!res.ok) {
+        const msg = data?.message || `Failed to fetch Zoho taxes (status ${res.status})`;
+        console.warn("[ZohoBooks] getZohoTaxesList error:", msg);
+        return { taxes: [], taxgroups: [] };
+      }
+      const taxes = Array.isArray(data?.taxes) ? data.taxes : [];
+      const tax_groups = Array.isArray(data?.tax_groups) ? data.tax_groups : [];
+      return { taxes, taxgroups: tax_groups };
+    }
+
+    function pickTaxForRate({ taxes, taxgroups }, rate, isInterstate) {
+      if (!rate || rate <= 0) return null;
+      const norm = (v) => Number(v);
+      const rateEq = (r, x) => typeof r === "number" && !Number.isNaN(r) && Math.abs(r - x) < 0.001;
+      if (isInterstate) {
+        const matchIgst = taxes.find((t) => {
+          const r = norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage);
+          const name = String(t?.tax_name || t?.name || "").toUpperCase();
+          return rateEq(r, rate) && (name.includes("IGST") || name.includes("INTEGRATED"));
+        });
+        if (matchIgst?.tax_id) return { kind: "tax", id: matchIgst.tax_id };
+        const anyTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+        if (anyTax?.tax_id) return { kind: "tax", id: anyTax.tax_id };
+        return null;
+      }
+      const matchGroup = taxgroups.find((g) => rateEq(norm(g?.tax_percentage ?? g?.rate ?? g?.tax_rate ?? g?.percentage), rate));
+      if (matchGroup?.tax_group_id) return { kind: "group", id: matchGroup.tax_group_id };
+      const matchTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+      if (matchTax?.tax_id) return { kind: "tax", id: matchTax.tax_id };
+      return null;
+    }
+
+    let chosenTax = null;
+    if (gstTreatment === "business_gst" && !zeroTax) {
+      const { taxes, taxgroups } = await getZohoTaxesList();
+      let isInterstate;
+      if (orgStateCode && normalizedPOS) {
+        isInterstate = orgStateCode !== normalizedPOS;
+      } else if (!orgStateCode && normalizedPOS) {
+        // If org state unknown but POS known, default to interstate to satisfy Zoho
+        isInterstate = true;
+      } else {
+        isInterstate = false;
+      }
+      chosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, isInterstate);
+      try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: normalizedPOS }); } catch (_) {}
+    }
+
+    const liFormatted = itemsArray.map((it) => {
+      const li = {
+        name: it.name || it.description || "Item",
+        description: it.description || it.name || "Item",
+        rate: Number(it.rate || it.unitPrice || ((it.amount || it.item_total || 0) / (it.quantity || 1))),
+        quantity: Number(it.quantity || 1),
+        unit: it.unit || "nos",
+        ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
+      };
+      const perItemRate = typeof it.tax_percentage === "number" ? Number(it.tax_percentage) : defaultTaxPercent;
+      if (gstTreatment === "business_gst" && perItemRate > 0 && chosenTax) {
+        li.tax_id = chosenTax.id;
+      }
+      return li;
+    });
+
+    if (!liFormatted || liFormatted.length === 0) {
+      throw new Error("Estimate must have at least one line item to create in Zoho Books");
+    }
+
+    const bp = estimateDoc?.billing_period || billingPeriod;
+    const payload = {
+      customer_id,
+      reference_number: estimateDoc.estimate_number || estimate_number || undefined,
+      date: date ? new Date(new Date(date).toDateString()).toISOString().slice(0, 10) : new Date(new Date().toDateString()).toISOString().slice(0, 10),
+      ...(expiry_date ? { expiry_date: new Date(new Date(expiry_date).toDateString()).toISOString().slice(0, 10) } : {}),
+      line_items: liFormatted,
+      notes: estimateDoc.notes || notes || "Thank you for your interest.",
+      terms:
+        bp && bp.start && bp.end
+          ? `Billing Period: ${new Date(bp.start).toISOString().slice(0, 10)} to ${new Date(bp.end).toISOString().slice(0, 10)}`
+          : "Terms & Conditions apply",
+      ...(estimateDoc?.gst_treatment ? { gst_treatment: estimateDoc.gst_treatment } : {}),
+      ...(normalizedPOS ? { place_of_supply: normalizedPOS } : {}),
+      ...(estimateDoc?.gst_no ? { gst_no: estimateDoc.gst_no } : {}),
+      ...(gstTreatment === "business_gst" && !zeroTax && chosenTax
+        ? (chosenTax.kind === "tax" ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
+        : {}),
+      ...((gstTreatment !== "business_gst" || zeroTax) && process.env.ZOHO_TAX_EXEMPTION_ID
+        ? { tax_exemption_id: process.env.ZOHO_TAX_EXEMPTION_ID }
+        : {}),
+    };
+
+    const headers = {
+      Authorization: `Zoho-oauthtoken ${authToken}`,
+      "Content-Type": "application/json",
+    };
+    const requestId = await apiLogger.logOutgoingCall({
+      service: "zoho_books",
+      operation: "create_estimate",
+      method: "POST",
+      url,
+      headers,
+      requestBody: payload,
+      userId: null,
+      clientId: clientDoc?._id || null,
+      relatedEntity: 'invoice',
+      relatedEntityId: estimateDoc?._id || null,
+      attemptNumber: 1,
+      maxAttempts: 1,
+    });
+
+    let response;
+    let data;
+    try {
+      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      const responseText = await response.text();
+      try { data = responseText ? JSON.parse(responseText) : {}; } catch (e) { data = responseText; }
+
+      await apiLogger.logResponse({
+        requestId,
+        statusCode: response.status,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        responseBody: data,
+        success: response.ok,
+        errorMessage: response.ok ? null : (data?.message || `HTTP ${response.status}`),
+      });
+
+      if (!response.ok) {
+        const errMsg = data?.message || data?.code || `Zoho API error (status ${response.status})`;
+        console.error("ZohoBooks:createEstimate error payload:", typeof data === "object" ? JSON.stringify(data, null, 2) : data);
+        throw new Error(errMsg);
+      }
+
+      return data;
+    } catch (err) {
+      await apiLogger.logResponse({ requestId, statusCode: 0, responseHeaders: {}, responseBody: null, success: false, errorMessage: err.message });
+      throw err;
+    }
+  } catch (err) {
+    console.error("❌ Error creating estimate:", err.message);
+    throw err;
+  }
+}
+
+export async function getZohoEstimate(estimateId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates/${estimateId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, { method: "GET", headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error");
+    return data?.estimate || null;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho estimate:", err.message);
+    throw err;
+  }
+}
+
+export async function markZohoEstimateAsSent(estimateId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates/${estimateId}/status/sent?organization_id=${ORG_ID}`;
+    const res = await fetch(url, { method: "POST", headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error (mark sent)");
+    return data;
+  } catch (err) {
+    console.error("❌ Error marking estimate as sent:", err.message);
+    throw err;
+  }
+}

@@ -802,10 +802,17 @@ export const importCabinsFromCSV = async (req, res) => {
       }
 
       // Optional Matrix Device fields from CSV
-      const deviceIdRaw = norm(r.deviceId || r.device_id || r["device id"] || r["Device ID"] || r.device);
+      const rawDeviceInput = norm(r.deviceId || r.device_id || r["device id"] || r["Device ID"] || r.device);
       const deviceTypeRaw = norm(r.deviceType || r["device type"] || r["Device Type"]);
       let deviceType = toNumber(deviceTypeRaw);
-      if (deviceIdRaw) {
+      let deviceIdRaw = rawDeviceInput || '';
+      let deviceIdNormalized = undefined;
+      let numericDevice = undefined;
+      if (rawDeviceInput) {
+        const stripped = rawDeviceInput.startsWith('d_') ? rawDeviceInput.slice(2) : rawDeviceInput;
+        deviceIdNormalized = rawDeviceInput.startsWith('d_') ? rawDeviceInput : `d_${stripped}`;
+        const n = toNumber(stripped);
+        if (n !== undefined) numericDevice = n;
         // default deviceType to 16 if not provided
         if (deviceType === undefined) deviceType = 16;
         const allowedTypes = new Set([1, 16, 17]);
@@ -832,7 +839,7 @@ export const importCabinsFromCSV = async (req, res) => {
         perRow.push({
           index: idx + 1,
           success: true,
-          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length, deviceId: deviceIdRaw || null, deviceType: deviceIdRaw ? deviceType : undefined },
+          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined },
           originalRow
         });
         continue;
@@ -864,12 +871,13 @@ export const importCabinsFromCSV = async (req, res) => {
         await cabin.save();
 
         // If device details provided, create or link MatrixDevice and attach to cabin
-        if (deviceIdRaw) {
-          const numericDevice = toNumber(deviceIdRaw);
+        if (deviceIdNormalized) {
           let deviceDoc = await MatrixDevice.findOne({
             $or: [
-              { device_id: deviceIdRaw },
-              ...(numericDevice !== undefined ? [{ device: numericDevice }] : [])
+              { device_id: deviceIdNormalized },
+              ...(numericDevice !== undefined ? [{ device: numericDevice }] : []),
+              // Backward compatibility: also check unprefixed raw id if provided and different
+              ...(deviceIdRaw && deviceIdRaw !== deviceIdNormalized ? [{ device_id: deviceIdRaw }] : [])
             ]
           });
 
@@ -880,7 +888,7 @@ export const importCabinsFromCSV = async (req, res) => {
               vendor: 'MATRIX_COSEC',
               deviceType: deviceType ?? 16,
               direction: 'BIDIRECTIONAL',
-              device_id: deviceIdRaw,
+              device_id: deviceIdNormalized,
               device: numericDevice,
               status: 'Active',
               location: { floor }
@@ -893,6 +901,15 @@ export const importCabinsFromCSV = async (req, res) => {
             }
             if (deviceType !== undefined && deviceDoc.deviceType !== deviceType) {
               deviceDoc.deviceType = deviceType;
+              needSave = true;
+            }
+            // Ensure stored device_id is normalized going forward
+            if (deviceDoc.device_id !== deviceIdNormalized) {
+              deviceDoc.device_id = deviceIdNormalized;
+              needSave = true;
+            }
+            if (numericDevice !== undefined && deviceDoc.device !== numericDevice) {
+              deviceDoc.device = numericDevice;
               needSave = true;
             }
             if (needSave) await deviceDoc.save();
@@ -952,8 +969,8 @@ export const downloadSampleCSV = async (_req, res) => {
       'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities','deviceId','deviceType'
     ];
     // deviceType is optional during import and defaults to 16 if omitted. Provide 16 in sample for clarity.
-    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','10001','16'];
-    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','10002','16'];
+    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','d_10001','16'];
+    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','d_10002','16'];
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="cabins_import_sample.csv"');

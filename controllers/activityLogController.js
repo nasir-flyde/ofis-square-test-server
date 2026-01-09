@@ -1,4 +1,5 @@
 import ActivityLog from "../models/activityLogModel.js";
+import Client from "../models/clientModel.js";
 import mongoose from "mongoose";
 
 // Get all activity logs with filtering and pagination
@@ -60,7 +61,7 @@ const getAllActivityLogs = async (req, res) => {
     sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
     // Execute query with pagination
-    const [logs, totalCount] = await Promise.all([
+    const [logsRaw, totalCount] = await Promise.all([
       ActivityLog.find(filter)
         .populate('userId', 'name email')
         .sort(sortOptions)
@@ -69,6 +70,29 @@ const getAllActivityLogs = async (req, res) => {
         .lean(),
       ActivityLog.countDocuments(filter)
     ]);
+
+    // Augment: attach client.companyName for Client entity logs
+    const logs = Array.isArray(logsRaw) ? logsRaw : [];
+    const clientIds = [
+      ...new Set(
+        logs
+          .filter(l => l?.entity === 'Client' && l?.entityId && mongoose.Types.ObjectId.isValid(l.entityId))
+          .map(l => l.entityId.toString())
+      )
+    ];
+    if (clientIds.length > 0) {
+      const clients = await Client.find({ _id: { $in: clientIds } }).select('companyName').lean();
+      const map = new Map(clients.map(c => [c._id.toString(), c]));
+      for (const l of logs) {
+        if (l?.entity === 'Client' && l?.entityId) {
+          const c = map.get(l.entityId.toString());
+          if (c) {
+            l.client = { _id: l.entityId, companyName: c.companyName };
+            l.clientName = c.companyName;
+          }
+        }
+      }
+    }
 
     // Calculate pagination info
     const totalPages = Math.ceil(totalCount / parseInt(limit));
@@ -110,6 +134,15 @@ const getActivityLogById = async (req, res) => {
     const log = await ActivityLog.findById(id)
       .populate('userId', 'name email')
       .lean();
+
+    // Augment single log with client companyName if applicable
+    if (log && log.entity === 'Client' && log.entityId && mongoose.Types.ObjectId.isValid(log.entityId)) {
+      const c = await Client.findById(log.entityId).select('companyName').lean();
+      if (c) {
+        log.client = { _id: log.entityId, companyName: c.companyName };
+        log.clientName = c.companyName;
+      }
+    }
 
     if (!log) {
       return res.status(404).json({

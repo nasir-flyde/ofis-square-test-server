@@ -31,6 +31,18 @@ const clientSchema = new mongoose.Schema(
     companyAddress: { type: String, trim: true },
     industry: { type: String, trim: true, default: undefined },
 
+    // Authority Signee settings (local only; will be sent as contact person to Zoho if different)
+    isPrimaryContactauthoritySignee: { type: Boolean, default: true },
+    authoritySignee: {
+      salutation: { type: String, trim: true, default: undefined },
+      firstName: { type: String, trim: true, default: undefined },
+      lastName: { type: String, trim: true, default: undefined },
+      email: { type: String, trim: true, lowercase: true, default: undefined },
+      phone: { type: String, trim: true, default: undefined },
+      designation: { type: String, trim: true, default: undefined },
+      department: { type: String, trim: true, default: undefined },
+    },
+
     // Commercial details
     contactType: { type: String, enum: ["customer", "vendor", "both"], default: "customer" },
     customerSubType: { type: String, enum: ["business", "individual"], default: "business" },
@@ -91,6 +103,20 @@ const clientSchema = new mongoose.Schema(
     gstTreatment: { type: String, trim: true, default: undefined },
     isTaxable: { type: Boolean, default: true },
     taxRegNo: { type: String, trim: true, default: undefined },
+    // Optional: store multiple GST registrations locally to mirror Zoho tax_info_list
+    taxInfoList: {
+      type: [
+        new mongoose.Schema(
+          {
+            tax_registration_no: { type: String, trim: true },
+            place_of_supply: { type: String, trim: true },
+            is_primary: { type: Boolean, default: false },
+          },
+          { _id: false }
+        )
+      ],
+      default: []
+    },
     zohoBooksContactId: { type: String, trim: true, index: true },
     pricebookId: { type: String, trim: true, default: undefined },
     currencyId: { type: String, trim: true, default: undefined },
@@ -99,11 +125,7 @@ const clientSchema = new mongoose.Schema(
     extra_credits: { type: Number, default: 0 },
 
     // Security deposit details
-    securityDeposit: {
-      type: { type: String, trim: true, default: undefined },
-      amount: { type: Number, default: 0, min: 0 },
-      notes: { type: String, trim: true, default: undefined },
-    },
+    securityDeposit: { type: mongoose.Schema.Types.ObjectId, ref: "SecurityDeposit", index: true, default: null },
     isSecurityPaid: { type: Boolean, default: false },
 
     // Parking details (synced from contract on final approval)
