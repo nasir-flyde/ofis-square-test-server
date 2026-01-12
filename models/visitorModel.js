@@ -60,6 +60,11 @@ const visitorSchema = new Schema(
     createdBy: { type: Schema.Types.ObjectId, ref: "User" }, // Community manager/admin who created
     building: { type: Schema.Types.ObjectId, ref: "Building" }, // Which building they're visiting
     dayPass: { type: Schema.Types.ObjectId, ref: "DayPass", index: true },
+
+    // Integration metadata (optional)
+    externalSource: { type: String, index: true }, // e.g., 'myhq'
+    externalReferenceNumber: { type: String, index: true },
+    bookingRole: { type: String, enum: ["primary", "guest"], index: true },
     
     // Soft delete
     deletedAt: { type: Date, index: true },

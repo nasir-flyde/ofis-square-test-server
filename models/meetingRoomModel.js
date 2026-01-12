@@ -21,6 +21,8 @@ const timeSlotSchema = new Schema(
 const reservedSlotSchema = new Schema(
   {
     date: { type: Date, required: true },
+    // Denormalized IST day string for clarity in UIs/inspectors, e.g., "2026-01-12"
+    dateISTYMD: { type: String },
     startTime: { type: String, required: true },
     endTime: { type: String, required: true },
     bookingId: { type: Schema.Types.ObjectId, ref: "MeetingBooking" },

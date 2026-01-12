@@ -77,8 +77,8 @@ async function checkAvailability(room, start, end) {
   const { availability = {}, blackoutDates = [] } = room;
   const {
     daysOfWeek = [1, 2, 3, 4, 5],
-    openTime = "09:00",
-    closeTime = "19:00",
+    openTime: roomOpen = "09:00",
+    closeTime: roomClose = "19:00",
     minBookingMinutes = 30,
     maxBookingMinutes = 480,
   } = availability;
@@ -94,16 +94,26 @@ async function checkAvailability(room, start, end) {
   if (duration < minBookingMinutes) return { ok: false, reason: `Minimum booking is ${minBookingMinutes} minutes` };
   if (duration > maxBookingMinutes) return { ok: false, reason: `Maximum booking is ${maxBookingMinutes} minutes` };
 
-  // Within operating hours
-// Within operating hours (IST)
-const startHHMM = toHHMM(start);
-const endHHMM = toHHMM(end);
-if (startHHMM < openTime || endHHMM > closeTime) {
-  return { 
-    ok: false, 
-    reason: `Booking must be within operating hours ${openTime}-${closeTime} IST` 
-  };
-}
+  // Within operating hours (IST)
+  // Prefer building-level opening/closing times if present
+  let openTime = roomOpen;
+  let closeTime = roomClose;
+  try {
+    if (room.building) {
+      const b = await Building.findById(room.building).select('openingTime closingTime').lean();
+      if (b?.openingTime) openTime = b.openingTime;
+      if (b?.closingTime) closeTime = b.closingTime;
+    }
+  } catch (e) {}
+
+  const startHHMM = toHHMM(start);
+  const endHHMM = toHHMM(end);
+  if (startHHMM < openTime || endHHMM > closeTime) {
+    return { 
+      ok: false, 
+      reason: `Booking must be within operating hours ${openTime}-${closeTime} IST` 
+    };
+  }
 
   // Blackout dates
   const startDayStr = start.toISOString().substring(0, 10);
@@ -113,7 +123,7 @@ if (startHHMM < openTime || endHHMM > closeTime) {
   // Conflict check without buffer
   const overlap = await MeetingBooking.findOne({
     room: room._id,
-    status: "booked",
+    status: { $in: ["booked", "payment_pending"] },
     start: { $lt: end },
     end: { $gt: start },
   }).lean();
@@ -141,7 +151,14 @@ export const createBooking = async (req, res) => {
       amount, 
       notes,
       discount, // { percent, reason }
-      usingDefaultBuildingDiscount // boolean
+      usingDefaultBuildingDiscount, // boolean
+      // External partner payload (optional)
+      externalSource,
+      referenceNumber,
+      name,
+      email,
+      phone,
+      guests // array of { name, email, phone }
     } = req.body || {};
     
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
@@ -159,23 +176,76 @@ export const createBooking = async (req, res) => {
       }
       clientId = memberDoc.client?._id;
     } else {
-      // Admin/community flow: allow booking with a client only
+      // Admin/community or external partner flow: allow booking with a client only
       const clientFromBody = client;
-      if (!clientFromBody) {
+      if (!clientFromBody && !externalSource) {
         return res.status(400).json({ success: false, message: "client or memberId is required" });
       }
-      const clientDoc = await Client.findById(clientFromBody).select('_id');
-      if (!clientDoc) {
-        return res.status(404).json({ success: false, message: "Client not found" });
+      if (clientFromBody) {
+        const clientDoc = await Client.findById(clientFromBody).select('_id');
+        if (!clientDoc) {
+          return res.status(404).json({ success: false, message: "Client not found" });
+        }
+        clientId = clientDoc._id;
       }
-      clientId = clientDoc._id;
     }
 
-    const room = await MeetingRoom.findById(roomId);
+    const room = await MeetingRoom.findById(roomId).populate('building');
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
     const avail = await checkAvailability(room, new Date(start), new Date(end));
     if (!avail.ok) return res.status(400).json({ success: false, message: avail.reason });
+
+    // If external partner provides a primary booker and guests, create Visitor records
+    const visitorIds = [];
+    if (externalSource && (name || email || phone)) {
+      try {
+        const expectedVisitDate = new Date(start);
+        const primaryVisitor = await Visitor.create({
+          name: (name || 'Guest').trim(),
+          email: email?.trim(),
+          phone: phone?.trim(),
+          companyName: undefined,
+          hostMember: currentMemberId || undefined,
+          hostClient: clientId || undefined,
+          purpose: 'Meeting Room Booking',
+          expectedVisitDate,
+          expectedArrivalTime: new Date(start),
+          expectedDepartureTime: new Date(end),
+          building: room.building?._id || room.building,
+          status: 'invited',
+          externalSource,
+          externalReferenceNumber: referenceNumber,
+          bookingRole: 'primary'
+        });
+        visitorIds.push(primaryVisitor._id);
+        if (Array.isArray(guests)) {
+          for (const g of guests) {
+            if (!g || (!g.name && !g.email && !g.phone)) continue;
+            const gv = await Visitor.create({
+              name: (g.name || 'Guest').trim(),
+              email: g.email?.trim(),
+              phone: g.phone?.trim(),
+              hostMember: currentMemberId || undefined,
+              hostClient: clientId || undefined,
+              purpose: 'Meeting Room Booking',
+              expectedVisitDate,
+              expectedArrivalTime: new Date(start),
+              expectedDepartureTime: new Date(end),
+              building: room.building?._id || room.building,
+              status: 'invited',
+              externalSource,
+              externalReferenceNumber: referenceNumber,
+              bookingRole: 'guest'
+            });
+            visitorIds.push(gv._id);
+          }
+        }
+      } catch (e) {
+        // Do not fail booking if visitor creation fails; log and continue
+        console.error('External visitor creation failed:', e?.message);
+      }
+    }
 
     // Calculate duration and pricing
     const durationHours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
@@ -198,7 +268,7 @@ export const createBooking = async (req, res) => {
     let requestedBy = req.user?.id || undefined;
     const hasDiscountRequest = discount && typeof discount === 'object' && discount.percent != null;
 
-    // Resolve cap early if a discount is requested and not paying with credits
+    // Resolve discount cap early if a discount is requested and not paying with credits
     let discountCap;
     if (hasDiscountRequest) {
       // Reject discount with credits
@@ -319,7 +389,7 @@ export const createBooking = async (req, res) => {
       room: roomId,
       member: currentMemberId || undefined,
       client: clientId || undefined,
-      visitors: Array.isArray(visitors) ? visitors : undefined,
+      visitors: visitorIds.length ? visitorIds : (Array.isArray(visitors) ? visitors : undefined),
       start: new Date(start),
       end: new Date(end),
       amenitiesRequested: Array.isArray(amenitiesRequested) ? amenitiesRequested : undefined,
@@ -336,6 +406,9 @@ export const createBooking = async (req, res) => {
       requestedReason: discountStatus === 'pending' ? requestedReason : undefined,
       appliedDiscountPercent: appliedDiscountPercent || 0,
       discountAmount: discountAmount || 0,
+      // external idempotency
+      externalSource: externalSource || undefined,
+      referenceNumber: referenceNumber || undefined,
     });
 
     // Add reserved slot to meeting room
@@ -356,9 +429,15 @@ export const createBooking = async (req, res) => {
       timeZone: 'Asia/Kolkata'
     });
 
+    // Compute IST day string and UTC midnight for that day (visual consistency in DB tools)
+    const istYmd = formatYMDIST(bookingStart);
+    const utcMidnightOfIstDay = new Date(`${istYmd}T00:00:00.000Z`);
+
     // Add to reserved slots
     const reservedSlot = {
-      date: new Date(bookingStart.setHours(0, 0, 0, 0)),
+      // Store UTC midnight of the IST day + denormalized IST day string
+      date: utcMidnightOfIstDay,
+      dateISTYMD: istYmd,
       startTime: startTimeStr,
       endTime: endTimeStr,
       bookingId: booking._id

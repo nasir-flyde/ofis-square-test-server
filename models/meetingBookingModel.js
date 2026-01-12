@@ -15,17 +15,17 @@ const meetingBookingSchema = new Schema(
 
     currency: { type: String, default: "INR" },
     amount: { type: Number, default: 0 },
- client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
-  invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
-  payment: {
-    method: { type: String, enum: ["cash", "card", "credits"], default: "cash" },
-    coveredCredits: { type: Number },
-    extraCredits: { type: Number },
-    overageAmount: { type: Number },
-    valuePerCredit: { type: Number },
-    idempotencyKey: { type: String },
-    amount: { type: Number }
-  },
+    client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
+    invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
+    payment: {
+      method: { type: String, enum: ["cash", "card", "credits"], default: "cash" },
+      coveredCredits: { type: Number },
+      extraCredits: { type: Number },
+      overageAmount: { type: Number },
+      valuePerCredit: { type: Number },
+      idempotencyKey: { type: String },
+      amount: { type: Number }
+    },
     // Discount workflow
     usingDefaultBuildingDiscount: { type: Boolean, default: false },
     discountStatus: { type: String, enum: ["none", "pending", "approved", "rejected"], default: "none", index: true },
@@ -38,10 +38,16 @@ const meetingBookingSchema = new Schema(
     approvalNotes: { type: String },
     approvedAt: { type: Date },
     notes: { type: String, trim: true },
+
+    // External integration fields for idempotency
+    externalSource: { type: String, index: true }, // e.g., 'myhq'
+    referenceNumber: { type: String, index: true }, // partner-provided unique reference
   },
   { timestamps: true, collection: "meeting_bookings" }
 );
 
 meetingBookingSchema.index({ room: 1, start: 1, end: 1 });
+// Ensure idempotency per external partner
+meetingBookingSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("MeetingBooking", meetingBookingSchema);

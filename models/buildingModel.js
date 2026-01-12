@@ -10,6 +10,8 @@ const BuildingSchema = new Schema(
     state: { type: String },
     country: { type: String, default: "India" },
     pincode: { type: String },
+    openingTime: { type: String, default: "09:00" },
+    closingTime: { type: String, default: "19:00" },
     location: {
       type: {
         type: String,
