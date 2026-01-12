@@ -13,6 +13,7 @@ import Payment from "../models/paymentModel.js";
 import { logBookingActivity, logPaymentActivity, logErrorActivity } from "../utils/activityLogger.js";
 import crypto from "crypto";
 import mongoose from "mongoose";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Create single day pass (not from bundle)
 export const createSingleDayPass = async (req, res) => {
@@ -207,6 +208,37 @@ export const createSingleDayPass = async (req, res) => {
         totalAmount
       });
 
+      // Notify booking customer - Day Pass booking confirmed
+      try {
+        const to = {};
+        // Prefer customer's email on populated document
+        if (dayPass.customer?.email) to.email = dayPass.customer.email;
+        if (to.email) {
+          await sendNotification({
+            to,
+            channels: { email: true, sms: false },
+            templateKey: 'day_pass_booking_confirmed',
+            templateVariables: {
+              buildingName: dayPass.building?.name,
+              date: bookingDate.toISOString().slice(0,10),
+              dayPassId: String(dayPass._id)
+            },
+            title: 'Day Pass Booking Confirmed',
+            metadata: {
+              category: 'day_pass',
+              tags: ['day_pass_booking_confirmed'],
+              route: `/day-passes/${dayPass._id}`,
+              deepLink: `ofis://day-passes/${dayPass._id}`,
+              routeParams: { id: String(dayPass._id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      } catch (notifyErr) {
+        console.warn('createSingleDayPass: failed to send day_pass_booking_confirmed notification:', notifyErr?.message || notifyErr);
+      }
+
       const responseData = {
         dayPass,
       };
@@ -397,6 +429,138 @@ export const inviteVisitor = async (req, res) => {
       await dayPass.save();
     } catch (e) {
       console.warn("Failed to append visitor to day pass visitors array:", e?.message || e);
+    }
+
+    // Send notifications: visitor and host/booker - Day Pass booking confirmed
+    try {
+      // Visitor notification (email)
+      if (visitorEmail) {
+        await sendNotification({
+          to: { email: visitorEmail },
+          channels: { email: true, sms: false },
+          templateKey: 'day_pass_booking_confirmed',
+          templateVariables: {
+            buildingName: dayPass.building?.name,
+            date: passDate.toISOString().slice(0,10),
+            dayPassId: String(dayPass._id)
+          },
+          title: 'Day Pass Booking Confirmed',
+          metadata: {
+            category: 'day_pass',
+            tags: ['day_pass_booking_confirmed', 'visitor'],
+            route: `/visitor/day-passes/${dayPass._id}`,
+            deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
+            routeParams: { id: String(dayPass._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+
+      // Host/booker notification (member/client/guest)
+      let hostEmail = null;
+      if (dayPass.hostMember?.email) hostEmail = dayPass.hostMember.email;
+      else if (dayPass.hostClient?.email) hostEmail = dayPass.hostClient.email;
+      else if (dayPass.customer?.email) hostEmail = dayPass.customer.email;
+
+      if (hostEmail) {
+        await sendNotification({
+          to: { email: hostEmail },
+          channels: { email: true, sms: false },
+          templateKey: 'day_pass_booking_confirmed',
+          templateVariables: {
+            buildingName: dayPass.building?.name,
+            date: passDate.toISOString().slice(0,10),
+            dayPassId: String(dayPass._id)
+          },
+          title: 'Day Pass Booking Confirmed',
+          metadata: {
+            category: 'day_pass',
+            tags: ['day_pass_booking_confirmed', 'host'],
+            route: `/day-passes/${dayPass._id}`,
+            deepLink: `ofis://day-passes/${dayPass._id}`,
+            routeParams: { id: String(dayPass._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('inviteVisitor: failed to send day pass confirmation notifications:', notifyErr?.message || notifyErr);
+    }
+
+    // Schedule reminder notifications to visitor and host/booker
+    try {
+      const reminderMinutes = Number(process.env.DAY_PASS_REMINDER_MINUTES_BEFORE || 60);
+      // Prefer specific expectedArrivalTime if provided; else 10:00 AM on pass date
+      const defaultArrival = new Date(passDate);
+      defaultArrival.setHours(10, 0, 0, 0);
+      const arrivalTime = arrivalDT || defaultArrival;
+      const scheduledAt = new Date(arrivalTime.getTime() - reminderMinutes * 60000);
+      const now = new Date();
+      if (scheduledAt > now) {
+        const arrivalTimeStr = arrivalTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+        const dateStr = passDate.toISOString().slice(0,10);
+
+        // Visitor reminder
+        if (visitorEmail) {
+          await sendNotification({
+            to: { email: visitorEmail },
+            channels: { email: true, sms: false },
+            templateKey: 'day_pass_booking_reminder',
+            templateVariables: {
+              buildingName: dayPass.building?.name,
+              date: dateStr,
+              time: arrivalTimeStr,
+              dayPassId: String(dayPass._id)
+            },
+            title: 'Day Pass Reminder',
+            metadata: {
+              category: 'day_pass',
+              tags: ['day_pass_booking_reminder', 'visitor'],
+              route: `/visitor/day-passes/${dayPass._id}`,
+              deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
+              routeParams: { id: String(dayPass._id) }
+            },
+            source: 'system',
+            type: 'reminder',
+            scheduledAt
+          });
+        }
+
+        // Host/booker reminder
+        let hostEmailForReminder = null;
+        if (dayPass.hostMember?.email) hostEmailForReminder = dayPass.hostMember.email;
+        else if (dayPass.hostClient?.email) hostEmailForReminder = dayPass.hostClient.email;
+        else if (dayPass.customer?.email) hostEmailForReminder = dayPass.customer.email;
+
+        if (hostEmailForReminder) {
+          await sendNotification({
+            to: { email: hostEmailForReminder },
+            channels: { email: true, sms: false },
+            templateKey: 'day_pass_booking_reminder',
+            templateVariables: {
+              buildingName: dayPass.building?.name,
+              date: dateStr,
+              time: arrivalTimeStr,
+              dayPassId: String(dayPass._id)
+            },
+            title: 'Day Pass Reminder',
+            metadata: {
+              category: 'day_pass',
+              tags: ['day_pass_booking_reminder', 'host'],
+              route: `/day-passes/${dayPass._id}`,
+              deepLink: `ofis://day-passes/${dayPass._id}`,
+              routeParams: { id: String(dayPass._id) }
+            },
+            source: 'system',
+            type: 'reminder',
+            scheduledAt
+          });
+        }
+      }
+    } catch (remErr) {
+      console.warn('inviteVisitor: failed to schedule day pass reminders:', remErr?.message || remErr);
     }
 
     // TODO: Send invitation email with QR code similar to visitor system

@@ -1,7 +1,7 @@
 import Notification from '../models/notificationModel.js';
 import { getSMSProvider } from '../services/notifications/smsProvider.js';
 import { getEmailProvider } from '../services/notifications/emailProvider.js';
-import renderer from '../services/notifications/renderer.js';
+import { renderTemplateByKey, renderArbitraryContent } from '../services/notifications/templateService.js';
 
 const smsProvider = getSMSProvider();
 const emailProvider = getEmailProvider();
@@ -52,7 +52,7 @@ export const sendNotification = async (options) => {
     // Render content
     let renderedContent = {};
     if (templateKey) {
-      const templateContent = renderer.renderTemplate(templateKey, templateVariables || {});
+      const templateContent = await renderTemplateByKey(templateKey, templateVariables || {});
       renderedContent = {
         smsText: templateContent.sms,
         emailSubject: templateContent.subject,
@@ -60,7 +60,7 @@ export const sendNotification = async (options) => {
         emailText: templateContent.text
       };
     } else if (content) {
-      renderedContent = renderer.renderContent(content, templateVariables || {});
+      renderedContent = renderArbitraryContent(content, templateVariables || {});
     } else {
       throw new Error('Either templateKey or content must be provided');
     }

@@ -7,6 +7,7 @@ import Invoice from "../models/invoiceModel.js";
 import Payment from "../models/paymentModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Create a new day pass bundle
 export const createDayPassBundle = async (req, res) => {
@@ -249,6 +250,39 @@ export const createDayPassBundle = async (req, res) => {
         { path: 'building', select: 'name address openSpacePricing' },
         { path: 'invoice', select: 'invoice_number total status' }
       ]);
+
+      // Notify booking customer - Day Pass Bundle booking confirmed
+      try {
+        const to = {};
+        if (bundle.customer?.email) to.email = bundle.customer.email;
+        // We can optionally associate clientId in future if available
+        if (to.email) {
+          await sendNotification({
+            to,
+            channels: { email: true, sms: false },
+            templateKey: 'day_pass_booking_confirmed',
+            templateVariables: {
+              buildingName: bundle.building?.name,
+              passes: bundle.no_of_dayPasses,
+              validFrom: bundle.validFrom?.toISOString()?.slice(0, 10),
+              validUntil: bundle.validUntil?.toISOString()?.slice(0, 10),
+              bundleId: String(bundle._id)
+            },
+            title: 'Day Pass Bundle Booking Confirmed',
+            metadata: {
+              category: 'day_pass',
+              tags: ['day_pass_booking_confirmed', 'bundle'],
+              route: `/day-pass-bundles/${bundle._id}`,
+              deepLink: `ofis://day-pass-bundles/${bundle._id}`,
+              routeParams: { id: String(bundle._id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      } catch (notifyErr) {
+        console.warn('createDayPassBundle: failed to send day_pass_booking_confirmed notification:', notifyErr?.message || notifyErr);
+      }
 
       const resp = {
         message: "Day pass bundle created successfully",

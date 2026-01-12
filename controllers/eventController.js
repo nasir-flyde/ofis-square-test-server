@@ -227,7 +227,7 @@ const publishEvent = async (req, res) => {
     await event.save();
 
     // Log activity
-    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id,
       { status: oldStatus }, { status: 'published' });
 
     res.json({
@@ -260,7 +260,7 @@ const getEvents = async (req, res) => {
     } = req.query;
 
     const query = {};
-    
+
     // Filter by status
     if (status) {
       query.status = status;
@@ -433,15 +433,48 @@ const rsvpEvent = async (req, res) => {
         });
       }
     }
-
-    // Credit consumption disabled for RSVP flow
-
-    // Add to RSVP list
     event.rsvps.push(memberId);
     await event.save();
+    try {
+      const member = await Member.findById(memberId).select('email firstName').lean();
+      if (member?.email) {
+        await sendNotification({
+          to: {
+            email: member.email,
+            memberId: member._id
+          },
+          channels: { email: true, sms: false },
+          templateKey: 'rsvp_success',
+          templateVariables: {
+            eventName: event.title,
+            eventDate: new Date(event.startDate).toLocaleDateString('en-IN', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            }),
+            eventId: event._id.toString()
+          },
+          title: 'RSVP Confirmed',
+          metadata: {
+            category: 'events',
+            tags: ['rsvp', 'confirmation'],
+            route: `/events/${event._id}`,
+            deepLink: `ofis://events/${event._id}`,
+            routeParams: { id: event._id.toString() }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('Failed to send RSVP confirmation:', notifyErr?.message || notifyErr);
+      // Don't fail the RSVP if notification fails
+    }
 
     // Log activity
-    await logCRUDActivity(req.userId, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.userId, 'UPDATE', 'Event', event._id,
       null, { action: 'RSVP', memberId });
 
     res.json({
@@ -482,8 +515,6 @@ const cancelRsvp = async (req, res) => {
         message: 'Event not found'
       });
     }
-
-    // If requester is a client token, validate that provided member belongs to this client
     if (req.authType === 'client' && req.clientId) {
       const memberDoc = await Member.findById(memberId);
       if (!memberDoc || String(memberDoc.client) !== String(req.clientId)) {
@@ -493,23 +524,15 @@ const cancelRsvp = async (req, res) => {
         });
       }
     }
-
-    // Check if RSVP'd
     if (!event.rsvps.includes(memberId)) {
       return res.status(400).json({
         success: false,
         message: 'No RSVP found for this event'
       });
     }
-
-    // Credit refund disabled for RSVP cancellation
-
-    // Remove from RSVP list
     event.rsvps = event.rsvps.filter(rsvp => !rsvp.equals(memberId));
     await event.save();
-
-    // Log activity
-    await logCRUDActivity(req.userId, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.userId, 'UPDATE', 'Event', event._id,
       null, { action: 'CANCEL_RSVP', memberId });
 
     res.json({
@@ -530,7 +553,6 @@ const cancelRsvp = async (req, res) => {
   }
 };
 
-// Mark Attendance (Admin/Community)
 const markAttendance = async (req, res) => {
   try {
     const { id } = req.params;
@@ -550,29 +572,23 @@ const markAttendance = async (req, res) => {
         message: 'Event not found'
       });
     }
-
-    // Check if member RSVP'd
     if (!event.rsvps.includes(memberId)) {
       return res.status(400).json({
         success: false,
         message: 'Member did not RSVP for this event'
       });
     }
-
-    // Check if already marked attendance
     if (event.attendance.includes(memberId)) {
       return res.status(400).json({
         success: false,
         message: 'Attendance already marked for this member'
       });
     }
-
-    // Add to attendance
     event.attendance.push(memberId);
     await event.save();
 
     // Log activity
-    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id,
       null, { action: 'MARK_ATTENDANCE', memberId });
 
     res.json({
@@ -620,7 +636,7 @@ const completeEvent = async (req, res) => {
     await event.save();
 
     // Log activity
-    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id,
       { status: oldStatus }, { status: 'completed' });
 
     res.json({
@@ -683,7 +699,7 @@ const cancelEvent = async (req, res) => {
     await event.save();
 
     // Log activity
-    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, 
+    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id,
       { status: oldStatus }, { status: 'cancelled', reason });
 
     res.json({
@@ -761,14 +777,14 @@ const updateEvent = async (req, res) => {
         });
       }
     }
-    
+
     // Clean up empty string values for ObjectId fields in updates
     const cleanedUpdates = { ...updates };
-    
+
     if (cleanedUpdates.category !== undefined) {
       cleanedUpdates.category = cleanedUpdates.category && cleanedUpdates.category.trim() !== '' ? cleanedUpdates.category : undefined;
     }
-    
+
     if (cleanedUpdates.location) {
       cleanedUpdates.location = {
         building: cleanedUpdates.location.building && cleanedUpdates.location.building.trim() !== '' ? cleanedUpdates.location.building : undefined,

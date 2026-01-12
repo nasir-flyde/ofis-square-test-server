@@ -670,29 +670,14 @@ export const finalApprove = async (req, res) => {
           .select('email contactPerson companyName')
           .lean();
         if (clientDoc?.email) {
-          const subject = 'Welcome to OFIS SQUARE – Onboarding Initiated';
-          const bodyText = 'Welcome to OFIS SQUARE Coworking Space. Your onboarding process has been successfully initiated. To complete the onboarding and activate your workspace access, please complete the following steps if pending: submit your profile details, upload required KYC documents, and complete the payment process. Once all required steps are completed, your workspace access will be activated. For any assistance, please contact the OFIS SQUARE support team.\n\nTeam OFIS SQUARE';
-          const bodyHtml = `<p>Welcome to <strong>OFIS SQUARE Coworking Space</strong>.</p>
-            <p>Your onboarding process has been successfully initiated.</p>
-            <p>To complete the onboarding and activate your workspace access, please complete the following steps if pending:</p>
-            <ul>
-              <li>Submit your profile details</li>
-              <li>Upload required KYC documents</li>
-              <li>Complete the payment process</li>
-            </ul>
-            <p>Once all required steps are completed, your workspace access will be activated.</p>
-            <p>For any assistance, please contact the OFIS SQUARE support team.</p>
-            <p>Team OFIS SQUARE</p>`;
-
           await sendNotification({
             to: { email: clientDoc.email, clientId: contract.client },
             channels: { email: true, sms: false },
-            content: {
-              emailSubject: subject,
-              emailHtml: bodyHtml,
-              emailText: bodyText
+            templateKey: 'onboarding_initiated',
+            templateVariables: {
+              companyName: clientDoc.companyName || 'Your Company'
             },
-            title: 'Welcome to OFIS SQUARE',
+            title: 'Onboarding Initiated',
             metadata: { category: 'onboarding', tags: ['welcome', 'onboarding_initiated'] },
             source: 'system',
             type: 'transactional'

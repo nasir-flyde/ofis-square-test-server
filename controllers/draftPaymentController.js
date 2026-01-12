@@ -4,6 +4,8 @@ import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
 import imagekit from "../utils/imageKit.js";
 import { recordZohoPayment } from "../utils/zohoBooks.js";
+import { sendNotification } from "../utils/notificationHelper.js";
+import Client from "../models/clientModel.js";
 
 // Helper: apply amount delta to invoice and set status fields (aligned with current model)
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -103,6 +105,40 @@ export const createDraftPayment = async (req, res) => {
       status: "pending",
       submittedByClient: req.clientId || undefined,
     });
+
+    // Notify client: draft payment submitted
+    try {
+      const to = { clientId: submittingClient };
+      try {
+        const clientDoc = await Client.findById(submittingClient).select('email').lean();
+        if (clientDoc?.email) to.email = clientDoc.email;
+      } catch {}
+
+      await sendNotification({
+        to,
+        channels: { email: Boolean(to.email), sms: false },
+        templateKey: 'draft_payment_submitted',
+        templateVariables: {
+          invoiceNumber: invoice?.invoice_number || invoice?.reference_number || String(invoice?._id || invoiceId),
+          amount: Number(amount),
+          paymentDate: paymentDate ? new Date(paymentDate).toISOString().slice(0,10) : undefined,
+          type: type || '',
+          referenceNumber: referenceNumber || ''
+        },
+        title: 'Draft Payment Submitted',
+        metadata: {
+          category: 'payments',
+          tags: ['draft_payment_submitted'],
+          route: `/draft-payments/${draft._id}`,
+          deepLink: `ofis://draft-payments/${draft._id}`,
+          routeParams: { id: String(draft._id) }
+        },
+        source: 'system',
+        type: 'transactional'
+      });
+    } catch (notifyErr) {
+      console.warn('createDraftPayment: failed to send draft_payment_submitted notification:', notifyErr?.message || notifyErr);
+    }
 
     return res.status(201).json({ success: true, data: draft });
   } catch (error) {
@@ -229,6 +265,43 @@ export const approveDraftPayment = async (req, res) => {
     } catch (zohoError) {
       console.error("❌ Failed to sync payment to Zoho Books:", zohoError.message);
       // Don't fail the approval process if Zoho sync fails
+    }
+
+    // Notify client: draft payment approved
+    try {
+      const to = { clientId: draft.client };
+      try {
+        const clientDoc = await Client.findById(draft.client).select('email').lean();
+        if (clientDoc?.email) to.email = clientDoc.email;
+      } catch {}
+
+      const paymentDoc = Array.isArray(payment) ? payment[0] : payment;
+
+      await sendNotification({
+        to,
+        channels: { email: Boolean(to.email), sms: false },
+        templateKey: 'draft_payment_approved',
+        templateVariables: {
+          invoiceNumber: updatedInvoice?.invoice_number || updatedInvoice?.reference_number || String(updatedInvoice?._id || draft.invoice),
+          amount: Number(draft.amount),
+          paymentDate: draft.paymentDate ? new Date(draft.paymentDate).toISOString().slice(0,10) : undefined,
+          type: draft.type || '',
+          referenceNumber: draft.referenceNumber || '',
+          paymentNumber: paymentDoc?.payment_number || ''
+        },
+        title: 'Draft Payment Approved',
+        metadata: {
+          category: 'payments',
+          tags: ['draft_payment_approved'],
+          route: `/payments/${paymentDoc?._id || ''}`,
+          deepLink: `ofis://payments/${paymentDoc?._id || ''}`,
+          routeParams: { id: String(paymentDoc?._id || '') }
+        },
+        source: 'system',
+        type: 'transactional'
+      });
+    } catch (notifyErr) {
+      console.warn('approveDraftPayment: failed to send draft_payment_approved notification:', notifyErr?.message || notifyErr);
     }
 
     return res.json({ success: true, message: "Draft approved and payment recorded", data: { draft, payment: payment?.[0] } });

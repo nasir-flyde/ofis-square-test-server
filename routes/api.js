@@ -56,6 +56,7 @@ import zohoBooksRoutes from "./zohoBooks.js";
 import locationsRoutes from "./locations.js";
 import estimatesRoutes from "./estimates.js";
 import partnerMyhqRoutes from "./partnerMyhq.js";
+import notificationTemplatesRoutes from "./notificationTemplates.js";
 
 const router = express.Router();
 
@@ -96,6 +97,7 @@ router.use("/events", eventsRoutes);
 router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
+router.use("/notification-templates", notificationTemplatesRoutes);
 router.use("/announcements", announcementsRoutes);
 router.use("/pincode", pincodeRoutes);
 router.use("/access", accessRoutes);

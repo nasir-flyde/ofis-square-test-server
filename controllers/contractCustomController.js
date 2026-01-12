@@ -11,6 +11,9 @@ import { sendAdminApprovalRequestEmail, sendLegalReviewRequestEmail } from "../u
 import SecurityDeposit from "../models/securityDepositModel.js";
 import fetch from "node-fetch";
 import { getAccessToken } from "../utils/zohoSignAuth.js";
+import { sendNotification } from "../utils/notificationHelper.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
 
 // Compute stage for custom flow
 export const getCustomWorkflowStatus = (contract) => {
@@ -301,6 +304,43 @@ export const createBySales = async (req, res) => {
       kycItemsAttached: kycCount,
     });
 
+    // Notify Sales role users: commercials submitted for senior approval
+    try {
+      const populatedForNotify = await Contract.findById(contract._id).populate("client", "companyName");
+      const clientName = populatedForNotify?.client?.companyName || 'Client';
+      const salesRole = await Role.findOne({ roleName: 'Sales' }).lean();
+      if (!salesRole?._id) {
+        console.warn('createBySales: Sales role not found');
+      } else {
+        const salesUsers = await User.find({ role: salesRole._id }).select('email _id').lean();
+        for (const u of salesUsers) {
+          const to = { userId: u._id };
+          if (u.email) to.email = u.email;
+          await sendNotification({
+            to,
+            channels: { email: Boolean(to.email), sms: false },
+            templateKey: 'sales_senior_commercials_approval',
+            templateVariables: {
+              clientName,
+              contractId: String(contract._id)
+            },
+            title: 'Commercials Submitted for Senior Approval',
+            metadata: {
+              category: 'contract',
+              tags: ['sales_senior_commercials_approval'],
+              route: `/contracts/${contract._id}`,
+              deepLink: `ofis://contracts/${contract._id}`,
+              routeParams: { id: String(contract._id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      }
+    } catch (notifyErr) {
+      console.warn('createBySales: failed to notify Sales users:', notifyErr?.message || notifyErr);
+    }
+
     return res.json({ success: true, message: "Contract created by Sales", data: { id: contract._id, securityDepositId: contract.securityDeposit || securityDepositId || null } });
   } catch (err) {
     console.error("createBySales error:", err);
@@ -554,6 +594,43 @@ export const salesSeniorUpdateAndApprove = async (req, res) => {
       } catch (emailErr) {
         console.warn("Failed to send legal review request email:", emailErr?.message || emailErr);
       }
+
+      // Notify Legal Team users only about legal stage kickoff
+      try {
+        const populated = await Contract.findById(id).populate("client", "companyName");
+        const clientName = populated?.client?.companyName || 'Client';
+        const legalRole = await Role.findOne({ roleName: 'Legal Team' }).lean();
+        if (!legalRole?._id) {
+          console.warn('salesSeniorUpdateAndApprove: Legal Team role not found');
+        } else {
+          const legalUsers = await User.find({ role: legalRole._id }).select('email _id').lean();
+          for (const u of legalUsers) {
+            const to = { userId: u._id };
+            if (u.email) to.email = u.email;
+            await sendNotification({
+              to,
+              channels: { email: Boolean(to.email), sms: false },
+              templateKey: 'legal_team_contract_upload',
+              templateVariables: {
+                clientName,
+                contractId: String(id)
+              },
+              title: 'Legal Team Stage Initiated',
+              metadata: {
+                category: 'contract',
+                tags: ['legal_team_contract_upload'],
+                route: `/contracts/${id}`,
+                deepLink: `ofis://contracts/${id}`,
+                routeParams: { id: String(id) }
+              },
+              source: 'system',
+              type: 'transactional'
+            });
+          }
+        }
+      } catch (notifyErr) {
+        console.warn('salesSeniorUpdateAndApprove: failed to notify Legal Team:', notifyErr?.message || notifyErr);
+      }
     }
 
     return res.json({ success: true, message: approve ? "Approved by Sales Senior" : "Updated by Sales Senior" });
@@ -609,6 +686,44 @@ export const salesSeniorReject = async (req, res) => {
       notes: String(notes).trim(),
     });
 
+    // Notify Sales role users about rejection
+    try {
+      const populatedForNotify = await Contract.findById(id).populate("client", "companyName");
+      const clientName = populatedForNotify?.client?.companyName || 'Client';
+      const salesRole = await Role.findOne({ roleName: 'Sales' }).lean();
+      if (!salesRole?._id) {
+        console.warn('salesSeniorReject: Sales role not found');
+      } else {
+        const salesUsers = await User.find({ role: salesRole._id }).select('email _id').lean();
+        for (const u of salesUsers) {
+          const to = { userId: u._id };
+          if (u.email) to.email = u.email;
+          await sendNotification({
+            to,
+            channels: { email: Boolean(to.email), sms: false },
+            templateKey: 'sales_senior_commercials_rejected',
+            templateVariables: {
+              clientName,
+              contractId: String(id),
+              notes: String(notes).trim()
+            },
+            title: 'Sales Senior Rejected Commercials',
+            metadata: {
+              category: 'contract',
+              tags: ['sales_senior_commercials_rejected'],
+              route: `/contracts/${id}`,
+              deepLink: `ofis://contracts/${id}`,
+              routeParams: { id: String(id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      }
+    } catch (notifyErr) {
+      console.warn('salesSeniorReject: failed to notify Sales users:', notifyErr?.message || notifyErr);
+    }
+
     return res.json({ success: true, message: "Rejected by Sales Senior" });
   } catch (err) {
     console.error("salesSeniorReject error:", err);
@@ -658,6 +773,43 @@ export const legalUploadDocument = async (req, res) => {
       action: "legal_uploaded",
       fileName: file.originalname,
     });
+
+    // Notify System Admin users (role) about next approval step using 'sales_senior_commercials_approval'
+    try {
+      const populatedClient = await Contract.findById(id).populate("client", "companyName");
+      const clientName = populatedClient?.client?.companyName || 'Client';
+      const adminRole = await Role.findOne({ roleName: 'System Admin' }).lean();
+      if (!adminRole?._id) {
+        console.warn('legalUploadDocument: System Admin role not found');
+      } else {
+        const adminUsers = await User.find({ role: adminRole._id }).select('email _id').lean();
+        for (const u of adminUsers) {
+          const to = { userId: u._id };
+          if (u.email) to.email = u.email;
+          await sendNotification({
+            to,
+            channels: { email: Boolean(to.email), sms: false },
+            templateKey: 'sales_senior_commercials_approval',
+            templateVariables: {
+              clientName,
+              contractId: String(id)
+            },
+            title: 'Commercials Submitted for Senior Approval',
+            metadata: {
+              category: 'contract',
+              tags: ['sales_senior_commercials_approval'],
+              route: `/contracts/${id}`,
+              deepLink: `ofis://contracts/${id}`,
+              routeParams: { id: String(id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      }
+    } catch (notifyErr) {
+      console.warn('legalUploadDocument: failed to notify System Admin users:', notifyErr?.message || notifyErr);
+    }
 
     // Notify System Admins to review and approve the contract
     try {

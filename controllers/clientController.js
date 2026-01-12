@@ -1918,6 +1918,28 @@ export const createClientMember = async (req, res) => {
       status: "active"
     });
 
+    // Send platform access welcome email to the new member (template-based)
+    try {
+      if (email) {
+        const portalLink = process.env.PLATFORM_LOGIN_URL || process.env.PORTAL_URL || 'https://ofis-square.app/login';
+        await sendNotification({
+          to: { email, clientId },
+          channels: { email: true, sms: false },
+          templateKey: 'platform_access_welcome',
+          templateVariables: { link: portalLink },
+          title: 'Platform Access - Welcome',
+          metadata: {
+            category: 'onboarding',
+            tags: ['platform_access', 'welcome']
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (e) {
+      console.warn('createClientMember: failed to send platform access email:', e?.message || e);
+    }
+
     return res.status(201).json({ success: true, data: member });
   } catch (err) {
     if (err.code === 11000) {

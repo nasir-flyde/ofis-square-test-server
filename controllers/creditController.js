@@ -169,6 +169,38 @@ export const consumeCreditsForItem = async (req, res) => {
     
     const newBalance = currentBalance - creditsToConsume;
 
+    // If balance is now exhausted (<= 0) and was > 0 before, notify client
+    if (currentBalance > 0 && newBalance <= 0) {
+      const to = { clientId };
+      try {
+        const clientDoc = await Client.findById(clientId).select('email name companyName').lean();
+        if (clientDoc?.email) to.email = clientDoc.email;
+        const clientName = clientDoc?.name || clientDoc?.companyName || 'Client';
+
+        await sendNotification({
+          to,
+          channels: { email: Boolean(to.email), sms: false },
+          templateKey: 'credits_exhausted',
+          templateVariables: {
+            clientName,
+            balance: 0
+          },
+          title: 'Credits Exhausted',
+          metadata: {
+            category: 'credits',
+            tags: ['credits_exhausted'],
+            route: `/credits/wallet/${clientId}`,
+            deepLink: `ofis://credits/wallet/${clientId}`,
+            routeParams: { clientId: String(clientId) }
+          },
+          source: 'system',
+          type: 'alert'
+        });
+      } catch (notifyErr) {
+        console.warn('consumeCreditsForItem: failed to send credits_exhausted notification:', notifyErr?.message || notifyErr);
+      }
+    }
+
     // Activity log: credits consumed
     await logActivity({
       req,
@@ -765,6 +797,41 @@ export const recordCreditTransaction = async (req, res) => {
         },
         { upsert: true }
       );
+    }
+
+    const balanceBefore = await ClientCreditWallet.findOne({ client: clientId }).then(wallet => wallet?.balance || 0);
+    const balanceAfter = balanceBefore + creditsDelta; // creditsDelta may be negative
+
+    // If balance is now exhausted (<= 0) and was > 0 before, notify client
+    if (balanceBefore > 0 && balanceAfter <= 0) {
+      const to = { clientId };
+      try {
+        const clientDoc = await Client.findById(clientId).select('email name companyName').lean();
+        if (clientDoc?.email) to.email = clientDoc.email;
+        const clientName = clientDoc?.name || clientDoc?.companyName || 'Client';
+
+        await sendNotification({
+          to,
+          channels: { email: Boolean(to.email), sms: false },
+          templateKey: 'credits_exhausted',
+          templateVariables: {
+            clientName,
+            balance: 0
+          },
+          title: 'Credits Exhausted',
+          metadata: {
+            category: 'credits',
+            tags: ['credits_exhausted'],
+            route: `/credits/wallet/${clientId}`,
+            deepLink: `ofis://credits/wallet/${clientId}`,
+            routeParams: { clientId: String(clientId) }
+          },
+          source: 'system',
+          type: 'alert'
+        });
+      } catch (notifyErr) {
+        console.warn('recordCreditTransaction: failed to send credits_exhausted notification:', notifyErr?.message || notifyErr);
+      }
     }
 
     // Activity log: generic credit transaction

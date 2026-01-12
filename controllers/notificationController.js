@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 
 import { getSMSProvider } from "../services/notifications/smsProvider.js";
 import { getEmailProvider } from "../services/notifications/emailProvider.js";
-import renderer from "../services/notifications/renderer.js";
+import { renderTemplateByKey, renderArbitraryContent, getTemplateByKey } from "../services/notifications/templateService.js";
 import { logCRUDActivity } from "../utils/activityLogger.js";
 
 // Initialize providers
@@ -53,15 +53,23 @@ export const createNotification = async (req, res) => {
 
     // Render content
     let renderedContent = {};
+    let mergedMetadata = { ...(metadata || {}) };
     if (templateKey) {
       try {
-        const templateContent = renderer.renderTemplate(templateKey, templateVariables || {});
+        const templateContent = await renderTemplateByKey(templateKey, templateVariables || {});
         renderedContent = {
           smsText: templateContent.sms,
           emailSubject: templateContent.subject,
           emailHtml: templateContent.html,
           emailText: templateContent.text
         };
+        // Merge template default metadata if present
+        try {
+          const tplDoc = await getTemplateByKey(templateKey);
+          if (tplDoc?.defaults?.metadata) {
+            mergedMetadata = { ...tplDoc.defaults.metadata, ...mergedMetadata };
+          }
+        } catch (_) {}
       } catch (error) {
         return res.status(400).json({
           success: false,
@@ -69,7 +77,7 @@ export const createNotification = async (req, res) => {
         });
       }
     } else if (content) {
-      renderedContent = renderer.renderContent(content, templateVariables || {});
+      renderedContent = renderArbitraryContent(content, templateVariables || {});
     } else {
       return res.status(400).json({
         success: false,
@@ -110,7 +118,7 @@ export const createNotification = async (req, res) => {
       templateVariables,
       content: renderedContent,
       image: image || undefined,
-      metadata: metadata || {},
+      metadata: mergedMetadata,
       to: cleanTo,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
       expiresAt: expiresAt ? new Date(expiresAt) : null,

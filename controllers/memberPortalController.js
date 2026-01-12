@@ -5,6 +5,7 @@ import Notification from "../models/notificationModel.js";
 import Event from "../models/eventModel.js";
 import Announcement from "../models/announcementModel.js";
 import imagekit from "../utils/imageKit.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -402,6 +403,48 @@ export const createMyTicket = async (req, res) => {
     // Populate the created ticket for response
     const populatedTicket = await Ticket.findById(ticket._id)
       .populate('category.categoryId', 'name');
+
+    // Notify the creating member using template 'ticket_created'
+    try {
+      const to = {
+        memberId: req.memberId,
+        clientId: req.clientId
+      };
+      try {
+        // Prefer the earlier loaded member for email if available
+        if (member?.email) {
+          to.email = member.email;
+        } else {
+          const m = await Member.findById(req.memberId).select('email').lean();
+          if (m?.email) to.email = m.email;
+        }
+      } catch {}
+      
+      await sendNotification({
+        to,
+        channels: { email: Boolean(to.email), sms: false },
+        templateKey: 'ticket_created',
+        templateVariables: {
+          subject: ticketData.subject,
+          priority: ticketData.priority || 'low',
+          ticketId: populatedTicket?.ticketId || String(populatedTicket._id),
+          category: populatedTicket?.category?.categoryId?.name || undefined,
+          status: populatedTicket?.status || 'open'
+        },
+        title: 'Ticket Created',
+        metadata: {
+          category: 'ticket',
+          tags: ['ticket_created'],
+          route: `/tickets/${populatedTicket._id}`,
+          deepLink: `ofis://tickets/${populatedTicket._id}`,
+          routeParams: { id: String(populatedTicket._id) }
+        },
+        source: 'system',
+        type: 'transactional'
+      });
+    } catch (notifyErr) {
+      console.warn('createMyTicket: failed to send ticket_created notification:', notifyErr?.message || notifyErr);
+    }
 
     res.status(201).json({ success: true, data: populatedTicket });
   } catch (err) {

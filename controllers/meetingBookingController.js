@@ -8,6 +8,7 @@ import Client from "../models/clientModel.js";
 import WalletService from "../services/walletService.js";
 import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -446,6 +447,131 @@ export const createBooking = async (req, res) => {
     room.reservedSlots.push(reservedSlot);
     await room.save();
 
+    // Notify on confirmed booking (status 'booked') using template 'meeting_booking_confirmed'
+    try {
+      if (bookingStatus === 'booked') {
+        const to = {};
+        let emailTo = null;
+        if (currentMemberId) {
+          to.memberId = currentMemberId;
+          if (memberDoc?.client?._id) to.clientId = memberDoc.client._id;
+          if (memberDoc?.email) emailTo = memberDoc.email;
+        } else if (clientId) {
+          to.clientId = clientId;
+          try {
+            const clientDoc = await Client.findById(clientId).select('email').lean();
+            if (clientDoc?.email) emailTo = clientDoc.email;
+          } catch {}
+        }
+        if (emailTo) to.email = emailTo;
+
+        await sendNotification({
+          to,
+          channels: { email: Boolean(emailTo), sms: false },
+          templateKey: 'meeting_booking_confirmed',
+          templateVariables: {
+            roomName: room?.name,
+            date: istYmd,
+            startTime: startTimeStr,
+            endTime: endTimeStr,
+            bookingId: String(booking._id)
+          },
+          title: 'Meeting Booking Confirmed',
+          metadata: {
+            category: 'meeting_booking',
+            tags: ['meeting_booking_confirmed'],
+            route: `/meeting-bookings/${booking._id}`,
+            deepLink: `ofis://meeting-bookings/${booking._id}`,
+            routeParams: { id: String(booking._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('createBooking: failed to send meeting_booking_confirmed notification:', notifyErr?.message || notifyErr);
+    }
+
+    // Schedule reminders for member and visitors before the meeting start
+    try {
+      const reminderMinutes = Number(process.env.MEETING_BOOKING_REMINDER_MINUTES_BEFORE || 30);
+      const startDt = new Date(start);
+      const scheduledAt = new Date(startDt.getTime() - reminderMinutes * 60000);
+      const now = new Date();
+      if (bookingStatus === 'booked' && scheduledAt > now) {
+        // Member reminder
+        if (currentMemberId && (memberDoc?.email || memberDoc?.phone)) {
+          const to = {
+            memberId: currentMemberId,
+            ...(memberDoc?.client?._id ? { clientId: memberDoc.client._id } : {}),
+            ...(memberDoc?.email ? { email: memberDoc.email } : {})
+          };
+          await sendNotification({
+            to,
+            channels: { email: Boolean(to.email), sms: false },
+            templateKey: 'meeting_booking_reminder',
+            templateVariables: {
+              roomName: room?.name,
+              date: istYmd,
+              startTime: startTimeStr,
+              endTime: endTimeStr,
+              bookingId: String(booking._id)
+            },
+            title: 'Meeting Reminder',
+            metadata: {
+              category: 'meeting_booking',
+              tags: ['meeting_booking_reminder'],
+              route: `/meeting-bookings/${booking._id}`,
+              deepLink: `ofis://meeting-bookings/${booking._id}`,
+              routeParams: { id: String(booking._id) }
+            },
+            source: 'system',
+            type: 'reminder',
+            scheduledAt
+          });
+        }
+
+        // Visitor reminders (email only if available)
+        try {
+          const visitorIds = Array.isArray(booking.visitors) ? booking.visitors : [];
+          if (visitorIds.length) {
+            const visitorDocs = await Visitor.find({ _id: { $in: visitorIds } }).select('email name').lean();
+            for (const v of visitorDocs) {
+              if (!v?.email) continue;
+              const to = { email: v.email, ...(memberDoc?.client?._id ? { clientId: memberDoc.client._id } : {}) };
+              await sendNotification({
+                to,
+                channels: { email: true, sms: false },
+                templateKey: 'meeting_booking_reminder',
+                templateVariables: {
+                  roomName: room?.name,
+                  date: istYmd,
+                  startTime: startTimeStr,
+                  endTime: endTimeStr,
+                  bookingId: String(booking._id)
+                },
+                title: 'Meeting Reminder',
+                metadata: {
+                  category: 'meeting_booking',
+                  tags: ['meeting_booking_reminder'],
+                  route: `/visitor-bookings/${booking._id}`,
+                  deepLink: `ofis://visitor-bookings/${booking._id}`,
+                  routeParams: { id: String(booking._id) }
+                },
+                source: 'system',
+                type: 'reminder',
+                scheduledAt
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('createBooking: failed to schedule visitor reminders:', e?.message || e);
+        }
+      }
+    } catch (remErr) {
+      console.warn('createBooking: failed to schedule meeting reminders:', remErr?.message || remErr);
+    }
+
     const responseData = {
       booking,
     };
@@ -863,8 +989,8 @@ export const requestDiscount = async (req, res) => {
             description: `Meeting Room - ${booking.room.name} (Daily)`,
             quantity: 1,
             unitPrice: dailyRate,
-            amount: dailyRate,
-            rate: dailyRate,
+            amount: dailyRate, // show gross amount in line item
+            rate: dailyRate
           }],
           sub_total: dailyRate,
           discount: totals.discountAmount || 0,

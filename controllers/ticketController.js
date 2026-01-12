@@ -5,6 +5,7 @@ import Member from "../models/memberModel.js";
 import mongoose from "mongoose";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // GET /api/tickets
 export const getAllTickets = async (req, res) => {
@@ -180,6 +181,48 @@ export const createTicket = async (req, res) => {
       .populate("createdBy", "firstName lastName phone")
       .populate({ path: "category.categoryId", select: "name description subCategories" });
 
+    // Notify creator (member if available, else client) using template 'ticket_created'
+    try {
+      let to = {};
+      let emailTo = null;
+      if (ticketData.createdBy) {
+        const m = await Member.findById(ticketData.createdBy).select('email client').lean();
+        to.memberId = ticketData.createdBy;
+        if (m?.client) to.clientId = m.client;
+        if (m?.email) emailTo = m.email;
+      } else if (ticketData.client) {
+        const c = await Client.findById(ticketData.client).select('email').lean();
+        to.clientId = ticketData.client;
+        if (c?.email) emailTo = c.email;
+      }
+      if (emailTo) to.email = emailTo;
+
+      await sendNotification({
+        to,
+        channels: { email: Boolean(emailTo), sms: false },
+        templateKey: 'ticket_created',
+        templateVariables: {
+          subject: ticketData.subject,
+          priority: ticketData.priority || 'low',
+          ticketId: populated?.ticketId || String(populated._id),
+          category: populated?.category?.categoryId?.name || undefined,
+          status: populated?.status || 'open'
+        },
+        title: 'Ticket Created',
+        metadata: {
+          category: 'ticket',
+          tags: ['ticket_created'],
+          route: `/tickets/${populated._id}`,
+          deepLink: `ofis://tickets/${populated._id}`,
+          routeParams: { id: String(populated._id) }
+        },
+        source: 'system',
+        type: 'transactional'
+      });
+    } catch (notifyErr) {
+      console.warn('createTicket: failed to send ticket_created notification:', notifyErr?.message || notifyErr);
+    }
+
     // Log activity
     await logCRUDActivity(req, "CREATE", "Ticket", ticket._id, null, {
       title: ticketData.subject,
@@ -269,6 +312,50 @@ export const updateTicket = async (req, res) => {
       statusChange: currentTicket.status !== ticket.status ? `${currentTicket.status} → ${ticket.status}` : null,
       assignmentChange: String(currentTicket.assignedTo) !== String(ticket.assignedTo)
     });
+
+    // If ticket just got resolved, notify requester using template 'ticket_resolved'
+    try {
+      if (String(currentTicket.status) !== 'resolved' && String(ticket.status) === 'resolved') {
+        let to = {};
+        let emailTo = null;
+        if (ticket.createdBy) {
+          const m = await Member.findById(ticket.createdBy).select('email client').lean();
+          to.memberId = ticket.createdBy;
+          if (m?.client) to.clientId = m.client;
+          if (m?.email) emailTo = m.email;
+        } else if (ticket.client) {
+          const c = await Client.findById(ticket.client).select('email').lean();
+          to.clientId = ticket.client;
+          if (c?.email) emailTo = c.email;
+        }
+        if (emailTo) to.email = emailTo;
+
+        await sendNotification({
+          to,
+          channels: { email: Boolean(emailTo), sms: false },
+          templateKey: 'ticket_resolved',
+          templateVariables: {
+            subject: ticket.subject,
+            priority: ticket.priority || 'low',
+            ticketId: ticket.ticketId || String(ticket._id),
+            category: ticket?.category?.categoryId?.name || undefined,
+            status: ticket.status
+          },
+          title: 'Ticket Resolved',
+          metadata: {
+            category: 'ticket',
+            tags: ['ticket_resolved'],
+            route: `/tickets/${ticket._id}`,
+            deepLink: `ofis://tickets/${ticket._id}`,
+            routeParams: { id: String(ticket._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('updateTicket: failed to send ticket_resolved notification:', notifyErr?.message || notifyErr);
+    }
 
     res.json(ticket);
   } catch (error) {
