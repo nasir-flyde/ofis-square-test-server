@@ -29,7 +29,7 @@ router.get("/stats", communityMiddleware, getCommunityStats);
 
 // Community clients
 router.get("/clients", communityMiddleware, getCommunityClients);
-router.get("/clients/:id", communityMiddleware, getCommunityClientById);
+router.get("/clients/:id",getCommunityClientById);
 router.get("/clients/:id/members", universalAuthMiddleware, getCommunityClientMembers);
 
 // Building-specific clients for community users

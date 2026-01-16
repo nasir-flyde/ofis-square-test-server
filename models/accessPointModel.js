@@ -18,7 +18,7 @@ const resourceRefSchema = new Schema(
   {
     refType: {
       type: String,
-      enum: ["MeetingRoom", "Cabin", "Desk", "InventoryUnit", "Custom"],
+      enum: ["MeetingRoom", "Cabin", "Desk", "InventoryUnit", "CommonArea", "Custom"],
       default: "Custom",
     },
     refId: { type: Schema.Types.ObjectId, refPath: "resource.refType" },
@@ -35,7 +35,7 @@ const AccessPointSchema = new Schema(
     name: { type: String, required: true, trim: true },
     bindingType: {
       type: String,
-      enum: ["inventory_unit", "meeting_room", "custom", "cabin", "desk"],
+      enum: ["inventory_unit", "meeting_room", "common_area", "custom", "cabin", "desk"],
       default: "custom",
       index: true,
     },
@@ -43,7 +43,7 @@ const AccessPointSchema = new Schema(
     zoneId: { type: Schema.Types.ObjectId, ref: "AccessZone", index: true },
     pointType: {
       type: String,
-      enum: ["DOOR", "TURNSTILE", "BARRIER", "ELEVATOR", "MEETING_ROOM", "CABIN", "DESK", "CUSTOM"],
+      enum: ["DOOR", "TURNSTILE", "BARRIER", "ELEVATOR", "MEETING_ROOM", "COMMON_AREA", "CABIN", "DESK", "CUSTOM"],
       default: "DOOR",
       index: true,
     },

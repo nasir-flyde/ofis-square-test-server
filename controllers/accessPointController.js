@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import AccessPoint from "../models/accessPointModel.js";
 import Building from "../models/buildingModel.js";
 import AccessZone from "../models/accessZoneModel.js";
+import CommonArea from "../models/commonAreaModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // List access points with filters and pagination
@@ -77,13 +78,35 @@ export const createAccessPoint = async (req, res) => {
       if (!building) return res.status(400).json({ success: false, message: "Building not found" });
     } catch {}
 
+    // Validate CommonArea binding if provided
+    let resolvedResource = resource;
+    try {
+      if ((bindingType === "common_area") || (resource && resource.refType === "CommonArea")) {
+        const refId = resource?.refId;
+        if (!refId || !mongoose.Types.ObjectId.isValid(refId)) {
+          return res.status(400).json({ success: false, message: "Valid resource.refId is required for CommonArea" });
+        }
+        const ca = await CommonArea.findById(refId).select("_id buildingId name").lean();
+        if (!ca) return res.status(400).json({ success: false, message: "CommonArea not found" });
+        if (String(ca.buildingId) !== String(buildingId)) {
+          return res.status(400).json({ success: false, message: "CommonArea must belong to the same building as the access point" });
+        }
+        resolvedResource = { refType: "CommonArea", refId, label: resource?.label || ca.name };
+      }
+    } catch (e) {
+      await logErrorActivity(req, e, "AccessPoints:CommonArea:Validate");
+      return res.status(400).json({ success: false, message: e?.message || "Invalid CommonArea binding" });
+    }
+
+    const effectivePointType = pointType || (bindingType === "common_area" ? "COMMON_AREA" : "DOOR");
+
     const created = await AccessPoint.create({
       buildingId,
       name: name.trim(),
       bindingType,
-      resource,
+      resource: resolvedResource,
       zoneId,
-      pointType,
+      pointType: effectivePointType,
       deviceBindings,
       status,
       location,
@@ -147,9 +170,34 @@ export const updateAccessPoint = async (req, res) => {
     const update = {};
     if (typeof name === "string") update.name = name.trim();
     if (bindingType) update.bindingType = bindingType;
-    if (resource !== undefined) update.resource = resource;
+
+    // Validate CommonArea binding on update if provided
+    let validatedResource = resource;
+    let validatedPointType = pointType;
+    if ((bindingType === "common_area") || (resource && resource.refType === "CommonArea")) {
+      try {
+        const refId = resource?.refId;
+        if (!refId || !mongoose.Types.ObjectId.isValid(refId)) {
+          return res.status(400).json({ success: false, message: "Valid resource.refId is required for CommonArea" });
+        }
+        // Determine building to validate against: need the AP's building if not provided
+        const existingAp = await AccessPoint.findById(id).select("buildingId").lean();
+        const targetBuildingId = existingAp?.buildingId;
+        const ca = await CommonArea.findById(refId).select("_id buildingId name").lean();
+        if (!ca) return res.status(400).json({ success: false, message: "CommonArea not found" });
+        if (targetBuildingId && String(ca.buildingId) !== String(targetBuildingId)) {
+          return res.status(400).json({ success: false, message: "CommonArea must belong to the same building as the access point" });
+        }
+        validatedResource = { refType: "CommonArea", refId, label: resource?.label || ca.name };
+        if (!validatedPointType) validatedPointType = "COMMON_AREA";
+      } catch (e) {
+        await logErrorActivity(req, e, "AccessPoints:CommonArea:ValidateUpdate");
+        return res.status(400).json({ success: false, message: e?.message || "Invalid CommonArea binding" });
+      }
+    }
+    if (validatedResource !== undefined) update.resource = validatedResource;
     if (zoneId !== undefined) update.zoneId = zoneId;
-    if (pointType) update.pointType = pointType;
+    if (validatedPointType) update.pointType = validatedPointType;
     if (deviceBindings !== undefined) update.deviceBindings = deviceBindings;
     if (status) update.status = status;
     if (location !== undefined) update.location = location;

@@ -14,11 +14,56 @@ import { logBookingActivity, logPaymentActivity, logErrorActivity } from "../uti
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { sendNotification } from "../utils/notificationHelper.js";
+import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
+
+// Helpers: normalize date and check capacity for building/inventory/date
+const normalizeStartOfDay = (d) => {
+  const dt = new Date(d);
+  dt.setHours(0, 0, 0, 0);
+  return dt;
+};
+
+const findInventoryById = (building, inventoryId) => {
+  if (!inventoryId) return null;
+  try {
+    const inv = (building?.dayPassInventories || []).find((i) => String(i?._id) === String(inventoryId));
+    return inv || null;
+  } catch {
+    return null;
+  }
+};
+
+// Daily capacity tracking helpers (single-key per building)
+const getDailyUsageCount = async (buildingId, date) => {
+  const start = normalizeStartOfDay(date);
+  const usage = await DayPassDailyUsage.findOne({ building: buildingId, date: start }).lean();
+  return usage?.bookedCount || 0;
+};
+
+// Reserve one slot for the given building/date, honoring building.dayPassDailyCapacity
+// Must be called within a session/transaction for atomicity with booking changes
+const reserveDailyCapacity = async (buildingDoc, date, session) => {
+  const start = normalizeStartOfDay(date);
+  const cap = Number(buildingDoc?.dayPassDailyCapacity || 0);
+  // Increment bookedCount; on transaction commit this becomes visible
+  const updated = await DayPassDailyUsage.findOneAndUpdate(
+    { building: buildingDoc._id, date: start },
+    { $inc: { bookedCount: 1 } },
+    { upsert: true, new: true, setDefaultsOnInsert: true, session }
+  );
+  if (cap > 0 && updated.bookedCount > cap) {
+    const err = new Error('No availability for this date at the building');
+    err.status = 409;
+    err.details = { capacity: cap, booked: updated.bookedCount - 1, remaining: 0 };
+    throw err;
+  }
+  return { capacity: cap || null, booked: updated.bookedCount, remaining: cap > 0 ? Math.max(0, cap - updated.bookedCount) : null };
+};
 
 // Create single day pass (not from bundle)
 export const createSingleDayPass = async (req, res) => {
   try {
-    const { customerId, memberId, buildingId, notes, bookingFor, visitDate } = req.body;
+    const { customerId, memberId, buildingId, notes, bookingFor, visitDate, inventoryId } = req.body;
 
     if (!customerId || !buildingId) {
       return res.status(400).json({ 
@@ -108,15 +153,31 @@ export const createSingleDayPass = async (req, res) => {
       return res.status(404).json({ error: "Building not found" });
     }
 
-    if (!building.openSpacePricing) {
+    if (!building.openSpacePricing && !(Array.isArray(building.dayPassInventories) && building.dayPassInventories.length)) {
       return res.status(400).json({ 
-        error: "Day pass pricing not configured for this building" 
+        error: "Day pass pricing/inventory not configured for this building" 
       });
     }
 
-    const price = building.openSpacePricing;
-    const taxAmount = 0; // No tax on day pass bookings
-    const totalAmount = price;
+    // Resolve price: prefer selected inventory's price if provided
+    let price = building.openSpacePricing;
+    let selectedInventory = null;
+    if (inventoryId) {
+      selectedInventory = findInventoryById(building, inventoryId);
+      if (!selectedInventory) {
+        return res.status(400).json({ error: 'Selected inventory not found for building' });
+      }
+      if (selectedInventory.isActive === false) {
+        return res.status(400).json({ error: 'Selected inventory is not active' });
+      }
+      price = selectedInventory.price;
+    }
+    if (typeof price !== 'number' || Number.isNaN(price)) {
+      return res.status(400).json({ error: 'Day pass price not configured' });
+    }
+    const gstRate = 18; // Apply 18% GST
+    const taxAmount = Math.round(((price * gstRate) / 100) * 100) / 100;
+    const totalAmount = Math.round(((price + taxAmount)) * 100) / 100;
 
     // Set booking date (today) and expiry at end of day
     const bookingDate = new Date();
@@ -129,6 +190,16 @@ export const createSingleDayPass = async (req, res) => {
     session.startTransaction();
 
     try {
+      // Reserve daily capacity for known self visit date
+      if (bookingFor === 'self' && parsedVisitDate) {
+        try {
+          await reserveDailyCapacity(building, parsedVisitDate, session);
+        } catch (capErr) {
+          const code = capErr.status || 409;
+          return res.status(code).json({ error: capErr.message, ...(capErr.details ? { details: capErr.details } : {}) });
+        }
+      }
+
       // Create day pass with payment_pending status
       const dayPass = new DayPass({
         customer: customerId,
@@ -143,7 +214,8 @@ export const createSingleDayPass = async (req, res) => {
         price,
         status: "payment_pending",
         notes,
-        createdBy: req.user?._id
+        createdBy: req.user?._id,
+        inventoryId: inventoryId ? String(inventoryId) : undefined,
       });
 
       await dayPass.save({ session });
@@ -173,11 +245,12 @@ export const createSingleDayPass = async (req, res) => {
           category: "day_pass",
           invoice_number: `DP-${Date.now()}`,
           line_items: [{
-            description: `Day Pass - ${building.name}`,
+            description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}`,
             quantity: 1,
             unitPrice: price,
             amount: price,
-            rate: price
+            rate: price,
+            tax_percentage: gstRate
           }],
           sub_total: price,
           tax_total: taxAmount,
@@ -284,307 +357,328 @@ export const createSingleDayPass = async (req, res) => {
 // Invite visitor to a day pass (assign date and generate QR)
 export const inviteVisitor = async (req, res) => {
   try {
-    const { dayPassId } = req.params;
-    const { 
-      date, 
-      visitorName, 
-      visitorPhone, 
-      visitorEmail,
-      visitorCompany,
-      purpose,
-      numberOfGuests = 1,
-      expectedArrivalTime,
-      expectedDepartureTime
-    } = req.body;
-
-    if (!date || !visitorName) {
-      return res.status(400).json({ error: "Date and visitor name are required" });
-    }
-
-    const dayPass = await DayPass.findById(dayPassId)
-      .populate('customer', 'name email phone')
-      .populate('building', 'name address creditValue')
-      .populate('hostMember', 'firstName lastName email phone')
-      .populate('hostClient', 'name email phone')
-      .populate('hostGuest', 'name email phone');
-
-    if (!dayPass) {
-      return res.status(404).json({ error: "Day pass not found" });
-    }
-
-    // Check if day pass is issued (payment completed)
-    if (dayPass.status !== 'issued') {
-      return res.status(400).json({ 
-        error: "Day pass must be paid for before inviting visitors",
-        currentStatus: dayPass.status,
-        requiredStatus: 'issued'
-      });
-    }
-
-    // Set host information from JWT via hostMiddleware (req.hostInfo)
-    if (req.hostInfo?.type && req.hostInfo?.id) {
-      if (req.hostInfo.type === 'member') {
-        dayPass.hostMember = req.hostInfo.id;
-        dayPass.hostClient = null;
-        dayPass.hostGuest = null;
-      } else if (req.hostInfo.type === 'client') {
-        dayPass.hostClient = req.hostInfo.id;
-        dayPass.hostMember = null;
-        dayPass.hostGuest = null;
-      } else if (req.hostInfo.type === 'guest') {
-        dayPass.hostGuest = req.hostInfo.id;
-        dayPass.hostMember = null;
-        dayPass.hostClient = null;
-      }
-    }
-
-    // Set the pass date and visitor details
-    const passDate = new Date(date);
-    passDate.setHours(0, 0, 0, 0);
-    
-    dayPass.date = passDate;
-    dayPass.visitorName = visitorName;
-    dayPass.visitorPhone = visitorPhone;
-    dayPass.visitorEmail = visitorEmail;
-    dayPass.visitorCompany = visitorCompany;
-    dayPass.purpose = purpose;
-    dayPass.numberOfGuests = Math.max(1, parseInt(numberOfGuests) || 1);
-    // Helper to merge a "HH:MM" time into a given date
-    const buildDateTime = (baseDate, timeStr) => {
-      if (!timeStr || typeof timeStr !== 'string') return null;
-      const [hh, mm] = timeStr.split(':').map((v) => parseInt(v, 10));
-      if (
-        Number.isNaN(hh) || Number.isNaN(mm) ||
-        hh < 0 || hh > 23 || mm < 0 || mm > 59
-      ) {
-        return null;
-      }
-      const dt = new Date(baseDate);
-      dt.setHours(hh, mm, 0, 0);
-      return dt;
-    };
-
-    const arrivalDT = buildDateTime(passDate, expectedArrivalTime);
-    const departureDT = buildDateTime(passDate, expectedDepartureTime);
-
-    dayPass.expectedArrivalTime = arrivalDT || null;
-    dayPass.expectedDepartureTime = departureDT || null;
-    dayPass.status = "invited";
-    dayPass.invitedAt = new Date();
-    
-    // Generate QR code and set expiry
-    const qrData = {
-      passId: dayPass._id,
-      visitorName,
-      date: passDate.toISOString(),
-      buildingId: dayPass.building._id,
-      type: 'day_pass'
-    };
-    
-    dayPass.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
-    
-    // Set QR expiry to end of pass date
-    const qrExpiry = new Date(passDate);
-    qrExpiry.setHours(23, 59, 59, 999);
-    dayPass.qrExpiresAt = qrExpiry;
-    
-    await dayPass.save();
-
-    // Populate host information for response
-    await dayPass.populate([
-      { path: 'hostMember', select: 'firstName lastName email phone' },
-      { path: 'hostClient', select: 'name email phone' },
-      { path: 'hostGuest', select: 'name email phone' }
-    ]);
-
-    // Also create a Visitor record linked to this DayPass
-    const visitorDoc = new Visitor({
-      name: visitorName,
-      email: visitorEmail,
-      phone: visitorPhone,
-      companyName: visitorCompany,
-      purpose,
-      numberOfGuests: Math.max(1, parseInt(numberOfGuests) || 1),
-      expectedVisitDate: passDate,
-      expectedArrivalTime: arrivalDT || null,
-      expectedDepartureTime: departureDT || null,
-      hostMember: dayPass.hostMember || undefined,
-      hostClient: dayPass.hostClient || undefined,
-      hostGuest: dayPass.hostGuest || undefined,
-      status: 'invited',
-      building: dayPass.building,
-      dayPass: dayPass._id,
-      createdBy: req.user?._id || undefined,
-      // Keep QR in sync with DayPass
-      qrToken: dayPass.qrCode,
-      qrExpiresAt: dayPass.qrExpiresAt,
-    });
-
-    await visitorDoc.save();
-
-    // Attach visitor to day pass visitors array
     try {
-      const current = Array.isArray(dayPass.visitors) ? dayPass.visitors : [];
-      dayPass.visitors = [...current, visitorDoc._id];
-      await dayPass.save();
-    } catch (e) {
-      console.warn("Failed to append visitor to day pass visitors array:", e?.message || e);
-    }
+      const { dayPassId } = req.params;
+      const { 
+        date, 
+        visitorName, 
+        visitorPhone, 
+        visitorEmail,
+        visitorCompany,
+        purpose,
+        numberOfGuests = 1,
+        expectedArrivalTime,
+        expectedDepartureTime,
+        inventoryId,
+      } = req.body;
 
-    // Send notifications: visitor and host/booker - Day Pass booking confirmed
-    try {
-      // Visitor notification (email)
-      if (visitorEmail) {
-        await sendNotification({
-          to: { email: visitorEmail },
-          channels: { email: true, sms: false },
-          templateKey: 'day_pass_booking_confirmed',
-          templateVariables: {
-            buildingName: dayPass.building?.name,
-            date: passDate.toISOString().slice(0,10),
-            dayPassId: String(dayPass._id)
-          },
-          title: 'Day Pass Booking Confirmed',
-          metadata: {
-            category: 'day_pass',
-            tags: ['day_pass_booking_confirmed', 'visitor'],
-            route: `/visitor/day-passes/${dayPass._id}`,
-            deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
-            routeParams: { id: String(dayPass._id) }
-          },
-          source: 'system',
-          type: 'transactional'
+      if (!date || !visitorName) {
+        return res.status(400).json({ error: "Date and visitor name are required" });
+      }
+
+      const dayPass = await DayPass.findById(dayPassId)
+        .populate('customer', 'name email phone')
+        .populate('building', 'name address creditValue')
+        .populate('hostMember', 'firstName lastName email phone')
+        .populate('hostClient', 'name email phone')
+        .populate('hostGuest', 'name email phone');
+
+      if (!dayPass) {
+        return res.status(404).json({ error: "Day pass not found" });
+      }
+
+      // Check if day pass is issued (payment completed)
+      if (dayPass.status !== 'issued') {
+        return res.status(400).json({ 
+          error: "Day pass must be paid for before inviting visitors",
+          currentStatus: dayPass.status,
+          requiredStatus: 'issued'
         });
       }
 
-      // Host/booker notification (member/client/guest)
-      let hostEmail = null;
-      if (dayPass.hostMember?.email) hostEmail = dayPass.hostMember.email;
-      else if (dayPass.hostClient?.email) hostEmail = dayPass.hostClient.email;
-      else if (dayPass.customer?.email) hostEmail = dayPass.customer.email;
+      // Set host information from JWT via hostMiddleware (req.hostInfo)
+      if (req.hostInfo?.type && req.hostInfo?.id) {
+        if (req.hostInfo.type === 'member') {
+          dayPass.hostMember = req.hostInfo.id;
+          dayPass.hostClient = null;
+          dayPass.hostGuest = null;
+        } else if (req.hostInfo.type === 'client') {
+          dayPass.hostClient = req.hostInfo.id;
+          dayPass.hostMember = null;
+          dayPass.hostGuest = null;
+        } else if (req.hostInfo.type === 'guest') {
+          dayPass.hostGuest = req.hostInfo.id;
+          dayPass.hostMember = null;
+          dayPass.hostClient = null;
+        }
+      }
 
-      if (hostEmail) {
-        await sendNotification({
-          to: { email: hostEmail },
-          channels: { email: true, sms: false },
-          templateKey: 'day_pass_booking_confirmed',
-          templateVariables: {
-            buildingName: dayPass.building?.name,
-            date: passDate.toISOString().slice(0,10),
-            dayPassId: String(dayPass._id)
-          },
-          title: 'Day Pass Booking Confirmed',
-          metadata: {
-            category: 'day_pass',
-            tags: ['day_pass_booking_confirmed', 'host'],
-            route: `/day-passes/${dayPass._id}`,
-            deepLink: `ofis://day-passes/${dayPass._id}`,
-            routeParams: { id: String(dayPass._id) }
-          },
-          source: 'system',
-          type: 'transactional'
+      // Set the pass date
+      const passDate = new Date(date);
+      passDate.setHours(0, 0, 0, 0);
+
+      // Reserve daily capacity for the invite date within a transaction
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        const building = await Building.findById(dayPass.building).session(session);
+        await reserveDailyCapacity(building, passDate, session);
+
+        // Set the pass date and visitor details
+        dayPass.date = passDate;
+        dayPass.visitorName = visitorName;
+        dayPass.visitorPhone = visitorPhone;
+        dayPass.visitorEmail = visitorEmail;
+        dayPass.visitorCompany = visitorCompany;
+        dayPass.purpose = purpose;
+        dayPass.numberOfGuests = Math.max(1, parseInt(numberOfGuests) || 1);
+        // Helper to merge a "HH:MM" time into a given date
+        const buildDateTime = (baseDate, timeStr) => {
+          if (!timeStr || typeof timeStr !== 'string') return null;
+          const [hh, mm] = timeStr.split(':').map((v) => parseInt(v, 10));
+          if (
+            Number.isNaN(hh) || Number.isNaN(mm) ||
+            hh < 0 || hh > 23 || mm < 0 || mm > 59
+          ) {
+            return null;
+          }
+          const dt = new Date(baseDate);
+          dt.setHours(hh, mm, 0, 0);
+          return dt;
+        };
+
+        const arrivalDT = buildDateTime(passDate, expectedArrivalTime);
+        const departureDT = buildDateTime(passDate, expectedDepartureTime);
+
+        dayPass.expectedArrivalTime = arrivalDT || null;
+        dayPass.expectedDepartureTime = departureDT || null;
+        dayPass.status = "invited";
+        dayPass.invitedAt = new Date();
+        
+        // Generate QR code and set expiry
+        const qrData = {
+          passId: dayPass._id,
+          visitorName,
+          date: passDate.toISOString(),
+          buildingId: dayPass.building._id,
+          type: 'day_pass'
+        };
+        
+        dayPass.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
+        
+        // Set QR expiry to end of pass date
+        const qrExpiry = new Date(passDate);
+        qrExpiry.setHours(23, 59, 59, 999);
+        dayPass.qrExpiresAt = qrExpiry;
+        
+        await dayPass.save({ session });
+
+        // Populate host information for response
+        await dayPass.populate([
+          { path: 'hostMember', select: 'firstName lastName email phone' },
+          { path: 'hostClient', select: 'name email phone' },
+          { path: 'hostGuest', select: 'name email phone' }
+        ]);
+
+        // Also create a Visitor record linked to this DayPass
+        const visitorDoc = new Visitor({
+          name: visitorName,
+          email: visitorEmail,
+          phone: visitorPhone,
+          companyName: visitorCompany,
+          purpose,
+          numberOfGuests: Math.max(1, parseInt(numberOfGuests) || 1),
+          expectedVisitDate: passDate,
+          expectedArrivalTime: arrivalDT || null,
+          expectedDepartureTime: departureDT || null,
+          hostMember: dayPass.hostMember || undefined,
+          hostClient: dayPass.hostClient || undefined,
+          hostGuest: dayPass.hostGuest || undefined,
+          status: 'invited',
+          building: dayPass.building,
+          dayPass: dayPass._id,
+          createdBy: req.user?._id || undefined,
+          // Keep QR in sync with DayPass
+          qrToken: dayPass.qrCode,
+          qrExpiresAt: dayPass.qrExpiresAt,
         });
-      }
-    } catch (notifyErr) {
-      console.warn('inviteVisitor: failed to send day pass confirmation notifications:', notifyErr?.message || notifyErr);
-    }
 
-    // Schedule reminder notifications to visitor and host/booker
-    try {
-      const reminderMinutes = Number(process.env.DAY_PASS_REMINDER_MINUTES_BEFORE || 60);
-      // Prefer specific expectedArrivalTime if provided; else 10:00 AM on pass date
-      const defaultArrival = new Date(passDate);
-      defaultArrival.setHours(10, 0, 0, 0);
-      const arrivalTime = arrivalDT || defaultArrival;
-      const scheduledAt = new Date(arrivalTime.getTime() - reminderMinutes * 60000);
-      const now = new Date();
-      if (scheduledAt > now) {
-        const arrivalTimeStr = arrivalTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
-        const dateStr = passDate.toISOString().slice(0,10);
+        await visitorDoc.save({ session });
 
-        // Visitor reminder
-        if (visitorEmail) {
-          await sendNotification({
-            to: { email: visitorEmail },
-            channels: { email: true, sms: false },
-            templateKey: 'day_pass_booking_reminder',
-            templateVariables: {
-              buildingName: dayPass.building?.name,
-              date: dateStr,
-              time: arrivalTimeStr,
-              dayPassId: String(dayPass._id)
-            },
-            title: 'Day Pass Reminder',
-            metadata: {
-              category: 'day_pass',
-              tags: ['day_pass_booking_reminder', 'visitor'],
-              route: `/visitor/day-passes/${dayPass._id}`,
-              deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
-              routeParams: { id: String(dayPass._id) }
-            },
-            source: 'system',
-            type: 'reminder',
-            scheduledAt
-          });
+        // Attach visitor to day pass visitors array
+        try {
+          const current = Array.isArray(dayPass.visitors) ? dayPass.visitors : [];
+          dayPass.visitors = [...current, visitorDoc._id];
+          await dayPass.save({ session });
+        } catch (e) {
+          console.warn("Failed to append visitor to day pass visitors array:", e?.message || e);
         }
 
-        // Host/booker reminder
-        let hostEmailForReminder = null;
-        if (dayPass.hostMember?.email) hostEmailForReminder = dayPass.hostMember.email;
-        else if (dayPass.hostClient?.email) hostEmailForReminder = dayPass.hostClient.email;
-        else if (dayPass.customer?.email) hostEmailForReminder = dayPass.customer.email;
+        await session.commitTransaction();
+        session.endSession();
 
-        if (hostEmailForReminder) {
-          await sendNotification({
-            to: { email: hostEmailForReminder },
-            channels: { email: true, sms: false },
-            templateKey: 'day_pass_booking_reminder',
-            templateVariables: {
-              buildingName: dayPass.building?.name,
-              date: dateStr,
-              time: arrivalTimeStr,
-              dayPassId: String(dayPass._id)
-            },
-            title: 'Day Pass Reminder',
-            metadata: {
-              category: 'day_pass',
-              tags: ['day_pass_booking_reminder', 'host'],
-              route: `/day-passes/${dayPass._id}`,
-              deepLink: `ofis://day-passes/${dayPass._id}`,
-              routeParams: { id: String(dayPass._id) }
-            },
-            source: 'system',
-            type: 'reminder',
-            scheduledAt
-          });
+        // Send notifications: visitor and host/booker - Day Pass booking confirmed
+        try {
+          // Visitor notification (email)
+          if (visitorEmail) {
+            await sendNotification({
+              to: { email: visitorEmail },
+              channels: { email: true, sms: false },
+              templateKey: 'day_pass_booking_confirmed',
+              templateVariables: {
+                buildingName: dayPass.building?.name,
+                date: passDate.toISOString().slice(0,10),
+                dayPassId: String(dayPass._id)
+              },
+              title: 'Day Pass Booking Confirmed',
+              metadata: {
+                category: 'day_pass',
+                tags: ['day_pass_booking_confirmed', 'visitor'],
+                route: `/visitor/day-passes/${dayPass._id}`,
+                deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
+                routeParams: { id: String(dayPass._id) }
+              },
+              source: 'system',
+              type: 'transactional'
+            });
+          }
+
+          // Host/booker notification (member/client/guest)
+          let hostEmail = null;
+          if (dayPass.hostMember?.email) hostEmail = dayPass.hostMember.email;
+          else if (dayPass.hostClient?.email) hostEmail = dayPass.hostClient.email;
+          else if (dayPass.customer?.email) hostEmail = dayPass.customer.email;
+
+          if (hostEmail) {
+            await sendNotification({
+              to: { email: hostEmail },
+              channels: { email: true, sms: false },
+              templateKey: 'day_pass_booking_confirmed',
+              templateVariables: {
+                buildingName: dayPass.building?.name,
+                date: passDate.toISOString().slice(0,10),
+                dayPassId: String(dayPass._id)
+              },
+              title: 'Day Pass Booking Confirmed',
+              metadata: {
+                category: 'day_pass',
+                tags: ['day_pass_booking_confirmed', 'host'],
+                route: `/day-passes/${dayPass._id}`,
+                deepLink: `ofis://day-passes/${dayPass._id}`,
+                routeParams: { id: String(dayPass._id) }
+              },
+              source: 'system',
+              type: 'transactional'
+            });
+          }
+        } catch (notifyErr) {
+          console.warn('inviteVisitor: failed to send day pass confirmation notifications:', notifyErr?.message || notifyErr);
         }
+
+        // Schedule reminder notifications to visitor and host/booker
+        try {
+          const reminderMinutes = Number(process.env.DAY_PASS_REMINDER_MINUTES_BEFORE || 60);
+          // Prefer specific expectedArrivalTime if provided; else 10:00 AM on pass date
+          const defaultArrival = new Date(passDate);
+          defaultArrival.setHours(10, 0, 0, 0);
+          const arrivalTime = arrivalDT || defaultArrival;
+          const scheduledAt = new Date(arrivalTime.getTime() - reminderMinutes * 60000);
+          const now = new Date();
+          if (scheduledAt > now) {
+            const arrivalTimeStr = arrivalTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+            const dateStr = passDate.toISOString().slice(0,10);
+
+            // Visitor reminder
+            if (visitorEmail) {
+              await sendNotification({
+                to: { email: visitorEmail },
+                channels: { email: true, sms: false },
+                templateKey: 'day_pass_booking_reminder',
+                templateVariables: {
+                  buildingName: dayPass.building?.name,
+                  date: dateStr,
+                  time: arrivalTimeStr,
+                  dayPassId: String(dayPass._id)
+                },
+                title: 'Day Pass Reminder',
+                metadata: {
+                  category: 'day_pass',
+                  tags: ['day_pass_booking_reminder', 'visitor'],
+                  route: `/visitor/day-passes/${dayPass._id}`,
+                  deepLink: `ofis://visitor/day-passes/${dayPass._id}`,
+                  routeParams: { id: String(dayPass._id) }
+                },
+                source: 'system',
+                type: 'reminder',
+                scheduledAt
+              });
+            }
+
+            // Host/booker reminder
+            let hostEmailForReminder = null;
+            if (dayPass.hostMember?.email) hostEmailForReminder = dayPass.hostMember.email;
+            else if (dayPass.hostClient?.email) hostEmailForReminder = dayPass.hostClient.email;
+            else if (dayPass.customer?.email) hostEmailForReminder = dayPass.customer.email;
+
+            if (hostEmailForReminder) {
+              await sendNotification({
+                to: { email: hostEmailForReminder },
+                channels: { email: true, sms: false },
+                templateKey: 'day_pass_booking_reminder',
+                templateVariables: {
+                  buildingName: dayPass.building?.name,
+                  date: dateStr,
+                  time: arrivalTimeStr,
+                  dayPassId: String(dayPass._id)
+                },
+                title: 'Day Pass Reminder',
+                metadata: {
+                  category: 'day_pass',
+                  tags: ['day_pass_booking_reminder', 'host'],
+                  route: `/day-passes/${dayPass._id}`,
+                  deepLink: `ofis://day-passes/${dayPass._id}`,
+                  routeParams: { id: String(dayPass._id) }
+                },
+                source: 'system',
+                type: 'reminder',
+                scheduledAt
+              });
+            }
+          }
+        } catch (remErr) {
+          console.warn('inviteVisitor: failed to schedule day pass reminders:', remErr?.message || remErr);
+        }
+
+        // TODO: Send invitation email with QR code similar to visitor system
+        
+        res.json({
+          message: "Visitor invited successfully",
+          dayPass,
+          visitor: {
+            id: visitorDoc._id,
+            name: visitorDoc.name,
+            qrToken: visitorDoc.qrToken,
+            expectedVisitDate: visitorDoc.expectedVisitDate,
+            status: visitorDoc.status,
+          },
+          qrCode: dayPass.qrCode,
+          qrUrl: `${req.protocol}://${req.get('host')}/day-passes/scan?qr=${dayPass.qrCode}`
+        });
+
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
       }
-    } catch (remErr) {
-      console.warn('inviteVisitor: failed to schedule day pass reminders:', remErr?.message || remErr);
+    } catch (error) {
+      console.error("inviteVisitor error:", error);
+      res.status(500).json({ error: "Internal Server Error" });
     }
-
-    // TODO: Send invitation email with QR code similar to visitor system
-    
-    res.json({
-      message: "Visitor invited successfully",
-      dayPass,
-      visitor: {
-        id: visitorDoc._id,
-        name: visitorDoc.name,
-        qrToken: visitorDoc.qrToken,
-        expectedVisitDate: visitorDoc.expectedVisitDate,
-        status: visitorDoc.status,
-      },
-      qrCode: dayPass.qrCode,
-      qrUrl: `${req.protocol}://${req.get('host')}/day-passes/scan?qr=${dayPass.qrCode}`
-    });
-
   } catch (error) {
     console.error("inviteVisitor error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
-
 // Check-in with QR code
 export const checkInWithQR = async (req, res) => {
   try {
@@ -877,14 +971,81 @@ export const getAllDayPasses = async (req, res) => {
     const skip = (page - 1) * limit;
     const sort = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
 
-    const dayPasses = await DayPass.find(query)
-      .populate('customer', 'name email phone')
+    const dayPassDocs = await DayPass.find(query)
+      .populate('customer', 'name email phone mobile contactNumber contact contactNo')
       .populate('building', 'name address creditValue')
       .populate('bundle', 'no_of_dayPasses')
       .populate('invoice', 'invoiceNumber totalAmount status')
       .sort(sort)
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
+
+    // Helper: stringify ObjectId-like values (handles lean ObjectId, buffer shape, etc.)
+    const toIdString = (val) => {
+      try {
+        if (!val) return null;
+        if (typeof val === 'string') return val;
+        if (typeof val === 'object') {
+          if (typeof val.toHexString === 'function') return val.toHexString();
+          if (typeof val.toString === 'function') {
+            const s = val.toString();
+            if (/^[a-f0-9]{24}$/i.test(s)) return s;
+          }
+          if (val.id && Buffer.isBuffer(val.id)) return val.id.toString('hex');
+          if (val.buffer && Array.isArray(val.buffer.data)) return Buffer.from(val.buffer.data).toString('hex');
+        }
+      } catch (_) {}
+      return null;
+    };
+
+    // Resolve customer when populate didn't work (no ref on DayPass.customer)
+    const unresolvedIds = new Set();
+    for (const dp of dayPassDocs || []) {
+      const idStr = toIdString(dp.customer);
+      if (idStr) unresolvedIds.add(idStr);
+    }
+
+    const idArr = Array.from(unresolvedIds);
+    const [guestDocs, memberDocs, clientDocs] = await Promise.all([
+      idArr.length ? Guest.find({ _id: { $in: idArr } }).select('name email phone').lean() : Promise.resolve([]),
+      idArr.length ? Member.find({ _id: { $in: idArr } }).select('firstName lastName email phone').lean() : Promise.resolve([]),
+      idArr.length ? Client.find({ _id: { $in: idArr } }).select('name companyName legalName contactPerson email phone contactNumber mobile contact contactNo').lean() : Promise.resolve([]),
+    ]);
+
+    const byId = new Map();
+    const addDocs = (docs) => {
+      for (const d of docs || []) {
+        const name = d.name || [d.firstName, d.lastName].filter(Boolean).join(' ') || d.companyName || d.legalName || d.contactPerson || undefined;
+        const phone = d.phone || d.mobile || d.contactNumber || d.contactNo || d.contact || undefined;
+        byId.set(String(d._id), { _id: d._id, ...(name ? { name } : {}), ...(d.email ? { email: d.email } : {}), ...(phone ? { phone } : {}) });
+      }
+    };
+    addDocs(guestDocs);
+    addDocs(memberDocs);
+    addDocs(clientDocs);
+
+    // Normalize to ensure customer.phone is always present for frontend usage
+    const dayPasses = (dayPassDocs || []).map((dp) => {
+      try {
+        const c = dp.customer;
+        let normalized = null;
+        const idStr = toIdString(c);
+        if (idStr) {
+          normalized = byId.get(idStr) || { _id: idStr };
+        } else if (c && typeof c === 'object') {
+          normalized = { ...c };
+        } else {
+          normalized = {};
+        }
+        if (!normalized.phone) {
+          const fallbackPhone = normalized.mobile || normalized.contactNumber || normalized.contactNo || normalized.contact || dp?.visitorPhone || null;
+          if (fallbackPhone) normalized.phone = fallbackPhone;
+        }
+        dp.customer = normalized;
+      } catch (_) {}
+      return dp;
+    });
 
     const total = await DayPass.countDocuments(query);
 
@@ -952,33 +1113,43 @@ export const updateVisitorDraft = async (req, res) => {
   }
 };
 
-// Manual issuance of day pass (triggers visitor creation)
+// Manual issuance of day pass (minimal implementation)
 export const issueDayPassManual = async (req, res) => {
   try {
     const { dayPassId } = req.params;
 
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    const dayPass = await DayPass.findById(dayPassId);
+    if (!dayPass) return res.status(404).json({ error: 'Day pass not found' });
 
-    try {
-      const result = await issueDayPass(dayPassId, session);
-      
-      if (result.success) {
-        await session.commitTransaction();
-        res.json(result);
-      } else {
-        await session.abortTransaction();
-        res.status(400).json(result);
-      }
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
+    if (!['pending', 'payment_pending'].includes(dayPass.status)) {
+      return res.status(400).json({ error: `Cannot issue in current status: ${dayPass.status}` });
     }
 
+    dayPass.status = 'issued';
+    await dayPass.save();
+
+    return res.json({ success: true, message: 'Day pass issued', dayPass });
   } catch (error) {
-    console.error("issueDayPassManual error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error('issueDayPassManual error:', error);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// Availability endpoint
+export const getAvailability = async (req, res) => {
+  try {
+    const { buildingId, date } = req.query;
+    if (!buildingId || !date) {
+      return res.status(400).json({ error: 'buildingId and date are required' });
+    }
+    const building = await Building.findById(buildingId);
+    if (!building) return res.status(404).json({ error: 'Building not found' });
+    const cap = Number(building.dayPassDailyCapacity || 0);
+    const booked = await getDailyUsageCount(buildingId, date);
+    const remaining = cap > 0 ? Math.max(0, cap - booked) : null;
+    return res.json({ success: true, data: { capacity: cap || null, booked, remaining } });
+  } catch (e) {
+    console.error('getAvailability error:', e);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 };

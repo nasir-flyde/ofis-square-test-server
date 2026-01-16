@@ -2,6 +2,7 @@ import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
 import { populateUserRole, requireSystemAdmin } from "../middlewares/rbacMiddleware.js";
 import {
+  findByPhone,
   createMatrixUser,
   listMatrixUsers,
   getMatrixUserById,
@@ -21,6 +22,9 @@ import {
 } from "../controllers/matrixUserController.js";
 
 const router = express.Router();
+
+// Find by phone (normalized to externalUserId)
+router.get("/find-by-phone", authMiddleware, populateUserRole, findByPhone);
 
 // List users
 router.get("/", authMiddleware, populateUserRole, listMatrixUsers);

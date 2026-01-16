@@ -16,6 +16,7 @@ const meetingBookingSchema = new Schema(
     currency: { type: String, default: "INR" },
     amount: { type: Number, default: 0 },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
+    guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", index: true },
     invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
     payment: {
       method: { type: String, enum: ["cash", "card", "credits"], default: "cash" },
@@ -26,6 +27,12 @@ const meetingBookingSchema = new Schema(
       idempotencyKey: { type: String },
       amount: { type: Number }
     },
+    // Building access flags (WiFi and Matrix access control)
+    buildingAccess: {
+      wifiAccess: { type: Boolean, default: false },
+      matrixAccess: { type: Boolean, default: false }
+    },
+
     // Discount workflow
     usingDefaultBuildingDiscount: { type: Boolean, default: false },
     discountStatus: { type: String, enum: ["none", "pending", "approved", "rejected"], default: "none", index: true },

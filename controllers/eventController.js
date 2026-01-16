@@ -630,12 +630,10 @@ const completeEvent = async (req, res) => {
         message: 'Event is already completed'
       });
     }
-
     const oldStatus = event.status;
     event.status = 'completed';
     await event.save();
 
-    // Log activity
     await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id,
       { status: oldStatus }, { status: 'completed' });
 

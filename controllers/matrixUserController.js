@@ -4,8 +4,48 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import EnrollmentDetail from "../models/enrollmentDetailModel.js";
+import DayPass from "../models/dayPassModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import matrixApi from "../utils/matrixApi.js";
+
+// Helper to normalize a phone into externalUserId candidates
+function normalizePhoneCandidates(phone) {
+  if (!phone) return { last10: null, externalUserId: null };
+  let p = String(phone).replace(/\D/g, "");
+  p = p.replace(/^0+/, "");
+  const last10 = p.length > 10 ? p.slice(-10) : p;
+  if (last10.length !== 10) return { last10: null, externalUserId: null };
+  return { last10, externalUserId: `91${last10}` };
+}
+
+// GET /api/matrix-users/find-by-phone?phone=XXXXXXXXXX
+export const findByPhone = async (req, res) => {
+  try {
+    const raw = req.query?.phone || req.body?.phone;
+    if (!raw) return res.status(400).json({ success: false, message: 'phone is required' });
+    const { last10, externalUserId } = normalizePhoneCandidates(raw);
+    if (!last10) return res.status(400).json({ success: false, message: 'phone must contain 10 digits' });
+
+    // Try exact externalUserId first, then fallback to phone ending with last10
+    const regexEnd10 = new RegExp(`${last10}$`);
+    const user = await MatrixUser.findOne({
+      $or: [
+        { externalUserId },
+        { externalUserId: last10 },
+        { phone: regexEnd10 },
+      ],
+    })
+      .select('_id name phone email externalUserId policyId validTill isDeviceAssigned isEnrolled isCardCredentialVerified buildingId')
+      .lean();
+
+    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+    return res.json({ success: true, data: user });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixUser:FindByPhone');
+    return res.status(500).json({ success: false, message: 'Failed to lookup matrix user' });
+  }
+};
 
 export const createMatrixUser = async (req, res) => {
   try {
@@ -464,7 +504,7 @@ export const enrollCardToDevice = async (req, res) => {
 export const setCardCredential = async (req, res) => {
   try {
     const { id } = req.params; // MatrixUser _id
-    const { rfidCardId, cardId, deviceId: bodyDeviceId, device_id: bodyDevice_id, policyId: bodyPolicyId } = req.body || {};
+    const { rfidCardId, cardId, deviceId: bodyDeviceId, device_id: bodyDevice_id, policyId: bodyPolicyId, dayPassId, meetingBookingId } = req.body || {};
     const refId = rfidCardId || cardId;
     if (!refId) return res.status(400).json({ success: false, message: 'rfidCardId (or cardId) is required' });
 
@@ -530,6 +570,24 @@ export const setCardCredential = async (req, res) => {
           );
         }
       } catch {}
+
+      // If dayPassId is provided, mark access control granted on that DayPass
+      if (dayPassId) {
+        try {
+          await DayPass.findByIdAndUpdate(dayPassId, { $set: { 'buildingAccess.accessControl': true } });
+        } catch (e) {
+          await logErrorActivity(req, e, 'DayPass:MarkAccessControl', { dayPassId });
+        }
+      }
+
+      // If meetingBookingId is provided, mark matrix access granted on that MeetingBooking
+      if (meetingBookingId) {
+        try {
+          await MeetingBooking.findByIdAndUpdate(meetingBookingId, { $set: { 'buildingAccess.matrixAccess': true } });
+        } catch (e) {
+          await logErrorActivity(req, e, 'MeetingBooking:MarkMatrixAccess', { meetingBookingId });
+        }
+      }
 
       await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, {
         setCardCredential: {
@@ -660,6 +718,7 @@ export const listCardDevices = async (req, res) => {
 };
 
 export default {
+  findByPhone,
   createMatrixUser,
   listMatrixUsers,
   getMatrixUserById,

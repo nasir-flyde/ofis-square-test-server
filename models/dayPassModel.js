@@ -9,6 +9,8 @@ const dayPassSchema = new Schema(
     member: { type: Schema.Types.ObjectId, ref: "Member", default: null },
     building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
     bundle: { type: Schema.Types.ObjectId, ref: "DayPassBundle", default: null }, // null for single passes
+    // Inventory reference (subdocument _id from Building.dayPassInventories)
+    inventoryId: { type: String, index: true },
     
     // Pass details
     date: { type: Date, default: null },
@@ -56,9 +58,17 @@ const dayPassSchema = new Schema(
     invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
     payment: { type: Schema.Types.ObjectId, ref: "Payment" },
     
+    // Building access flags
+    buildingAccess: {
+      wifiAccess: { type: Boolean, default: false },
+      accessControl: { type: Boolean, default: false }
+    },
+    
     // Additional info
     notes: { type: String, trim: true },
-    createdBy: { type: Schema.Types.ObjectId, ref: "User" }
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+    externalSource: { type: String, index: true },
+    referenceNumber: { type: String, index: true },
   },
   { 
     timestamps: true, 
@@ -72,6 +82,9 @@ dayPassSchema.index({ building: 1, date: 1, status: 1 });
 dayPassSchema.index({ bundle: 1 });
 dayPassSchema.index({ qrCode: 1 }, { sparse: true });
 dayPassSchema.index({ status: 1, date: 1 });
+// Ensure idempotency per external partner (unique combination when provided)
+dayPassSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
+dayPassSchema.index({ inventoryId: 1 });
 
 const DayPass = mongoose.model("DayPass", dayPassSchema);
 export default DayPass;

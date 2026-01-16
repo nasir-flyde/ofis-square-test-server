@@ -265,7 +265,7 @@ export async function updateContact(contactId, payload) {
     const durationMs = Date.now() - startTime;
     const rawText = await res.text();
     let data;
-    try { data = rawText ? JSON.parse(rawText) : {}; } catch (e) { data = { parse_error: String(e?.message || e), raw: rawText }; }
+    try { data = rawText ? JSON.parse(rawText) : {}; } catch (e) { data = { parse_error: true, raw: rawText }; }
 
     console.log("===== ZohoBooks:updateContact - Response =====");
     console.log("HTTP:", res.status, res.statusText || "");
@@ -388,6 +388,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
   try {
     const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
+    
+    console.log("🔗 Zoho Payment URL:", url);
+    console.log("📤 Payment payload:", JSON.stringify(invoiceDoc, null, 2));
+    
     const {
       invoiceNumber,
       issueDate,
@@ -406,15 +410,61 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
     }
     const itemsArray = invoiceDoc.line_items || items || [];
-    // Determine a default tax percentage if line item doesn't carry one
-    const defaultTaxPercent =
-      typeof itemsArray?.[0]?.tax_percentage === 'number' && itemsArray?.[0]?.tax_percentage >= 0
-        ? Number(itemsArray[0].tax_percentage)
-        : 18; // fallback to 18% for IN region
+    
+    // Derive default tax percent:
+    // 1) If invoice explicitly has tax_total <= 0, treat as zero-tax
+    // 2) Else use first line item's tax_percentage if provided
+    // 3) Else fallback to 18
+    const explicitTaxTotal = typeof invoiceDoc?.tax_total === 'number' ? Number(invoiceDoc.tax_total) : null;
+    let defaultTaxPercent;
+    if (explicitTaxTotal !== null && explicitTaxTotal <= 0) {
+      defaultTaxPercent = 0;
+    } else if (typeof itemsArray?.[0]?.tax_percentage === 'number') {
+      defaultTaxPercent = Number(itemsArray[0].tax_percentage);
+    } else {
+      defaultTaxPercent = 18; // fallback to 18% for IN region
+    }
 
     // GST treatment influences whether we should apply a tax or exemption
-    const gstTreatment = invoiceDoc?.gst_treatment || 'business_gst';
-    const zeroTax = !defaultTaxPercent || Number(defaultTaxPercent) <= 0;
+    const gstTreatment = invoiceDoc?.gst_treatment || clientDoc?.gstTreatment || 'business_gst';
+    const zeroTax = !(Number(defaultTaxPercent) > 0);
+
+    // Normalize Indian state codes/names to a comparable uppercase token
+    const normalizeStateToken = (v) => {
+      if (!v) return '';
+      let s = String(v).trim().toUpperCase();
+      // Handle common numeric GST codes -> alpha
+      const numMap = {
+        '01': 'JK', '02': 'HP', '03': 'PB', '04': 'CH', '05': 'UT', '06': 'HR', '07': 'DL', '08': 'RJ', '09': 'UP', '10': 'BR',
+        '11': 'SK', '12': 'AR', '13': 'AS', '14': 'NL', '15': 'MN', '16': 'ML', '17': 'TR', '18': 'MZ', '19': 'WB', '20': 'JH',
+        '21': 'OD', '22': 'CT', '23': 'MP', '24': 'GJ', '25': 'DD', '26': 'DN', '27': 'MH', '28': 'AP', '29': 'KA', '30': 'GA',
+        '31': 'LD', '32': 'KL', '33': 'TN', '34': 'PY', '35': 'AN', '36': 'TS', '37': 'AP', '38': 'LA'
+      };
+      if (/^\d{2}$/.test(s) && numMap[s]) return numMap[s];
+      // Strip any separators like 'IN-XX' or 'XX-YY'
+      if (s.includes('-')) s = s.split('-').pop();
+      s = s.replace(/[^A-Z]/g, '');
+      // Map names and already-alpha codes
+      const map = {
+        'ANDAMAN AND NICOBAR': 'AN', 'ANDHRA PRADESH': 'AP', 'ARUNACHAL PRADESH': 'AR', 'ASSAM': 'AS', 'BIHAR': 'BR',
+        'CHANDIGARH': 'CH', 'CHHATTISGARH': 'CT', 'DADRA AND NAGAR HAVELI': 'DN', 'DAMAN AND DIU': 'DD',
+        'DELHI': 'DL', 'NCTOFDELHI': 'DL', 'GOA': 'GA', 'GUJARAT': 'GJ', 'HARYANA': 'HR', 'HIMACHAL PRADESH': 'HP',
+        'JAMMU AND KASHMIR': 'JK', 'JHARKHAND': 'JH', 'KARNATAKA': 'KA', 'KERALA': 'KL', 'LADAKH': 'LA', 'LAKSHADWEEP': 'LD',
+        'MADHYA PRADESH': 'MP', 'MAHARASHTRA': 'MH', 'MANIPUR': 'MN', 'MEGHALAYA': 'ML', 'MIZORAM': 'MZ', 'NAGALAND': 'NL',
+        'ODISHA': 'OD', 'ORISSA': 'OD', 'PUDUCHERRY': 'PY', 'PUNJAB': 'PB', 'RAJASTHAN': 'RJ', 'SIKKIM': 'SK',
+        'TAMIL NADU': 'TN', 'TELANGANA': 'TS', 'TRIPURA': 'TR', 'UTTAR PRADESH': 'UP', 'UTTARAKHAND': 'UK', 'WEST BENGAL': 'WB',
+        // Already-alpha codes should map to themselves
+        'AN': 'AN','AP': 'AP','AR': 'AR','AS': 'AS','BR': 'BR','CH': 'CH','CT': 'CT','DD': 'DD','DL': 'DL','DN': 'DN','GA': 'GA','GJ': 'GJ','HP': 'HP','HR': 'HR','JH': 'JH','JK': 'JK','KA': 'KA','KL': 'KL','LA': 'LA','LD': 'LD','MH': 'MH','ML': 'ML','MN': 'MN','MP': 'MP','MZ': 'MZ','NL': 'NL','OD': 'OD','PB': 'PB','PY': 'PY','RJ': 'RJ','SK': 'SK','TN': 'TN','TR': 'TR','TS': 'TS','UK': 'UK','UP': 'UP','WB': 'WB'
+      };
+      return map[s] || s;
+    };
+
+    // Derive place_of_supply if missing on invoice from client billing address
+    const derivedPlaceOfSupply = invoiceDoc?.place_of_supply
+      || clientDoc?.place_of_supply
+      || clientDoc?.billingAddress?.state_code
+      || clientDoc?.billingAddress?.state
+      || '';
 
     // Fetch organization taxes to map a percentage to a Zoho tax_id (or tax group id)
     async function getZohoTaxesList() {
@@ -468,20 +518,51 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
 
     // Only fetch/apply tax when GST treatment is business_gst AND tax rate > 0
     let chosenTax = null;
-    if (gstTreatment === 'business_gst' && !zeroTax) {
+    // Normalize org and POS codes up-front for reuse
+    const orgStateRaw = (invoiceDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim();
+    const orgStateCode = normalizeStateToken(orgStateRaw);
+    const posRaw = (derivedPlaceOfSupply || '').trim();
+    let posCode = normalizeStateToken(posRaw);
+    if (!posCode) {
+      // Fallback: use org state code to avoid Zoho 'Please provide a valid state code' error
+      posCode = orgStateCode;
+    }
+
+    if (!zeroTax) {
       const { taxes, taxgroups } = await getZohoTaxesList();
       // Determine interstate based on org state vs place of supply
-      const orgState = (invoiceDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim().toUpperCase();
-      const pos = (invoiceDoc?.place_of_supply || '').trim().toUpperCase();
-      const isInterstate = !!(orgState && pos && orgState !== pos);
+      const isInterstate = !!(orgStateCode && posCode && orgStateCode !== posCode);
       chosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, isInterstate);
+      // Fallback: if still no tax, pick a reasonable default to satisfy Zoho (any group for intrastate, any tax for interstate)
+      if (!chosenTax) {
+        if (isInterstate) {
+          // Prefer any single tax
+          const anyTax = Array.isArray(taxes) && taxes.length > 0 ? taxes[0] : null;
+          if (anyTax?.tax_id) chosenTax = { kind: 'tax', id: anyTax.tax_id };
+        } else {
+          // Prefer any group (CGST+SGST); else any single tax
+          const anyGroup = Array.isArray(taxgroups) && taxgroups.length > 0 ? taxgroups[0] : null;
+          if (anyGroup?.tax_group_id) chosenTax = { kind: 'group', id: anyGroup.tax_group_id };
+          if (!chosenTax) {
+            const anyTax = Array.isArray(taxes) && taxes.length > 0 ? taxes[0] : null;
+            if (anyTax?.tax_id) chosenTax = { kind: 'tax', id: anyTax.tax_id };
+          }
+        }
+      }
       try {
-        console.log('[ZohoBooks] Taxes count:', taxes?.length || 0, 'TaxGroups count:', taxgroups?.length || 0, 'DefaultTax%:', defaultTaxPercent, 'isInterstate:', isInterstate, 'ChosenTax:', chosenTax);
+        console.log('[ZohoBooks] Taxes count:', taxes?.length || 0, 'TaxGroups count:', taxgroups?.length || 0, 'DefaultTax%:', defaultTaxPercent, 'isInterstate:', isInterstate, 'ChosenTax:', chosenTax, 'orgState:', orgStateCode, 'pos:', posCode);
       } catch (_) {}
       if (!chosenTax) {
-        console.warn(`[ZohoBooks] No matching tax_id found for rate ${defaultTaxPercent}%. Configure taxes in Zoho Books or adjust mapping.`);
+        console.warn(`[ZohoBooks] No matching tax could be selected. Ensure taxes are configured in Zoho Books.`);
       }
     }
+
+    // Compute a safe place_of_supply code for payload usage
+    const placeOfSupplyCode = (typeof posCode !== 'undefined' && posCode)
+      ? posCode
+      : (normalizeStateToken((derivedPlaceOfSupply || '').trim())
+        || normalizeStateToken((invoiceDoc?.place_of_supply || '').trim())
+        || normalizeStateToken((process.env.ZOHO_ORG_STATE_CODE || '').trim()));
 
     const line_items = itemsArray.map((it) => {
       const li = {
@@ -493,7 +574,8 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
         ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
       };
       const perItemRate = typeof it.tax_percentage === 'number' ? Number(it.tax_percentage) : defaultTaxPercent;
-      if (gstTreatment === 'business_gst' && perItemRate > 0 && chosenTax) {
+      // Attach item-level tax only when a single tax is chosen (tax groups cannot be attached at item-level)
+      if (perItemRate > 0 && chosenTax && chosenTax.kind === 'tax') {
         li.tax_id = chosenTax.id;
       }
       return li;
@@ -523,20 +605,16 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
               .slice(0, 10)}`
           : "Terms & Conditions apply",
       // GST context for India: let Zoho compute IGST vs CGST/SGST based on place_of_supply and org state
-      ...(invoiceDoc?.gst_treatment ? { gst_treatment: invoiceDoc.gst_treatment } : {}),
-      ...(invoiceDoc?.place_of_supply ? { place_of_supply: invoiceDoc.place_of_supply } : {}),
+      ...(gstTreatment ? { gst_treatment: gstTreatment } : {}),
+      ...(placeOfSupplyCode ? { place_of_supply: placeOfSupplyCode } : {}),
       // Force the GST registration number to match the selected client registration for this invoice
-      ...(invoiceDoc?.gst_no ? { gst_no: invoiceDoc.gst_no } : {}),
+      ...(invoiceDoc?.gst_no ? { gst_no: invoiceDoc.gst_no } : (clientDoc?.gstNo ? { gst_no: clientDoc.gstNo } : {})),
       // Apply common tax_id at invoice level so Zoho knows a Tax is set (only when business_gst & non-zero)
-      ...(gstTreatment === 'business_gst' && !zeroTax && chosenTax
+      ...(!zeroTax && chosenTax
         ? (chosenTax.kind === 'tax' ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
         : {}),
-      // If zero-tax or non-GST treatment, try to attach a tax_exemption_id if configured
-      ...((gstTreatment !== 'business_gst' || zeroTax) && process.env.ZOHO_TAX_EXEMPTION_ID
-        ? { tax_exemption_id: process.env.ZOHO_TAX_EXEMPTION_ID }
-        : {}),
+      // No automatic tax_exemption_id — enforce GST application as per user's policy
     };
-    // TDS (withholding) disabled: do not attach withholding_taxes to payload
 
     const headers = {
       Authorization: `Zoho-oauthtoken ${authToken}`,
@@ -1194,7 +1272,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
         : 18; // default GST 18%
 
     const gstTreatment = estimateDoc?.gst_treatment || "business_gst";
-    const zeroTax = !defaultTaxPercent || Number(defaultTaxPercent) <= 0;
+    const zeroTax = !(Number(defaultTaxPercent) > 0);
 
     // Normalize place_of_supply to valid two-letter Indian state code (e.g., MH, DL)
     function normalizePlaceOfSupply(raw) {
@@ -1217,7 +1295,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       for (const [name, code] of Object.entries(NAME_TO_CODE)) { if (s.includes(name)) return code; }
       return null;
     }
-    const orgStateCode = normalizePlaceOfSupply((process.env.ZOHO_ORG_STATE_CODE || '').trim().toUpperCase());
+    const orgStateCode = normalizePlaceOfSupply((estimateDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim());
     let normalizedPOS = normalizePlaceOfSupply(estimateDoc?.place_of_supply);
     if (!normalizedPOS && clientDoc) {
       const til = Array.isArray(clientDoc.taxInfoList) ? clientDoc.taxInfoList : [];
@@ -1268,7 +1346,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
     }
 
     let chosenTax = null;
-    if (gstTreatment === "business_gst" && !zeroTax) {
+    if (!zeroTax) {
       const { taxes, taxgroups } = await getZohoTaxesList();
       let isInterstate;
       if (orgStateCode && normalizedPOS) {
@@ -1280,6 +1358,20 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
         isInterstate = false;
       }
       chosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, isInterstate);
+      // Robust fallback like invoice flow
+      if (!chosenTax) {
+        if (isInterstate) {
+          const anyTax = Array.isArray(taxes) && taxes.length > 0 ? taxes[0] : null;
+          if (anyTax?.tax_id) chosenTax = { kind: 'tax', id: anyTax.tax_id };
+        } else {
+          const anyGroup = Array.isArray(taxgroups) && taxgroups.length > 0 ? taxgroups[0] : null;
+          if (anyGroup?.tax_group_id) chosenTax = { kind: 'group', id: anyGroup.tax_group_id };
+          if (!chosenTax) {
+            const anyTax = Array.isArray(taxes) && taxes.length > 0 ? taxes[0] : null;
+            if (anyTax?.tax_id) chosenTax = { kind: 'tax', id: anyTax.tax_id };
+          }
+        }
+      }
       try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: normalizedPOS }); } catch (_) {}
     }
 
@@ -1293,7 +1385,8 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
         ...(it.item_id && it.item_id !== "goods" ? { item_id: it.item_id } : {})
       };
       const perItemRate = typeof it.tax_percentage === "number" ? Number(it.tax_percentage) : defaultTaxPercent;
-      if (gstTreatment === "business_gst" && perItemRate > 0 && chosenTax) {
+      // Attach item-level tax only when a single tax is chosen (tax groups cannot be attached at item-level)
+      if (perItemRate > 0 && chosenTax && chosenTax.kind === 'tax') {
         li.tax_id = chosenTax.id;
       }
       return li;
@@ -1313,17 +1406,19 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       notes: estimateDoc.notes || notes || "Thank you for your interest.",
       terms:
         bp && bp.start && bp.end
-          ? `Billing Period: ${new Date(bp.start).toISOString().slice(0, 10)} to ${new Date(bp.end).toISOString().slice(0, 10)}`
+          ? `Billing Period: ${new Date(bp.start)
+              .toISOString()
+              .slice(0, 10)} to ${new Date(bp.end)
+              .toISOString()
+              .slice(0, 10)}`
           : "Terms & Conditions apply",
       ...(estimateDoc?.gst_treatment ? { gst_treatment: estimateDoc.gst_treatment } : {}),
       ...(normalizedPOS ? { place_of_supply: normalizedPOS } : {}),
       ...(estimateDoc?.gst_no ? { gst_no: estimateDoc.gst_no } : {}),
-      ...(gstTreatment === "business_gst" && !zeroTax && chosenTax
+      ...(!zeroTax && chosenTax
         ? (chosenTax.kind === "tax" ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
         : {}),
-      ...((gstTreatment !== "business_gst" || zeroTax) && process.env.ZOHO_TAX_EXEMPTION_ID
-        ? { tax_exemption_id: process.env.ZOHO_TAX_EXEMPTION_ID }
-        : {}),
+      // No automatic tax_exemption_id — enforce GST application as per user's policy
     };
 
     const headers = {

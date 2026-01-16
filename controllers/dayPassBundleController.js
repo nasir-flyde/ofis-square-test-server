@@ -8,6 +8,7 @@ import Payment from "../models/paymentModel.js";
 import mongoose from "mongoose";
 import crypto from "crypto";
 import { sendNotification } from "../utils/notificationHelper.js";
+import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 
 // Create a new day pass bundle
 export const createDayPassBundle = async (req, res) => {
@@ -105,17 +106,39 @@ export const createDayPassBundle = async (req, res) => {
       return res.status(404).json({ error: "Building not found" });
     }
 
-    if (!building.openSpacePricing) {
-      return res.status(400).json({ 
-        error: "Day pass pricing not configured for this building" 
-      });
+    // Resolve price per pass from building (single-key capacity model)
+    const pricePerPass = Number(building.openSpacePricing) || 0;
+    if (!pricePerPass) {
+      return res.status(400).json({ error: 'Day pass price not configured for this building' });
     }
+    const baseAmount = pricePerPass * no_of_dayPasses;
+    const gstRate = 18; // Apply 18% GST
+    const taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
+    const finalAmount = Math.round(((baseAmount + taxAmount)) * 100) / 100;
 
-    // Calculate total amount
-    const pricePerPass = building.openSpacePricing;
-    const totalAmount = pricePerPass * no_of_dayPasses;
-    const taxAmount = 0; // No tax on day pass bookings
-    const finalAmount = totalAmount;
+    // Server-side capacity pre-check for provided self dates (no reservation here)
+    const cap = Number(building.dayPassDailyCapacity || 0);
+    if (cap > 0 && splitSelf > 0) {
+      // Build a per-date count map from datesSelf
+      const dateCounts = {};
+      for (const ds of parsedDatesSelf) {
+        const d = new Date(ds);
+        d.setHours(0,0,0,0);
+        const key = d.toISOString();
+        dateCounts[key] = (dateCounts[key] || 0) + 1;
+      }
+      // Check each date against existing bookedCount in DayPassDailyUsage
+      for (const [iso, reqCount] of Object.entries(dateCounts)) {
+        const used = await DayPassDailyUsage.findOne({ building: buildingId, date: new Date(iso) }).lean();
+        const booked = Number(used?.bookedCount || 0);
+        if (booked + reqCount > cap) {
+          return res.status(409).json({ 
+            error: 'Insufficient capacity for one or more selected dates',
+            details: { date: iso.slice(0,10), capacity: cap, requested: reqCount, booked, remaining: Math.max(0, cap - booked) }
+          });
+        }
+      }
+    }
 
     // Set validity dates
     const validFrom = new Date();
@@ -149,6 +172,32 @@ export const createDayPassBundle = async (req, res) => {
     session.startTransaction();
 
     try {
+      // Reserve capacity for self dates at booking time (aggregate by date)
+      if (cap > 0 && splitSelf > 0 && parsedDatesSelf.length > 0) {
+        const incCounts = {};
+        for (const ds of parsedDatesSelf) {
+          const d = new Date(ds);
+          d.setHours(0,0,0,0);
+          const key = d.toISOString();
+          incCounts[key] = (incCounts[key] || 0) + 1;
+        }
+        for (const [iso, add] of Object.entries(incCounts)) {
+          const updated = await DayPassDailyUsage.findOneAndUpdate(
+            { building: buildingId, date: new Date(iso) },
+            { $inc: { bookedCount: add } },
+            { upsert: true, new: true, setDefaultsOnInsert: true, session }
+          );
+          if (updated && updated.bookedCount > cap) {
+            const exceededBy = updated.bookedCount - cap;
+            // Abort on overflow
+            const err = new Error('Capacity exceeded for selected date');
+            err.status = 409;
+            err.details = { date: iso.slice(0,10), capacity: cap, requested: add, booked: updated.bookedCount - add, remaining: Math.max(0, cap - (updated.bookedCount - add)), exceededBy };
+            throw err;
+          }
+        }
+      }
+
       // Create bundle
       const bundle = new DayPassBundle({
         customer: customerId,
@@ -225,10 +274,11 @@ export const createDayPassBundle = async (req, res) => {
             description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
             quantity: no_of_dayPasses,
             unitPrice: pricePerPass,
-            amount: totalAmount,
-            rate: pricePerPass
+            amount: baseAmount,
+            rate: pricePerPass,
+            tax_percentage: gstRate
           }],
-          sub_total: totalAmount,
+          sub_total: baseAmount,
           tax_total: taxAmount,
           total: finalAmount,
           status: "draft",

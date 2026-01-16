@@ -4,8 +4,9 @@ const { Schema } = mongoose;
 
 const bhaifiUserSchema = new Schema(
   {
-    member: { type: Schema.Types.ObjectId, ref: "Member", required: true, index: true },
+    member: { type: Schema.Types.ObjectId, ref: "Member", index: true },
     client: { type: Schema.Types.ObjectId, ref: "Client", index: true }, // optional backref for convenience
+    guest: { type: Schema.Types.ObjectId, ref: "Guest", index: true }, // optional backref when no member/client
     contract: { type: Schema.Types.ObjectId, ref: "Contract", index: true }, // optional linkage
 
     email: { type: String, required: true, trim: true, lowercase: true },
@@ -54,7 +55,10 @@ const bhaifiUserSchema = new Schema(
 );
 
 bhaifiUserSchema.index({ member: 1 }, { name: "ix_member" });
+bhaifiUserSchema.index({ guest: 1 }, { name: "ix_guest" });
 // Avoid duplicates for same member+userName
 bhaifiUserSchema.index({ member: 1, userName: 1 }, { unique: true, sparse: true, name: "uq_member_userName" });
+// Avoid duplicates for same guest+userName
+bhaifiUserSchema.index({ guest: 1, userName: 1 }, { unique: true, sparse: true, name: "uq_guest_userName" });
 
 export default mongoose.model("BhaifiUser", bhaifiUserSchema);

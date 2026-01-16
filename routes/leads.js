@@ -9,7 +9,8 @@ import {
   approveKYC,
   rejectKYC,
   getPendingKYCLeads,
-  uploadKYCByAdmin
+  uploadKYCByAdmin,
+  searchGuests,
 } from "../controllers/leadController.js";
 import { uploadKYCDocuments, handleUploadError } from "../middlewares/uploadMiddleware.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -23,16 +24,18 @@ const router = express.Router();
 router.post("/signup", uploadKYCDocuments, handleUploadError, createLead);
 
 // Protected routes (require authentication)
-router.get("/", authMiddleware, checkPermission(PERMISSIONS.CLIENT_READ), getLeads);
-router.get("/stats", authMiddleware, checkPermission(PERMISSIONS.CLIENT_READ), getLeadStats);
-router.get("/kyc/pending", authMiddleware, checkPermission(PERMISSIONS.CLIENT_READ), getPendingKYCLeads);
-router.get("/:id", authMiddleware, checkPermission(PERMISSIONS.CLIENT_READ), getLeadById);
-router.put("/:id", authMiddleware, checkPermission(PERMISSIONS.CLIENT_UPDATE), updateLead);
-router.delete("/:id", authMiddleware, checkPermission(PERMISSIONS.CLIENT_DELETE), deleteLead);
+router.get("/", authMiddleware, getLeads);
+router.get("/stats", authMiddleware, getLeadStats);
+router.get("/kyc/pending", authMiddleware, getPendingKYCLeads);
+// Guest search for community/ops to select ondemand users
+router.get("/guests/search", authMiddleware, searchGuests);
+router.get("/:id", authMiddleware, getLeadById);
+router.put("/:id", authMiddleware, updateLead);
+router.delete("/:id", authMiddleware, deleteLead);
 
 // KYC approval routes (require client approval permission)
-router.put("/:id/kyc/upload", authMiddleware, checkPermission(PERMISSIONS.CLIENT_APPROVE), uploadKYCDocuments, handleUploadError, uploadKYCByAdmin);
-router.post("/:id/kyc/approve", authMiddleware, checkPermission(PERMISSIONS.CLIENT_APPROVE), approveKYC);
-router.post("/:id/kyc/reject", authMiddleware, checkPermission(PERMISSIONS.CLIENT_APPROVE), rejectKYC);
+router.put("/:id/kyc/upload", authMiddleware, uploadKYCDocuments, handleUploadError, uploadKYCByAdmin);
+router.post("/:id/kyc/approve", authMiddleware, approveKYC);
+router.post("/:id/kyc/reject", authMiddleware, rejectKYC);
 
 export default router;

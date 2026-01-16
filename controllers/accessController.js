@@ -8,6 +8,7 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import AccessAudit from "../models/accessAuditModel.js";
 import Cabin from "../models/cabinModel.js";
 import AccessPoint from "../models/accessPointModel.js";
+import CommonArea from "../models/commonAreaModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import { enforceAccessByInvoices, extendGrant as serviceExtendGrant } from "../services/accessService.js";
 
@@ -64,6 +65,7 @@ export const createAccessPolicy = async (req, res) => {
       effectiveFrom,
       effectiveTo,
       cabinId,
+      commonAreaId,
     } = req.body || {};
 
     if (!buildingId || !mongoose.Types.ObjectId.isValid(buildingId)) {
@@ -92,6 +94,15 @@ export const createAccessPolicy = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Cabin must belong to the same building as the policy' });
       }
       points = (cabin.matrixDevices || []).map((id) => String(id));
+    } else if (commonAreaId) {
+      const ca = await CommonArea.findById(commonAreaId).select('buildingId matrixDevices').lean();
+      if (!ca) {
+        return res.status(404).json({ success: false, message: 'Common Area not found' });
+      }
+      if (String(ca.buildingId) !== String(buildingId)) {
+        return res.status(400).json({ success: false, message: 'Common Area must belong to the same building as the policy' });
+      }
+      points = (ca.matrixDevices || []).map((id) => String(id));
     } else {
       const raw = Array.isArray(accessPointIds) ? accessPointIds.map((p) => String(p).trim()).filter(Boolean) : [];
       const idRegex = /^[a-f\d]{24}$/i;
@@ -211,6 +222,7 @@ export const updateAccessPolicy = async (req, res) => {
       effectiveFrom,
       effectiveTo,
       cabinId,
+      commonAreaId,
     } = req.body || {};
 
     const targetBuildingId = buildingId || existing.buildingId;
@@ -245,6 +257,15 @@ export const updateAccessPolicy = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Cabin must belong to the same building as the policy' });
       }
       normalizedPoints = (cabin.matrixDevices || []).map((id) => String(id));
+    } else if (commonAreaId) {
+      const ca = await CommonArea.findById(commonAreaId).select('buildingId matrixDevices').lean();
+      if (!ca) {
+        return res.status(404).json({ success: false, message: 'Common Area not found' });
+      }
+      if (String(ca.buildingId) !== String(targetBuildingId)) {
+        return res.status(400).json({ success: false, message: 'Common Area must belong to the same building as the policy' });
+      }
+      normalizedPoints = (ca.matrixDevices || []).map((id) => String(id));
     } else if (Array.isArray(accessPointIds)) {
       const raw = accessPointIds.map((p) => String(p).trim()).filter(Boolean);
       const idRegex = /^[a-f\d]{24}$/i;

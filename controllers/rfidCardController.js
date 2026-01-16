@@ -221,6 +221,25 @@ export const assignClientToCard = async (req, res) => {
     if (!card) return res.status(404).json({ success: false, message: "Card not found" });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
+    // Determine a primary phone from client details (primary contact > any contact person > client.phone > contactNumber)
+    let primaryPhone;
+    const normalizePhone = (v) => (v ? String(v).replace(/\D/g, "") : undefined);
+    try {
+      if (Array.isArray(client.contactPersons) && client.contactPersons.length) {
+        const primaryCP = client.contactPersons.find((cp) => cp?.is_primary_contact);
+        const fromPrimary = normalizePhone(primaryCP?.phone || primaryCP?.mobile);
+        if (fromPrimary) primaryPhone = fromPrimary;
+        if (!primaryPhone) {
+          for (const cp of client.contactPersons) {
+            const p = normalizePhone(cp?.phone || cp?.mobile);
+            if (p) { primaryPhone = p; break; }
+          }
+        }
+      }
+      if (!primaryPhone && client.phone) primaryPhone = normalizePhone(client.phone);
+      if (!primaryPhone && client.contactNumber) primaryPhone = normalizePhone(client.contactNumber);
+    } catch {}
+
     // Ensure Company Access User role exists
     let role = await Role.findOne({ roleName: "Company Access" });
     if (!role) {
@@ -251,13 +270,29 @@ export const assignClientToCard = async (req, res) => {
         const dummyLocal = `company+${String(client.companyName).slice(-6)}+${Date.now()}`;
         const dummyEmail = `${dummyLocal}@${domain}`;
         const hashed = await bcrypt.hash(Math.random().toString(36).slice(-10), 10);
-        ownerUser = await User.create({
-          name: nameFromClient,
-          email: dummyEmail,
-          password: hashed,
-          role: role._id,
-          clientId: client._id,
-        });
+        try {
+          ownerUser = await User.create({
+            name: nameFromClient,
+            email: dummyEmail,
+            password: hashed,
+            role: role._id,
+            clientId: client._id,
+            phone: primaryPhone || undefined,
+          });
+        } catch (e) {
+          // In case phone collides with an existing user, retry without phone
+          if (e?.code === 11000 && String(e?.message || '').includes('phone')) {
+            ownerUser = await User.create({
+              name: nameFromClient,
+              email: dummyEmail,
+              password: hashed,
+              role: role._id,
+              clientId: client._id,
+            });
+          } else {
+            throw e;
+          }
+        }
       }
     }
 
@@ -265,13 +300,39 @@ export const assignClientToCard = async (req, res) => {
     if (!ownerUser) {
       const nameFromClient = (client.companyName || client.legalName || "Company Access").trim();
       const hashed = await bcrypt.hash(Math.random().toString(36).slice(-10), 10);
-      ownerUser = await User.create({
-        name: nameFromClient,
-        email: ownerEmailFromClient,
-        password: hashed,
-        role: role._id,
-        clientId: client._id,
-      });
+      try {
+        ownerUser = await User.create({
+          name: nameFromClient,
+          email: ownerEmailFromClient,
+          password: hashed,
+          role: role._id,
+          clientId: client._id,
+          phone: primaryPhone || undefined,
+        });
+      } catch (e) {
+        // In case phone collides, retry without phone
+        if (e?.code === 11000 && String(e?.message || '').includes('phone')) {
+          ownerUser = await User.create({
+            name: nameFromClient,
+            email: ownerEmailFromClient,
+            password: hashed,
+            role: role._id,
+            clientId: client._id,
+          });
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    // 4) If we found/created ownerUser but phone differs/missing, try to align to primary phone (best-effort)
+    if (ownerUser && primaryPhone && String(ownerUser.phone || '').replace(/\D/g, '') !== primaryPhone) {
+      try {
+        await User.updateOne({ _id: ownerUser._id }, { $set: { phone: primaryPhone } });
+        ownerUser.phone = primaryPhone;
+      } catch (e) {
+        // Ignore duplicate phone errors to avoid breaking the flow
+      }
     }
 
     // Update card linkage

@@ -19,8 +19,10 @@ import {
   sendZohoInvoiceEmail,
   findOrCreateContactFromClient,
   markZohoInvoiceAsSent,
+  createContact as createZohoContact,
 } from "../utils/zohoBooks.js";
 import Building from "../models/buildingModel.js";
+import Guest from "../models/guestModel.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
@@ -392,19 +394,46 @@ export const pushInvoiceToZoho = async (req, res) => {
         await client.save();
       }
 
-      // Create Zoho invoice from local invoice
-      const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
-      const zohoId = zohoResp?.invoice?.invoice_id;
-      const zohoNumber = zohoResp?.invoice?.invoice_number;
-      if (!zohoId) {
-        return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
-      }
+      // Enrich invoice document with GST context if missing
+      try {
+        const invObj = invoice.toObject();
+        const hasZeroTax = typeof invObj.tax_total === 'number' && Number(invObj.tax_total) <= 0;
+        // Prefer client-provided GST treatment; else infer: if client has gstNo then business_gst else consumer
+        const inferredTreatment = client.gstTreatment || (client.gstNo ? 'business_gst' : 'consumer');
+        invObj.gst_treatment = invObj.gst_treatment || inferredTreatment;
+        // Place of supply from invoice or client billing address
+        const placeOfSupply = invObj.place_of_supply
+          || client.place_of_supply
+          || client?.billingAddress?.state_code
+          || client?.billingAddress?.state
+          || undefined;
+        if (placeOfSupply) invObj.place_of_supply = placeOfSupply;
+        // GST number
+        invObj.gst_no = invObj.gst_no || client.gstNo || undefined;
+        // Provide org state code for interstate decision (read from env)
+        invObj.organization_state_code = process.env.ZOHO_ORG_STATE_CODE || process.env.ZOHO_BOOKS_ORG_STATE_CODE || undefined;
+        // If zero-tax and no exemption configured, relax to consumer to avoid IGST enforcement
+        if (hasZeroTax && invObj.gst_treatment === 'business_gst' && !process.env.ZOHO_TAX_EXEMPTION_ID) {
+          invObj.gst_treatment = 'consumer';
+        }
 
-      invoice.zoho_invoice_id = zohoId;
-      invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
-      invoice.source = invoice.source || "zoho";
-      
-      await invoice.save();
+        // Create Zoho invoice from local invoice (robust IGST/CGST handling lives here)
+        const zohoResp = await createZohoInvoiceFromLocal(invObj, client.toObject());
+        const zohoId = zohoResp?.invoice?.invoice_id;
+        const zohoNumber = zohoResp?.invoice?.invoice_number;
+        if (!zohoId) {
+          return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
+        }
+
+        invoice.zoho_invoice_id = zohoId;
+        invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
+        invoice.source = invoice.source || "zoho";
+        
+        await invoice.save();
+      } catch (zErr) {
+        await logErrorActivity(req, zErr, "Push Invoice to Zoho");
+        return res.status(400).json({ success: false, message: zErr.message });
+      }
 
       // After pushing invoice to Zoho, also push any associated payments
       try {
@@ -421,7 +450,7 @@ export const pushInvoiceToZoho = async (req, res) => {
             }
 
             // Fetch the Zoho invoice to get the actual balance
-            const zohoInvoiceDetails = await getZohoInvoice(zohoId);
+            const zohoInvoiceDetails = await getZohoInvoice(invoice.zoho_invoice_id);
             const zohoBalance = Number(zohoInvoiceDetails?.balance || zohoInvoiceDetails?.total || 0);
             const paymentAmount = Number(payment.amount || 0);
             
@@ -440,7 +469,7 @@ export const pushInvoiceToZoho = async (req, res) => {
               amount: amountToApply,
               date: payment.paymentDate ? new Date(payment.paymentDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
               invoices: [{
-                invoice_id: zohoId,
+                invoice_id: invoice.zoho_invoice_id,
                 amount_applied: amountToApply
               }],
               reference_number: payment.referenceNumber || payment.paymentGatewayRef || '',
@@ -500,9 +529,9 @@ export const pushInvoiceToZoho = async (req, res) => {
         try {
           // Send the invoice via Zoho
           console.log(`Sending invoice email via Zoho to ${client.email}`);
-          await sendZohoInvoiceEmail(zohoId, {
+          await sendZohoInvoiceEmail(invoice.zoho_invoice_id, {
             to_mail_ids: [client.email],
-            subject: `Invoice ${invoice.invoice_number || zohoNumber}`,
+            subject: `Invoice ${invoice.invoice_number || invoice.zoho_invoice_number}`,
             body: 'Please find attached your invoice.'
           });
           
@@ -515,7 +544,8 @@ export const pushInvoiceToZoho = async (req, res) => {
           return res.json({ 
             success: true, 
             data: invoice, 
-            zoho: zohoResp,
+            zoho_invoice_id: invoice.zoho_invoice_id,
+            zoho_invoice_number: invoice.zoho_invoice_number,
             sent: true
           });
         } catch (emailError) {
@@ -540,7 +570,8 @@ export const pushInvoiceToZoho = async (req, res) => {
       return res.json({ 
         success: true, 
         data: invoice, 
-        zoho: zohoResp,
+        zoho_invoice_id: invoice.zoho_invoice_id,
+        zoho_invoice_number: invoice.zoho_invoice_number,
         sent: invoice.status === 'sent'
       });
     } catch (err) {
@@ -1111,6 +1142,7 @@ export const consolidateInvoices = async (req, res) => {
         start: startDate,
         end: endDate,
       },
+
       line_items: consolidatedLineItems,
       sub_total: consolidatedSubTotal,
       tax_total: consolidatedTaxTotal,
@@ -1353,16 +1385,12 @@ export const markInvoiceAsSent = async (req, res) => {
 
       // Ensure Zoho contact exists
       if (!client.zohoBooksContactId) {
-        try {
-          const contactId = await findOrCreateContactFromClient(client);
-          if (!contactId) {
-            return res.status(400).json({ success: false, message: "Failed to create Zoho contact for client" });
-          }
-          client.zohoBooksContactId = contactId;
-          await client.save();
-        } catch (e) {
-          return res.status(400).json({ success: false, message: `Zoho contact error: ${e.message}` });
+        const contactId = await findOrCreateContactFromClient(client);
+        if (!contactId) {
+          return res.status(400).json({ success: false, message: "Failed to find or create Zoho contact for client" });
         }
+        client.zohoBooksContactId = contactId;
+        await client.save();
       }
 
       // Push local invoice to Zoho as draft
@@ -1394,6 +1422,159 @@ export const markInvoiceAsSent = async (req, res) => {
     }
   } catch (error) {
     await logErrorActivity(req, error, "Mark Invoice As Sent");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/invoices/:id/push-zoho-guest
+// Push an invoice to Zoho Books using a Guest (ondemand) instead of a Client. Always pushes as draft (no email).
+export const pushInvoiceToZohoGuest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { guestId } = req.body || {};
+
+    if (!guestId) {
+      return res.status(400).json({ success: false, message: "guestId is required" });
+    }
+
+    const invoice = await Invoice.findById(id);
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    // If already linked to Zoho, return as success
+    if (invoice.zoho_invoice_id) {
+      return res.json({ success: true, data: invoice, zoho_invoice_id: invoice.zoho_invoice_id });
+    }
+
+    const guest = await Guest.findById(guestId);
+    if (!guest) {
+      return res.status(404).json({ success: false, message: "Guest not found" });
+    }
+
+    // Ensure Zoho contact for guest
+    if (!guest.zohoBooksContactId) {
+      const payload = {
+        contact_name: guest.name || guest.companyName || `Guest ${guest._id}`,
+        company_name: guest.companyName || undefined,
+        email: guest.email || undefined,
+        phone: guest.phone || undefined,
+        mobile: guest.phone || undefined,
+        contact_type: 'customer',
+        customer_sub_type: 'individual',
+        notes: `Ondemand guest created via guest invoice push for invoice ${invoice.invoice_number || invoice._id}`,
+        contact_persons: [
+          {
+            first_name: (guest.name || '').split(' ')[0] || 'Guest',
+            last_name: (guest.name || '').split(' ').slice(1).join(' ') || '',
+            email: guest.email || '',
+            phone: guest.phone || '',
+            mobile: guest.phone || '',
+            is_primary_contact: true,
+          },
+        ],
+      };
+      try {
+        const z = await createZohoContact(payload);
+        const cid = z?.contact?.contact_id || z?.data?.contact?.contact_id || z?.contact_id || null;
+        if (!cid) {
+          return res.status(400).json({ success: false, message: "Failed to create Zoho contact for guest" });
+        }
+        guest.zohoBooksContactId = cid;
+        await guest.save();
+      } catch (e) {
+        await logErrorActivity(req, e, "Create Zoho Contact for Guest");
+        return res.status(400).json({ success: false, message: e.message || "Failed to create Zoho contact for guest" });
+      }
+    }
+
+    // Push to Zoho using guest contact, keep as draft
+    try {
+      const zohoResp = await createZohoInvoiceFromLocal(
+        invoice.toObject(),
+        { _id: null, zohoBooksContactId: guest.zohoBooksContactId }
+      );
+      const zohoId = zohoResp?.invoice?.invoice_id;
+      const zohoNumber = zohoResp?.invoice?.invoice_number;
+      if (!zohoId) {
+        return res.status(400).json({ success: false, message: "Zoho did not return an invoice_id", details: zohoResp });
+      }
+
+      invoice.zoho_invoice_id = zohoId;
+      invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
+      invoice.source = invoice.source || "zoho";
+      invoice.status = 'draft';
+      invoice.zoho_status = 'draft';
+      await invoice.save();
+
+      // After pushing invoice to Zoho, also push any associated payments (non-blocking on errors)
+      try {
+        const payments = await Payment.find({ invoice: id });
+        if (payments && payments.length > 0) {
+          for (const payment of payments) {
+            if (payment.zoho_payment_id) continue; // already synced
+
+            // Get latest Zoho invoice details to calculate applicable amount
+            const zohoInvoiceDetails = await getZohoInvoice(zohoId);
+            const zohoBalance = Number(zohoInvoiceDetails?.balance || zohoInvoiceDetails?.total || 0);
+            const paymentAmount = Number(payment.amount || 0);
+            const amountToApply = Math.min(paymentAmount, zohoBalance);
+            if (amountToApply <= 0) continue;
+
+            const zohoPaymentPayload = {
+              customer_id: guest.zohoBooksContactId,
+              payment_mode: payment.type || 'cash',
+              amount: amountToApply,
+              date: payment.paymentDate ? new Date(payment.paymentDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+              invoices: [{
+                invoice_id: invoice.zoho_invoice_id,
+                amount_applied: amountToApply,
+              }],
+              reference_number: payment.referenceNumber || payment.paymentGatewayRef || '',
+              description: payment.notes || `Payment for invoice ${invoice.invoice_number}`,
+            };
+
+            const accessToken = await getValidAccessToken();
+            const orgId = process.env.ZOHO_ORG_ID;
+            if (orgId && accessToken) {
+              const zohoUrl = `https://www.zohoapis.in/books/v3/customerpayments?organization_id=${orgId}`;
+              const zohoPaymentResponse = await fetch(zohoUrl, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(zohoPaymentPayload),
+              });
+              const zohoPaymentData = await zohoPaymentResponse.json();
+              if (zohoPaymentResponse.ok && zohoPaymentData?.payment?.payment_id) {
+                payment.zoho_payment_id = zohoPaymentData.payment.payment_id;
+                payment.payment_number = zohoPaymentData.payment.payment_number;
+                payment.zoho_status = zohoPaymentData.payment.status;
+                payment.source = 'zoho_books';
+                await payment.save();
+              } else {
+                console.warn('Failed to push guest payment to Zoho:', zohoPaymentData?.message || 'Unknown error');
+              }
+            }
+          }
+        }
+      } catch (paymentErr) {
+        console.warn('Failed to push payments to Zoho (guest flow):', paymentErr?.message || paymentErr);
+      }
+
+      return res.json({ 
+        success: true, 
+        data: invoice, 
+        zoho_invoice_id: invoice.zoho_invoice_id,
+        zoho_invoice_number: invoice.zoho_invoice_number,
+        sent: false,
+        zohoContactId: guest.zohoBooksContactId
+      });
+    } catch (err) {
+      await logErrorActivity(req, err, "Push Invoice to Zoho (Guest)");
+      return res.status(400).json({ success: false, message: err.message });
+    }
+  } catch (error) {
+    await logErrorActivity(req, error, "Push Invoice to Zoho (Guest)");
     return res.status(500).json({ success: false, message: error.message });
   }
 };

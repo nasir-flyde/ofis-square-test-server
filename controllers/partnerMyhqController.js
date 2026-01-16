@@ -4,6 +4,8 @@ import MeetingRoom from "../models/meetingRoomModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import Visitor from "../models/visitorModel.js";
 import { recordCancellation } from "./cancelledBookingController.js";
+import DayPass from "../models/dayPassModel.js";
+import Guest from "../models/guestModel.js";
 
 // ===== Utils =====
 function hhmmToMinutes(hhmm = "09:00") {
@@ -432,6 +434,225 @@ export async function cancelBooking(req, res) {
     } catch (e) {}
 
     return res.json({ status: 200, success: true, message: "Booking Cancelled Successfully", data: { booking_id: String(booking._id), status: 'CANCELLED' } });
+  } catch (e) {
+    return res.status(500).json({ status: 500, success: false, message: e.message });
+  }
+}
+
+// ===== Day Pass: Buildings list =====
+export async function listDayPassBuildings(req, res) {
+  try {
+    const buildings = await Building.find({ status: { $ne: 'inactive' } }).lean();
+    const data = buildings
+      .filter(b => Array.isArray(b.dayPassInventories) && b.dayPassInventories.some(inv => inv?.isActive && (inv?.capacity ?? 0) > 0))
+      .map(b => ({
+        building_id: String(b._id),
+        name: b.name,
+        address: b.address,
+        oppening_time: b.openingTime || '09:00:00',
+        closing_time: b.closingTime || '19:00:00',
+        city_id: null,
+        city_name: b.city,
+        image_gallery: (b.photos || []).map(p => p.imageUrl).slice(0, 5)
+      }));
+    return res.json({ status: true, data });
+  } catch (e) {
+    return res.status(500).json({ status: 500, success: false, message: e.message });
+  }
+}
+
+// ===== Day Pass: Inventories in Building =====
+export async function listDayPassInventories(req, res) {
+  try {
+    const { buildingId } = req.params;
+    const b = await Building.findById(buildingId).lean();
+    if (!b) return res.status(404).json({ status: 404, success: false, message: 'Building not found' });
+    const inventories = Array.isArray(b.dayPassInventories) ? b.dayPassInventories : [];
+    const data = inventories.map(inv => ({
+      building_id: String(b._id),
+      inventory_type: inv.inventoryType,
+      inventory_id: String(inv._id),
+      seating_capacity: inv.capacity || 0,
+      isActive: !!inv.isActive,
+      other_details: {
+        images: Array.isArray(inv.images) ? inv.images : [],
+        price: inv.price ?? null,
+        rackPrice: inv.rackPrice ?? null,
+      }
+    }));
+    return res.json({ status: true, data });
+  } catch (e) {
+    return res.status(500).json({ status: 500, success: false, message: e.message });
+  }
+}
+
+// ===== Day Pass: Bulk availability =====
+export async function bulkDayPassAvailability(req, res) {
+  try {
+    const { dates, inventory_ids } = req.body || {};
+    if (!Array.isArray(dates) || !Array.isArray(inventory_ids) || !dates.length || !inventory_ids.length) {
+      return res.status(400).json({ status: 400, success: false, message: 'dates[] and inventory_ids[] are required' });
+    }
+
+    // Build a lookup of inventory by id and parent building
+    const buildings = await Building.find({ 'dayPassInventories._id': { $in: inventory_ids } }).lean();
+    const invMap = new Map();
+    for (const b of buildings) {
+      for (const inv of (b.dayPassInventories || [])) {
+        const key = String(inv._id);
+        if (inventory_ids.includes(key)) {
+          invMap.set(key, { inv, building: b });
+        }
+      }
+    }
+
+    const activeStatuses = ['issued', 'invited', 'active', 'checked_in', 'checked_out'];
+    const data = [];
+
+    for (const invId of inventory_ids) {
+      const pair = invMap.get(String(invId));
+      if (!pair) continue;
+      const { inv } = pair;
+
+      for (const dateISO of dates) {
+        const dayStart = startOfDayIST(dateISO);
+        const dayEnd = endOfDayIST(dateISO);
+        // Query all passes for this inventory/date
+        const passes = await DayPass.find({
+          inventoryId: String(inv._id),
+          date: { $gte: dayStart, $lte: dayEnd },
+          status: { $in: activeStatuses }
+        }).select('numberOfGuests').lean();
+
+        const bookedSeats = (passes || []).reduce((sum, p) => sum + (Number(p.numberOfGuests || 1)), 0);
+        const capacity = Number(inv.capacity || 0);
+        const availableSeats = Math.max(0, capacity - bookedSeats);
+        const availability = availableSeats > 0
+          ? { status: 'Available', availableSeats }
+          : { status: 'Closed' };
+
+        data.push({ inventory_id: String(inv._id), date: new Date(dateISO), availability });
+      }
+    }
+
+    return res.json({ status: 1, message: 'success', data });
+  } catch (e) {
+    console.error('daypass availability error:', e);
+    return res.status(500).json({ status: 500, success: false, message: e.message });
+  }
+}
+
+// ===== Day Pass: Booking =====
+export async function bookDayPass(req, res) {
+  try {
+    const { inventory_id, building_id, reference_number, date_of_booking, name, email, phone } = req.body || {};
+    if (!inventory_id || !building_id || !reference_number || !date_of_booking) {
+      return res.status(400).json({ status: 400, success: false, message: 'Missing required fields' });
+    }
+
+    // Idempotency
+    const existing = await DayPass.findOne({ externalSource: 'myhq', referenceNumber: reference_number }).select('_id').lean();
+    if (existing) {
+      return res.json({ success: true, message: 'Booked Successfully', data: { booking_id: String(existing._id) } });
+    }
+
+    const building = await Building.findById(building_id).lean();
+    if (!building) return res.status(400).json({ status: 400, success: false, message: 'Invalid value: building_id' });
+    const inv = (building.dayPassInventories || []).find(v => String(v._id) === String(inventory_id));
+    if (!inv) return res.status(400).json({ status: 400, success: false, message: 'Invalid value: inventory_id' });
+    if (!inv.isActive) return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
+
+    const passDate = startOfDayIST(date_of_booking);
+    const dayStart = new Date(passDate);
+    const dayEnd = endOfDayIST(passDate);
+
+    // Capacity check
+    const activeStatuses = ['issued', 'invited', 'active', 'checked_in', 'checked_out'];
+    const passes = await DayPass.find({
+      inventoryId: String(inv._id),
+      date: { $gte: dayStart, $lte: dayEnd },
+      status: { $in: activeStatuses }
+    }).select('numberOfGuests').lean();
+    const bookedSeats = (passes || []).reduce((sum, p) => sum + (Number(p.numberOfGuests || 1)), 0);
+    const capacity = Number(inv.capacity || 0);
+    if (bookedSeats >= capacity) {
+      return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
+    }
+
+    // Find or create guest
+    let guest = null;
+    if (email) guest = await Guest.findOne({ email }).lean();
+    if (!guest && phone) guest = await Guest.findOne({ phone }).lean();
+    if (!guest) {
+      guest = await Guest.create({ name: name || 'Guest', email: email || undefined, phone: phone || undefined });
+    }
+
+    // Build basic day pass details
+    const expiresAt = endOfDayIST(passDate);
+    const price = Number(inv.price || building.openSpacePricing || 0);
+    const dayPass = await DayPass.create({
+      customer: guest._id,
+      member: null,
+      building: building._id,
+      bundle: null,
+      inventoryId: String(inv._id),
+      date: passDate,
+      visitDate: passDate,
+      bookingFor: 'self',
+      expiresAt,
+      price,
+      currency: 'INR',
+      status: 'issued',
+      visitorName: name,
+      visitorEmail: email,
+      visitorPhone: phone,
+      numberOfGuests: 1,
+      externalSource: 'myhq',
+      referenceNumber: reference_number,
+    });
+
+    return res.json({ success: true, message: 'Booked Successfully', data: { booking_id: String(dayPass._id) } });
+  } catch (e) {
+    console.error('myhq daypass book error:', e);
+    return res.status(500).json({ status: 500, success: false, message: e.message });
+  }
+}
+
+// ===== Day Pass: Cancellation =====
+export async function cancelDayPassBooking(req, res) {
+  try {
+    const { id } = req.params;
+    const pass = await DayPass.findById(id).populate('building');
+    if (!pass) return res.status(404).json({ status: 404, success: false, message: 'Invalid Booking ID' });
+    if (pass.externalSource !== 'myhq') {
+      return res.status(400).json({ status: 400, success: false, message: 'Not a partner booking' });
+    }
+    if (pass.status === 'cancelled') {
+      return res.status(409).json({ status: 409, success: false, message: 'Booking Already Cancelled' });
+    }
+
+    const now = new Date();
+    const createdAt = new Date(pass.createdAt);
+    const graceMinutes = parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || '5', 10);
+    const cutoffMinutes = parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+    const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
+
+    // Determine the effective start time on the pass date using building openingTime
+    const baseDate = startOfDayIST(pass.date || now);
+    const [hh, mm] = String(pass.building?.openingTime || '09:00').split(':').map(Number);
+    const startTime = new Date(baseDate);
+    startTime.setHours(hh || 9, mm || 0, 0, 0);
+    const cutoffTime = new Date(startTime.getTime() - cutoffMinutes * 60 * 1000);
+    const beforeCutoff = now.getTime() < cutoffTime.getTime();
+
+    if (!(withinGrace || beforeCutoff)) {
+      return res.status(403).json({ status: 403, success: false, message: 'Outside Booking Cancellation Window' });
+    }
+
+    pass.status = 'cancelled';
+    await pass.save();
+
+    return res.json({ status: 200, success: true, message: 'Booking Cancelled Successfully', data: { booking_id: String(pass._id), status: 'CANCELLED' } });
   } catch (e) {
     return res.status(500).json({ status: 500, success: false, message: e.message });
   }

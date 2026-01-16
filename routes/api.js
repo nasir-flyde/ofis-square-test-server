@@ -57,6 +57,8 @@ import locationsRoutes from "./locations.js";
 import estimatesRoutes from "./estimates.js";
 import partnerMyhqRoutes from "./partnerMyhq.js";
 import notificationTemplatesRoutes from "./notificationTemplates.js";
+import guestsRoutes from "./guests.js";
+import commonAreasRoutes from "./commonAreas.js";
 
 const router = express.Router();
 
@@ -98,6 +100,8 @@ router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
 router.use("/notification-templates", notificationTemplatesRoutes);
+router.use("/guests", guestsRoutes);
+router.use("/common-areas", commonAreasRoutes);
 router.use("/announcements", announcementsRoutes);
 router.use("/pincode", pincodeRoutes);
 router.use("/access", accessRoutes);

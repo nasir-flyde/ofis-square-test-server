@@ -1,6 +1,7 @@
 import BhaifiUser from "../models/bhaifiUserModel.js";
 import Member from "../models/memberModel.js";
 import Contract from "../models/contractModel.js";
+import DayPass from "../models/dayPassModel.js";
 import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
 
 const getEnvNasId = () => process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1";
@@ -244,7 +245,7 @@ export const getBhaifiUser = async (req, res) => {
 export const whitelistBhaifiUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { startDate: startOverride, endDate: endOverride } = req.body || {};
+    const { startDate: startOverride, endDate: endOverride, dayPassId } = req.body || {};
 
     let doc = await BhaifiUser.findById(id).populate("contract", "endDate");
     if (!doc) return res.status(404).json({ success: false, message: "Not found" });
@@ -285,6 +286,15 @@ export const whitelistBhaifiUser = async (req, res) => {
       response: apiRes?.data,
     });
     await doc.save();
+
+    // If this action corresponds to a Day Pass, mark its wifiAccess=true
+    if (dayPassId) {
+      try {
+        await DayPass.findByIdAndUpdate(dayPassId, { $set: { 'buildingAccess.wifiAccess': true } });
+      } catch (e) {
+        console.warn('[BHAIFI] Failed to mark wifiAccess on DayPass', { dayPassId, message: e?.message });
+      }
+    }
 
     return res.json({ success: true, message: "Whitelisted successfully", data: { startDate, endDate, response: apiRes?.data } });
   } catch (err) {

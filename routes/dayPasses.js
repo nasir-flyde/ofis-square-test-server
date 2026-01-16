@@ -9,7 +9,8 @@ import {
   getDayPassDetails,
   getAllDayPasses,
   updateVisitorDraft,
-  issueDayPassManual
+  issueDayPassManual,
+  getAvailability,
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -37,6 +38,9 @@ router.post("/bundles", createDayPassBundle);
 router.get("/bundles/user/:customerId", getUserBundles);
 router.get("/bundles/:bundleId", getBundleDetails);
 router.put("/bundles/:bundleId/cancel", cancelBundle);
+
+// Availability
+router.get("/availability", getAvailability);
 
 // Check-in/Check-out Routes (Public - for front desk)
 router.post("/checkin", checkInWithQR);

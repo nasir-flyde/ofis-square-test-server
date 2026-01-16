@@ -10,6 +10,7 @@ import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import CreditTransaction from "../models/creditTransactionModel.js";
 import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceService.js";
+import { provisionAccessForMeetingBooking } from "../services/meetingAccessService.js";
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
 import crypto from 'crypto';
 import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
@@ -290,6 +291,7 @@ export const getClientPayments = async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch client payments" });
   }
 };
+
 const getBooksBaseUrl = () => {
   return "https://www.zohoapis.in/books/v3";
 };
@@ -438,7 +440,7 @@ async function createInvoiceInZoho(invoice, client) {
   invoice.source = 'zoho';
   await invoice.save();
 
-  console.log(`✅ Updated local invoice ${invoice.invoice_number} with Zoho invoice number: ${zohoInvoiceNumber}`);
+  console.log(`Updated local invoice ${invoice.invoice_number} with Zoho invoice number: ${zohoInvoiceNumber}`);
 
   return {
     zoho_invoice_id: zohoInvoiceId,
@@ -527,7 +529,7 @@ export const recordCustomerPayment = async (req, res) => {
 
     // Additional preflight: validate against Zoho's current balance to avoid API rejection if local data is stale
     for (const paymentInv of safeInvoices) {
-      const dbInvoice = dbInvoices.find(inv => inv._id.toString() === paymentInv.invoiceId);
+      const dbInvoice = dbInvoices.find(dbInv => dbInv._id.toString() === paymentInv.invoiceId);
       if (!dbInvoice?.zoho_invoice_id) continue; // if not synced yet, it will be created below
       try {
         const zohoInv = await getZohoInvoice(dbInvoice.zoho_invoice_id);
@@ -541,7 +543,7 @@ export const recordCustomerPayment = async (req, res) => {
           });
         }
       } catch (_) {
-        // Non-blocking if Zoho fetch fails; let main flow proceed to either create invoice in Zoho or error there
+        // Non-blocking if Zoho fetch fails, continue with localOutstanding
       }
     }
 
@@ -552,9 +554,9 @@ export const recordCustomerPayment = async (req, res) => {
         
         try {
           const zohoResult = await createInvoiceInZoho(dbInvoice, client);
-          console.log(`✅ Invoice ${dbInvoice.invoice_number} created in Zoho with number: ${zohoResult.zoho_invoice_number}`);
+          console.log(`Updated local invoice ${dbInvoice.invoice_number} with Zoho invoice number: ${zohoResult.zoho_invoice_number}`);
         } catch (error) {
-          console.error(`❌ Failed to create invoice ${dbInvoice.invoice_number} in Zoho:`, error.message);
+          console.error(`Failed to create invoice ${dbInvoice.invoice_number} in Zoho:`, error.message);
           return res.status(400).json({
             success: false,
             message: `Failed to create invoice ${dbInvoice.invoice_number} in Zoho Books: ${error.message}`
@@ -592,8 +594,8 @@ export const recordCustomerPayment = async (req, res) => {
       let zohoOutstanding = localOutstanding;
       if (dbInvoice.zoho_invoice_id) {
         try {
-          const zInv = await getZohoInvoice(dbInvoice.zoho_invoice_id);
-          const zBal = Number(zInv?.balance || zInv?.balance_due || zInv?.outstanding || 0);
+          const zohoInv = await getZohoInvoice(dbInvoice.zoho_invoice_id);
+          const zBal = Number(zohoInv?.balance || zohoInv?.balance_due || zohoInv?.outstanding || 0);
           if (!Number.isNaN(zBal)) zohoOutstanding = zBal;
         } catch (_) {
           // Non-blocking if Zoho fetch fails, continue with localOutstanding
@@ -875,6 +877,151 @@ export const listCustomerPayments = async (req, res) => {
   }
 };
 
+// Create a shareable Razorpay Payment Link for a meeting booking
+export const createRazorpayPaymentLink = async (req, res) => {
+  try {
+    const { meetingBookingId, dayPassId, invoiceId } = req.body || {};
+
+    if (!meetingBookingId && !dayPassId && !invoiceId) {
+      return res.status(400).json({ success: false, message: 'Provide one of: meetingBookingId, dayPassId, invoiceId' });
+    }
+
+    // Day Pass: generate payment link for a pending day pass
+    if (dayPassId) {
+      const pass = await DayPass.findById(dayPassId).populate('invoice').populate('building').populate('customer');
+      if (!pass) {
+        return res.status(404).json({ success: false, message: 'Day pass not found' });
+      }
+      if (pass.status !== 'payment_pending') {
+        return res.status(400).json({ success: false, message: `Cannot generate payment link when day pass status is ${pass.status}` });
+      }
+      let amount = 0;
+      if (pass.invoice && typeof pass.invoice.total === 'number') {
+        amount = Number(pass.invoice.total);
+      } else if (typeof pass.price === 'number') {
+        const gstRate = 18;
+        const taxAmount = Math.round(((pass.price * gstRate) / 100) * 100) / 100;
+        amount = Math.round(((pass.price + taxAmount)) * 100) / 100;
+      }
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ success: false, message: 'Invalid amount for day pass' });
+      }
+      const linkData = {
+        amount: Math.round(amount * 100),
+        currency: 'INR',
+        description: `Day Pass - ${pass.building?.name || 'Booking'}`,
+        reference_id: `day_pass_${pass._id}`,
+        notes: {
+          type: 'day_pass',
+          dayPassId: String(pass._id),
+          ...(pass.invoice?._id && { invoiceId: String(pass.invoice._id) }),
+        },
+      };
+      const cust = pass.customer || {};
+      if (cust.name && (cust.email || cust.phone)) {
+        linkData.customer = { name: cust.name, email: cust.email, contact: cust.phone };
+      }
+      const result = await loggedRazorpay.createPaymentLink(linkData, {
+        userId: req.user?.id || null,
+        relatedEntity: 'DayPass',
+        relatedEntityId: String(pass._id),
+      });
+      return res.json({ success: true, data: { id: result.id, short_url: result.short_url, status: result.status } });
+    }
+
+    // Invoice: fallback link creation directly from invoice
+    if (invoiceId) {
+      const inv = await Invoice.findById(invoiceId).populate('client');
+      if (!inv) return res.status(404).json({ success: false, message: 'Invoice not found' });
+      const amount = Number(inv.balance || inv.total || 0);
+      if (!amount || amount <= 0) return res.status(400).json({ success: false, message: 'Invalid invoice amount' });
+      const linkData = {
+        amount: Math.round(amount * 100),
+        currency: 'INR',
+        description: `Invoice ${inv.invoice_number || inv._id}`,
+        reference_id: `invoice_${inv._id}`,
+        notes: {
+          type: 'invoice',
+          invoiceId: String(inv._id),
+        },
+      };
+      const cl = inv.client || {};
+      if ((cl.companyName || cl.legalName) && (cl.email || cl.phone)) {
+        linkData.customer = { name: cl.companyName || cl.legalName, email: cl.email, contact: cl.phone };
+      }
+      const result = await loggedRazorpay.createPaymentLink(linkData, {
+        userId: req.user?.id || null,
+        relatedEntity: 'Invoice',
+        relatedEntityId: String(inv._id),
+      });
+      return res.json({ success: true, data: { id: result.id, short_url: result.short_url, status: result.status } });
+    }
+
+    // Meeting booking: existing behavior
+    if (!meetingBookingId) {
+      return res.status(400).json({ success: false, message: 'Provide one of: meetingBookingId, dayPassId, invoiceId' });
+    }
+    const booking = await MeetingBooking.findById(meetingBookingId).populate('invoice');
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.discountStatus === 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Discount approval pending; cannot generate payment link yet',
+      });
+    }
+    if (booking.status !== 'payment_pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot generate payment link when booking status is ${booking.status}`,
+      });
+    }
+    let amount = 0;
+    if (booking.invoice && typeof booking.invoice.total === 'number') {
+      amount = Number(booking.invoice.total);
+    } else {
+      const dailyRate = booking.room?.pricing?.dailyRate || 500;
+      const totals = computeInvoiceTotals(dailyRate, booking.appliedDiscountPercent || 0);
+      amount = Number(totals.total);
+    }
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid amount for booking' });
+    }
+    const linkData = {
+      amount: Math.round(amount * 100),
+      currency: 'INR',
+      description: `Meeting Room - ${booking.room?.name || 'Booking'}`,
+      reference_id: `meeting_booking_${booking._id}`,
+      notes: {
+        type: 'meeting_booking',
+        meetingBookingId: String(booking._id),
+        ...(booking.invoice?._id && { invoiceId: String(booking.invoice._id) }),
+      },
+    };
+    const cust = booking.customer || {};
+    if (cust.name && (cust.email || cust.phone)) {
+      linkData.customer = { name: cust.name, email: cust.email, contact: cust.phone };
+    }
+    const result = await loggedRazorpay.createPaymentLink(linkData, {
+      userId: req.user?.id || null,
+      relatedEntity: 'MeetingBooking',
+      relatedEntityId: String(booking._id),
+    });
+    return res.json({ success: true, data: { id: result.id, short_url: result.short_url, status: result.status } });
+  } catch (error) {
+    console.error('createRazorpayPaymentLink error:', error);
+    await logErrorActivity(req, error, 'Create Razorpay Payment Link');
+
+    const msg =
+      (error?.message || '').toLowerCase().includes('authentication failed')
+        ? 'Razorpay authentication failed. Please ensure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are configured on the server.'
+        : error?.message || 'Failed to create payment link';
+
+    return res.status(500).json({ success: false, message: msg });
+  }
+};
+
 // Razorpay payment integration for day passes and meeting rooms
 export const createRazorpayOrder = async (req, res) => {
   // Log incoming API call
@@ -896,18 +1043,19 @@ export const createRazorpayOrder = async (req, res) => {
   });
 
   try {
-    const { dayPassId, bundleId, meetingBookingId } = req.body;
+    const { dayPassId, bundleId, meetingBookingId, useExtraCredits = false, clientId: bodyClientId } = req.body || {};
 
     if (!dayPassId && !bundleId && !meetingBookingId) {
       return res.status(400).json({ error: "Day pass ID, Bundle ID, or Meeting Booking ID is required" });
     }
 
     let item, amount, description, buildingName;
+    let invoice = null;
 
     if (dayPassId) {
       // Single day pass payment
       const dayPass = await DayPass.findById(dayPassId)
-        .populate('building', 'name openSpacePricing')
+        .populate('building', 'openSpacePricing')
         .populate('invoice', 'total');
 
       if (!dayPass) {
@@ -922,6 +1070,7 @@ export const createRazorpayOrder = async (req, res) => {
       buildingName = dayPass.building?.name || "Workspace";
       description = `Day Pass - ${buildingName}`;
       item = { type: 'daypass', id: dayPassId };
+      invoice = dayPass.invoice || null;
     } else if (bundleId) {
       // Bundle payment
       const bundle = await DayPassBundle.findById(bundleId)
@@ -940,6 +1089,7 @@ export const createRazorpayOrder = async (req, res) => {
       buildingName = bundle.building?.name || "Workspace";
       description = `Day Pass Bundle - ${buildingName} (${bundle.no_of_dayPasses} passes)`;
       item = { type: 'bundle', id: bundleId };
+      invoice = bundle.invoice || null;
     } else {
       // Meeting room booking payment
       const booking = await MeetingBooking.findById(meetingBookingId)
@@ -968,12 +1118,170 @@ export const createRazorpayOrder = async (req, res) => {
       const endTime = new Date(booking.end).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
       description = `Meeting Room - ${roomName} (${startTime}-${endTime})`;
       item = { type: 'meeting', id: meetingBookingId };
+      invoice = booking.invoice || null;
     }
     
+    // Early exit ONLY when 'Use available credits first' is enabled and invoice is fully paid
+    if (useExtraCredits && invoice && invoice._id) {
+      try {
+        const invFull = await Invoice.findById(invoice._id);
+        const invBalance = invFull
+          ? (invFull.balance != null
+              ? Number(invFull.balance)
+              : Math.max(0, Number(invFull.total || 0) - Number(invFull.amount_paid || 0)))
+          : Number(amount || 0);
+        if (invFull && invBalance <= 0.009) {
+          if (item.type === 'bundle') {
+            const dayPasses = await DayPass.find({ bundle: item.id });
+            const dayPassIds = dayPasses.map(p => p._id.toString());
+            await issueDayPassBatch(dayPassIds);
+            const bundleDoc = await DayPassBundle.findById(item.id);
+            if (bundleDoc) { bundleDoc.status = 'issued'; await bundleDoc.save(); }
+          } else if (item.type === 'daypass') {
+            await issueDayPass(item._id);
+          } else if (item.type === 'meeting') {
+            const bookingDoc = await MeetingBooking.findById(item.id);
+            if (bookingDoc) { bookingDoc.status = 'booked'; await bookingDoc.save(); }
+            // Provision BHAiFi + Matrix access for the booked meeting timeslot
+            try { await provisionAccessForMeetingBooking({ bookingId: item.id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on create-order (credits covered)', e?.message); }
+          }
+
+          const response = {
+            success: true,
+            razorpayKey: process.env.RAZORPAY_KEY_ID,
+            amount: 0,
+            currency: 'INR',
+            item,
+            buildingName,
+            description,
+            noPaymentRequired: true,
+            message: 'Covered by available credits; no Razorpay payment required.'
+          };
+          await apiLogger.logWebhookResponse(requestId, 200, response, true);
+          return res.json(response);
+        }
+      } catch (_) {}
+    }
+    
+    // Mixed payment: optionally apply client's extra credits before creating Razorpay order
+    if (useExtraCredits && invoice) {
+      // Resolve client for allocation
+      let clientForZoho = null;
+      if (bodyClientId) {
+        clientForZoho = await Client.findById(bodyClientId);
+      } else if (item?.type === 'daypass') {
+        const dp = await DayPass.findById(item.id)
+          .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+          .populate('invoice');
+        if (dp?.customer) {
+          const ctor = dp.customer.constructor?.modelName;
+          if (ctor === 'Client') clientForZoho = dp.customer;
+          else if (ctor === 'Member') {
+            const mem = await Member.findById(dp.customer._id).populate('client');
+            clientForZoho = mem?.client || null;
+          }
+        }
+      } else if (item?.type === 'bundle') {
+        const b = await DayPassBundle.findById(item.id)
+          .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+          .populate('invoice');
+        if (b?.customer) {
+          const ctor = b.customer.constructor?.modelName;
+          if (ctor === 'Client') clientForZoho = b.customer;
+          else if (ctor === 'Member') {
+            const mem = await Member.findById(b.customer._id).populate('client');
+            clientForZoho = mem?.client || null;
+          }
+        }
+      } else if (item?.type === 'meeting') {
+        const mb = await MeetingBooking.findById(item.id).populate({ path: 'member', select: 'client' }).populate('client').populate('invoice');
+        clientForZoho = mb?.client || null;
+        if (!clientForZoho && mb?.member) {
+          const mem = await Member.findById(mb.member._id).populate('client');
+          clientForZoho = mem?.client || null;
+        }
+        // Fallback to body client id if still not resolved
+        if (!clientForZoho && bodyClientId) {
+          clientForZoho = await Client.findById(bodyClientId);
+        }
+      }
+
+      if (clientForZoho?._id) {
+        // Ensure invoice exists in Zoho before allocation
+        if (!invoice.zoho_invoice_id) {
+          try {
+            await createInvoiceInZoho(invoice, clientForZoho);
+          } catch (syncErr) {
+            // If client is not linked to Zoho, try to auto-link by creating a contact
+            try {
+              if (!clientForZoho.zohoBooksContactId) {
+                const { findOrCreateContactFromClient } = await import('../utils/loggedZohoBooks.js');
+                const contactId = await findOrCreateContactFromClient(clientForZoho, { userId: req.user?.id || null });
+                if (contactId) {
+                  clientForZoho.zohoBooksContactId = contactId;
+                  await clientForZoho.save();
+                }
+              }
+            } catch (linkErr) {
+              return res.status(400).json({ error: 'Unable to sync invoice to Zoho for credit application', reason: `Client not linked to Zoho Books: ${linkErr?.message || linkErr}` });
+            }
+
+            // Retry creating invoice after linking client
+            try {
+              await createInvoiceInZoho(invoice, clientForZoho);
+            } catch (retryErr) {
+              return res.status(400).json({ error: 'Unable to sync invoice to Zoho for credit application', reason: retryErr?.message || retryErr });
+            }
+          }
+        }
+        if (!invoice.zoho_invoice_id) {
+          return res.status(400).json({ error: 'Unable to sync invoice to Zoho for credit application', reason: 'Unknown reason (invoice has no zoho_invoice_id after sync attempts)' });
+        }
+
+        // Apply credits to invoice and refresh remaining amount
+        const result = await applyExtraCreditsToInvoiceInternal(clientForZoho._id, invoice._id);
+        try { invoice = await Invoice.findById(invoice._id); } catch (_) {}
+        const remaining = Math.max(0, Number(invoice?.balance || 0));
+        amount = remaining;
+
+        if (remaining <= 0.009) {
+          // Fully covered by credits: issue the items and skip Razorpay
+          if (item.type === 'bundle') {
+            const dayPasses = await DayPass.find({ bundle: item.id });
+            const dayPassIds = dayPasses.map(p => p._id.toString());
+            await issueDayPassBatch(dayPassIds);
+            const bundleDoc = await DayPassBundle.findById(item.id);
+            if (bundleDoc) { bundleDoc.status = 'issued'; await bundleDoc.save(); }
+          } else if (item.type === 'daypass') {
+            await issueDayPass(item._id);
+          } else if (item.type === 'meeting') {
+            const bookingDoc = await MeetingBooking.findById(item.id);
+            if (bookingDoc) { bookingDoc.status = 'booked'; await bookingDoc.save(); }
+            // Provision BHAiFi + Matrix access for the booked meeting timeslot
+            try { await provisionAccessForMeetingBooking({ bookingId: item.id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on create-order (credits covered)', e?.message); }
+          }
+
+          const response = {
+            success: true,
+            razorpayKey: process.env.RAZORPAY_KEY_ID,
+            amount: 0,
+            currency: 'INR',
+            item,
+            buildingName,
+            description,
+            noPaymentRequired: true,
+            message: 'Covered by available credits; no Razorpay payment required.'
+          };
+          await apiLogger.logWebhookResponse(requestId, 200, response, true);
+          return res.json(response);
+        }
+      }
+    }
+
     const response = {
       success: true,
       razorpayKey: process.env.RAZORPAY_KEY_ID,
-      amount: amount * 100,
+      amount: Math.round(Number(amount) * 100),
       currency: "INR",
       item,
       buildingName,
@@ -991,98 +1299,6 @@ export const createRazorpayOrder = async (req, res) => {
     res.status(500).json(errorResponse);
   }
 };
-
-// Create a shareable Razorpay Payment Link for a meeting booking
-export const createRazorpayPaymentLink = async (req, res) => {
-  try {
-    const { meetingBookingId } = req.body || {};
-
-    if (!meetingBookingId) {
-      return res.status(400).json({ success: false, message: 'meetingBookingId is required' });
-    }
-
-    const booking = await MeetingBooking.findById(meetingBookingId).populate('invoice');
-    if (!booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
-
-    if (booking.discountStatus === 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: 'Discount approval pending; cannot generate payment link yet',
-      });
-    }
-
-    if (booking.status !== 'payment_pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot generate payment link when booking status is ${booking.status}`,
-      });
-    }
-
-    // Amount calculation
-    let amount = 0;
-    if (booking.invoice && typeof booking.invoice.total === 'number') {
-      amount = Number(booking.invoice.total);
-    } else {
-      const dailyRate = booking.room?.pricing?.dailyRate || 500;
-      const totals = computeInvoiceTotals(dailyRate, booking.appliedDiscountPercent || 0);
-      amount = Number(totals.total);
-    }
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ success: false, message: 'Invalid amount for booking' });
-    }
-
-    // Razorpay-compliant payload
-    const linkData = {
-      amount: Math.round(amount * 100),
-      currency: 'INR',
-      description: `Meeting Room - ${booking.room?.name || 'Booking'}`,
-      reference_id: `meeting_booking_${booking._id}`,
-      notes: {
-        type: 'meeting_booking',
-        meetingBookingId: String(booking._id),
-        ...(booking.invoice?._id && { invoiceId: String(booking.invoice._id) }),
-      },
-    };
-
-    // OPTIONAL: add customer only if all values exist
-    if (booking.customerName && booking.customerEmail && booking.customerPhone) {
-      linkData.customer = {
-        name: booking.customerName,
-        email: booking.customerEmail,
-        contact: booking.customerPhone,
-      };
-    }
-
-    const result = await loggedRazorpay.createPaymentLink(linkData, {
-      userId: req.user?.id || null,
-      relatedEntity: 'MeetingBooking',
-      relatedEntityId: String(booking._id),
-    });
-
-    return res.json({
-      success: true,
-      data: {
-        id: result.id,
-        short_url: result.short_url,
-        status: result.status,
-      },
-    });
-  } catch (error) {
-    console.error('createRazorpayPaymentLink error:', error);
-    await logErrorActivity(req, error, 'Create Razorpay Payment Link');
-
-    const msg =
-      (error?.message || '').toLowerCase().includes('authentication failed')
-        ? 'Razorpay authentication failed. Please ensure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are configured on the server.'
-        : error?.message || 'Failed to create payment link';
-
-    return res.status(500).json({ success: false, message: msg });
-  }
-};
-
 
 // Handle Razorpay payment success
 export const handleRazorpaySuccess = async (req, res) => {
@@ -1110,10 +1326,15 @@ export const handleRazorpaySuccess = async (req, res) => {
       dayPassId,
       bundleId,
       meetingBookingId,
+      useExtraCredits = false,
+      clientId,
       amount,
-      invoiceId,
-      clientId
+      invoiceId
     } = req.body;
+
+    if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, error: 'amount (in paise) is required in request body' });
+    }
 
     if (!razorpay_payment_id || (!dayPassId && !bundleId && !meetingBookingId)) {
       return res.status(400).json({ error: "Payment ID and Day Pass ID, Bundle ID, or Meeting Booking ID are required" });
@@ -1153,7 +1374,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Meeting room booking payment
       const booking = await MeetingBooking.findById(meetingBookingId)
         .populate('invoice')
-        .populate({ path: 'member', select: 'firstName lastName email client' })
+        .populate({ path: 'member', select: 'client' })
         .populate({ path: 'client', select: 'companyName zohoBooksContactId' });
 
       if (!booking) {
@@ -1174,7 +1395,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       invoice = booking.invoice;
       paymentNotes = `Razorpay payment for meeting booking ${booking._id}`;
     }
-
+    
     // Determine customer type and set appropriate payment fields
     let paymentData = {
       invoice: invoice?._id || (invoiceId || undefined),
@@ -1232,16 +1453,24 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Issue all passes in the bundle (this will create visitor records)
       await issueDayPassBatch(dayPassIds);
       
+      // Provision per issued pass (skip if Guest KYC pending)
+      for (const pid of dayPassIds) {
+        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) {}
+      }
+      
       // Update bundle status
       item.status = "issued";
       await item.save();
     } else if (dayPassId) {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
+      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) {}
     } else if (meetingBookingId) {
       // For meeting room booking, update status to booked
       item.status = "booked";
       await item.save();
+      // Provision BHAiFi + Matrix access for the booked meeting timeslot
+      try { await provisionAccessForMeetingBooking({ bookingId: item._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on razorpay success', e?.message); }
     }
 
     // Convert paise to INR and floor to avoid rounding up (e.g., 2033.99 -> 2033)
@@ -1262,16 +1491,12 @@ export const handleRazorpaySuccess = async (req, res) => {
           // Re-fetch booking to get client linkage
           const bookingForZoho = await MeetingBooking.findById(meetingBookingId)
             .populate({ path: 'member', select: 'client' })
-            .populate({ path: 'client', select: 'zohoBooksContactId companyName' })
-            .populate('invoice');
-
-          // Resolve client
-          let clientForZoho = bookingForZoho?.client;
+            .populate('client');
+          let clientForZoho = bookingForZoho?.client || null;
           if (!clientForZoho && bookingForZoho?.member) {
             const mem = await Member.findById(bookingForZoho.member._id).populate('client');
             clientForZoho = mem?.client || null;
           }
-
           if (clientForZoho && !bookingForZoho.invoice?.zoho_invoice_id) {
             await createInvoiceInZoho(bookingForZoho.invoice, clientForZoho);
           }
@@ -1313,7 +1538,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               await applyInvoicePayment(invoice._id, paymentInrFloor);
             } else {
               console.error('Zoho customer payment failed for meeting booking:', zohoData);
-              // Even if Zoho fails, apply locally to reflect Razorpay success
+              // Even if Zoho fails, apply locally
               await applyInvoicePayment(invoice._id, paymentInrFloor);
             }
           }
@@ -1527,7 +1752,9 @@ export const handleRazorpayWebhook = async (req, res) => {
              const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
              const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
              const invoiceId = notes?.invoiceId;
-             const amount = (typeof pl.amount === 'number' ? pl.amount : pl.amount_paid) || 0; // in paise
+             const amount = (typeof pl.amount === 'number')
+               ? Number(pl.amount)
+               : (pl.amount_paid || 0); // in paise
           
              if (isMeeting && bookingId) {
                const booking = await MeetingBooking.findById(bookingId).populate('invoice');
@@ -1554,6 +1781,7 @@ if (booking.invoice?._id && paidAmountInr > 0) {
         paymentGatewayRef: rzpPaymentId || undefined,
         amount: paidAmountInr,
         paymentDate: new Date(),
+        referenceNumber: rzpPaymentId,
         currency: 'INR',
         notes: `Razorpay ${event} • meeting_booking:${bookingId}`,
         source: 'webhook'
@@ -1625,6 +1853,8 @@ if (booking.invoice?._id && paidAmountInr > 0) {
                  if (booking.status === 'payment_pending') {
                    booking.status = 'booked';
                    await booking.save();
+                   // Provision BHAiFi + Matrix access for the booked meeting timeslot
+                   try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
                  }
                }
              }
@@ -1655,6 +1885,33 @@ if (booking.invoice?._id && paidAmountInr > 0) {
     res.status(500).json(errorResponse);
   }
 };
+
+// Provisioning helper: skip Matrix/Bhaifi for Guests with pending KYC
+// This is a guard to be called immediately after day pass issuance.
+// Actual provisioning (Matrix/Bhaifi) will be implemented separately behind this gate.
+async function maybeProvisionAfterIssuanceForDayPassId(dayPassId) {
+  try {
+    const pass = await DayPass.findById(dayPassId).populate('customer').lean();
+    if (!pass) return;
+
+    // If customer is a Guest and KYC is pending, skip any provisioning
+    try {
+      const guest = await Guest.findById(pass.customer);
+      if (guest && guest.kycStatus === 'pending') {
+        console.log('[Provisioning] Skipping Matrix/Bhaifi for Guest with pending KYC', {
+          dayPassId: String(dayPassId),
+          guestId: guest?._id ? String(guest._id) : null,
+        });
+        return; // gate: do not provision
+      }
+    } catch (_) {}
+
+    // TODO: Add Matrix/Bhaifi provisioning here for eligible customers
+    // e.g., ensureBhaifiForMember / createMatrixUserForMember
+  } catch (e) {
+    console.warn('[Provisioning] maybeProvisionAfterIssuanceForDayPassId error:', e?.message || e);
+  }
+}
 
 // Credit-based payment for day passes
 export const payWithCredits = async (req, res) => {
@@ -1824,10 +2081,15 @@ export const payWithCredits = async (req, res) => {
     if (bundleId) {
       // For bundles, get all associated day passes and issue them
       const dayPasses = await DayPass.find({ bundle: bundleId });
-      const dayPassIds = dayPasses.map(pass => pass._id.toString());
+      const dayPassIds = dayPasses.map(p => p._id.toString());
       
       // Issue all passes in the bundle (this will create visitor records)
       await issueDayPassBatch(dayPassIds);
+      
+      // Provision per issued pass (skip if Guest KYC pending)
+      for (const pid of dayPassIds) {
+        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) {}
+      }
       
       // Update bundle status
       item.status = "issued";
@@ -1835,6 +2097,7 @@ export const payWithCredits = async (req, res) => {
     } else {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
+      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) {}
     }
 
     // Create payment record for tracking
@@ -2066,7 +2329,8 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     if (!payment.zoho_payment_id) return res.status(400).json({ success: false, message: "Payment not synced to Zoho yet" });
 
-    if (allocAmount > Number(payment.unused_amount || 0)) {
+    const refundAmount = Number(amount);
+    if (refundAmount > Number(payment.unused_amount || 0)) {
       return res.status(400).json({ success: false, message: `Allocation amount (${allocAmount}) exceeds payment unused amount (${payment.unused_amount || 0})` });
     }
 
@@ -2205,7 +2469,9 @@ export const applyAllCreditsToInvoice = async (req, res) => {
 
     const invoice = await Invoice.findById(invoiceId).populate('client');
     if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
-    const invClientId = invoice?.client?._id ? String(invoice.client._id) : String(invoice.client);
+    const invClientId = invoice?.client?._id
+      ? invoice.client._id.toString()
+      : (invoice?.client && typeof invoice.client.toString === 'function' ? invoice.client.toString() : null);
     if (String(invClientId) !== String(clientId)) {
       return res.status(400).json({ success: false, message: 'Invoice does not belong to the provided client' });
     }

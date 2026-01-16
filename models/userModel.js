@@ -23,8 +23,6 @@ const userSchema = new mongoose.Schema(
     phone: {
       type: String,
       required: false,
-      unique: true,
-      sparse: true,
       trim: true,
     },
     password: {
@@ -49,6 +47,12 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
     collection: "users",
   }
+);
+
+// Ensure phone uniqueness only when phone is a non-empty string
+userSchema.index(
+  { phone: 1 },
+  { unique: true, partialFilterExpression: { phone: { $exists: true, $type: "string", $ne: "" } } }
 );
 
 // Export as "User" to match the ref in memberModel

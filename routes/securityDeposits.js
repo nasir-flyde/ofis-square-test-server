@@ -30,7 +30,6 @@ router.get(
 router.post(
   "/",
   authMiddleware,
-  checkPermission(PERMISSIONS.INVOICE_CREATE),
   createDeposit
 );
 

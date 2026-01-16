@@ -8,7 +8,9 @@ import Client from "../models/clientModel.js";
 import WalletService from "../services/walletService.js";
 import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
+import Guest from "../models/guestModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
+import { provisionAccessForMeetingBooking } from "../services/meetingAccessService.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -28,16 +30,37 @@ function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-// Compute discounted totals (GST is 0 for meeting rooms per current logic)
+// Helper: convert any date-like to IST Date object
+function toIST(date) {
+  try {
+    return new Date(new Date(date).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  } catch (e) {
+    return new Date(date);
+  }
+}
+
+// Helper: get IST day in YYYY-MM-DD string
+function formatYMDIST(dateLike) {
+  const d = toIST(dateLike);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// Compute discounted totals with 18% GST
 function computeInvoiceTotals(baseAmount, percent) {
   const pct = Math.max(0, Math.min(100, Number(percent || 0)));
   const discountAmount = Math.max(0, Math.round((Number(baseAmount || 0) * pct) / 100));
   const sub_total = Math.max(0, Number(baseAmount || 0) - discountAmount);
+  const gstRate = 18; // 18% GST
+  const tax_total = Math.round((sub_total * gstRate) / 100);
+  const total = Math.max(0, sub_total + tax_total);
   return {
     discountAmount,
     sub_total,
-    tax_total: 0,
-    total: sub_total,
+    tax_total,
+    total,
   };
 }
 
@@ -159,15 +182,18 @@ export const createBooking = async (req, res) => {
       name,
       email,
       phone,
-      guests // array of { name, email, phone }
+      guests, // array of { name, email, phone }
+      guest: bodyGuest,
+      guestId: bodyGuestId
     } = req.body || {};
     
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
 
-    // Determine member/client context (admin flow may not have a member)
+    // Determine member/client/guest context (admin flow may not have a member)
     const currentMemberId = req.memberId || memberId || null;
     let clientId = null;
+    let guestId = req.guestId || bodyGuestId || null;
     let memberDoc = null;
     if (currentMemberId) {
       // Validate member and derive client from member
@@ -177,10 +203,11 @@ export const createBooking = async (req, res) => {
       }
       clientId = memberDoc.client?._id;
     } else {
-      // Admin/community or external partner flow: allow booking with a client only
+      // Admin/community or external partner/guest flow
       const clientFromBody = client;
-      if (!clientFromBody && !externalSource) {
-        return res.status(400).json({ success: false, message: "client or memberId is required" });
+      // If no member/client context, allow guest context (on-demand)
+      if (!clientFromBody && !externalSource && !guestId && !bodyGuest) {
+        return res.status(400).json({ success: false, message: "client, memberId or guest context is required" });
       }
       if (clientFromBody) {
         const clientDoc = await Client.findById(clientFromBody).select('_id');
@@ -188,6 +215,14 @@ export const createBooking = async (req, res) => {
           return res.status(404).json({ success: false, message: "Client not found" });
         }
         clientId = clientDoc._id;
+      }
+      // If on-demand body.guest is provided, create/ensure a Guest record and use its _id
+      if (!guestId && bodyGuest && typeof bodyGuest === 'object') {
+        const gName = (bodyGuest.name || 'Guest').toString().trim();
+        const gEmail = (bodyGuest.email || '').toString().trim() || undefined;
+        const gPhone = (bodyGuest.phone || '').toString().trim() || undefined;
+        const createdGuest = await Guest.create({ name: gName, email: gEmail, phone: gPhone });
+        guestId = createdGuest._id;
       }
     }
 
@@ -253,8 +288,7 @@ export const createBooking = async (req, res) => {
     const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
     // For cash/card payments we use daily pricing (quantity should be 1)
     const dailyRate = room.pricing?.dailyRate || pricing?.dailyRate || 500; // Default daily rate fallback
-    // No GST for meeting room cash invoices per requirement
-    const taxAmount = 0;
+    // Apply 18% GST on taxable base (after discount)
 
     // Handle credit payment
     let paymentDetails = {};
@@ -339,19 +373,20 @@ export const createBooking = async (req, res) => {
         valuePerCredit: result.valuePerCredit,
         idempotencyKey
       };
-    } else if (paymentMethod === "cash") {
-      // Cash payment - create invoice and set payment_pending status
+    } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay") {
+      // Cash/Card payment - create invoice and set payment_pending status for Razorpay create-order flow
       bookingStatus = "payment_pending";
 
       if (discountStatus === "pending") {
         // Skip invoice creation; wait for approval
-        paymentDetails = { method: "cash" };
+        paymentDetails = { method: paymentMethod || "cash" };
       } else {
         // Apply approved or no discount
         const totals = computeInvoiceTotals(dailyRate, appliedDiscountPercent || 0);
-        if (clientId) {
+        if (clientId || guestId) {
           invoice = new Invoice({
-            client: clientId,
+            ...(clientId ? { client: clientId } : {}),
+            ...(guestId ? { guest: guestId } : {}),
             type: "regular",
             category: "meeting_room",
             invoice_number: `MR-${Date.now()}`,
@@ -362,10 +397,10 @@ export const createBooking = async (req, res) => {
               amount: dailyRate, // show gross amount in line item
               rate: dailyRate
             }],
-            sub_total: dailyRate, // gross amount
+            sub_total: totals.sub_total,
             discount: totals.discountAmount || 0,
             tax_total: totals.tax_total,
-            total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+            total: totals.total,
             status: "draft",
             due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
           });
@@ -374,8 +409,8 @@ export const createBooking = async (req, res) => {
         }
 
         paymentDetails = { 
-          method: "cash", 
-          amount: (invoice?.total ?? totals.total)
+          method: paymentMethod || "cash", 
+          amount: (invoice?.total ?? totals.total) // GST-inclusive total
         };
       }
     } else {
@@ -390,6 +425,7 @@ export const createBooking = async (req, res) => {
       room: roomId,
       member: currentMemberId || undefined,
       client: clientId || undefined,
+      guest: guestId || undefined,
       visitors: visitorIds.length ? visitorIds : (Array.isArray(visitors) ? visitors : undefined),
       start: new Date(start),
       end: new Date(end),
@@ -572,16 +608,21 @@ export const createBooking = async (req, res) => {
       console.warn('createBooking: failed to schedule meeting reminders:', remErr?.message || remErr);
     }
 
+    // If booking is finalized immediately (credits or free), provision BHAiFi + Matrix access for the timeslot
+    if (booking?.status === 'booked') {
+      try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on create', e?.message); }
+    }
+
     const responseData = {
       booking,
     };
     if (invoice) {
       responseData.invoice = invoice;
     }
-    if (paymentMethod === 'cash' && discountStatus !== 'pending') {
+    if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay') && discountStatus !== 'pending') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
-        amount: (paymentDetails.amount || dailyRate) * 100, // Convert to paise (no GST)
+        amount: Math.round((paymentDetails.amount || dailyRate) * 100), // Convert to paise (GST-inclusive)
         currency: "INR",
         name: "Ofis Square",
         description: `Meeting Room - ${room.name}`,
@@ -599,10 +640,12 @@ export const createBooking = async (req, res) => {
 // List bookings with filters
 export const listBookings = async (req, res) => {
   try {
-    const { room, member, status, from, to, buildingId, building } = req.query || {};
+    const { room, member, status, from, to, buildingId, building, guest, guestId } = req.query || {};
     const filter = {};
     if (room) filter.room = room;
     if (member) filter.member = member;
+    const gId = guest || guestId;
+    if (gId) filter.guest = gId;
     if (status) filter.status = status;
     if (from || to) {
       filter.start = filter.start || {};
@@ -625,6 +668,7 @@ export const listBookings = async (req, res) => {
     const bookings = await MeetingBooking.find(filter)
       .populate("room", "name capacity amenities building")
       .populate("member", "firstName lastName email phone companyName")
+      .populate("guest", "name email phone")
       .populate("visitors", "name email phone company")
       .sort({ start: 1 });
 
@@ -992,10 +1036,10 @@ export const requestDiscount = async (req, res) => {
             amount: dailyRate, // show gross amount in line item
             rate: dailyRate
           }],
-          sub_total: dailyRate,
+          sub_total: totals.sub_total,
           discount: totals.discountAmount || 0,
           tax_total: totals.tax_total,
-          total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+          total: totals.total,
           status: 'draft',
           due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         });
@@ -1012,10 +1056,10 @@ export const requestDiscount = async (req, res) => {
               amount: dailyRate,
               rate: dailyRate,
             }],
-            sub_total: dailyRate,
+            sub_total: totals.sub_total,
             discount: totals.discountAmount || 0,
             tax_total: totals.tax_total,
-            total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+            total: totals.total,
           }
         });
       }
@@ -1088,10 +1132,10 @@ export const approveDiscount = async (req, res) => {
           amount: dailyRate,
           rate: dailyRate,
         }],
-        sub_total: dailyRate,
+        sub_total: totals.sub_total,
         discount: totals.discountAmount || 0,
         tax_total: totals.tax_total,
-        total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+        total: totals.total,
         status: 'draft',
         due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       });
@@ -1107,10 +1151,10 @@ export const approveDiscount = async (req, res) => {
             amount: dailyRate,
             rate: dailyRate,
           }],
-          sub_total: dailyRate,
+          sub_total: totals.sub_total,
           discount: totals.discountAmount || 0,
           tax_total: totals.tax_total,
-          total: Math.max(0, Number(dailyRate) - Number(totals.discountAmount || 0)),
+          total: totals.total,
         }
       });
     }
@@ -1163,10 +1207,10 @@ export const rejectDiscount = async (req, res) => {
           amount: dailyRate,
           rate: dailyRate,
         }],
-        sub_total: dailyRate,
+        sub_total: totals.sub_total,
         discount: 0,
         tax_total: totals.tax_total,
-        total: dailyRate,
+        total: totals.total,
         status: 'draft',
         due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       });

@@ -8,6 +8,7 @@ import {
   getInvoiceById,
   updateInvoiceStatus,
   pushInvoiceToZoho,
+  pushInvoiceToZohoGuest,
   sendInvoiceEmail,
   syncInvoiceFromZoho,
   getInvoicePdf,
@@ -40,6 +41,8 @@ router.patch("/:id/status", authMiddleware, checkPermission(PERMISSIONS.INVOICE_
 
 // Zoho Books integration - Finance Senior only
 router.post("/:id/push-zoho", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), pushInvoiceToZoho);
+// Guest-specific push: allow creators to push as draft for ondemand users
+router.post("/:id/push-zoho-guest", authMiddleware, pushInvoiceToZohoGuest);
 // Allow creators to push only as draft
 router.post(
   "/:id/push-zoho-draft",
