@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import Building from "../models/buildingModel.js";
 import MeetingRoom from "../models/meetingRoomModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
@@ -6,7 +7,7 @@ import Visitor from "../models/visitorModel.js";
 import { recordCancellation } from "./cancelledBookingController.js";
 import DayPass from "../models/dayPassModel.js";
 import Guest from "../models/guestModel.js";
-
+import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 // ===== Utils =====
 function hhmmToMinutes(hhmm = "09:00") {
   const [h, m] = String(hhmm).split(":").map(Number);
@@ -104,7 +105,7 @@ export async function listCenters(req, res) {
       city_id: null,
       city_name: b.city,
       products: {
-        daypass: { isActive: false },
+        daypass: { isActive: Number(b.dayPassDailyCapacity || 0) > 0 },
         meeting_room: { isActive: (countMap.get(String(b._id)) || 0) > 0 }
       },
       image_gallery: []
@@ -444,7 +445,7 @@ export async function listDayPassBuildings(req, res) {
   try {
     const buildings = await Building.find({ status: { $ne: 'inactive' } }).lean();
     const data = buildings
-      .filter(b => Array.isArray(b.dayPassInventories) && b.dayPassInventories.some(inv => inv?.isActive && (inv?.capacity ?? 0) > 0))
+      .filter(b => Number(b.dayPassDailyCapacity || 0) > 0)
       .map(b => ({
         building_id: String(b._id),
         name: b.name,
@@ -461,92 +462,61 @@ export async function listDayPassBuildings(req, res) {
   }
 }
 
-// ===== Day Pass: Inventories in Building =====
-export async function listDayPassInventories(req, res) {
+export async function buildingDayPassAvailability(req, res) {
   try {
     const { buildingId } = req.params;
+    const { dates } = req.body || {};
+    if (!Array.isArray(dates) || !dates.length) {
+      return res.status(400).json({ status: 400, success: false, message: 'dates[] are required' });
+    }
+
     const b = await Building.findById(buildingId).lean();
     if (!b) return res.status(404).json({ status: 404, success: false, message: 'Building not found' });
-    const inventories = Array.isArray(b.dayPassInventories) ? b.dayPassInventories : [];
-    const data = inventories.map(inv => ({
-      building_id: String(b._id),
-      inventory_type: inv.inventoryType,
-      inventory_id: String(inv._id),
-      seating_capacity: inv.capacity || 0,
-      isActive: !!inv.isActive,
-      other_details: {
-        images: Array.isArray(inv.images) ? inv.images : [],
-        price: inv.price ?? null,
-        rackPrice: inv.rackPrice ?? null,
-      }
-    }));
-    return res.json({ status: true, data });
-  } catch (e) {
-    return res.status(500).json({ status: 500, success: false, message: e.message });
-  }
-}
 
-// ===== Day Pass: Bulk availability =====
-export async function bulkDayPassAvailability(req, res) {
-  try {
-    const { dates, inventory_ids } = req.body || {};
-    if (!Array.isArray(dates) || !Array.isArray(inventory_ids) || !dates.length || !inventory_ids.length) {
-      return res.status(400).json({ status: 400, success: false, message: 'dates[] and inventory_ids[] are required' });
-    }
+    // Capacity configured per building
+    const totalCapacity = Number(b.dayPassDailyCapacity || 0);
 
-    // Build a lookup of inventory by id and parent building
-    const buildings = await Building.find({ 'dayPassInventories._id': { $in: inventory_ids } }).lean();
-    const invMap = new Map();
-    for (const b of buildings) {
-      for (const inv of (b.dayPassInventories || [])) {
-        const key = String(inv._id);
-        if (inventory_ids.includes(key)) {
-          invMap.set(key, { inv, building: b });
-        }
-      }
-    }
-
-    const activeStatuses = ['issued', 'invited', 'active', 'checked_in', 'checked_out'];
     const data = [];
+    for (const dateISO of dates) {
+      const dayStart = startOfDayIST(dateISO);
+      let bookedSeats = 0;
 
-    for (const invId of inventory_ids) {
-      const pair = invMap.get(String(invId));
-      if (!pair) continue;
-      const { inv } = pair;
+      try {
+        // Prefer daily usage counter (fast path)
+        const usage = await DayPassDailyUsage.findOne({ building: b._id, date: dayStart }).lean();
+        if (usage && typeof usage.bookedCount === 'number') {
+          bookedSeats = Number(usage.bookedCount || 0);
+        } else {
+          // Fallback to counting passes for backward compatibility
+          const activeStatuses = ['issued', 'invited', 'active', 'checked_in'];
+          const passes = await DayPass.find({
+            building: b._id,
+            date: { $gte: dayStart, $lte: endOfDayIST(dayStart) },
+            status: { $in: activeStatuses },
+          }).select('numberOfGuests').lean();
+          bookedSeats = (passes || []).reduce((sum, p) => sum + Number(p.numberOfGuests || 1), 0);
+        }
+      } catch (_) {}
 
-      for (const dateISO of dates) {
-        const dayStart = startOfDayIST(dateISO);
-        const dayEnd = endOfDayIST(dateISO);
-        // Query all passes for this inventory/date
-        const passes = await DayPass.find({
-          inventoryId: String(inv._id),
-          date: { $gte: dayStart, $lte: dayEnd },
-          status: { $in: activeStatuses }
-        }).select('numberOfGuests').lean();
-
-        const bookedSeats = (passes || []).reduce((sum, p) => sum + (Number(p.numberOfGuests || 1)), 0);
-        const capacity = Number(inv.capacity || 0);
-        const availableSeats = Math.max(0, capacity - bookedSeats);
-        const availability = availableSeats > 0
-          ? { status: 'Available', availableSeats }
-          : { status: 'Closed' };
-
-        data.push({ inventory_id: String(inv._id), date: new Date(dateISO), availability });
-      }
+      const availableSeats = Math.max(0, totalCapacity - bookedSeats);
+      const availability = totalCapacity > 0 && availableSeats > 0
+        ? { status: 'Available', availableSeats }
+        : { status: 'Closed' };
+      data.push({ building_id: String(b._id), date: new Date(dateISO), availability });
     }
 
     return res.json({ status: 1, message: 'success', data });
   } catch (e) {
-    console.error('daypass availability error:', e);
+    console.error('daypass building availability error:', e);
     return res.status(500).json({ status: 500, success: false, message: e.message });
   }
 }
 
-// ===== Day Pass: Booking =====
+// ===== Day Pass: Booking (building-level, no inventory) =====
 export async function bookDayPass(req, res) {
   try {
-    const { inventory_id, building_id, reference_number, date_of_booking, name, email, phone } = req.body || {};
-    if (!inventory_id || !building_id || !reference_number || !date_of_booking) {
+    const { building_id, reference_number, date_of_booking, name, email, phone } = req.body || {};
+    if (!building_id || !reference_number || !date_of_booking) {
       return res.status(400).json({ status: 400, success: false, message: 'Missing required fields' });
     }
 
@@ -558,24 +528,22 @@ export async function bookDayPass(req, res) {
 
     const building = await Building.findById(building_id).lean();
     if (!building) return res.status(400).json({ status: 400, success: false, message: 'Invalid value: building_id' });
-    const inv = (building.dayPassInventories || []).find(v => String(v._id) === String(inventory_id));
-    if (!inv) return res.status(400).json({ status: 400, success: false, message: 'Invalid value: inventory_id' });
-    if (!inv.isActive) return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
+
+    // Building-level capacity
+    const totalCapacity = Number(building.dayPassDailyCapacity || 0);
+    if (totalCapacity <= 0) return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
 
     const passDate = startOfDayIST(date_of_booking);
-    const dayStart = new Date(passDate);
-    const dayEnd = endOfDayIST(passDate);
 
-    // Capacity check
-    const activeStatuses = ['issued', 'invited', 'active', 'checked_in', 'checked_out'];
-    const passes = await DayPass.find({
-      inventoryId: String(inv._id),
-      date: { $gte: dayStart, $lte: dayEnd },
-      status: { $in: activeStatuses }
-    }).select('numberOfGuests').lean();
-    const bookedSeats = (passes || []).reduce((sum, p) => sum + (Number(p.numberOfGuests || 1)), 0);
-    const capacity = Number(inv.capacity || 0);
-    if (bookedSeats >= capacity) {
+    // Atomically reserve a slot for this building/date
+    const usage = await DayPassDailyUsage.findOneAndUpdate(
+      { building: building._id, date: passDate },
+      { $inc: { bookedCount: 1 } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    if (Number(usage.bookedCount || 0) > totalCapacity) {
+      // Rollback and reject
+      await DayPassDailyUsage.updateOne({ building: building._id, date: passDate }, { $inc: { bookedCount: -1 } });
       return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
     }
 
@@ -587,29 +555,41 @@ export async function bookDayPass(req, res) {
       guest = await Guest.create({ name: name || 'Guest', email: email || undefined, phone: phone || undefined });
     }
 
-    // Build basic day pass details
-    const expiresAt = endOfDayIST(passDate);
-    const price = Number(inv.price || building.openSpacePricing || 0);
-    const dayPass = await DayPass.create({
-      customer: guest._id,
-      member: null,
-      building: building._id,
-      bundle: null,
-      inventoryId: String(inv._id),
-      date: passDate,
-      visitDate: passDate,
-      bookingFor: 'self',
-      expiresAt,
-      price,
-      currency: 'INR',
-      status: 'issued',
-      visitorName: name,
-      visitorEmail: email,
-      visitorPhone: phone,
-      numberOfGuests: 1,
-      externalSource: 'myhq',
-      referenceNumber: reference_number,
-    });
+    // Determine price: prefer building.openSpacePricing; else min active inventory price; else error
+    let price = Number(building.openSpacePricing || 0);
+    if (!price || Number.isNaN(price)) {
+      // No inventories path: require openSpacePricing
+    }
+    if (!price || Number.isNaN(price)) {
+      return res.status(400).json({ status: 400, success: false, message: 'Price not configured for day pass' });
+    }
+
+    let dayPass;
+    try {
+      dayPass = await DayPass.create({
+        customer: guest._id,
+        member: null,
+        building: building._id,
+        bundle: null,
+        date: passDate,
+        visitDate: passDate,
+        bookingFor: 'self',
+        expiresAt: endOfDayIST(passDate),
+        price,
+        currency: 'INR',
+        status: 'issued',
+        visitorName: name,
+        visitorEmail: email,
+        visitorPhone: phone,
+        numberOfGuests: 1,
+        externalSource: 'myhq',
+        referenceNumber: reference_number,
+      });
+    } catch (err) {
+      // rollback reserved slot on failure
+      await DayPassDailyUsage.updateOne({ building: building._id, date: passDate }, { $inc: { bookedCount: -1 } });
+      throw err;
+    }
 
     return res.json({ success: true, message: 'Booked Successfully', data: { booking_id: String(dayPass._id) } });
   } catch (e) {
@@ -651,6 +631,12 @@ export async function cancelDayPassBooking(req, res) {
 
     pass.status = 'cancelled';
     await pass.save();
+
+    // decrement the reserved usage slot
+    try {
+      const d = startOfDayIST(pass.date);
+      await DayPassDailyUsage.updateOne({ building: pass.building._id || pass.building, date: d }, { $inc: { bookedCount: -1 } });
+    } catch (_) {}
 
     return res.json({ status: 200, success: true, message: 'Booking Cancelled Successfully', data: { booking_id: String(pass._id), status: 'CANCELLED' } });
   } catch (e) {

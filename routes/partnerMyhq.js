@@ -9,8 +9,7 @@ import {
   getBookingDetails,
   cancelBooking,
   listDayPassBuildings,
-  listDayPassInventories,
-  bulkDayPassAvailability,
+  buildingDayPassAvailability,
   bookDayPass,
   cancelDayPassBooking,
 } from "../controllers/partnerMyhqController.js";
@@ -35,10 +34,9 @@ router.post("/meeting-room/booking", bookRoom);
 router.get("/meeting-room/booking/:id", getBookingDetails);
 router.delete("/meeting-room/booking/:id", cancelBooking);
 
-// Day Pass: buildings and inventories
+// Day Pass: buildings and building-level availability
 router.get("/building/list", listDayPassBuildings); // expects ?product=daypass
-router.get("/building/:buildingId/daypass/inventories", listDayPassInventories);
-router.post("/building/:buildingId/daypass/inventories/availability", bulkDayPassAvailability);
+router.post("/building/:buildingId/daypass/availability", buildingDayPassAvailability);
 
 // Day Pass: booking lifecycle
 router.post("/daypass/booking", bookDayPass);

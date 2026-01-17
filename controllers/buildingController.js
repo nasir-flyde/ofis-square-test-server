@@ -4,10 +4,7 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent } = req.body || {};
-
-// Update per-building invoice settings (draft invoice schedule and late fee policy)
-
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -59,7 +56,6 @@ export const createBuilding = async (req, res) => {
       businessMapLink
     };
 
-    // Building-level community discount cap (0-100)
     if (communityDiscountMaxPercent !== undefined) {
       const v = Number(communityDiscountMaxPercent);
       if (!Number.isFinite(v) || v < 0 || v > 100) {
@@ -68,7 +64,6 @@ export const createBuilding = async (req, res) => {
       buildingData.communityDiscountMaxPercent = v;
     }
 
-    // Attach sanitized TDS settings if provided
     if (tdsSettings && typeof tdsSettings === 'object') {
       const sanitizedTds = {};
       if (typeof tdsSettings.enabled === 'boolean') sanitizedTds.enabled = tdsSettings.enabled;
@@ -100,22 +95,64 @@ export const createBuilding = async (req, res) => {
       }
     }
 
-    // Add coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
       buildingData.coordinates = {
         longitude: parseFloat(longitude),
         latitude: parseFloat(latitude)
       };
-      // Also add to location for geospatial queries
       buildingData.location = {
         type: 'Point',
         coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
       };
     }
 
+    if (openingTime) buildingData.openingTime = String(openingTime);
+    if (closingTime) buildingData.closingTime = String(closingTime);
+
+    if (dayPassDailyCapacity !== undefined) {
+      const cap = Number(dayPassDailyCapacity);
+      if (!Number.isFinite(cap) || cap < 0) {
+        return res.status(400).json({ success: false, message: "dayPassDailyCapacity must be a non-negative number" });
+      }
+      buildingData.dayPassDailyCapacity = cap;
+    }
+
+    if (creditValue !== undefined) {
+      const cv = Number(creditValue);
+      if (!Number.isFinite(cv) || cv < 0) {
+        return res.status(400).json({ success: false, message: "creditValue must be a non-negative number" });
+      }
+      buildingData.creditValue = cv;
+    }
+
+    if (typeof draftInvoiceGeneration === 'boolean') {
+      buildingData.draftInvoiceGeneration = draftInvoiceGeneration;
+    }
+    if (draftInvoiceDay !== undefined) {
+      const dd = Number(draftInvoiceDay);
+      if (!Number.isFinite(dd) || dd < 1 || dd > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDay must be between 1 and 31" });
+      }
+      buildingData.draftInvoiceDay = dd;
+    }
+    if (draftInvoiceDueDay !== undefined) {
+      const ddd = Number(draftInvoiceDueDay);
+      if (!Number.isFinite(ddd) || ddd < 1 || ddd > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDueDay must be between 1 and 31" });
+      }
+      buildingData.draftInvoiceDueDay = ddd;
+    }
+
+    if (securityDepositThreshold !== undefined) {
+      const sdt = Number(securityDepositThreshold);
+      if (!Number.isFinite(sdt) || sdt < 0) {
+        return res.status(400).json({ success: false, message: "securityDepositThreshold must be a non-negative number" });
+      }
+      buildingData.securityDepositThreshold = sdt;
+    }
+
     const building = await Building.create(buildingData);
 
-    // Log activity
     await logCRUDActivity(req, 'CREATE', 'Building', building._id, null, {
       buildingName: name,
       location: `${city}, ${state}`,
@@ -165,11 +202,10 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
-    // If photos provided, process them similarly to create. If not provided, don't change existing photos
     let processedPhotos;
     if (photos && Array.isArray(photos)) {
       processedPhotos = [];
@@ -212,7 +248,6 @@ export const updateBuilding = async (req, res) => {
       updatePayload.photos = processedPhotos;
     }
 
-    // Update building-level community discount max percent if provided
     if (communityDiscountMaxPercent !== undefined) {
       const v = Number(communityDiscountMaxPercent);
       if (!Number.isFinite(v) || v < 0 || v > 100) {
@@ -221,20 +256,62 @@ export const updateBuilding = async (req, res) => {
       updatePayload.communityDiscountMaxPercent = v;
     }
 
-    // Update coordinates object if provided
     if (longitude !== undefined && latitude !== undefined) {
       updatePayload.coordinates = {
         longitude: parseFloat(longitude),
         latitude: parseFloat(latitude)
       };
-      // Also update location for geospatial queries
       updatePayload.location = {
         type: 'Point',
         coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
       };
     }
 
-    // Update TDS settings if provided
+    if (openingTime !== undefined) updatePayload.openingTime = String(openingTime);
+    if (closingTime !== undefined) updatePayload.closingTime = String(closingTime);
+
+    if (dayPassDailyCapacity !== undefined) {
+      const cap = Number(dayPassDailyCapacity);
+      if (!Number.isFinite(cap) || cap < 0) {
+        return res.status(400).json({ success: false, message: "dayPassDailyCapacity must be a non-negative number" });
+      }
+      updatePayload.dayPassDailyCapacity = cap;
+    }
+
+    if (creditValue !== undefined) {
+      const cv = Number(creditValue);
+      if (!Number.isFinite(cv) || cv < 0) {
+        return res.status(400).json({ success: false, message: "creditValue must be a non-negative number" });
+      }
+      updatePayload.creditValue = cv;
+    }
+
+    if (draftInvoiceGeneration !== undefined) {
+      updatePayload.draftInvoiceGeneration = Boolean(draftInvoiceGeneration);
+    }
+    if (draftInvoiceDay !== undefined) {
+      const dd = Number(draftInvoiceDay);
+      if (!Number.isFinite(dd) || dd < 1 || dd > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDay must be between 1 and 31" });
+      }
+      updatePayload.draftInvoiceDay = dd;
+    }
+    if (draftInvoiceDueDay !== undefined) {
+      const ddd = Number(draftInvoiceDueDay);
+      if (!Number.isFinite(ddd) || ddd < 1 || ddd > 31) {
+        return res.status(400).json({ success: false, message: "draftInvoiceDueDay must be between 1 and 31" });
+      }
+      updatePayload.draftInvoiceDueDay = ddd;
+    }
+
+    if (securityDepositThreshold !== undefined) {
+      const sdt = Number(securityDepositThreshold);
+      if (!Number.isFinite(sdt) || sdt < 0) {
+        return res.status(400).json({ success: false, message: "securityDepositThreshold must be a non-negative number" });
+      }
+      updatePayload.securityDepositThreshold = sdt;
+    }
+
     if (tdsSettings !== undefined) {
       const sanitizedTds = {};
       if (typeof tdsSettings?.enabled === 'boolean') sanitizedTds.enabled = tdsSettings.enabled;
@@ -280,14 +357,13 @@ export const updateBuilding = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
 
-    // Log activity with changes
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });
@@ -305,7 +381,6 @@ export const deleteBuilding = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
 
-    // Log activity
     await logCRUDActivity(req, 'DELETE', 'Building', id, null, {
       buildingName: building.name,
       location: `${building.city}, ${building.state}`
@@ -341,7 +416,6 @@ export const updateBuildingCreditValue = async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    // Log activity
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: { creditValue: oldBuilding.creditValue },
       after: { creditValue: building.creditValue }
@@ -368,7 +442,6 @@ export const updateBuildingCreditValue = async (req, res) => {
   }
 };
 
-// Activate a draft building
 export const activateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
@@ -382,7 +455,6 @@ export const activateBuilding = async (req, res) => {
       return res.status(400).json({ success: false, message: "Only draft buildings can be activated" });
     }
 
-    // Validate required fields for activation
     if (!building.perSeatPricing || building.perSeatPricing <= 0) {
       return res.status(400).json({ success: false, message: "Per seat pricing must be set before activation" });
     }
@@ -393,7 +465,6 @@ export const activateBuilding = async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    // Log activity
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: { status: building.status },
       after: { status: updatedBuilding.status }
@@ -414,6 +485,7 @@ export const activateBuilding = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
 export const updateBuildingInvoiceSettings = async (req, res) => {
   try {
     const { id } = req.params;
@@ -429,7 +501,6 @@ export const updateBuildingInvoiceSettings = async (req, res) => {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
 
-    // Build update payload with validation
     const updatePayload = {};
 
     if (typeof draftInvoiceGeneration === 'boolean') {
@@ -475,7 +546,6 @@ export const updateBuildingInvoiceSettings = async (req, res) => {
     Object.assign(building, updatePayload);
     await building.save();
 
-    // Log activity
     await logCRUDActivity(
       req,
       'UPDATE',
@@ -485,10 +555,8 @@ export const updateBuildingInvoiceSettings = async (req, res) => {
       { buildingName: building.name, updatedFields: Object.keys(updatePayload) }
     );
 
-    // If lateFeePolicy was updated, trigger background recompute for last month provisional fees
     try {
       if (updatePayload.lateFeePolicy) {
-        // Fire and forget; don't block response
         recomputeLateFeesForBuilding(id).catch(() => {});
       }
     } catch (_) {}

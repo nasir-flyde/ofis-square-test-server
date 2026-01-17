@@ -445,7 +445,7 @@ export const finalApprove = async (req, res) => {
             client: contract.client,
             status: "active",
           })
-            .select("_id firstName lastName email phone")
+            .select("_id firstName lastName email phone matrixUser matrixExternalUserId bhaifiUser")
             .lean();
 
           for (const m of membersForJobs || []) {
@@ -453,31 +453,41 @@ export const finalApprove = async (req, res) => {
               // Ensure matrixUserId is available for both API call and job payload
               let matrixUserId;
 
-              // Best-effort direct call to Matrix to create/upsert user
+              // Check if Matrix user already exists for this member (prefer existing external ID)
               try {
-                const random6 = Math.floor(100000 + Math.random() * 900000);
-                matrixUserId = `MEM${random6}`;
-                await matrixApi.createUser({
-                  id: matrixUserId,
-                  name:
-                    m.firstName || m.lastName
-                      ? `${m.firstName || ""} ${m.lastName || ""}`.trim()
-                      : undefined,
-                  email: m.email || undefined,
-                  phone: m.phone || undefined,
-                  status: "active",
-                  contractEndDate: contract.endDate || undefined,
-                });
-              } catch (apiErr) {
-                console.warn(
-                  "Matrix createUser failed for member",
-                  String(m._id),
-                  apiErr?.message
-                );
-                // Ensure we still have an ID to queue in the job if API call failed early
-                if (!matrixUserId) {
-                  const fallbackRand = Math.floor(100000 + Math.random() * 900000);
-                  matrixUserId = `MEM${fallbackRand}`;
+                const existingMuByMember = await MatrixUser.findOne({ memberId: m._id })
+                  .select("_id externalUserId")
+                  .lean();
+                matrixUserId = m.matrixExternalUserId || existingMuByMember?.externalUserId;
+              } catch {}
+
+              // Create a Matrix user only if none exists
+              if (!matrixUserId) {
+                try {
+                  const random6 = Math.floor(100000 + Math.random() * 900000);
+                  matrixUserId = `MEM${random6}`;
+                  await matrixApi.createUser({
+                    id: matrixUserId,
+                    name:
+                      m.firstName || m.lastName
+                        ? `${m.firstName || ""} ${m.lastName || ""}`.trim()
+                        : undefined,
+                    email: m.email || undefined,
+                    phone: m.phone || undefined,
+                    status: "active",
+                    contractEndDate: contract.endDate || undefined,
+                  });
+                } catch (apiErr) {
+                  console.warn(
+                    "Matrix createUser failed for member",
+                    String(m._id),
+                    apiErr?.message
+                  );
+                  // Ensure we still have an ID to queue in the job if API call failed early
+                  if (!matrixUserId) {
+                    const fallbackRand = Math.floor(100000 + Math.random() * 900000);
+                    matrixUserId = `MEM${fallbackRand}`;
+                  }
                 }
               }
 
@@ -630,6 +640,10 @@ export const finalApprove = async (req, res) => {
           const wifiProvisioned = [];
           for (const m of membersForJobs || []) {
             try {
+              // Skip creating Bhaifi user if already linked
+              if (m?.bhaifiUser) {
+                continue;
+              }
               const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
               wifiProvisioned.push(String(m._id));
 

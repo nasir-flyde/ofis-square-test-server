@@ -238,7 +238,7 @@ const contractSchema = new mongoose.Schema(
     workflowMode: {
       type: String,
       enum: ["automated", "custom"],
-      default: null,
+      default: "custom",
       index: true,
     },
     workflowModeMeta: {

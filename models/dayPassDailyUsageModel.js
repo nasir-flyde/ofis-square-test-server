@@ -2,19 +2,23 @@ import mongoose from "mongoose";
 
 const { Schema } = mongoose;
 
-const DayPassDailyUsageSchema = new Schema(
+const dayPassDailyUsageSchema = new Schema(
   {
-    building: { type: Schema.Types.ObjectId, ref: 'Building', required: true, index: true },
-    // Always normalized to start-of-day (00:00:00.000)
-    date: { type: Date, required: true, index: true },
-    bookedCount: { type: Number, required: true, min: 0, default: 0 },
+    building: { type: Schema.Types.ObjectId, ref: "Building", required: true, index: true },
+    date: { type: Date, required: true, index: true }, // store the day (start of day in IST or UTC-consistent)
+
+    dayPass: { type: Schema.Types.ObjectId, ref: "DayPass", required: true, unique: true },
+    seats: { type: Number, default: 1, min: 1 },
+
+    // Partner idempotency context
+    externalSource: { type: String, index: true }, // e.g., 'myhq'
+    referenceNumber: { type: String, index: true },
   },
-  {
-    timestamps: true,
-    collection: 'daypass_daily_usages'
-  }
+  { timestamps: true, collection: "daypassdailyusages" }
 );
 
-DayPassDailyUsageSchema.index({ building: 1, date: 1 }, { unique: true });
+// For fast lookups by building/date
+dayPassDailyUsageSchema.index({ building: 1, date: 1 });
 
-export default mongoose.model('DayPassDailyUsage', DayPassDailyUsageSchema);
+const DayPassDailyUsage = mongoose.model("DayPassDailyUsage", dayPassDailyUsageSchema);
+export default DayPassDailyUsage;

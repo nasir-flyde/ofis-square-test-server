@@ -87,7 +87,7 @@ const BuildingSchema = new Schema(
       imageUrl: { type: String, required: true },
       uploadedAt: { type: Date, default: Date.now }
     }],
-
+    securityDepositThreshold : {type : Number,default:20},
     sdNoteSettings: {
       enabled: { type: Boolean, default: true },
       templateType: { type: String, enum: ['html', 'structured'], default: 'structured' },
