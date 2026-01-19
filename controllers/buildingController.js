@@ -202,7 +202,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -346,6 +346,38 @@ export const updateBuilding = async (req, res) => {
       }
       updatePayload.tdsSettings = sanitizedTds;
     }
+    if (wifiAccess !== undefined) {
+      const sanitized = {};
+      if (wifiAccess.enterpriseLevel && typeof wifiAccess.enterpriseLevel === 'object') {
+        sanitized.enterpriseLevel = {};
+        if (typeof wifiAccess.enterpriseLevel.enabled === 'boolean') {
+          sanitized.enterpriseLevel.enabled = wifiAccess.enterpriseLevel.enabled;
+        }
+        if (Array.isArray(wifiAccess.enterpriseLevel.nasRefs)) {
+          sanitized.enterpriseLevel.nasRefs = wifiAccess.enterpriseLevel.nasRefs.filter(Boolean);
+        }
+        if (typeof wifiAccess.enterpriseLevel.defaultProfile === 'string') {
+          sanitized.enterpriseLevel.defaultProfile = wifiAccess.enterpriseLevel.defaultProfile;
+        }
+        if (wifiAccess.enterpriseLevel.defaultValidityDays !== undefined) {
+          const d = Number(wifiAccess.enterpriseLevel.defaultValidityDays);
+          if (!Number.isFinite(d) || d <= 0) {
+            return res.status(400).json({ success: false, message: 'wifiAccess.enterpriseLevel.defaultValidityDays must be a positive number' });
+          }
+          sanitized.enterpriseLevel.defaultValidityDays = d;
+        }
+      }
+      if (wifiAccess.daypass && typeof wifiAccess.daypass === 'object') {
+        sanitized.daypass = {};
+        if (typeof wifiAccess.daypass.enabled === 'boolean') {
+          sanitized.daypass.enabled = wifiAccess.daypass.enabled;
+        }
+        if (Array.isArray(wifiAccess.daypass.nasRefs)) {
+          sanitized.daypass.nasRefs = wifiAccess.daypass.nasRefs.filter(Boolean);
+        }
+      }
+      updatePayload.wifiAccess = sanitized;
+    }
 
     const building = await Building.findByIdAndUpdate(
       id,
@@ -360,10 +392,10 @@ export const updateBuilding = async (req, res) => {
     await logCRUDActivity(req, 'UPDATE', 'Building', id, {
       before: oldBuilding?.toObject(),
       after: building.toObject(),
-      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined })
+      fields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined, wifiAccess: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'wifiAccess')) ? 'updated' : undefined })
     }, {
       buildingName: building.name,
-      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined })
+      updatedFields: Object.keys({ name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos: processedPhotos ? 'updated' : undefined, tdsSettings: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'tdsSettings')) ? 'updated' : undefined, communityDiscountMaxPercent: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'communityDiscountMaxPercent')) ? 'updated' : undefined, openingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'openingTime')) ? 'updated' : undefined, closingTime: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'closingTime')) ? 'updated' : undefined, dayPassDailyCapacity: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'dayPassDailyCapacity')) ? 'updated' : undefined, creditValue: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'creditValue')) ? 'updated' : undefined, draftInvoiceGeneration: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceGeneration')) ? 'updated' : undefined, draftInvoiceDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDay')) ? 'updated' : undefined, draftInvoiceDueDay: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'draftInvoiceDueDay')) ? 'updated' : undefined, securityDepositThreshold: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'securityDepositThreshold')) ? 'updated' : undefined, wifiAccess: (req.body && Object.prototype.hasOwnProperty.call(req.body, 'wifiAccess')) ? 'updated' : undefined })
     });
 
     res.json({ success: true, data: building });

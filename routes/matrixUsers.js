@@ -1,6 +1,6 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
-import { populateUserRole, requireSystemAdmin } from "../middlewares/rbacMiddleware.js";
+import { populateUserRole, requireSystemAdmin, requireAnyPermission } from "../middlewares/rbacMiddleware.js";
 import {
   findByPhone,
   createMatrixUser,
@@ -79,7 +79,7 @@ router.post(
   "/:id/set-card-credential",
   authMiddleware,
   populateUserRole,
-  requireSystemAdmin,
+  requireAnyPermission(["*:*", "rfid:assign:member"]),
   setCardCredential
 );
 

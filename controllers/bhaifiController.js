@@ -2,6 +2,8 @@ import BhaifiUser from "../models/bhaifiUserModel.js";
 import Member from "../models/memberModel.js";
 import Contract from "../models/contractModel.js";
 import DayPass from "../models/dayPassModel.js";
+import Building from "../models/buildingModel.js";
+import BhaifiNas from "../models/bhaifiNasModel.js";
 import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
 
 const getEnvNasId = () => process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1";
@@ -227,6 +229,41 @@ export const listBhaifiUsers = async (req, res) => {
   }
 };
 
+// Create (or get) NAS mapping for a building
+export const createNasForBuilding = async (req, res) => {
+  try {
+    const { buildingId } = req.params;
+    const { nasId, label, isActive = true } = req.body || {};
+    if (!buildingId) return res.status(400).json({ success: false, message: 'buildingId is required' });
+    if (!nasId || !String(nasId).trim()) return res.status(400).json({ success: false, message: 'nasId is required' });
+    const b = await Building.findById(buildingId).select('_id');
+    if (!b) return res.status(404).json({ success: false, message: 'Building not found' });
+
+    // Idempotent upsert-like behavior: find existing by (building, nasId)
+    let doc = await BhaifiNas.findOne({ building: buildingId, nasId: String(nasId).trim() });
+    if (!doc) {
+      doc = await BhaifiNas.create({ building: buildingId, nasId: String(nasId).trim(), label: label || undefined, isActive: Boolean(isActive) });
+    } else if (label !== undefined || isActive !== undefined) {
+      // Allow updating label/isActive on existing
+      doc.label = (label !== undefined) ? label : doc.label;
+      if (isActive !== undefined) doc.isActive = Boolean(isActive);
+      await doc.save();
+    }
+    return res.status(201).json({ success: true, data: doc });
+  } catch (err) {
+    // Handle unique constraint violation gracefully
+    if (err && err.code === 11000) {
+      try {
+        const { buildingId } = req.params;
+        const { nasId } = req.body || {};
+        const existing = await BhaifiNas.findOne({ building: buildingId, nasId: String(nasId).trim() });
+        if (existing) return res.status(200).json({ success: true, data: existing, message: 'Already exists' });
+      } catch (_) {}
+    }
+    return res.status(500).json({ success: false, message: 'Failed to create NAS mapping', error: err?.message });
+  }
+};
+
 export const getBhaifiUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -241,12 +278,28 @@ export const getBhaifiUser = async (req, res) => {
   }
 };
 
+// List Bhaifi NAS devices for a building
+export const listNasByBuilding = async (req, res) => {
+  try {
+    const { buildingId } = req.params;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, message: 'buildingId is required' });
+    }
+    const items = await BhaifiNas.find({ building: buildingId })
+      .select('_id nasId label isActive createdAt updatedAt')
+      .sort({ isActive: -1, createdAt: -1 })
+      .lean();
+    return res.json({ success: true, data: items });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to list NAS for building', error: err?.message });
+  }
+};
+
 // Manually trigger Bhaifi whitelist for a given local BhaifiUser id
 export const whitelistBhaifiUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { startDate: startOverride, endDate: endOverride, dayPassId } = req.body || {};
-
     let doc = await BhaifiUser.findById(id).populate("contract", "endDate");
     if (!doc) return res.status(404).json({ success: false, message: "Not found" });
 
@@ -400,5 +453,71 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       data: e?.response?.data,
     });
     throw e;
+  }
+};
+
+// Grant enterprise-level Bhaifi access across all NAS refs for a building
+export const grantEnterpriseAccess = async (req, res) => {
+  try {
+    const { buildingId } = req.params;
+    const { userName: rawUserName, phone, memberId, startDate: startOverride, endDate: endOverride } = req.body || {};
+    let userName = (rawUserName && String(rawUserName).trim()) || null;
+    if (!userName && phone) userName = normalizePhoneToUserName(phone);
+    if (!userName && memberId) {
+      const m = await Member.findById(memberId).select('phone');
+      if (!m) return res.status(404).json({ success: false, message: 'Member not found for userName resolution' });
+      userName = normalizePhoneToUserName(m.phone);
+    }
+    if (!userName) return res.status(400).json({ success: false, message: 'userName or phone or memberId is required' });
+    const building = await Building.findById(buildingId).lean();
+    if (!building) return res.status(404).json({ success: false, message: 'Building not found' });
+    const enterprise = building?.wifiAccess?.enterpriseLevel || {};
+    const nasRefIds = Array.isArray(enterprise?.nasRefs) ? enterprise.nasRefs : [];
+    if (!nasRefIds.length) return res.status(400).json({ success: false, message: 'No enterprise NAS configured for building' });
+    const nasDocs = await BhaifiNas.find({ _id: { $in: nasRefIds }, isActive: true }).select('nasId label').lean();
+    const nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
+    if (!nasIds.length) return res.status(400).json({ success: false, message: 'No active NAS found for building enterprise configuration' });
+    const startDate = normalizeToDateTimeString(startOverride) || formatDateTime(new Date());
+    let endDate = normalizeToDateTimeString(endOverride);
+    if (!endDate) {
+      const d = Number(enterprise?.defaultValidityDays);
+      if (Number.isFinite(d) && d > 0) {
+        const end = new Date();
+        end.setDate(end.getDate() + d);
+        endDate = endOfDayString(end);
+      } else {
+        return res.status(400).json({ success: false, message: 'endDate is required (or set wifiAccess.enterpriseLevel.defaultValidityDays)' });
+      }
+    }
+
+    const results = [];
+    for (const nasId of nasIds) {
+      try {
+        const t0 = Date.now();
+        const apiRes = await bhaifiWhitelist({ nasId, startDate, endDate, userName });
+        results.push({ nasId, ok: true, status: 'success', message: 'whitelisted', latencyMs: Date.now() - t0, data: apiRes?.data });
+      } catch (e) {
+        results.push({
+          nasId,
+          ok: false,
+          status: 'failed',
+          message: e?.response?.data?.message || e?.message || 'Failed',
+          code: e?.code,
+          httpStatus: e?.response?.status,
+          data: e?.response?.data,
+        });
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      success: results.filter(r => r.ok).length,
+      failed: results.filter(r => !r.ok).length,
+    };
+
+    return res.json({ success: true, data: { buildingId, userName, startDate, endDate, nasCount: nasIds.length, results, summary } });
+  } catch (err) {
+    console.error('[BHAIFI] grantEnterpriseAccess error', err?.message);
+    return res.status(500).json({ success: false, message: 'Failed to grant enterprise access', error: err?.message });
   }
 };

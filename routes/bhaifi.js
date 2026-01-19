@@ -9,6 +9,9 @@ import {
   getBhaifiUser,
   whitelistBhaifiUser,
   dewhitelistBhaifiUser,
+  grantEnterpriseAccess,
+  listNasByBuilding,
+  createNasForBuilding,
 } from "../controllers/bhaifiController.js";
 
 const router = express.Router();
@@ -62,6 +65,32 @@ router.post(
   populateUserRole,
   checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
   dewhitelistBhaifiUser
+);
+
+router.post(
+  "/buildings/:buildingId/enterprise/access",
+  authMiddleware,
+  populateUserRole,
+  checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+  grantEnterpriseAccess
+);
+
+// List NAS devices configured for a building
+router.get(
+  "/buildings/:buildingId/nas",
+  authMiddleware,
+  populateUserRole,
+  checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+  listNasByBuilding
+);
+
+// Create NAS mapping for a building
+router.post(
+  "/buildings/:buildingId/nas",
+  authMiddleware,
+  populateUserRole,
+  checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+  createNasForBuilding
 );
 
 export default router;

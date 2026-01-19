@@ -28,6 +28,8 @@ import DocumentEntity from "../models/documentEntityModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import Building from "../models/buildingModel.js";
+import BhaifiNas from "../models/bhaifiNasModel.js";
+import { bhaifiWhitelist } from "../services/bhaifiService.js";
 
 const checkWorkflowPrerequisites = (contract, requiredFlags, isSystemAdmin = false) => {
   if (isSystemAdmin) return []; // Bypass all checks for System Admin
@@ -644,7 +646,7 @@ export const finalApprove = async (req, res) => {
               if (m?.bhaifiUser) {
                 continue;
               }
-              const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
+              const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id });
               wifiProvisioned.push(String(m._id));
 
               // Attach Bhaifi references on Member (bhaifiUser, bhaifiUserName)
@@ -671,6 +673,66 @@ export const finalApprove = async (req, res) => {
           });
         } catch (wifiErr) {
           console.warn('Bhaifi auto-provisioning failed:', wifiErr?.message);
+        }
+
+        // Enterprise-level WiFi access: whitelist all active members across building's enterprise NAS
+        try {
+          const cliForWifi = await Client.findById(contract.client).select('building').lean();
+          const buildingId = cliForWifi?.building || null;
+          if (buildingId) {
+            const bld = await Building.findById(buildingId).select('wifiAccess').lean();
+            const enterprise = bld?.wifiAccess?.enterpriseLevel || {};
+            const nasRefIds = Array.isArray(enterprise?.nasRefs) ? enterprise.nasRefs : [];
+            if (enterprise?.enabled && nasRefIds.length > 0) {
+              const nasDocs = await BhaifiNas.find({ _id: { $in: nasRefIds }, isActive: true }).select('nasId').lean();
+              const nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
+              if (nasIds.length > 0) {
+                const pad = (n) => String(n).padStart(2, '0');
+                const formatDateTime = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                const endOfDayString = (d) => { const dd = new Date(d); dd.setHours(23,59,59,0); return formatDateTime(dd); };
+
+                const startDate = formatDateTime(new Date());
+                let endDateStr = null;
+                if (contract.endDate) {
+                  endDateStr = endOfDayString(new Date(contract.endDate));
+                } else if (Number.isFinite(Number(enterprise.defaultValidityDays)) && Number(enterprise.defaultValidityDays) > 0) {
+                  const end = new Date();
+                  end.setDate(end.getDate() + Number(enterprise.defaultValidityDays));
+                  endDateStr = endOfDayString(end);
+                }
+
+                if (endDateStr) {
+                  let grants = 0;
+                  for (const m of membersForJobs || []) {
+                    let p = String(m?.phone || '').replace(/\D/g, '');
+                    p = p.replace(/^0+/, '');
+                    if (p.startsWith('91')) p = p.replace(/^91+/, '');
+                    if (p.length > 10) p = p.slice(-10);
+                    if (p.length !== 10) continue;
+                    const userName = `91${p}`;
+
+                    for (const nasId of nasIds) {
+                      try {
+                        await bhaifiWhitelist({ nasId, startDate, endDate: endDateStr, userName });
+                        grants += 1;
+                      } catch (e) {
+                        await logErrorActivity(req, e, 'FinalApprove:BhaifiEnterpriseWhitelist', { memberId: String(m._id), nasId });
+                      }
+                    }
+                  }
+
+                  await logContractActivity(req, 'UPDATE', contract._id, contract.client, {
+                    action: 'bhaifi_enterprise_whitelist_granted',
+                    members: (membersForJobs || []).length,
+                    nasCount: nasIds.length,
+                    grants,
+                  });
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Enterprise Bhaifi access grant failed:', e?.message);
         }
       } catch (grantErr) {
         console.warn("Access grant on final approval failed:", grantErr?.message);

@@ -15,6 +15,8 @@ import {
   assignMemberToCardByCompany,
   downloadSampleCSV,
   importRFIDCardsFromCSV,
+  downloadAssignClientSampleCSV,
+  importRFIDCardClientAssignmentsFromCSV,
 } from "../controllers/rfidCardController.js";
 import multer from "multer";
 
@@ -29,6 +31,22 @@ const upload = multer({
 // CSV import routes must appear before any /:id routes
 router.get("/import/sample", authMiddleware, populateUserRole, requireSystemAdmin, downloadSampleCSV);
 router.post("/import", authMiddleware, populateUserRole, requireSystemAdmin, upload.single('file'), importRFIDCardsFromCSV);
+// Assign-client CSV import (community or roles with rfid:assign:client)
+router.get(
+  "/assign-client/import/sample",
+  authMiddleware,
+  populateUserRole,
+  requirePermission("rfid:assign:client"),
+  downloadAssignClientSampleCSV
+);
+router.post(
+  "/assign-client/import",
+  authMiddleware,
+  populateUserRole,
+  requirePermission("rfid:assign:client"),
+  upload.single('file'),
+  importRFIDCardClientAssignmentsFromCSV
+);
 
 router.get("/", authMiddleware, populateUserRole, listRFIDCards);
 router.post("/", authMiddleware, populateUserRole, requireSystemAdmin, createRFIDCard);

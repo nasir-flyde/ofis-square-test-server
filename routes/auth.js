@@ -14,7 +14,8 @@ import {
   getMe,
   refreshAccessToken,
   logout,
-  logoutAllDevices
+  logoutAllDevices,
+  companyAccessLogin
 } from "../controllers/authController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import { populateUserRole } from "../middlewares/rbacMiddleware.js";
@@ -34,6 +35,8 @@ router.post("/community/register", communitySignup);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);
+// Company Access login
+router.post("/company-access/login", companyAccessLogin);
 
 // Refresh token routes
 router.post("/refresh", refreshAccessToken); // Refresh access token

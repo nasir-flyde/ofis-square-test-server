@@ -9,6 +9,7 @@ import MatrixUser from "../models/matrixUserModel.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import BhaifiNas from "../models/bhaifiNasModel.js";
 import { bhaifiCreateUser, bhaifiWhitelist } from "../services/bhaifiService.js";
 import matrixApi from "../utils/matrixApi.js";
 import crypto from "crypto";
@@ -268,7 +269,20 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
       const userName = normalizePhoneToUserName(phone);
       if (email && userName) {
         let bhaifi = await BhaifiUser.findOne({ guest: guest._id, userName });
-        const nasId = getEnvNasId();
+        // Resolve NAS list from building.wifiAccess.daypass; fallback to default env NAS
+        let nasIds = [];
+        try {
+          const dpCfg = building?.wifiAccess?.daypass || {};
+          const refIds = Array.isArray(dpCfg?.nasRefs) ? dpCfg.nasRefs : [];
+          if (dpCfg?.enabled && refIds.length) {
+            const nasDocs = await BhaifiNas.find({ _id: { $in: refIds }, isActive: true }).select('nasId').lean();
+            nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
+          }
+        } catch (_) {}
+        if (!Array.isArray(nasIds) || nasIds.length === 0) {
+          nasIds = [getEnvNasId()];
+        }
+        const nasId = nasIds[0];
         const idType = 1;
         if (!bhaifi) {
           const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
@@ -285,8 +299,14 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
             meta: { request: apiRes?.payload, response: apiRes?.data },
           });
         }
-        // Whitelist for the day
-        await bhaifiWhitelist({ nasId: bhaifi.nasId || nasId, startDate: startDateString, endDate: endDateString, userName });
+        // Whitelist across all configured NAS for the day
+        for (const nid of nasIds) {
+          try {
+            await bhaifiWhitelist({ nasId: nid, startDate: startDateString, endDate: endDateString, userName });
+          } catch (wlErr) {
+            console.warn('[Provision][Bhaifi] whitelist failed for NAS', { nasId: nid, userName, msg: wlErr?.message });
+          }
+        }
         const startAt = new Date(String(startDateString).replace(' ', 'T'));
         const endAt = new Date(String(endDateString).replace(' ', 'T'));
         bhaifi.lastWhitelistedAt = new Date();

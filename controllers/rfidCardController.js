@@ -201,6 +201,84 @@ export const replaceRFIDCard = async (req, res) => {
   }
 };
 
+// Helper to ensure we have a "Company Access" user for a client (reuses existing or creates new)
+async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
+  let role = await Role.findOne({ roleName: "Company Access" });
+  if (!role) {
+    role = await Role.create({
+      roleName: "Company Access",
+      description: "Client-scoped user who can manage access cards for their members",
+      canLogin: true,
+      permissions: ["rfid:assign:member"],
+    });
+  }
+  // Try existing user
+  const existing = await User.findOne({ clientId: client._id, role: role._id });
+  if (existing) {
+    return { user: existing, created: false, role };
+  }
+  const genRandom10 = () => {
+    let s = "";
+    while (s.length < 10) s += Math.floor(Math.random() * 10).toString();
+    return s.slice(0, 10);
+  };
+  const makeDomainFromCompany = (name) => {
+    const slug = String(name || "client").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30) || "client";
+    return `${slug}.com`;
+  };
+  const companyLabel = (companyLabelInput || client.companyName || client.legalName || "Company").trim();
+  let contactPhone = genRandom10();
+  const domain = makeDomainFromCompany(companyLabel);
+  let contactEmail = `${contactPhone}@${domain}`;
+  // Add a non-primary contact person to Client
+  try {
+    if (!Array.isArray(client.contactPersons)) client.contactPersons = [];
+    client.contactPersons.push({
+      first_name: companyLabel,
+      last_name: undefined,
+      email: contactEmail,
+      phone: contactPhone,
+      mobile: contactPhone,
+      designation: "Company Access",
+      department: undefined,
+      is_primary_contact: false,
+      enable_portal: false,
+    });
+    await client.save();
+  } catch {}
+  // Create user with retry on duplicates
+  let ownerUser = null;
+  let attempts = 0;
+  while (!ownerUser && attempts < 3) {
+    attempts += 1;
+    try {
+      ownerUser = await User.create({
+        name: companyLabel,
+        email: contactEmail,
+        password: '123456',
+        role: role._id,
+        clientId: client._id,
+        phone: contactPhone,
+      });
+    } catch (e) {
+      if (e?.code === 11000) {
+        const msg = String(e?.message || "");
+        if (msg.includes("phone")) {
+          contactPhone = genRandom10();
+          contactEmail = `${contactPhone}@${domain}`;
+          continue;
+        }
+        if (msg.includes("email")) {
+          contactEmail = `${contactPhone}+${Date.now()}@${domain}`;
+          continue;
+        }
+      }
+      throw e;
+    }
+  }
+  return { user: ownerUser, created: true, role };
+}
+
 export const assignClientToCard = async (req, res) => {
   try {
     const { id } = req.params;
@@ -221,121 +299,15 @@ export const assignClientToCard = async (req, res) => {
     if (!card) return res.status(404).json({ success: false, message: "Card not found" });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
-    // Determine a primary phone from client details (primary contact > any contact person > client.phone > contactNumber)
-    let primaryPhone;
-    const normalizePhone = (v) => (v ? String(v).replace(/\D/g, "") : undefined);
-    try {
-      if (Array.isArray(client.contactPersons) && client.contactPersons.length) {
-        const primaryCP = client.contactPersons.find((cp) => cp?.is_primary_contact);
-        const fromPrimary = normalizePhone(primaryCP?.phone || primaryCP?.mobile);
-        if (fromPrimary) primaryPhone = fromPrimary;
-        if (!primaryPhone) {
-          for (const cp of client.contactPersons) {
-            const p = normalizePhone(cp?.phone || cp?.mobile);
-            if (p) { primaryPhone = p; break; }
-          }
-        }
-      }
-      if (!primaryPhone && client.phone) primaryPhone = normalizePhone(client.phone);
-      if (!primaryPhone && client.contactNumber) primaryPhone = normalizePhone(client.contactNumber);
-    } catch {}
-
-    // Ensure Company Access User role exists
-    let role = await Role.findOne({ roleName: "Company Access" });
-    if (!role) {
-      role = await Role.create({
-        roleName: "Company Access",
-        description: "Client-scoped user who can manage access cards for their members",
-        canLogin: true,
-        permissions: ["rfid:assign:member"],
-      });
+    // Reject if card is already assigned to any client
+    if (card.clientId) {
+      return res.status(400).json({ success: false, message: "Card is already assigned to a client" });
     }
 
-    // Determine company user from client context
-    const ownerEmailFromClient = client.email ? String(client.email).toLowerCase().trim() : undefined;
-    if (!ownerEmailFromClient) {
-      return res.status(400).json({ success: false, message: "Client email is required to auto-create company user" });
-    }
+    const companyLabel = (client.companyName || client.legalName || "Company").trim();
+    const { user: ownerUser } = await ensureCompanyAccessUserForClient(client, companyLabel);
 
-    // 1) Prefer an existing Company Access user scoped to this client
-    let ownerUser = await User.findOne({ clientId: client._id, role: role._id });
-
-    // 2) If not found, try by email; if a user exists with that email, DO NOT modify it.
-    //    Instead create a new Company Access user with a unique dummy email on the same domain.
-    if (!ownerUser) {
-      const existingByEmail = await User.findOne({ email: ownerEmailFromClient });
-      if (existingByEmail) {
-        const nameFromClient = (client.companyName || client.legalName || "Company Access").trim();
-        const domain = ownerEmailFromClient.includes('@') ? ownerEmailFromClient.split('@')[1] : 'example.com';
-        const dummyLocal = `company+${String(client.companyName).slice(-6)}+${Date.now()}`;
-        const dummyEmail = `${dummyLocal}@${domain}`;
-        const hashed = await bcrypt.hash(Math.random().toString(36).slice(-10), 10);
-        try {
-          ownerUser = await User.create({
-            name: nameFromClient,
-            email: dummyEmail,
-            password: hashed,
-            role: role._id,
-            clientId: client._id,
-            phone: primaryPhone || undefined,
-          });
-        } catch (e) {
-          // In case phone collides with an existing user, retry without phone
-          if (e?.code === 11000 && String(e?.message || '').includes('phone')) {
-            ownerUser = await User.create({
-              name: nameFromClient,
-              email: dummyEmail,
-              password: hashed,
-              role: role._id,
-              clientId: client._id,
-            });
-          } else {
-            throw e;
-          }
-        }
-      }
-    }
-
-    // 3) If still not found, create a new Company Access user with client details
-    if (!ownerUser) {
-      const nameFromClient = (client.companyName || client.legalName || "Company Access").trim();
-      const hashed = await bcrypt.hash(Math.random().toString(36).slice(-10), 10);
-      try {
-        ownerUser = await User.create({
-          name: nameFromClient,
-          email: ownerEmailFromClient,
-          password: hashed,
-          role: role._id,
-          clientId: client._id,
-          phone: primaryPhone || undefined,
-        });
-      } catch (e) {
-        // In case phone collides, retry without phone
-        if (e?.code === 11000 && String(e?.message || '').includes('phone')) {
-          ownerUser = await User.create({
-            name: nameFromClient,
-            email: ownerEmailFromClient,
-            password: hashed,
-            role: role._id,
-            clientId: client._id,
-          });
-        } else {
-          throw e;
-        }
-      }
-    }
-
-    // 4) If we found/created ownerUser but phone differs/missing, try to align to primary phone (best-effort)
-    if (ownerUser && primaryPhone && String(ownerUser.phone || '').replace(/\D/g, '') !== primaryPhone) {
-      try {
-        await User.updateOne({ _id: ownerUser._id }, { $set: { phone: primaryPhone } });
-        ownerUser.phone = primaryPhone;
-      } catch (e) {
-        // Ignore duplicate phone errors to avoid breaking the flow
-      }
-    }
-
-    // Update card linkage
+    // Update card linkage to client and the (existing or newly created) company user
     const before = card.toObject();
     card.clientId = client._id;
     card.companyUserId = ownerUser?._id || card.companyUserId;
@@ -610,6 +582,200 @@ export const importRFIDCardsFromCSV = async (req, res) => {
   } catch (err) {
     await logErrorActivity(req, err, "RFIDCards:ImportCSV");
     const msg = err?.message || "Failed to import RFID cards";
+    return res.status(500).json({ success: false, message: msg });
+  }
+};
+
+// CSV: sample for assigning clients to cards
+export const downloadAssignClientSampleCSV = async (req, res) => {
+  try {
+    const headers = ["cardUid", "client"]; // client can be clientId or companyName/legalName
+    const sampleRows = [
+      ["ABC1234567", "Acme Corp"],
+      ["XYZ7654321", "65f0e2c1b7c4e2a0a1b2c3d4"],
+    ];
+    const lines = [headers.join(","), ...sampleRows.map(r => r.join(","))].join("\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=rfid-card-client-assignment-sample.csv");
+    return res.status(200).send(lines);
+  } catch (err) {
+    await logErrorActivity(req, err, "RFIDCards:DownloadAssignClientSampleCSV");
+    return res.status(500).json({ success: false, message: "Failed to generate sample CSV" });
+  }
+};
+
+// CSV: bulk assignment of clients to cards using same logic as assignClientToCard
+export const importRFIDCardClientAssignmentsFromCSV = async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ success: false, message: "CSV file is required (field name: file)" });
+    }
+
+    const dryRun = String(req.query?.dryRun || "false").toLowerCase() === "true";
+
+    const rows = await new Promise((resolve, reject) => {
+      const out = [];
+      let index = 0;
+      const stream = Readable.from([req.file.buffer]);
+      stream
+        .pipe(csv())
+        .on("data", (data) => {
+          index += 1;
+          out.push({ __line: index, ...data });
+        })
+        .on("end", () => resolve(out))
+        .on("error", reject);
+    });
+
+    if (!rows.length) {
+      return res.status(400).json({ success: false, message: "CSV appears to be empty" });
+    }
+
+    const errors = [];
+    let total = 0;
+    let assignedCount = 0;
+
+    // Preload role for dry-run checks (avoid creation during dryRun)
+    let companyAccessRole = await Role.findOne({ roleName: "Company Access" });
+    let willCreateRole = false;
+    if (dryRun && !companyAccessRole) {
+      // Indicate role will be created during import
+      willCreateRole = true;
+    }
+
+    // For preview mode, collect structured results per row
+    const previewResults = [];
+
+    for (const row of rows) {
+      total += 1;
+      const rawUid = row.cardUid || row.carduid || row["Card UID"] || row["card_uid"]; // tolerate some header variations
+      const cardUid = rawUid ? String(rawUid).trim() : "";
+      if (!cardUid) {
+        if (dryRun) {
+          previewResults.push({
+            success: false,
+            originalRow: row,
+            errors: ["cardUid is required"],
+          });
+        } else {
+          errors.push({ line: row.__line, reason: "cardUid is required" });
+        }
+        continue;
+      }
+
+      const clientRaw = row.clientId || row.client || row.clientName || row["Client"]; // id or name
+      if (!clientRaw) {
+        if (dryRun) {
+          previewResults.push({ success: false, originalRow: row, errors: ["client (id or name) is required"] });
+        } else {
+          errors.push({ line: row.__line, reason: "client (id or name) is required" });
+        }
+        continue;
+      }
+
+      const card = await RFIDCard.findOne({ cardUid });
+      if (!card) {
+        if (dryRun) {
+          previewResults.push({ success: false, originalRow: row, errors: [`Card not found for cardUid '${cardUid}'`] });
+        } else {
+          errors.push({ line: row.__line, reason: `Card not found for cardUid '${cardUid}'` });
+        }
+        continue;
+      }
+
+      // Reject if already assigned
+      if (card.clientId) {
+        const msg = "Card is already assigned to a client";
+        if (dryRun) {
+          previewResults.push({ success: false, originalRow: row, errors: [msg] });
+        } else {
+          errors.push({ line: row.__line, reason: msg });
+        }
+        continue;
+      }
+
+      let client = null;
+      const cr = String(clientRaw).trim();
+      if (mongoose.Types.ObjectId.isValid(cr)) {
+        client = await Client.findById(cr);
+      } else {
+        client = await Client.findOne({ $or: [
+          { companyName: new RegExp(`^${cr}$`, 'i') },
+          { legalName: new RegExp(`^${cr}$`, 'i') }
+        ]});
+      }
+      if (!client) {
+        if (dryRun) {
+          previewResults.push({ success: false, originalRow: row, errors: [`Client not found for '${cr}'`] });
+        } else {
+          errors.push({ line: row.__line, reason: `Client not found for '${cr}'` });
+        }
+        continue;
+      }
+
+      if (dryRun) {
+        // Determine if a Company Access user exists for this client without creating anything
+        let willCreateUser = false;
+        try {
+          // refresh role if not loaded
+          const roleToUse = companyAccessRole || (await Role.findOne({ roleName: "Company Access" }));
+          if (!roleToUse) {
+            willCreateUser = true; // role itself will be created during import
+          } else {
+            const existing = await User.findOne({ clientId: client._id, role: roleToUse._id });
+            willCreateUser = !existing;
+          }
+        } catch {
+          willCreateUser = true;
+        }
+        previewResults.push({
+          success: true,
+          originalRow: row,
+          preview: {
+            cardUid,
+            cardId: card._id,
+            clientId: client._id,
+            clientName: client.companyName || client.legalName || client.email || String(client._id),
+            willCreateRole,
+            willCreateUser,
+          },
+          errors: [],
+        });
+        assignedCount += 1;
+      } else {
+        try {
+          const companyLabel = (client.companyName || client.legalName || "Company").trim();
+          const { user: ownerUser } = await ensureCompanyAccessUserForClient(client, companyLabel);
+          const before = card.toObject();
+          card.clientId = client._id;
+          card.companyUserId = ownerUser?._id || card.companyUserId;
+          await card.save();
+          await logCRUDActivity(req, "UPDATE", "RFIDCard", card._id, { before, after: card.toObject(), fields: ["clientId", "companyUserId"] }, { clientId: client._id, companyUserId: ownerUser?._id, csvLine: row.__line });
+          assignedCount += 1;
+        } catch (e) {
+          errors.push({ line: row.__line, reason: e?.message || "Assignment failed" });
+        }
+      }
+    }
+
+    try {
+      await logCRUDActivity(req, dryRun ? "BULK_PREVIEW" : "BULK_IMPORT", "RFIDCard:AssignClient", null, null, {
+        totalRows: total,
+        assignedCount,
+        skippedCount: dryRun ? (total - assignedCount) : errors.length,
+        dryRun,
+      });
+    } catch {}
+
+    if (dryRun) {
+      const previewCounts = { total, valid: assignedCount, invalid: total - assignedCount, willAssign: assignedCount };
+      return res.json({ success: true, counts: previewCounts, results: previewResults });
+    }
+
+    return res.json({ success: true, summary: { totalRows: total, assignedCount, skippedCount: errors.length }, errors });
+  } catch (err) {
+    await logErrorActivity(req, err, "RFIDCards:ImportAssignClientCSV");
+    const msg = err?.message || "Failed to import card-client assignments";
     return res.status(500).json({ success: false, message: msg });
   }
 };

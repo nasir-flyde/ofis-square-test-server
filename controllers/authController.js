@@ -1260,3 +1260,73 @@ export const logoutAllDevices = async (req, res) => {
     res.status(500).json({ error: "Failed to logout from all devices", message: error.message });
   }
 };
+
+// Company Access login (client-scoped company access users)
+export const companyAccessLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body || {};
+    if ((!email && !phone) || !password) {
+      return res.status(400).json({ error: "Email or phone and password are required" });
+    }
+
+    const query = email
+      ? { email: String(email).toLowerCase().trim() }
+      : { phone: String(phone).trim() };
+    const user = await Users.findOne(query);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isMatch = user.password === password;
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+    const role = await Role.findById(user.role);
+    if (!role) return res.status(401).json({ error: "User role not found" });
+
+    const roleNameLower = (role.roleName || "").toLowerCase();
+    if (roleNameLower !== "company access") {
+      return res.status(403).json({ error: "Not a Company Access account" });
+    }
+    if (role.canLogin === false) {
+      return res.status(403).json({ error: "Role is not allowed to login" });
+    }
+
+    // Resolve clientId: prefer stored user.clientId, otherwise by matching email/phone on Client
+    let clientId = null;
+    if (user.clientId) {
+      clientId = String(user.clientId);
+    } else {
+      const client = await Client.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: user.phone }] : []),
+        ],
+      }).select('_id');
+      if (client?._id) clientId = String(client._id);
+    }
+
+    const token = createJWT(
+      user._id.toString(),
+      user.email,
+      role._id.toString(),
+      role.roleName,
+      user.phone,
+      clientId || undefined
+    );
+
+    const safeUser = {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      roleName: role.roleName,
+      clientId: clientId || undefined,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+
+    return res.json({ token, user: safeUser, ...(clientId ? { clientId } : {}) });
+  } catch (err) {
+    console.error("companyAccessLogin error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};

@@ -125,6 +125,19 @@ const BuildingSchema = new Schema(
       templateVersion: { type: Number, default: 1 },
     },
 
+    wifiAccess: {
+      enterpriseLevel: {
+        enabled: { type: Boolean, default: false },
+        nasRefs: [{ type: Schema.Types.ObjectId, ref: "BhaifiNas", index: true }],
+        defaultProfile: { type: String, default: undefined },
+        defaultValidityDays: { type: Number, default: undefined },
+      },
+      daypass: {
+        enabled: { type: Boolean, default: false },
+        nasRefs: [{ type: Schema.Types.ObjectId, ref: "BhaifiNas", index: true }],
+      },
+    },
+
     status: { type: String, enum: ["draft", "active", "inactive"], default: "draft", index: true },
   },
   {

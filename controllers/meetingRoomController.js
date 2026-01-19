@@ -900,9 +900,9 @@ export const exportMasterFile = async (_req, res) => {
 // Download sample CSV for meeting rooms import
 export const downloadSampleCSV = async (_req, res) => {
   try {
-    const header = ['buildingName','roomName','capacity','status','dailyRate','amenities'];
-    const sample1 = ['Main Building','Conference A','10','active','2500','WiFi;Projector;Whiteboard'];
-    const sample2 = ['Main Building','Board Room 1','8','active','1800','WiFi;Whiteboard'];
+    const header = ['buildingName','roomName','capacity','status','dailyRate','amenities','deviceId','deviceType'];
+    const sample1 = ['Main Building','Conference A','10','active','2500','WiFi;Projector;Whiteboard','d_20001','16'];
+    const sample2 = ['Main Building','Board Room 1','8','active','1800','WiFi;Whiteboard','d_20002','16'];
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="meeting_rooms_import_sample.csv"');
@@ -999,6 +999,25 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
         errors.push(`Unknown amenities: ${missingAmenityNames.join(', ')}`);
       }
 
+      // Optional Matrix Device fields from CSV (mirror cabin import behavior)
+      const rawDeviceInput = norm(r.deviceId || r.device_id || r["device id"] || r["Device ID"] || r.device);
+      const deviceTypeRaw = norm(r.deviceType || r["device type"] || r["Device Type"]);
+      let deviceType = toNumber(deviceTypeRaw);
+      let deviceIdRaw = rawDeviceInput || '';
+      let deviceIdNormalized = undefined;
+      let numericDevice = undefined;
+      if (rawDeviceInput) {
+        const stripped = rawDeviceInput.startsWith('d_') ? rawDeviceInput.slice(2) : rawDeviceInput;
+        deviceIdNormalized = rawDeviceInput.startsWith('d_') ? rawDeviceInput : `d_${stripped}`;
+        const n = toNumber(stripped);
+        if (n !== undefined) numericDevice = n;
+        if (deviceType === undefined) deviceType = 16;
+        const allowedTypes = new Set([1, 16, 17]);
+        if (!allowedTypes.has(deviceType)) {
+          errors.push(`Invalid deviceType: ${deviceType}. Allowed: 1, 16, 17`);
+        }
+      }
+
       if (!errors.length) {
         // Duplicate check within building by name
         const dup = await MeetingRoom.findOne({ building: buildingId, name: roomName }).lean();
@@ -1017,7 +1036,7 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
         perRow.push({
           index: idx + 1,
           success: true,
-          preview: { building: buildingId, name: roomName, capacity, status, dailyRate, amenities: amenityIds.length },
+          preview: { building: buildingId, name: roomName, capacity, status, dailyRate, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined },
           originalRow
         });
         continue;
@@ -1034,6 +1053,52 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
           images: []
         });
 
+        // If device details provided, create or link MatrixDevice and attach to meeting room
+        if (deviceIdNormalized) {
+          let deviceDoc = await MatrixDevice.findOne({
+            $or: [
+              { device_id: deviceIdNormalized },
+              ...(numericDevice !== undefined ? [{ device: numericDevice }] : []),
+              ...(deviceIdRaw && deviceIdRaw !== deviceIdNormalized ? [{ device_id: deviceIdRaw }] : [])
+            ]
+          });
+
+          if (!deviceDoc) {
+            deviceDoc = await MatrixDevice.create({
+              buildingId: buildingId,
+              name: `Meeting Room ${roomName} Device`,
+              vendor: 'MATRIX_COSEC',
+              deviceType: deviceType ?? 16,
+              direction: 'BIDIRECTIONAL',
+              device_id: deviceIdNormalized,
+              device: numericDevice,
+              status: 'Active'
+            });
+          } else {
+            let needSave = false;
+            if (String(deviceDoc.buildingId || '') !== String(buildingId)) {
+              deviceDoc.buildingId = buildingId;
+              needSave = true;
+            }
+            if (deviceType !== undefined && deviceDoc.deviceType !== deviceType) {
+              deviceDoc.deviceType = deviceType;
+              needSave = true;
+            }
+            if (deviceDoc.device_id !== deviceIdNormalized) {
+              deviceDoc.device_id = deviceIdNormalized;
+              needSave = true;
+            }
+            if (numericDevice !== undefined && deviceDoc.device !== numericDevice) {
+              deviceDoc.device = numericDevice;
+              needSave = true;
+            }
+            if (needSave) await deviceDoc.save();
+          }
+
+          room.matrixDevices = Array.from(new Set([...(room.matrixDevices || []), deviceDoc._id]));
+          await room.save();
+        }
+
         await logCRUDActivity(req, 'CREATE', 'MeetingRoom', room._id, null, {
           imported: true,
           building: buildingId,
@@ -1041,7 +1106,8 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
           capacity,
           status,
           dailyRate: dailyRate || null,
-          amenities: amenityIds.length
+          amenities: amenityIds.length,
+          matrixDevices: (room.matrixDevices || []).length
         });
 
         createdCount++;
