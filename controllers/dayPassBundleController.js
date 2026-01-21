@@ -127,10 +127,12 @@ export const createDayPassBundle = async (req, res) => {
         const key = d.toISOString();
         dateCounts[key] = (dateCounts[key] || 0) + 1;
       }
-      // Check each date against existing bookedCount in DayPassDailyUsage
+      // Check each date against existing usage: seats (bundle/seat-based) + bookedCount (partner counter)
       for (const [iso, reqCount] of Object.entries(dateCounts)) {
-        const used = await DayPassDailyUsage.findOne({ building: buildingId, date: new Date(iso) }).lean();
-        const booked = Number(used?.bookedCount || 0);
+        const usages = await DayPassDailyUsage.find({ building: buildingId, date: new Date(iso) })
+          .select('seats bookedCount')
+          .lean();
+        const booked = (usages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
         if (booked + reqCount > cap) {
           return res.status(409).json({ 
             error: 'Insufficient capacity for one or more selected dates',
@@ -172,31 +174,7 @@ export const createDayPassBundle = async (req, res) => {
     session.startTransaction();
 
     try {
-      // Reserve capacity for self dates at booking time (aggregate by date)
-      if (cap > 0 && splitSelf > 0 && parsedDatesSelf.length > 0) {
-        const incCounts = {};
-        for (const ds of parsedDatesSelf) {
-          const d = new Date(ds);
-          d.setHours(0,0,0,0);
-          const key = d.toISOString();
-          incCounts[key] = (incCounts[key] || 0) + 1;
-        }
-        for (const [iso, add] of Object.entries(incCounts)) {
-          const updated = await DayPassDailyUsage.findOneAndUpdate(
-            { building: buildingId, date: new Date(iso) },
-            { $inc: { bookedCount: add } },
-            { upsert: true, new: true, setDefaultsOnInsert: true, session }
-          );
-          if (updated && updated.bookedCount > cap) {
-            const exceededBy = updated.bookedCount - cap;
-            // Abort on overflow
-            const err = new Error('Capacity exceeded for selected date');
-            err.status = 409;
-            err.details = { date: iso.slice(0,10), capacity: cap, requested: add, booked: updated.bookedCount - add, remaining: Math.max(0, cap - (updated.bookedCount - add)), exceededBy };
-            throw err;
-          }
-        }
-      }
+      // We will not upsert counters without a dayPass. Instead, we'll create per-pass usage docs after creating day passes.
 
       // Create bundle
       const bundle = new DayPassBundle({
@@ -258,6 +236,42 @@ export const createDayPassBundle = async (req, res) => {
 
       await DayPass.insertMany(dayPasses, { session });
 
+      // After creating self day passes, record usage per date with seats equal to the number of passes
+      if (splitSelf > 0 && parsedDatesSelf.length > 0) {
+        // Group required additions per date for capacity validation within the transaction
+        const incCounts = {};
+        const selfPasses = dayPasses.filter(dp => dp.bookingFor === 'self');
+        for (const dp of selfPasses) {
+          const d = new Date(dp.visitDate);
+          d.setHours(0,0,0,0);
+          const key = d.toISOString();
+          incCounts[key] = (incCounts[key] || 0) + 1;
+        }
+        // Validate capacity against current usage: seats + bookedCount
+        if (cap > 0) {
+          for (const [iso, add] of Object.entries(incCounts)) {
+            const usages = await DayPassDailyUsage.find({ building: buildingId, date: new Date(iso) })
+              .select('seats bookedCount')
+              .session(session)
+              .lean();
+            const booked = (usages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
+            if (booked + add > cap) {
+              const err = new Error('Capacity exceeded for selected date');
+              err.status = 409;
+              err.details = { date: iso.slice(0,10), capacity: cap, requested: add, booked, remaining: Math.max(0, cap - booked) };
+              throw err;
+            }
+          }
+        }
+        // Upsert a single usage row per date for this bundle, incrementing seats by the count
+        for (const [iso, add] of Object.entries(incCounts)) {
+          await DayPassDailyUsage.findOneAndUpdate(
+            { building: buildingId, date: new Date(iso), bundle: bundle._id },
+            { $inc: { seats: add } },
+            { upsert: true, new: true, setDefaultsOnInsert: true, session }
+          );
+        }
+      }
       const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
       let invoice = null;
       if (paymentMethod !== 'credits') {

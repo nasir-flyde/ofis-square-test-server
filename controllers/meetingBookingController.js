@@ -10,7 +10,11 @@ import Visitor from "../models/visitorModel.js";
 import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
-import { provisionAccessForMeetingBooking } from "../services/meetingAccessService.js";
+import { provisionAccessForMeetingBooking, revokeAccessForMeetingBooking } from "../services/meetingAccessService.js";
+import Payment from "../models/paymentModel.js";
+import loggedRazorpay from "../utils/loggedRazorpay.js";
+import { recordCancellation } from "./cancelledBookingController.js";
+import { getValidAccessToken } from "../utils/zohoTokenManager.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -608,8 +612,8 @@ export const createBooking = async (req, res) => {
       console.warn('createBooking: failed to schedule meeting reminders:', remErr?.message || remErr);
     }
 
-    // If booking is finalized immediately (credits or free), provision BHAiFi + Matrix access for the timeslot
-    if (booking?.status === 'booked') {
+    // If booking is finalized immediately (credits or free) AND visitors exist, provision access for visitors
+    if (booking?.status === 'booked' && Array.isArray(booking.visitors) && booking.visitors.length) {
       try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on create', e?.message); }
     }
 
@@ -681,31 +685,274 @@ export const listBookings = async (req, res) => {
 // Cancel booking
 export const cancelBooking = async (req, res) => {
   try {
-    const booking = await MeetingBooking.findById(req.params.id).populate('room');
-    if (!booking) return res.status(404).json({ success: false, message: "Booking not found" });
+    console.log('[CancelFlow] Begin cancellation', { bookingId: String(req.params.id) });
+    // Load booking with room->building to access per-building cancellation settings
+    const booking = await MeetingBooking.findById(req.params.id)
+      .populate({
+        path: 'room',
+        select: 'building',
+        populate: { path: 'building', select: 'openingTime closingTime meetingCancellationGraceMinutes meetingCancellationCutoffMinutes' }
+      });
+    if (!booking) {
+      console.warn('[CancelFlow] Booking not found', { bookingId: String(req.params.id) });
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    console.log('[CancelFlow] Loaded booking', { bookingId: String(booking._id), status: booking.status, room: String(booking?.room?._id || booking?.room), building: String(booking?.room?.building?._id || booking?.room?.building) });
     if (booking.status !== "booked" && booking.status !== "payment_pending") {
+      console.warn('[CancelFlow] Invalid status for cancellation', { bookingId: String(booking._id), status: booking.status });
       return res.status(400).json({ success: false, message: "Only booked or payment pending reservations can be cancelled" });
     }
 
-    booking.status = "cancelled";
-    await booking.save();
+    // Compute cancellation window (myHQ-style):
+    // - within grace minutes from creation
+    // - OR before cutoff minutes prior to start (IST-safe)
+    const now = new Date();
+    const createdAt = new Date(booking.createdAt || booking.start);
 
-    // Remove reserved slot from meeting room
-    if (booking.room) {
-      const room = await MeetingRoom.findById(booking.room._id);
-      if (room) {
-        const bookingDate = new Date(booking.start);
-        bookingDate.setHours(0, 0, 0, 0);
+    // Building-level grace period (minutes). Fallback to env or default (5) if missing.
+    let graceMinutes = 5;
+    try {
+      const v = booking?.room?.building?.meetingCancellationGraceMinutes;
+      graceMinutes = (typeof v === 'number' && !Number.isNaN(v)) ? v : parseInt(process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
+      if (!Number.isFinite(graceMinutes) || graceMinutes < 0) graceMinutes = 5;
+    } catch (_) {}
 
-        // Filter out the reserved slot for this booking
-        room.reservedSlots = room.reservedSlots.filter(slot => {
-          return String(slot.bookingId) !== String(booking._id);
-        });
+    // Cutoff minutes (before start) sourced from building with env/default fallback
+    let cutoffMinutes = 60;
+    try {
+      const cv = booking?.room?.building?.meetingCancellationCutoffMinutes;
+      cutoffMinutes = (typeof cv === 'number' && !Number.isNaN(cv)) ? cv : parseInt(process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+      if (!Number.isFinite(cutoffMinutes) || cutoffMinutes < 0) cutoffMinutes = 60;
+    } catch (_) {}
 
-        await room.save();
-      }
+    const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
+    const startIST = toIST(booking.start);
+    const cutoffTime = new Date(startIST.getTime() - cutoffMinutes * 60 * 1000);
+    const beforeCutoff = now.getTime() < cutoffTime.getTime();
+
+    console.log('[CancelFlow] Window check', {
+      bookingId: String(booking._id),
+      graceMinutes,
+      cutoffMinutes,
+      createdAtISO: createdAt.toISOString(),
+      startIST: startIST.toISOString(),
+      cutoffTimeISO: cutoffTime.toISOString(),
+      withinGrace,
+      beforeCutoff
+    });
+    if (!(withinGrace || beforeCutoff)) {
+      console.warn('[CancelFlow] Outside window, denying cancellation', { bookingId: String(booking._id) });
+      return res.status(403).json({ success: false, message: "Outside Booking Cancellation Window" });
     }
 
+    // Proceed with cancellation
+    console.log('[CancelFlow] Proceeding to cancel booking', { bookingId: String(booking._id) });
+    booking.status = "cancelled";
+    await booking.save();
+    console.log('[CancelFlow] Booking status saved as cancelled', { bookingId: String(booking._id) });
+
+    // Record cancellation snapshot (idempotent)
+    try {
+      const reason = req.body?.reason || req.query?.reason;
+      const cancelledBy = req.user ? `user:${req.user._id}` : 'system';
+      await recordCancellation(booking, { cancelledBy, cancellationReason: reason });
+      console.log('[CancelFlow] Cancellation snapshot recorded', { bookingId: String(booking._id) });
+    } catch (e) {
+      console.error('Failed to record cancelled booking snapshot:', e?.message);
+    }
+
+    // Revoke building access (Matrix/WiFi) - non-blocking
+    try {
+      await revokeAccessForMeetingBooking({ bookingId: booking._id });
+      console.log('[CancelFlow] Access revoked (Matrix/WiFi)', { bookingId: String(booking._id) });
+    } catch (revErr) {
+      console.warn('[MeetingAccess] Revoke failed on cancel', revErr?.message || revErr);
+    }
+
+    // If paid with credits, reverse covered credits back to client wallet (idempotent)
+    try {
+      if (booking?.payment?.method === 'credits') {
+        // Determine clientId
+        let clientId = booking.client || null;
+        if (!clientId && booking.member) {
+          try {
+            const mem = await Member.findById(booking.member).select('client').lean();
+            clientId = mem?.client || null;
+          } catch (_) {}
+        }
+        const creditsToRefund = Number(booking?.payment?.coveredCredits || 0);
+        if (clientId && creditsToRefund > 0) {
+          const idKey = booking?.payment?.idempotencyKey
+            ? `${booking.payment.idempotencyKey}_refund`
+            : `meeting_${String(booking._id)}_credits_refund`;
+          const reason = (req.body?.reason || req.query?.reason || 'Meeting booking cancelled');
+          await WalletService.reverseCredits({
+            clientId,
+            memberId: booking.member || undefined,
+            credits: creditsToRefund,
+            idempotencyKey: idKey,
+            refType: 'meeting_booking',
+            refId: booking._id,
+            meta: { reason, relatedInvoiceId: booking.invoice || null, title: 'Meeting booking cancellation' },
+          });
+          console.log('[CancelFlow] Credits reversed', { bookingId: String(booking._id), creditsToRefund });
+        }
+      }
+    } catch (credErr) {
+      console.warn('[Credits] Reverse credits on cancellation failed:', credErr?.message || credErr);
+    }
+
+    // Minimal invoice handling: if invoice is still draft, mark as void
+    try {
+      const invId = booking.invoice?._id || booking.invoice;
+      if (invId) {
+        const inv = await Invoice.findById(invId);
+        if (inv && inv.status === 'draft') {
+          inv.status = 'void';
+          await inv.save();
+          console.log('[CancelFlow] Invoice voided (was draft)', { bookingId: String(booking._id), invoiceId: String(inv._id) });
+          // If invoice is linked to Zoho, attempt to void it there as well
+          if (inv.zoho_invoice_id) {
+            try {
+              const accessToken = await getValidAccessToken();
+              const orgId = process.env.ZOHO_BOOKS_ORG_ID || process.env.ZOHO_ORG_ID;
+              const booksBase = 'https://www.zohoapis.in/books/v3';
+              if (accessToken && orgId) {
+                const url = `${booksBase}/invoices/${inv.zoho_invoice_id}/status/void?organization_id=${orgId}`;
+                const resp = await fetch(url, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                    'Content-Type': 'application/json',
+                  },
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                  console.log('[CancelFlow] Zoho invoice voided successfully', { zoho_invoice_id: inv.zoho_invoice_id, invoiceId: String(inv._id) });
+                } else {
+                  console.warn('[CancelFlow] Zoho invoice void failed', { zoho_invoice_id: inv.zoho_invoice_id, message: data?.message || 'Unknown error' });
+                }
+              } else {
+                console.warn('[CancelFlow] Zoho void skipped: missing access token or org id');
+              }
+            } catch (zErr) {
+              console.warn('[CancelFlow] Zoho invoice void error', zErr?.message || zErr);
+            }
+          }
+        }
+      }
+    } catch (invErr) {
+      console.warn('[Invoice] Void draft on cancellation failed:', invErr?.message || invErr);
+    }
+
+    // If paid via Razorpay, attempt full refund via Razorpay API (best-effort, with capture-if-needed)
+    try {
+      const invId = booking.invoice?._id || booking.invoice;
+      if (invId) {
+        // Do not rely on type; use presence of paymentGatewayRef to infer Razorpay
+        const rzPay = await Payment.findOne({ invoice: invId, paymentGatewayRef: { $exists: true, $ne: null } }).sort({ createdAt: -1 }).lean();
+        if (rzPay && rzPay.paymentGatewayRef) {
+          // Basic idempotency: if there is already a refund recorded, skip
+          const alreadyRefunded = Array.isArray(rzPay.refunds) && rzPay.refunds.length > 0;
+          if (alreadyRefunded) {
+            console.log('[CancelFlow] Razorpay refund skipped (already refunded)', { paymentDocId: String(rzPay._id) });
+          } else {
+            const amountPaise = Math.max(0, Math.round(Number(rzPay.amount || 0) * 100));
+            if (amountPaise > 0) {
+              const reason = (req.body?.reason || req.query?.reason || 'meeting_booking_cancelled');
+              // Fetch payment to inspect current status
+              let paymentStatus = null;
+              try {
+                const fetched = await loggedRazorpay.fetchPayment(rzPay.paymentGatewayRef, {
+                  userId: req.user?.id || null,
+                  relatedEntity: 'payment',
+                  relatedEntityId: rzPay._id
+                });
+                paymentStatus = fetched?.status || null;
+                console.log('[CancelFlow] Razorpay payment status', { paymentId: rzPay.paymentGatewayRef, status: paymentStatus });
+              } catch (fetchErr) {
+                console.warn('[Razorpay] fetchPayment failed before refund', fetchErr?.message || fetchErr);
+              }
+
+              // If authorized, attempt to capture first
+              if (paymentStatus === 'authorized') {
+                try {
+                  await loggedRazorpay.capturePayment(rzPay.paymentGatewayRef, amountPaise, {
+                    userId: req.user?.id || null,
+                    relatedEntity: 'payment',
+                    relatedEntityId: rzPay._id
+                  });
+                  console.log('[CancelFlow] Razorpay payment captured for refund', { paymentId: rzPay.paymentGatewayRef, amountPaise });
+                  paymentStatus = 'captured';
+                } catch (capErr) {
+                  console.warn('[Razorpay] capturePayment failed; skipping refund', capErr?.message || capErr);
+                }
+              }
+
+              // Only refund when captured
+              if (paymentStatus === 'captured') {
+                const refundMode = process.env.ZOHO_REFUND_MODE || 'Bank Transfer';
+                const fromAccountId = rzPay.deposit_to_account_id || process.env.ZOHO_REFUND_ACCOUNT_ID;
+                const orgId = process.env.ZOHO_BOOKS_ORG_ID || process.env.ZOHO_ORG_ID;
+                const booksBase = 'https://www.zohoapis.in/books/v3';
+                const zohoPaymentId = rzPay.zoho_payment_id;
+                if (!fromAccountId) {
+                  console.warn('[CancelFlow] Zoho customer payment refund skipped: no from_account_id (set Payment.deposit_to_account_id or ZOHO_REFUND_ACCOUNT_ID)');
+                } else if (!orgId) {
+                  console.warn('[CancelFlow] Zoho customer payment refund skipped: missing organization id (ZOHO_BOOKS_ORG_ID or ZOHO_ORG_ID)');
+                } else if (!zohoPaymentId) {
+                  console.warn('[CancelFlow] Zoho customer payment refund skipped: missing zoho_payment_id on Payment');
+                } else {
+                  const refundBody = {
+                    amount: Number((amountPaise / 100).toFixed(2)),
+                    date: new Date().toISOString().slice(0, 10),
+                    description: `Auto refund for booking ${String(booking._id)} | RZP refund ${rzPay.paymentGatewayRef}`,
+                    refund_mode: refundMode,
+                    from_account_id: fromAccountId,
+                    reference_number: rzPay.paymentGatewayRef
+                  };
+                  const refundUrl = `${booksBase}/customerpayments/${zohoPaymentId}/refunds?organization_id=${orgId}`;
+                  const zResp = await fetch(refundUrl, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Zoho-oauthtoken ${await getValidAccessToken()}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(refundBody)
+                  });
+                  const zData = await zResp.json().catch(() => ({}));
+                  if (zResp.ok) {
+                    const zohoRefundId = zData?.payment_refund?.payment_refund_id || zData?.payment_refund_id || zData?.refund?.refund_id || null;
+                    console.log('[CancelFlow] Zoho customer payment refund recorded', { zoho_payment_id: zohoPaymentId, zoho_refund_id: zohoRefundId, amount: refundBody.amount });
+                  } else {
+                    console.warn('[CancelFlow] Zoho customer payment refund failed', { zoho_payment_id: zohoPaymentId, message: zData?.message || 'Unknown error' });
+                  }
+                }
+              } else {
+                console.warn('[CancelFlow] Razorpay refund skipped (payment not captured)', { paymentId: rzPay.paymentGatewayRef, status: paymentStatus });
+              }
+            }
+          }
+        }
+      }
+    } catch (rzErr) {
+      console.warn('[Razorpay] Refund attempt failed on cancellation:', rzErr?.message || rzErr);
+    }
+
+    // Remove reserved slot from meeting room
+    try {
+      const roomId = booking.room?._id || booking.room;
+      if (roomId) {
+        const room = await MeetingRoom.findById(roomId);
+        if (room) {
+          room.reservedSlots = (room.reservedSlots || []).filter(slot => String(slot.bookingId) !== String(booking._id));
+          await room.save();
+          console.log('[CancelFlow] Reserved slot freed in room', { bookingId: String(booking._id), roomId: String(room._id) });
+        }
+      }
+    } catch (_) {}
+
+    console.log('[CancelFlow] Completed successfully', { bookingId: String(booking._id) });
     return res.json({ success: true, data: booking });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -720,8 +967,8 @@ export const getBookingById = async (req, res) => {
 
     const booking = await MeetingBooking.findById(id)
       .populate("room", "name capacity amenities")
-      .populate("member", "firstName lastName email phone companyName user")
-      .populate("client", "companyName name email phone")
+      .populate("member", "firstName lastName email phone companyName")
+      .populate("guest", "name email phone")
       .populate("visitors", "name email phone company")
       .populate({ path: "invoice", select: "invoiceNumber status total" });
 
@@ -771,6 +1018,7 @@ export const addVisitorToBooking = async (req, res) => {
         phone: phone?.trim(),
         companyName: companyName?.trim(),
         hostMember: booking.member || undefined,
+        hostClient: booking.client || undefined,
         purpose: purpose?.trim(),
         expectedVisitDate: booking.start,
         expectedArrivalTime: booking.start,
@@ -798,6 +1046,14 @@ export const addVisitorToBooking = async (req, res) => {
       .populate("member", "firstName lastName email phone companyName")
       .populate("visitors", "name email phone company status expectedVisitDate")
       .populate({ path: "invoice", select: "invoice_number status total" });
+
+    // Best-effort: provision access for visitors now that one is added
+    try {
+      await provisionAccessForMeetingBooking({ bookingId: id });
+      console.log('[MeetingAccess] Provisioned after adding visitor', { bookingId: String(id) });
+    } catch (e) {
+      console.warn('[MeetingAccess] Provision failed after addVisitorToBooking', e?.message || e);
+    }
 
     return res.json({ success: true, data: updated });
   } catch (error) {
@@ -1096,7 +1352,7 @@ export const approveDiscount = async (req, res) => {
   try {
     const { id } = req.params;
     const { approvedPercent, approvalNotes } = req.body || {};
-    if (!id) return res.status(400).json({ success: false, message: 'booking id is required' });
+    if (!id) return res.status(400).json({ success: false, code: "BOOKING_ID_REQUIRED", message: 'booking id is required' });
     const booking = await MeetingBooking.findById(id).populate('room');
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
     if (booking.discountStatus !== 'pending') {
@@ -1113,7 +1369,6 @@ export const approveDiscount = async (req, res) => {
     booking.approvedBy = req.user?.id || undefined;
     booking.approvalNotes = approvalNotes;
     booking.approvedAt = new Date();
-    // clear request fields
     booking.requestedDiscountPercent = undefined;
     booking.requestedBy = booking.requestedBy; // keep requester for history
     booking.requestedReason = undefined;
@@ -1176,7 +1431,7 @@ export const rejectDiscount = async (req, res) => {
   try {
     const { id } = req.params;
     const { approvalNotes } = req.body || {};
-    if (!id) return res.status(400).json({ success: false, message: 'booking id is required' });
+    if (!id) return res.status(400).json({ success: false, code: "BOOKING_ID_REQUIRED", message: 'booking id is required' });
     const booking = await MeetingBooking.findById(id).populate('room');
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
     if (booking.discountStatus !== 'pending') {

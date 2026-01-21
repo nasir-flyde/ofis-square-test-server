@@ -401,6 +401,7 @@ export const importRFIDCardsFromCSV = async (req, res) => {
     }
 
     const mode = (req.query.mode || "upsert").toLowerCase(); // 'upsert' | 'insert'
+    const dryRun = String(req.query?.dryRun ?? req.body?.dryRun ?? 'false').toLowerCase() === 'true';
     const allowedTech = ["EM4100", "MIFARE", "HID", "ISO14443", "GENERIC"];
     const allowedCardType = ["PHYSICAL", "MOBILE", "VIRTUAL"];
     const allowedStatus = ["ISSUED", "ACTIVE", "SUSPENDED", "REVOKED", "LOST", "DAMAGED", "EXPIRED"];
@@ -431,6 +432,12 @@ export const importRFIDCardsFromCSV = async (req, res) => {
       return res.status(400).json({ success: false, message: "CSV appears to be empty" });
     }
 
+    // If dryRun, we follow the cabin preview structure
+    const perRow = [];
+    let validCount = 0;
+    let invalidCount = 0;
+
+    // For non-dry-run legacy counters
     const errors = [];
     const toInsert = [];
     const bulkOps = [];
@@ -440,8 +447,15 @@ export const importRFIDCardsFromCSV = async (req, res) => {
       total += 1;
       const rawUid = row.cardUid || row.carduid || row["Card UID"] || row["card_uid"]; // tolerate some header variations
       const cardUid = rawUid ? String(rawUid).trim() : "";
+      const rowErrors = [];
+      const originalRow = { ...row };
       if (!cardUid) {
-        errors.push({ line: row.__line, reason: "cardUid is required" });
+        if (dryRun) {
+          invalidCount++;
+          perRow.push({ index: row.__line, success: false, errors: ["cardUid is required"], originalRow });
+        } else {
+          errors.push({ line: row.__line, reason: "cardUid is required" });
+        }
         continue;
       }
 
@@ -460,7 +474,12 @@ export const importRFIDCardsFromCSV = async (req, res) => {
         }
       }
       if (!resolvedBuildingId) {
-        errors.push({ line: row.__line, reason: "building is required and must match an existing building (by name or id)" });
+        if (dryRun) {
+          invalidCount++;
+          perRow.push({ index: row.__line, success: false, errors: ["building is required and must match an existing building (by name or id)"], originalRow });
+        } else {
+          errors.push({ line: row.__line, reason: "building is required and must match an existing building (by name or id)" });
+        }
         continue;
       }
 
@@ -470,15 +489,30 @@ export const importRFIDCardsFromCSV = async (req, res) => {
       const status = row.status ? String(row.status).trim().toUpperCase() : undefined;
 
       if (technology && !allowedTech.includes(technology)) {
-        errors.push({ line: row.__line, reason: `Invalid technology '${technology}'` });
+        if (dryRun) {
+          invalidCount++;
+          perRow.push({ index: row.__line, success: false, errors: [`Invalid technology '${technology}'`], originalRow });
+        } else {
+          errors.push({ line: row.__line, reason: `Invalid technology '${technology}'` });
+        }
         continue;
       }
       if (cardType && !allowedCardType.includes(cardType)) {
-        errors.push({ line: row.__line, reason: `Invalid cardType '${cardType}'` });
+        if (dryRun) {
+          invalidCount++;
+          perRow.push({ index: row.__line, success: false, errors: [`Invalid cardType '${cardType}'`], originalRow });
+        } else {
+          errors.push({ line: row.__line, reason: `Invalid cardType '${cardType}'` });
+        }
         continue;
       }
       if (status && !allowedStatus.includes(status)) {
-        errors.push({ line: row.__line, reason: `Invalid status '${status}'` });
+        if (dryRun) {
+          invalidCount++;
+          perRow.push({ index: row.__line, success: false, errors: [`Invalid status '${status}'`], originalRow });
+        } else {
+          errors.push({ line: row.__line, reason: `Invalid status '${status}'` });
+        }
         continue;
       }
 
@@ -502,6 +536,26 @@ export const importRFIDCardsFromCSV = async (req, res) => {
         expiresAt: expiresAt || undefined,
       };
 
+      if (dryRun) {
+        validCount++;
+        perRow.push({
+          index: row.__line,
+          success: true,
+          preview: {
+            building: baseDoc.buildingId,
+            cardUid: baseDoc.cardUid,
+            facilityCode: baseDoc.facilityCode || null,
+            technology: baseDoc.technology || null,
+            cardType: baseDoc.cardType,
+            status: baseDoc.status,
+            expiresAt: baseDoc.expiresAt || null,
+          },
+          originalRow,
+        });
+        continue;
+      }
+
+      // Non-dry-run actual import path mirrors previous behavior
       if (mode === "insert") {
         toInsert.push({
           ...baseDoc,
@@ -532,6 +586,23 @@ export const importRFIDCardsFromCSV = async (req, res) => {
           },
         });
       }
+    }
+
+    if (dryRun) {
+      const summary = {
+        totalRows: rows.length,
+        validRows: validCount,
+        invalidRows: invalidCount,
+        created: 0,
+      };
+      return res.json({
+        success: true,
+        dryRun: true,
+        counts: { total: rows.length, valid: validCount, invalid: invalidCount, created: 0 },
+        summary,
+        canImport: validCount > 0,
+        results: perRow,
+      });
     }
 
     let insertedCount = 0;

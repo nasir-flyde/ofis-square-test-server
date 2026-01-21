@@ -378,10 +378,7 @@ export const inviteVisitor = async (req, res) => {
 
       const dayPass = await DayPass.findById(dayPassId)
         .populate('customer', 'name email phone')
-        .populate('building', 'name address creditValue')
-        .populate('hostMember', 'firstName lastName email phone')
-        .populate('hostClient', 'name email phone')
-        .populate('hostGuest', 'name email phone');
+        .populate('building', 'name address creditValue');
 
       if (!dayPass) {
         return res.status(404).json({ error: "Day pass not found" });
@@ -422,7 +419,29 @@ export const inviteVisitor = async (req, res) => {
       session.startTransaction();
       try {
         const building = await Building.findById(dayPass.building).session(session);
-        await reserveDailyCapacity(building, passDate, session);
+        const seatCount = Math.max(1, parseInt(numberOfGuests) || 1);
+        // Capacity check using combined usage (bundle seats + partner counters)
+        const existingUsages = await DayPassDailyUsage.find({ building: building._id, date: passDate })
+          .select('seats bookedCount dayPass')
+          .session(session)
+          .lean();
+        // Exclude any existing row for this same dayPass to avoid double-count if re-inviting the same pass
+        const existingForThisPass = (existingUsages || []).find(u => String(u.dayPass) === String(dayPass._id));
+        const totalBookedRaw = (existingUsages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
+        const alreadyBooked = totalBookedRaw - (existingForThisPass ? (Number(existingForThisPass.seats) || 0) : 0);
+        const totalCapacity = Number(building.dayPassDailyCapacity || 0);
+        if (totalCapacity > 0 && (alreadyBooked + seatCount) > totalCapacity) {
+          const err = new Error('No availability for this date at the building');
+          err.status = 409;
+          err.details = { capacity: totalCapacity, booked: alreadyBooked, requested: seatCount, remaining: Math.max(0, totalCapacity - alreadyBooked) };
+          throw err;
+        }
+        // Record or update usage row for this day pass
+        await DayPassDailyUsage.findOneAndUpdate(
+          { building: building._id, date: passDate, dayPass: dayPass._id },
+          { $set: { seats: seatCount } },
+          { upsert: true, new: true, setDefaultsOnInsert: true, session }
+        );
 
         // Set the pass date and visitor details
         dayPass.date = passDate;
@@ -473,12 +492,8 @@ export const inviteVisitor = async (req, res) => {
         
         await dayPass.save({ session });
 
-        // Populate host information for response
-        await dayPass.populate([
-          { path: 'hostMember', select: 'firstName lastName email phone' },
-          { path: 'hostClient', select: 'name email phone' },
-          { path: 'hostGuest', select: 'name email phone' }
-        ]);
+        // Populate building for response (host details are stored on Visitor)
+        await dayPass.populate([{ path: 'building', select: 'name' }]);
 
         // Also create a Visitor record linked to this DayPass
         const visitorDoc = new Visitor({

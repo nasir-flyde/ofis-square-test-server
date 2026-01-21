@@ -38,9 +38,7 @@ router.post("/", authMiddleware, checkPermission(PERMISSIONS.INVOICE_CREATE), cr
 router.post("/consolidate", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), consolidateInvoices);
 router.get("/:id", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), getInvoiceById);
 router.patch("/:id/status", authMiddleware, checkPermission(PERMISSIONS.INVOICE_UPDATE), updateInvoiceStatus);
-
-// Zoho Books integration - Finance Senior only
-router.post("/:id/push-zoho", authMiddleware, checkPermission(PERMISSIONS.INVOICE_SEND), pushInvoiceToZoho);
+router.post("/:id/push-zoho", authMiddleware, pushInvoiceToZoho);
 // Guest-specific push: allow creators to push as draft for ondemand users
 router.post("/:id/push-zoho-guest", authMiddleware, pushInvoiceToZohoGuest);
 // Allow creators to push only as draft

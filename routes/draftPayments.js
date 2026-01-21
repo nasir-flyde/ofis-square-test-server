@@ -12,19 +12,26 @@ import {
 } from "../controllers/draftPaymentController.js";
 
 const router = express.Router();
-
-// All authenticated users can access draft payments (role-based restrictions in controller)
+const clientBypassOr = (permission) => (req, res, next) => {
+  try {
+    const roleName = String(req?.userRole?.roleName || '').toLowerCase();
+    if (roleName.includes('client')) {
+      return next();
+    }
+  } catch (_) {}
+  return checkPermission(permission)(req, res, next);
+};
 router.post(
   "/",
   authMiddleware,
-  checkPermission(PERMISSIONS.DRAFT_PAYMENT_CREATE),
+  clientBypassOr(PERMISSIONS.DRAFT_PAYMENT_CREATE),
   upload.array('screenshots', 5),
   createDraftPayment
 );
 router.get(
   "/",
   authMiddleware,
-  checkPermission(PERMISSIONS.DRAFT_PAYMENT_READ),
+  clientBypassOr(PERMISSIONS.DRAFT_PAYMENT_READ),
   getDraftPayments
 );
 router.get(

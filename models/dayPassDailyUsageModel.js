@@ -4,10 +4,12 @@ const { Schema } = mongoose;
 
 const dayPassDailyUsageSchema = new Schema(
   {
-    building: { type: Schema.Types.ObjectId, ref: "Building", required: true, index: true },
-    date: { type: Date, required: true, index: true }, // store the day (start of day in IST or UTC-consistent)
+    building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
+    date: { type: Date, required: true }, // store the day (start of day in IST or UTC-consistent)
 
-    dayPass: { type: Schema.Types.ObjectId, ref: "DayPass", required: true, unique: true },
+    dayPass: { type: Schema.Types.ObjectId, ref: "DayPass" },
+    // Optional back-reference when usage is created from a Day Pass Bundle
+    bundle: { type: Schema.Types.ObjectId, ref: "DayPassBundle" },
     seats: { type: Number, default: 1, min: 1 },
 
     // Partner idempotency context
@@ -17,8 +19,8 @@ const dayPassDailyUsageSchema = new Schema(
   { timestamps: true, collection: "daypassdailyusages" }
 );
 
-// For fast lookups by building/date
-dayPassDailyUsageSchema.index({ building: 1, date: 1 });
+// Keep uniqueness for per-pass usage rows when dayPass is present
+dayPassDailyUsageSchema.index({ dayPass: 1 }, { unique: true, partialFilterExpression: { dayPass: { $exists: true, $ne: null } } });
 
 const DayPassDailyUsage = mongoose.model("DayPassDailyUsage", dayPassDailyUsageSchema);
 export default DayPassDailyUsage;

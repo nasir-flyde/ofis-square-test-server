@@ -206,6 +206,94 @@ class WalletService {
     }
   }
 
+  // Reverse credits back to client wallet (e.g., on cancellation)
+  static async reverseCredits({
+    clientId,
+    memberId,
+    credits,
+    idempotencyKey,
+    refType,
+    refId,
+    meta = {},
+    createdBy = null,
+  }) {
+    const session = await mongoose.startSession();
+    try {
+      let result = {};
+      await session.withTransaction(async () => {
+        if (!clientId) throw new Error("clientId is required for reverseCredits");
+        const qty = Number(credits || 0);
+        if (!(qty > 0)) throw new Error("credits must be > 0 for reverseCredits");
+
+        // Idempotency: ensure we don't double-refund
+        if (idempotencyKey) {
+          const existing = await CreditTransaction.findOne({ clientId, idempotencyKey }).session(session);
+          if (existing) {
+            result = { success: true, alreadyProcessed: true };
+            return;
+          }
+        }
+
+        // Ensure wallet exists
+        const wallet = await this.getOrCreateWallet(clientId);
+
+        // Increase wallet balance by refunded credits
+        await ClientCreditWallet.findByIdAndUpdate(
+          wallet._id,
+          { $inc: { balance: qty } },
+          { session }
+        );
+
+        const valuePerCredit = 500; // Keep consistent with usage/grant
+        const amountDelta = qty * valuePerCredit;
+
+        // Record refund transaction
+        await CreditTransaction.create([
+          {
+            clientId,
+            contractId: null,
+            itemId: null,
+            itemSnapshot: {
+              name: meta.title || `${refType || 'booking'} cancellation refund`,
+              unit: 'credits',
+              pricingMode: 'credits',
+              unitCredits: 1,
+              taxable: false,
+              gstRate: 0,
+            },
+            quantity: qty,
+            transactionType: 'refund',
+            pricingSnapshot: {
+              pricingMode: 'credits',
+              unitCredits: 1,
+              creditValueINR: valuePerCredit,
+            },
+            creditsDelta: qty, // returning credits
+            amountINRDelta: amountDelta,
+            purpose: meta.reason || 'Cancellation refund',
+            description: `Refunded ${qty} credits back to client wallet`,
+            status: 'completed',
+            createdBy: createdBy || memberId || clientId,
+            relatedInvoiceId: meta.relatedInvoiceId || null,
+            idempotencyKey: idempotencyKey || null,
+            metadata: {
+              bookingId: refId || null,
+              customData: meta || {},
+            },
+          },
+        ], { session });
+
+        result = { success: true, refundedCredits: qty };
+      });
+      return result;
+    } catch (error) {
+      console.error("Error in reverseCredits:", error);
+      throw new Error(error.message || "Failed to reverse credits");
+    } finally {
+      await session.endSession();
+    }
+  }
+
   // Adjust credits (admin only)
   static async adjustCredits({ clientId, credits, reason, approvedBy }) {
     const session = await mongoose.startSession();
@@ -213,8 +301,6 @@ class WalletService {
     try {
       await session.withTransaction(async () => {
         const wallet = await this.getOrCreateWallet(clientId);
-        
-        // Prevent negative balance
         if (credits < 0 && wallet.balance + credits < 0) {
           throw new Error("Adjustment would result in negative balance");
         }

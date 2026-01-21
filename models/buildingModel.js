@@ -12,6 +12,10 @@ const BuildingSchema = new Schema(
     pincode: { type: String },
     openingTime: { type: String, default: "09:00" },
     closingTime: { type: String, default: "19:00" },
+    // Building-level grace period (in minutes) for meeting room booking cancellations
+    meetingCancellationGraceMinutes: { type: Number, min: 0, default: 5 },
+    // Building-level cutoff (minutes before start) after which cancellations are not allowed
+    meetingCancellationCutoffMinutes: { type: Number, min: 0, default: 60 },
     location: {
       type: {
         type: String,
@@ -19,7 +23,7 @@ const BuildingSchema = new Schema(
         default: 'Point'
       },
       coordinates: {
-        type: [Number], // [longitude, latitude]
+        type: [Number],
         index: '2dsphere'
       }
     },
