@@ -5,7 +5,7 @@ import { logCRUDActivity } from '../utils/activityLogger.js';
 // Create Event Category
 const createEventCategory = async (req, res) => {
   try {
-    const { name, description, color, icon } = req.body;
+    const { name, description, color, icon, subcategories } = req.body;
 
     if (!name) {
       return res.status(400).json({
@@ -26,6 +26,7 @@ const createEventCategory = async (req, res) => {
     const category = new EventCategory({
       name,
       description,
+      subcategories,
       color: color || '#3B82F6',
       icon,
       createdBy: req.user.id
@@ -56,7 +57,7 @@ const createEventCategory = async (req, res) => {
 const getEventCategories = async (req, res) => {
   try {
     const { active } = req.query;
-    
+
     const query = {};
     if (active !== undefined) {
       query.isActive = active === 'true';
@@ -139,7 +140,7 @@ const updateEventCategory = async (req, res) => {
     const oldData = category.toObject();
 
     // Update allowed fields
-    const allowedUpdates = ['name', 'description', 'color', 'icon', 'isActive'];
+    const allowedUpdates = ['name', 'description', 'color', 'icon', 'isActive', 'subcategories'];
     allowedUpdates.forEach(field => {
       if (updates[field] !== undefined) {
         category[field] = updates[field];
@@ -182,7 +183,7 @@ const deleteEventCategory = async (req, res) => {
 
     // Check if category is being used by any events
     const eventsUsingCategory = await Event.countDocuments({ category: id });
-    
+
     if (eventsUsingCategory > 0) {
       return res.status(400).json({
         success: false,
