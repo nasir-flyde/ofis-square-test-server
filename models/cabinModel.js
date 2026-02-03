@@ -7,20 +7,11 @@ const CabinSchema = new Schema(
     building: { type: Schema.Types.ObjectId, ref: "Building", required: true, index: true },
     floor: { type: Number },
     number: { type: String, required: true, trim: true, index: true },
-    // Cabin type is now fixed to 'cabin' (Desks are a separate model)
     type: { type: String,default: "cabin", index: true },
     capacity: { type: Number, default: 1 },
-
-    // Category and classification
-    category: { type: String, trim: true }, // e.g., "Standard", "Premium", "Executive"
-    
-    // Physical specifications
-    sizeSqFt: { type: Number }, // Size in square feet
-    
-    // Amenities (references to CabinAmenity documents)
+    category: { type: String, trim: true },
+    sizeSqFt: { type: Number },
     amenities: [{ type: Schema.Types.ObjectId, ref: "CabinAmenity" }],
-    
-    // Images
     images: [
       {
         url: { type: String },
@@ -28,17 +19,13 @@ const CabinSchema = new Schema(
         isPrimary: { type: Boolean, default: false },
       },
     ],
-    
-    // Pricing
-    pricing: { type: Number }, // Single pricing field
-
+    pricing: { type: Number },
     status: {
       type: String,
       enum: ["available", "blocked", "occupied", "maintenance"],
       default: "available",
       index: true,
     },
-    // Matrix access devices associated with this cabin
     matrixDevices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice", default: [] }],
     desks: [{ type: Schema.Types.ObjectId, ref: "Desk", default: [] }],
 
@@ -46,8 +33,6 @@ const CabinSchema = new Schema(
     contract: { type: Schema.Types.ObjectId, ref: "Contract", default: null, index: true },
     allocatedAt: { type: Date },
     releasedAt: { type: Date },
-
-    // Cabin blocks (inline subdocuments to avoid a new model)
     blocks: [
       {
         client: { type: Schema.Types.ObjectId, ref: "Client", required: true },
@@ -74,7 +59,6 @@ const CabinSchema = new Schema(
   }
 );
 
-// Ensure cabin number is unique within a building
 CabinSchema.index({ building: 1, number: 1 }, { unique: true });
 
 export default mongoose.model("Cabin", CabinSchema);

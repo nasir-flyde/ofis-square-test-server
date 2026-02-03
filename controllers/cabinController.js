@@ -660,6 +660,7 @@ export const exportMasterFile = async (req, res) => {
         category: 'Standard',
         sizeSqFt: '100',
         pricing: '5000',
+        image1: 'https://example.com/sample-cabin-1.jpg',
         amenity1: amenityNames[0],
         amenity2: amenityNames[1],
         amenity3: amenityNames[2]
@@ -675,6 +676,7 @@ export const exportMasterFile = async (req, res) => {
         category: 'Premium',
         sizeSqFt: '150',
         pricing: '7500',
+        image1: 'https://example.com/sample-cabin-2.jpg',
         amenity1: amenityNames[0],
         amenity2: amenityNames[1],
         amenity3: amenityNames[2]
@@ -691,6 +693,7 @@ export const exportMasterFile = async (req, res) => {
         category: 'Standard',
         sizeSqFt: '100',
         pricing: '5000',
+        image1: 'https://example.com/sample-cabin.jpg',
         amenity1: 'WiFi',
         amenity2: 'Air Conditioning',
         amenity3: 'Whiteboard'
@@ -759,6 +762,64 @@ export const importCabinsFromCSV = async (req, res) => {
       return { ids, missing };
     };
 
+    const parseBool = (v) => {
+      if (v === undefined || v === null) return false;
+      const s = String(v).trim().toLowerCase();
+      return s === 'true' || s === '1' || s === 'yes' || s === 'y';
+    };
+
+    const parseImages = (obj) => {
+      const urls = [];
+      const captions = {};
+      const primaryFlags = {};
+
+      const combined = norm(obj.images);
+      if (combined) {
+        combined.split(/[;,]/).map(x => x.trim()).filter(Boolean).forEach((u) => urls.push(u));
+      }
+      // image1..image10 and captions image1Caption..image10Caption and primary flags image1Primary..image10Primary
+      for (let i = 1; i <= 10; i++) {
+        const urlKey = `image${i}`;
+        const captionKey = `image${i}Caption`;
+        const primaryKey = `image${i}Primary`;
+        const u = norm(obj[urlKey]);
+        if (u) {
+          urls.push(u);
+          if (obj[captionKey]) captions[urls.length - 1] = norm(obj[captionKey]);
+          if (obj[primaryKey] !== undefined) primaryFlags[urls.length - 1] = parseBool(obj[primaryKey]);
+        }
+      }
+
+      // Build processed image objects
+      const processed = urls
+        .map((u, idx) => ({
+          url: u,
+          caption: captions[idx] || undefined,
+          isPrimary: Boolean(primaryFlags[idx]) || false,
+        }))
+        // remove exact duplicate URLs while preserving first occurrence
+        .filter((img, idx, arr) => arr.findIndex(x => x.url === img.url) === idx);
+
+      // Allow specifying primaryImage column by URL or index
+      const primaryImage = norm(obj.primaryImage);
+      if (primaryImage) {
+        const byIndex = Number(primaryImage);
+        if (Number.isFinite(byIndex) && byIndex >= 1 && byIndex <= processed.length) {
+          processed.forEach((p, i) => p.isPrimary = i === (byIndex - 1));
+        } else {
+          const idx = processed.findIndex(p => p.url === primaryImage);
+          if (idx >= 0) processed.forEach((p, i) => p.isPrimary = i === idx);
+        }
+      }
+
+      // If none marked as primary but we have images, mark first as primary
+      if (processed.length > 0 && !processed.some(p => p.isPrimary)) {
+        processed[0].isPrimary = true;
+      }
+
+      return processed;
+    };
+
     const perRow = [];
     let createdCount = 0;
     let validCount = 0;
@@ -821,6 +882,8 @@ export const importCabinsFromCSV = async (req, res) => {
         }
       }
 
+      const imagesProcessed = parseImages(r);
+
       if (!errors.length) {
         // Check duplicates within building
         const dup = await Cabin.findOne({ building: buildingId, number }).lean();
@@ -839,7 +902,7 @@ export const importCabinsFromCSV = async (req, res) => {
         perRow.push({
           index: idx + 1,
           success: true,
-          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined },
+          preview: { building: buildingId, number, type, capacity, floor, status, category, sizeSqFt, pricing, images: imagesProcessed.length, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined },
           originalRow
         });
         continue;
@@ -857,7 +920,7 @@ export const importCabinsFromCSV = async (req, res) => {
           category,
           sizeSqFt,
           amenities: amenityIds,
-          images: [],
+          images: imagesProcessed,
           pricing,
         });
         const deskDocs = [];
