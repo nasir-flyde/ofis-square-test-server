@@ -18,7 +18,7 @@ const kycDocumentItemSchema = new mongoose.Schema(
 const clientSchema = new mongoose.Schema(
   {
     // Basic company info
-    companyName: { type: String, required:false, trim: true },
+    companyName: { type: String, required: false, trim: true },
     legalName: { type: String, trim: true, default: undefined },
     contactPerson: { type: String, trim: true },
     // Structured primary contact details (for Zoho mapping)
@@ -140,6 +140,12 @@ const clientSchema = new mongoose.Schema(
       type: String,
       enum: ["none", "pending", "verified", "rejected"],
       default: "none",
+    },
+    membershipStatus: {
+      type: String,
+      enum: ["active", "inactive", "pending", "suspended"],
+      default: "active",
+      index: true
     },
     // Normalized KYC documents using DocumentEntity references
     kycDocumentItems: { type: [kycDocumentItemSchema], default: [] },

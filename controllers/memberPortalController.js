@@ -4,6 +4,8 @@ import MeetingBooking from "../models/meetingBookingModel.js";
 import Notification from "../models/notificationModel.js";
 import Event from "../models/eventModel.js";
 import Announcement from "../models/announcementModel.js";
+import Cabin from "../models/cabinModel.js";
+import Contract from "../models/contractModel.js";
 import imagekit from "../utils/imageKit.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
@@ -54,18 +56,18 @@ export const getMemberDashboard = async (req, res) => {
     });
 
     // Get recent activity
-    const recentBookings = await MeetingBooking.find({ 
+    const recentBookings = await MeetingBooking.find({
       member: memberId,
-      client: clientId 
+      client: clientId
     })
       .sort({ createdAt: -1 })
       .limit(3)
       .populate('room', 'name')
       .select('room status start createdAt');
 
-    const recentTickets = await Ticket.find({ 
+    const recentTickets = await Ticket.find({
       createdBy: memberId,
-      client: clientId 
+      client: clientId
     })
       .sort({ createdAt: -1 })
       .limit(3)
@@ -236,7 +238,7 @@ export const getMyProfile = async (req, res) => {
 export const getMyTickets = async (req, res) => {
   try {
     const { page = 1, limit = 20, status, priority } = req.query;
-    
+
     // Detect role via universalAuthVerify/memberMiddleware
     const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
     const authType = String(req.authType || '').toLowerCase();
@@ -251,17 +253,17 @@ export const getMyTickets = async (req, res) => {
       };
     } else {
       // Member role: only this member's tickets
-      filter = { 
+      filter = {
         createdBy: req.memberId,
-        client: req.clientId 
+        client: req.clientId
       };
     }
-    
+
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
 
     const skip = (page - 1) * limit;
-    
+
     const tickets = await Ticket.find(filter)
       .populate('building', 'name')
       .populate('cabin', 'name')
@@ -323,10 +325,10 @@ export const createMyTicket = async (req, res) => {
         }
       } catch (uploadError) {
         console.error("ImageKit upload error (files):", uploadError);
-        return res.status(500).json({ 
+        return res.status(500).json({
           success: false,
           message: "Failed to upload images",
-          error: uploadError.message 
+          error: uploadError.message
         });
       }
     }
@@ -374,7 +376,7 @@ export const createMyTicket = async (req, res) => {
     // Normalize category from various possible field encodings in multipart
     let categoryObj = req.body?.category;
     if (typeof categoryObj === 'string') {
-      try { categoryObj = JSON.parse(categoryObj); } catch { categoryObj = { }; }
+      try { categoryObj = JSON.parse(categoryObj); } catch { categoryObj = {}; }
     }
     const categoryId = categoryObj?.categoryId || req.body['category[categoryId]'] || req.body['category.categoryId'];
     const subCategory = categoryObj?.subCategory || req.body['category[subCategory]'] || req.body['category.subCategory'] || "";
@@ -418,8 +420,8 @@ export const createMyTicket = async (req, res) => {
           const m = await Member.findById(req.memberId).select('email').lean();
           if (m?.email) to.email = m.email;
         }
-      } catch {}
-      
+      } catch { }
+
       await sendNotification({
         to,
         channels: { email: Boolean(to.email), sms: false },
@@ -457,16 +459,16 @@ export const createMyTicket = async (req, res) => {
 export const getMyBookings = async (req, res) => {
   try {
     const { page = 1, limit = 20, status } = req.query;
-    
-    const filter = { 
+
+    const filter = {
       member: req.memberId,
-      client: req.clientId 
+      client: req.clientId
     };
-    
+
     if (status) filter.status = status;
 
     const skip = (page - 1) * limit;
-    
+
     const bookings = await MeetingBooking.find(filter)
       .populate('room', 'name capacity amenities')
       .sort({ start: -1 })
@@ -644,6 +646,215 @@ export const markAllNotificationsRead = async (req, res) => {
     });
   } catch (err) {
     console.error("markAllNotificationsRead error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+// Get Homepage Data
+export const getHomePageData = async (req, res) => {
+  try {
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+    const isClient = roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients';
+
+    let name = "";
+    let cabinNumber = null;
+    let buildingName = null;
+    let membershipStatus = null;
+    let companyName = null;
+    let notifications = [];
+    let contractData = null;
+
+    // --- 1. Identify User & Basic Info ---
+    if (isClient) {
+      if (req.client) {
+        name = req.client.primaryFirstName || req.client.companyName || "Client";
+        membershipStatus = req.client.membershipStatus || "active";
+        companyName = req.client.companyName
+
+        // Find cabin allocated to this client
+        // Checking both direct allocation and allocation via active contract blocks is complex, 
+        // starting with simple direct allocation check on Cabin model
+        const cabin = await Cabin.findOne({
+          allocatedTo: req.client._id,
+          status: { $ne: 'released' } // simple check
+        }).populate('building', 'name');
+
+        if (cabin) {
+          cabinNumber = cabin.number;
+          buildingName = cabin.building?.name;
+        }
+      }
+    } else {
+      // Member
+      const member = await Member.findById(req.memberId)
+        .populate({
+          path: 'desk',
+          populate: { path: 'cabin', select: 'number' }
+        })
+        .populate({
+          path: 'client',
+          select: 'membershipStatus building companyName',
+          populate: { path: 'building', select: 'name' }
+        });
+
+      if (member) {
+        name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
+        membershipStatus = member.client?.membershipStatus || "active";
+        companyName = member.client?.companyName || companyName;
+
+        if (member.desk) {
+          cabinNumber = member.desk.cabin?.number;
+          // Prefer building from client if available (usually consistent), else from desk relation if we populated it
+          // In member populate above, we populated member -> client -> building
+          buildingName = member.client?.building?.name;
+        } else if (member.client && member.client.building) {
+          // If no desk, fallback to client's building
+          buildingName = member.client.building.name;
+        }
+      }
+    }
+
+    // --- Fetch Active Contract ---
+    if (req.clientId) {
+      try {
+        const contract = await Contract.findOne({
+          client: req.clientId,
+          status: 'active'
+        }).select('monthlyRent capacity escalation startDate').lean();
+
+        if (contract) {
+          // Calculate escalation due date
+          let escalationDueInMonths = null;
+          if (contract.escalation && contract.escalation.frequencyMonths && contract.startDate) {
+            const startDate = new Date(contract.startDate);
+            const frequencyMonths = contract.escalation.frequencyMonths;
+            const today = new Date();
+
+            // Calculate months since contract start
+            const monthsSinceStart = (today.getFullYear() - startDate.getFullYear()) * 12 +
+              (today.getMonth() - startDate.getMonth());
+
+            // Calculate next escalation point
+            const nextEscalationMonths = Math.ceil((monthsSinceStart + 1) / frequencyMonths) * frequencyMonths;
+            escalationDueInMonths = nextEscalationMonths - monthsSinceStart;
+          }
+
+          contractData = {
+            monthlyRent: contract.monthlyRent || null,
+            capacity: contract.capacity || null,
+            escalationDueInMonths
+          };
+        }
+      } catch (contractErr) {
+        console.warn('Failed to fetch contract data:', contractErr);
+      }
+    }
+
+    // --- 2. Upcoming Events ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(today);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    // Start of week
+    const startOfWeek = new Date(today);
+    // End of week (next 7 days from today)
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + 7);
+
+    // Common event query: published
+    const baseEventQuery = {
+      status: 'published',
+      // We generally want future events or events happening today
+      endDate: { $gte: today }
+    };
+
+    // Parallel fetch for events
+    const [todaysEvents, weeksEvents, allEvents] = await Promise.all([
+      // Today's events
+      Event.find({
+        ...baseEventQuery,
+        startDate: { $gte: today, $lte: endOfToday }
+      })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: 1 }),
+
+      // This week's events
+      Event.find({
+        ...baseEventQuery,
+        startDate: { $gte: today, $lte: endOfWeek }
+      })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: 1 }),
+
+      // All events (Global, showing potentially all or just future? Let's show all published for now as requested, or maybe recent past too?)
+      // User said "all events are not showing", likely expecting to see more.
+      // Removing date filter to show EVERYTHING published.
+      Event.find({
+        status: 'published'
+      })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: -1 }) // Newest/Future first
+        .limit(50) // Increased limit
+    ]);
+
+
+    // --- 3. Notifications ---
+    let notifFilter;
+    if (isClient) {
+      // Client notifications
+      const memberIds = req.clientId
+        ? (await Member.find({ client: req.clientId }).select('_id')).map(m => m._id)
+        : [];
+
+      notifFilter = {
+        $or: [
+          { 'to.clientId': req.clientId },
+          memberIds.length ? { 'to.memberId': { $in: memberIds } } : { _id: { $exists: true } }
+        ]
+      };
+    } else {
+      // Member notifications
+      notifFilter = {
+        'to.memberId': req.memberId,
+        ...(req.clientId ? { 'to.clientId': req.clientId } : {})
+      };
+    }
+
+    // Fetch recent notifications (limit 5)
+    notifications = await Notification.find(notifFilter)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('title content type isRead createdAt metadata');
+
+
+    res.json({
+      success: true,
+      data: {
+        profile: {
+          name,
+          companyName,
+          cabinNumber,
+          buildingName,
+          membershipStatus,
+          role: isClient ? 'client' : 'member',
+          contract: contractData
+        },
+        events: {
+          today: todaysEvents,
+          thisWeek: weeksEvents,
+          all: allEvents
+        },
+        notifications
+      }
+    });
+
+  } catch (err) {
+    console.error("getHomePageData error:", err);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };

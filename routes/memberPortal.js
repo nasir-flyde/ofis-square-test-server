@@ -5,6 +5,7 @@ import upload from "../middlewares/multer.js";
 import {
   getMemberDashboard,
   getMyProfile,
+  getHomePageData,
   getMyTickets,
   createMyTicket,
   getMyBookings,
@@ -23,6 +24,9 @@ router.post("/me/tickets", universalMiddleware, upload.any(), createMyTicket);
 router.get("/me/notifications", universalMiddleware, getMyNotifications);
 router.post("/me/notifications/:id/read", universalMiddleware, markNotificationRead);
 router.post("/me/notifications/read-all", universalMiddleware, markAllNotificationsRead);
+
+// Allow clients and members to get homepage data via universal auth
+router.get("/me/home", universalMiddleware, getHomePageData);
 
 // All other routes require member authentication
 router.use(memberMiddleware);

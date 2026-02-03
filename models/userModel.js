@@ -42,6 +42,10 @@ const userSchema = new mongoose.Schema(
       required: false,
       index: true,
     },
+    profile_picture: {
+      url: { type: String },
+      fileId: { type: String },
+    },
   },
   {
     timestamps: true,

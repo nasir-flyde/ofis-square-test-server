@@ -8,9 +8,9 @@ import mongoose from "mongoose";
 export const getUsers = async (req, res) => {
   try {
     const { role, page = 1, limit = 20, search, excludeMember } = req.query;
-    
+
     const filter = {};
-    
+
     if (role) filter.role = role;
     if (search) {
       filter.$or = [
@@ -57,7 +57,6 @@ export const getUsers = async (req, res) => {
   }
 };
 
-// POST /api/users/client-legal - Create a client-scoped Legal Team user
 export const createClientLegalUser = async (req, res) => {
   try {
     const { clientId, name, email, phone, password } = req.body;
@@ -125,7 +124,7 @@ export const getUserById = async (req, res) => {
       .populate('role', 'roleName permissions')
       .populate('buildingId', 'name address')
       .select('-password');
-    
+
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
@@ -144,43 +143,43 @@ export const createUser = async (req, res) => {
 
     // Validate required fields
     if (!name || !email || !phone || !password || !role) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "All fields are required" 
+      return res.status(400).json({
+        success: false,
+        message: "All fields are required"
       });
     }
 
     // Get role information to check if it's a community user
     const roleDoc = await Role.findById(role);
     if (!roleDoc) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Invalid role" 
+      return res.status(400).json({
+        success: false,
+        message: "Invalid role"
       });
     }
 
     // If it's a community user, buildingId is required
     if (roleDoc.roleName === "community") {
       if (!buildingId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Building ID is required for community users" 
+        return res.status(400).json({
+          success: false,
+          message: "Building ID is required for community users"
         });
       }
 
       // Validate building exists
       if (!mongoose.Types.ObjectId.isValid(buildingId)) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Invalid building ID" 
+        return res.status(400).json({
+          success: false,
+          message: "Invalid building ID"
         });
       }
 
       const building = await Building.findById(buildingId);
       if (!building) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Building not found" 
+        return res.status(400).json({
+          success: false,
+          message: "Building not found"
         });
       }
     }
@@ -191,9 +190,9 @@ export const createUser = async (req, res) => {
     });
 
     if (existingUser) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "User with this email or phone already exists" 
+      return res.status(400).json({
+        success: false,
+        message: "User with this email or phone already exists"
       });
     }
 
@@ -229,9 +228,9 @@ export const createUser = async (req, res) => {
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "User with this email or phone already exists" 
+      return res.status(400).json({
+        success: false,
+        message: "User with this email or phone already exists"
       });
     }
     return res.status(500).json({ success: false, message: err.message });
@@ -256,16 +255,16 @@ export const updateUser = async (req, res) => {
         _id: { $ne: id },
         $or: []
       };
-      
+
       if (email) duplicateQuery.$or.push({ email: email.toLowerCase().trim() });
       if (phone) duplicateQuery.$or.push({ phone: phone.trim() });
-      
+
       if (duplicateQuery.$or.length > 0) {
         const duplicate = await User.findOne(duplicateQuery);
         if (duplicate) {
-          return res.status(400).json({ 
-            success: false, 
-            message: "User with this email or phone already exists" 
+          return res.status(400).json({
+            success: false,
+            message: "User with this email or phone already exists"
           });
         }
       }
@@ -276,24 +275,24 @@ export const updateUser = async (req, res) => {
       const roleDoc = await Role.findById(role);
       if (roleDoc && roleDoc.roleName === "community") {
         if (!buildingId) {
-          return res.status(400).json({ 
-            success: false, 
-            message: "Building ID is required for community users" 
+          return res.status(400).json({
+            success: false,
+            message: "Building ID is required for community users"
           });
         }
 
         if (!mongoose.Types.ObjectId.isValid(buildingId)) {
-          return res.status(400).json({ 
-            success: false, 
-            message: "Invalid building ID" 
+          return res.status(400).json({
+            success: false,
+            message: "Invalid building ID"
           });
         }
 
         const building = await Building.findById(buildingId);
         if (!building) {
-          return res.status(400).json({ 
-            success: false, 
-            message: "Building not found" 
+          return res.status(400).json({
+            success: false,
+            message: "Building not found"
           });
         }
       }
@@ -347,9 +346,9 @@ export const updateUser = async (req, res) => {
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "User with this email or phone already exists" 
+      return res.status(400).json({
+        success: false,
+        message: "User with this email or phone already exists"
       });
     }
     return res.status(500).json({ success: false, message: err.message });

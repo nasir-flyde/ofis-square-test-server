@@ -98,8 +98,8 @@ export const adminLogin = async (req, res) => {
     if ((!email && !phone) || !password) {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
+    const query = email
+      ? { email: email.toLowerCase().trim() }
       : { phone: phone.trim() };
     const user = await Users.findOne(query);
     if (!user) {
@@ -116,14 +116,14 @@ export const adminLogin = async (req, res) => {
     if (role.canLogin === false) {
       return res.status(403).json({ error: "Role is not allowed to login" });
     }
-    
+
     // Block client, client legal team, member, community, and staff roles from admin portal
     const blockedRoles = ['client', 'client legal team', 'member', 'community', 'staff'];
     const normalizedRoleName = (role.roleName || '').toLowerCase().trim();
-    
+
     if (blockedRoles.includes(normalizedRoleName)) {
-      return res.status(403).json({ 
-        error: "Access denied. This login is for admin portal only. Please use the appropriate client/member portal." 
+      return res.status(403).json({
+        error: "Access denied. This login is for admin portal only. Please use the appropriate client/member portal."
       });
     }
     const token = createJWT(
@@ -133,7 +133,7 @@ export const adminLogin = async (req, res) => {
       role.roleName,
       user.phone
     );
-    
+
     // Allow admin roles: Contract Creator, Approver, Billing Admin, Operations Admin, System Admin
     // The RBAC system will control what they can do based on permissions
 
@@ -156,7 +156,7 @@ export const adminLogin = async (req, res) => {
       loginType: 'admin'
     });
 
-    res.json({ 
+    res.json({
       accessToken,
       refreshToken,
       user: safeUser,
@@ -165,12 +165,12 @@ export const adminLogin = async (req, res) => {
     });
   } catch (err) {
     console.error("adminLogin error:", err);
-    
+
     await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
       userRole: 'admin',
       loginType: 'admin'
     });
-    
+
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -183,8 +183,8 @@ export const clientLogin = async (req, res) => {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
+    const query = email
+      ? { email: email.toLowerCase().trim() }
       : { phone: phone.trim() };
 
     const user = await Users.findOne(query);
@@ -219,7 +219,7 @@ export const clientLogin = async (req, res) => {
     }
 
     // Find the corresponding member record for this client
-    const member = await Member.findOne({ 
+    const member = await Member.findOne({
       $or: [
         { user: user._id, client: client._id },
         { email: user.email, client: client._id },
@@ -264,9 +264,9 @@ export const memberLogin = async (req, res) => {
     // Check if this is OTP-based login
     if (otp && phone) {
       // Redirect to OTP verification endpoint
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Please use /api/otp/verify endpoint for OTP-based login",
-        useOtpEndpoint: true 
+        useOtpEndpoint: true
       });
     }
 
@@ -289,11 +289,11 @@ export const memberLogin = async (req, res) => {
 
     let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
     if (!member) {
-      const fallbackQuery = user.email 
-        ? { email: user.email } 
+      const fallbackQuery = user.email
+        ? { email: user.email }
         : { phone: user.phone };
       const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
-      
+
       if (!fallbackMember) {
         return res.status(404).json({ error: "Member record not found. Please contact admin." });
       }
@@ -329,9 +329,9 @@ export const memberLogin = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
-    res.json({ 
-      token, 
-      user: safeUser, 
+    res.json({
+      token,
+      user: safeUser,
       memberId: member._id,
       clientId: member.client._id,
       allowedUsingCredits: typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true
@@ -427,11 +427,11 @@ export const communitySignup = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
-    res.status(201).json({ 
-      message: "Community user created successfully", 
-      user: safeUser, 
+    res.status(201).json({
+      message: "Community user created successfully",
+      user: safeUser,
       buildingId: buildingId,
-      token 
+      token
     });
   } catch (err) {
     console.error("communitySignup error:", err);
@@ -447,8 +447,8 @@ export const communityLogin = async (req, res) => {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
+    const query = email
+      ? { email: email.toLowerCase().trim() }
       : { phone: phone.trim() };
 
     const user = await Users.findOne(query);
@@ -492,7 +492,7 @@ export const communityLogin = async (req, res) => {
     };
 
     res.json({ token, user: safeUser, buildingId: user.buildingId });
-        await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
+    await logAuthActivity(req, 'LOGIN', 'SUCCESS', null, {
       userRole: 'community',
       loginType: 'community'
     });
@@ -576,11 +576,11 @@ export const onDemandUserSignup = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
-    res.status(201).json({ 
-      message: "OnDemand user created successfully", 
-      user: safeUser, 
-      guestId: guest._id, 
-      token 
+    res.status(201).json({
+      message: "OnDemand user created successfully",
+      user: safeUser,
+      guestId: guest._id,
+      token
     });
   } catch (err) {
     console.error("onDemandUserSignup error:", err);
@@ -595,9 +595,9 @@ export const onDemandUserLogin = async (req, res) => {
     // Check if this is OTP-based login
     if (otp && phone) {
       // Redirect to OTP verification endpoint
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Please use /api/otp/verify endpoint for OTP-based login",
-        useOtpEndpoint: true 
+        useOtpEndpoint: true
       });
     }
 
@@ -605,8 +605,8 @@ export const onDemandUserLogin = async (req, res) => {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
+    const query = email
+      ? { email: email.toLowerCase().trim() }
       : { phone: phone.trim() };
 
     const user = await Users.findOne(query);
@@ -664,7 +664,7 @@ export const onDemandUserLogin = async (req, res) => {
 export const sendMemberClientOtp = async (req, res) => {
   try {
     const { phone } = req.body;
-    
+
     if (!phone) {
       return res.status(400).json({ error: "Phone number is required" });
     }
@@ -686,7 +686,7 @@ export const sendMemberClientOtp = async (req, res) => {
     }
 
     const roleName = (role.roleName || "").toLowerCase();
-    
+
     // Check if role is member or client
     if (roleName !== "member" && roleName !== "client") {
       return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
@@ -706,17 +706,17 @@ export const sendMemberClientOtp = async (req, res) => {
 
     // Clear existing OTPs for this phone
     await OTP.deleteMany({ phone: normalizedPhone });
-    await OTP.create({ 
-      email: user.email, 
-      phone: normalizedPhone, 
-      otp, 
-      expiresAt 
+    await OTP.create({
+      email: user.email,
+      phone: normalizedPhone,
+      otp,
+      expiresAt
     });
 
     // Send SMS
     const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
-    
+
     try {
       await SendSMS({ phone: normalizedPhone, message: smsText });
       console.log('SMS sent successfully');
@@ -739,14 +739,14 @@ export const sendMemberClientOtp = async (req, res) => {
 
   } catch (error) {
     console.error('Send Member/Client OTP error:', error);
-    
+
     await logAuthActivity(req, 'OTP_SENT', 'FAILED', error.message, {
       loginType: 'member_client_otp'
     });
-    
-    return res.status(500).json({ 
-      error: "Failed to send OTP", 
-      message: error.message 
+
+    return res.status(500).json({
+      error: "Failed to send OTP",
+      message: error.message
     });
   }
 };
@@ -764,7 +764,7 @@ export const verifyMemberClientOtp = async (req, res) => {
     // Import OTP model dynamically
     const OTP = (await import("../models/otpModel.js")).default;
 
-    const otpRecord = await OTP.findOne({ 
+    const otpRecord = await OTP.findOne({
       phone: normalizedPhone,
       expiresAt: { $gt: new Date() }
     });
@@ -797,7 +797,7 @@ export const verifyMemberClientOtp = async (req, res) => {
     }
 
     const roleName = (role.roleName || "").toLowerCase();
-    
+
     // Check if role is member or client
     if (roleName !== "member" && roleName !== "client") {
       return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
@@ -821,7 +821,7 @@ export const verifyMemberClientOtp = async (req, res) => {
           ...(user.phone ? [{ phone: user.phone }] : []),
         ],
       });
-      
+
       if (!client) {
         return res.status(404).json({ error: "Client record not found. Please sign up first." });
       }
@@ -829,7 +829,7 @@ export const verifyMemberClientOtp = async (req, res) => {
       clientId = client._id.toString();
 
       // Find the corresponding member record for this client
-      const member = await Member.findOne({ 
+      const member = await Member.findOne({
         $or: [
           { user: user._id, client: client._id },
           { email: user.email, client: client._id },
@@ -845,13 +845,13 @@ export const verifyMemberClientOtp = async (req, res) => {
     } else if (roleName === "member") {
       // Handle member login
       let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
-      
+
       if (!member) {
-        const fallbackQuery = user.email 
-          ? { email: user.email } 
+        const fallbackQuery = user.email
+          ? { email: user.email }
           : { phone: user.phone };
         const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
-        
+
         if (!fallbackMember) {
           return res.status(404).json({ error: "Member record not found. Please contact admin." });
         }
@@ -871,9 +871,9 @@ export const verifyMemberClientOtp = async (req, res) => {
 
     // Generate both access and refresh tokens
     const { accessToken, refreshToken } = await generateAuthTokens(
-      user, 
-      role, 
-      req, 
+      user,
+      role,
+      req,
       { clientId, memberId, buildingId: undefined, allowedUsingCredits }
     );
 
@@ -895,7 +895,7 @@ export const verifyMemberClientOtp = async (req, res) => {
     });
 
     // Return unified response structure
-    const response = { 
+    const response = {
       accessToken,
       refreshToken,
       user: safeUser,
@@ -910,14 +910,14 @@ export const verifyMemberClientOtp = async (req, res) => {
 
   } catch (error) {
     console.error('Verify Member/Client OTP error:', error);
-    
+
     await logAuthActivity(req, 'LOGIN', 'FAILED', error.message, {
       loginType: 'member_client_otp'
     });
-    
-    return res.status(500).json({ 
-      error: "Failed to verify OTP", 
-      message: error.message 
+
+    return res.status(500).json({
+      error: "Failed to verify OTP",
+      message: error.message
     });
   }
 };
@@ -928,9 +928,9 @@ export const memberClientLogin = async (req, res) => {
 
     // If only phone is provided (no password), redirect to OTP flow
     if (phone && !password && !email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Password is required for password-based login. Use /api/auth/member-client/send-otp for OTP login",
-        useOtpEndpoint: true 
+        useOtpEndpoint: true
       });
     }
 
@@ -938,8 +938,8 @@ export const memberClientLogin = async (req, res) => {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email 
-      ? { email: email.toLowerCase().trim() } 
+    const query = email
+      ? { email: email.toLowerCase().trim() }
       : { phone: phone.trim() };
 
     const user = await Users.findOne(query);
@@ -952,7 +952,7 @@ export const memberClientLogin = async (req, res) => {
     if (!role) return res.status(401).json({ error: "User role not found" });
 
     const roleName = (role.roleName || "").toLowerCase();
-    
+
     // Check if role is member or client
     if (roleName !== "member" && roleName !== "client") {
       return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
@@ -974,7 +974,7 @@ export const memberClientLogin = async (req, res) => {
           ...(user.phone ? [{ phone: user.phone }] : []),
         ],
       });
-      
+
       if (!client) {
         return res.status(404).json({ error: "Client record not found. Please sign up first." });
       }
@@ -982,7 +982,7 @@ export const memberClientLogin = async (req, res) => {
       clientId = client._id.toString();
 
       // Find the corresponding member record for this client
-      const member = await Member.findOne({ 
+      const member = await Member.findOne({
         $or: [
           { user: user._id, client: client._id },
           { email: user.email, client: client._id },
@@ -998,13 +998,13 @@ export const memberClientLogin = async (req, res) => {
     } else if (roleName === "member") {
       // Handle member login
       let member = await Member.findOne({ user: user._id }).populate('client', 'contactPerson');
-      
+
       if (!member) {
-        const fallbackQuery = user.email 
-          ? { email: user.email } 
+        const fallbackQuery = user.email
+          ? { email: user.email }
           : { phone: user.phone };
         const fallbackMember = await Member.findOne(fallbackQuery).populate('client', 'contactPerson');
-        
+
         if (!fallbackMember) {
           return res.status(404).json({ error: "Member record not found. Please contact admin." });
         }
@@ -1052,8 +1052,8 @@ export const memberClientLogin = async (req, res) => {
     });
 
     // Return unified response structure
-    const response = { 
-      token, 
+    const response = {
+      token,
       user: safeUser
     };
 
@@ -1065,11 +1065,11 @@ export const memberClientLogin = async (req, res) => {
 
   } catch (err) {
     console.error("memberClientLogin error:", err);
-    
+
     await logAuthActivity(req, 'LOGIN', 'FAILED', err.message, {
       loginType: 'member_client_unified'
     });
-    
+
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -1077,7 +1077,7 @@ export const memberClientLogin = async (req, res) => {
 export const getMe = async (req, res) => {
   try {
     const user = await Users.findById(req.user._id).populate('role').lean();
-    
+
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -1144,7 +1144,7 @@ export const refreshAccessToken = async (req, res) => {
       });
       if (client) {
         clientId = client._id.toString();
-        const member = await Member.findOne({ 
+        const member = await Member.findOne({
           $or: [
             { user: user._id, client: client._id },
             { email: user.email, client: client._id },
@@ -1197,7 +1197,7 @@ export const refreshAccessToken = async (req, res) => {
       userId: user._id.toString()
     });
 
-    res.json({ 
+    res.json({
       accessToken,
       refreshToken: newRefreshToken,
       user: {
@@ -1211,12 +1211,12 @@ export const refreshAccessToken = async (req, res) => {
 
   } catch (error) {
     console.error('Refresh token error:', error);
-    
+
     await logAuthActivity(req, 'TOKEN_REFRESH', 'FAILED', error.message);
-    
-    return res.status(401).json({ 
+
+    return res.status(401).json({
       error: "Invalid or expired refresh token",
-      message: error.message 
+      message: error.message
     });
   }
 };

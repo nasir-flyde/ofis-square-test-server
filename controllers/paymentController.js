@@ -1,5 +1,6 @@
 import Payment from "../models/paymentModel.js";
 import Invoice from "../models/invoiceModel.js";
+import DraftPayment from "../models/draftPaymentModel.js";
 import Client from "../models/clientModel.js";
 import DayPass from "../models/dayPassModel.js";
 import DayPassBundle from "../models/dayPassBundleModel.js";
@@ -154,7 +155,7 @@ export const createPayment = async (req, res) => {
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
     // Update linked security deposit if this is a deposit invoice
-    try { await applyPaymentToDeposit(invoiceId, Number(amount)); } catch (_) {}
+    try { await applyPaymentToDeposit(invoiceId, Number(amount)); } catch (_) { }
 
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_MADE', 'Payment', payment._id, {
@@ -185,7 +186,7 @@ export const deletePayment = async (req, res) => {
       if (invoiceExists) {
         await applyInvoicePayment(payment.invoice, -Number(payment.amount || 0));
         // Reverse deposit applied amount as well
-        try { await applyPaymentToDeposit(payment.invoice, -Number(payment.amount || 0)); } catch (_) {}
+        try { await applyPaymentToDeposit(payment.invoice, -Number(payment.amount || 0)); } catch (_) { }
       }
     } catch (_) {
     }
@@ -257,7 +258,7 @@ export const getClientPayments = async (req, res) => {
 
     const { page = 1, limit = 10, type, from, to } = req.query;
     const query = { client: clientId };
-    
+
     if (type) query.type = type;
     if (from || to) {
       query.paymentDate = {};
@@ -265,23 +266,74 @@ export const getClientPayments = async (req, res) => {
       if (to) query.paymentDate.$lte = new Date(to);
     }
 
+    // 1. Fetch Draft Payments (Pending only)
+    const draftQuery = { client: clientId, status: "pending" };
+    // If filtering by type/date, apply to drafts too if fields match (DraftPayment has 'type', 'paymentDate')
+    if (type) draftQuery.type = type;
+    if (from || to) {
+      draftQuery.paymentDate = {};
+      if (from) draftQuery.paymentDate.$gte = new Date(from);
+      if (to) draftQuery.paymentDate.$lte = new Date(to);
+    }
+
+    // Fetch all pending drafts (usually few) to merge correctly. 
+    // If strict pagination is needed across mixed collections, it's complex. 
+    // Here we fetch drafts and mix them, assuming regular user won't have 1000s of *pending* drafts.
+    const drafts = await DraftPayment.find(draftQuery)
+      .populate("invoice", "invoice_number zoho_invoice_number total amount_paid balance due_date status building cabin")
+      .sort({ paymentDate: -1, createdAt: -1 })
+      .lean();
+
+    // 2. Fetch Regular Payments
+    // We adjust limit if we want to show mixed page, but simple approach:
+    // Fetch 'limit' payments, combine with drafts, then slice?
+    // User expects "Payment History" to show drafts. 
+    // Strategy: Fetch payments normally. Prepend drafts to the list.
+    // If pagination is requested (page 2), should drafts show again? Ideally only on page 1?
+    // Or treating them as part of the stream.
+    // Let's go with: Drafts always on top (if they are pending, they are "recent" actions).
+    // Or strictly by date.
+
+    // Attempting strict date merge for 'limit' items:
+    // This is hard with simple Mongoose generic pagination.
+    // Let's use the strategy: Fetch `limit` payments. Return `drafts + payments`.
+    // NOTE: This might return `drafts.length + limit` items on page 1. This is acceptable for "Pending items at top" UI pattern.
+
     const payments = await Payment.find(query)
-      .populate("invoice", "invoice_number total amount_paid balance due_date status building cabin")
+      .populate("invoice", "invoice_number zoho_invoice_number total amount_paid balance due_date status building cabin")
       .sort({ paymentDate: -1, createdAt: -1 })
       .limit(Number(limit))
-      .skip((Number(page) - 1) * Number(limit));
+      .skip((Number(page) - 1) * Number(limit))
+      .lean();
 
-    const total = await Payment.countDocuments(query);
+    const totalPayments = await Payment.countDocuments(query);
+    const totalDrafts = await DraftPayment.countDocuments(draftQuery);
+    const total = totalPayments + totalDrafts;
+
+    // Mark drafts distinctively
+    const formattedDrafts = drafts.map(d => ({ ...d, isDraft: true, status: 'pending' }));
+
+    // If page 1, include drafts. If page > 1, maybe minimal drafts or none?
+    // Usually pending drafts should be seen immediately. Let's send them on Page 1.
+    let combined = [];
+    if (Number(page) === 1) {
+      combined = [...formattedDrafts, ...payments];
+    } else {
+      combined = payments; // On subsequent pages only show historical payments
+    }
+
+    // Retain sort if preferred, but usually "Actionable/Pending" items stay on top regardless of date (unless they are very old), 
+    // but here we just prepend them on page 1.
 
     return res.json({
       success: true,
       data: {
-        payments,
+        payments: combined,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
           total,
-          pages: Math.ceil(total / limit)
+          pages: Math.ceil(totalPayments / limit) // Approximate pages based on main collection
         }
       }
     });
@@ -314,11 +366,11 @@ async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied, withheldD
   const newAmountPaid = Math.max(0, Number(invoice.amount_paid || 0) + Number(amountApplied));
   const newWithheld = Math.max(0, Number(invoice.tax_withheld_total || 0) + Number(withheldDelta || 0));
   const newBalance = Math.max(0, Number(invoice.total || 0) - newAmountPaid - newWithheld);
-  
+
   invoice.amount_paid = newAmountPaid;
   invoice.balance = newBalance;
   invoice.tax_withheld_total = newWithheld;
-  
+
   // Update status based on balance
   if (newBalance === 0) {
     invoice.status = "paid";
@@ -328,7 +380,7 @@ async function updateInvoiceAfterZohoPayment(invoiceId, amountApplied, withheldD
   } else if (invoice.status !== "partially_paid") {
     invoice.status = "partially_paid";
   }
-  
+
   invoice.last_payment_date = new Date();
   await invoice.save();
   return invoice;
@@ -366,11 +418,11 @@ async function createInvoiceInZoho(invoice, client) {
   const zohoInvoicePayload = {
     customer_id: client.zohoBooksContactId,
     date: invoice.date ? new Date(invoice.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-    due_date: invoice.due_date ? new Date(invoice.due_date).toISOString().split('T')[0] : new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+    due_date: invoice.due_date ? new Date(invoice.due_date).toISOString().split('T')[0] : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     reference_number: invoice.reference_number || '',
     notes: invoice.notes || '',
     terms: invoice.terms || '',
-    
+
     // Line items
     line_items: invoice.line_items.map(item => ({
       name: item.name || item.description,
@@ -380,14 +432,14 @@ async function createInvoiceInZoho(invoice, client) {
       unit: item.unit || 'nos',
       tax_percentage: item.tax_percentage || 18
     })),
-    
+
     // Totals
     sub_total: invoice.sub_total || 0,
     discount: invoice.discount || 0,
     discount_type: invoice.discount_type || 'entity_level',
     tax_total: invoice.tax_total || 0,
     total: invoice.total || 0,
-    
+
     // Additional fields
     currency_code: invoice.currency_code || 'INR',
     exchange_rate: invoice.exchange_rate || 1,
@@ -429,7 +481,7 @@ async function createInvoiceInZoho(invoice, client) {
 
   const zohoInvoiceId = zohoData.invoice?.invoice_id;
   const zohoInvoiceNumber = zohoData.invoice?.invoice_number;
-  
+
   if (!zohoInvoiceId) {
     throw new Error('No invoice_id returned from Zoho Books');
   }
@@ -510,7 +562,7 @@ export const recordCustomerPayment = async (req, res) => {
     // Fetch and validate invoices
     const invoiceIds = safeInvoices.map(inv => inv.invoiceId);
     const dbInvoices = await Invoice.find({ _id: { $in: invoiceIds } });
-    
+
     if (dbInvoices.length !== safeInvoices.length) {
       return res.status(404).json({
         success: false,
@@ -551,7 +603,7 @@ export const recordCustomerPayment = async (req, res) => {
     for (const dbInvoice of dbInvoices) {
       if (!dbInvoice.zoho_invoice_id) {
         console.log(`Creating invoice ${dbInvoice.invoice_number} in Zoho Books...`);
-        
+
         try {
           const zohoResult = await createInvoiceInZoho(dbInvoice, client);
           console.log(`Updated local invoice ${dbInvoice.invoice_number} with Zoho invoice number: ${zohoResult.zoho_invoice_number}`);
@@ -640,7 +692,7 @@ export const recordCustomerPayment = async (req, res) => {
     try {
       console.log("[recordCustomerPayment] Zoho payload amount:", zohoPayload.amount);
       console.log("[recordCustomerPayment] Zoho payload invoices:", (zohoPayload.invoices || []).map(i => ({ invoice_id: i.invoice_id, amount_applied: i.amount_applied, tax_amount_withheld: i.tax_amount_withheld })));
-    } catch (_) {}
+    } catch (_) { }
 
     // Generate idempotency key
     const idempotencyKey = generateIdempotencyKey(zohoPayload);
@@ -671,7 +723,7 @@ export const recordCustomerPayment = async (req, res) => {
     try {
       console.log('[recordCustomerPayment] POST URL:', zohoUrl);
       console.log('[recordCustomerPayment] Full payload:', JSON.stringify(zohoPayload, null, 2));
-    } catch (_) {}
+    } catch (_) { }
     const zohoResponse = await fetch(zohoUrl, {
       method: 'POST',
       headers: {
@@ -726,14 +778,14 @@ export const recordCustomerPayment = async (req, res) => {
       applied_total: appliedTotal,
       unused_amount: unusedAmount,
       tax_amount_withheld_total: safeInvoices.reduce((s, inv) => s + (inv.tax_deducted ? Number(inv.tax_amount_withheld || 0) : 0), 0),
-      
+
       // Zoho Books fields
       customer_id: client.zohoBooksContactId,
       zoho_payment_id: zohoData.payment?.payment_id,
       payment_number: zohoData.payment?.payment_number,
       zoho_status: zohoData.payment?.status,
       deposit_to_account_id,
-      
+
       // Audit fields
       idempotency_key: idempotencyKey,
       raw_zoho_response: zohoData,
@@ -753,7 +805,7 @@ export const recordCustomerPayment = async (req, res) => {
       const withheld = Number(withheldByLocalId.get(inv.invoiceId) || 0);
       if (allowed > 0.009 || withheld > 0.009) {
         await updateInvoiceAfterZohoPayment(inv.invoiceId, allowed, withheld);
-        try { if (allowed > 0.009) await applyPaymentToDeposit(inv.invoiceId, allowed); } catch (_) {}
+        try { if (allowed > 0.009) await applyPaymentToDeposit(inv.invoiceId, allowed); } catch (_) { }
       }
     }
 
@@ -783,7 +835,7 @@ export const recordCustomerPayment = async (req, res) => {
     if (unusedAmount > 0) {
       try {
         await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: unusedAmount } });
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Log payment activity
@@ -819,7 +871,7 @@ export const recordCustomerPayment = async (req, res) => {
 export const listCustomerPayments = async (req, res) => {
   try {
     const { customer_id, from, to, status, page = 1, per_page = 50 } = req.query;
-    
+
     const accessToken = await getValidAccessToken();
     const orgId = getOrgId();
 
@@ -1114,21 +1166,21 @@ export const createRazorpayOrder = async (req, res) => {
       amount = booking.invoice?.total || booking.payment?.amount;
       buildingName = booking.room?.building?.name || "Meeting Room";
       const roomName = booking.room?.name || "Room";
-      const startTime = new Date(booking.start).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-      const endTime = new Date(booking.end).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      const startTime = new Date(booking.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const endTime = new Date(booking.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       description = `Meeting Room - ${roomName} (${startTime}-${endTime})`;
       item = { type: 'meeting', id: meetingBookingId };
       invoice = booking.invoice || null;
     }
-    
+
     // Early exit ONLY when 'Use available credits first' is enabled and invoice is fully paid
     if (useExtraCredits && invoice && invoice._id) {
       try {
         const invFull = await Invoice.findById(invoice._id);
         const invBalance = invFull
           ? (invFull.balance != null
-              ? Number(invFull.balance)
-              : Math.max(0, Number(invFull.total || 0) - Number(invFull.amount_paid || 0)))
+            ? Number(invFull.balance)
+            : Math.max(0, Number(invFull.total || 0) - Number(invFull.amount_paid || 0)))
           : Number(amount || 0);
         if (invFull && invBalance <= 0.009) {
           if (item.type === 'bundle') {
@@ -1160,9 +1212,9 @@ export const createRazorpayOrder = async (req, res) => {
           await apiLogger.logWebhookResponse(requestId, 200, response, true);
           return res.json(response);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
-    
+
     // Mixed payment: optionally apply client's extra credits before creating Razorpay order
     if (useExtraCredits && invoice) {
       // Resolve client for allocation
@@ -1240,7 +1292,7 @@ export const createRazorpayOrder = async (req, res) => {
 
         // Apply credits to invoice and refresh remaining amount
         const result = await applyExtraCreditsToInvoiceInternal(clientForZoho._id, invoice._id);
-        try { invoice = await Invoice.findById(invoice._id); } catch (_) {}
+        try { invoice = await Invoice.findById(invoice._id); } catch (_) { }
         const remaining = Math.max(0, Number(invoice?.balance || 0));
         amount = remaining;
 
@@ -1293,7 +1345,7 @@ export const createRazorpayOrder = async (req, res) => {
   } catch (error) {
     console.error("createRazorpayOrder error:", error);
     await logErrorActivity(req, error, 'Create Razorpay Order');
-    
+
     const errorResponse = { error: "Internal Server Error" };
     await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message);
     res.status(500).json(errorResponse);
@@ -1321,8 +1373,8 @@ export const handleRazorpaySuccess = async (req, res) => {
   });
 
   try {
-    const { 
-      razorpay_payment_id, 
+    const {
+      razorpay_payment_id,
       dayPassId,
       bundleId,
       meetingBookingId,
@@ -1395,7 +1447,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       invoice = booking.invoice;
       paymentNotes = `Razorpay payment for meeting booking ${booking._id}`;
     }
-    
+
     // Determine customer type and set appropriate payment fields
     let paymentData = {
       invoice: invoice?._id || (invoiceId || undefined),
@@ -1449,22 +1501,22 @@ export const handleRazorpaySuccess = async (req, res) => {
       // For bundles, get all associated day passes and issue them
       const dayPasses = await DayPass.find({ bundle: bundleId });
       const dayPassIds = dayPasses.map(pass => pass._id.toString());
-      
+
       // Issue all passes in the bundle (this will create visitor records)
       await issueDayPassBatch(dayPassIds);
-      
+
       // Provision per issued pass (skip if Guest KYC pending)
       for (const pid of dayPassIds) {
-        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) {}
+        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) { }
       }
-      
+
       // Update bundle status
       item.status = "issued";
       await item.save();
     } else if (dayPassId) {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
-      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) {}
+      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) { }
     } else if (meetingBookingId) {
       // For meeting room booking, update status to booked
       item.status = "booked";
@@ -1480,7 +1532,7 @@ export const handleRazorpaySuccess = async (req, res) => {
     if (!invoice && invoiceId) {
       try {
         invoice = await Invoice.findById(invoiceId);
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Update invoice and push to Zoho for meeting bookings
@@ -1510,7 +1562,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               customer_id: clientForZoho.zohoBooksContactId,
               payment_mode: 'Razorpay',
               amount: paymentInrFloor,
-              date: new Date().toISOString().slice(0,10),
+              date: new Date().toISOString().slice(0, 10),
               invoices: [{ invoice_id: bookingForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
               reference_number: razorpay_payment_id,
               description: paymentNotes
@@ -1553,7 +1605,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       if (dayPassId || bundleId) {
         // Track whether we applied locally during Zoho success to avoid double-applying later
         let appliedViaZohoSuccess = false;
-        
+
         try {
           // Re-fetch day pass or bundle with customer and invoice populated
           let itemForZoho = null;
@@ -1598,7 +1650,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               customer_id: clientForZoho.zohoBooksContactId,
               payment_mode: 'Razorpay',
               amount: paymentInrFloor,
-              date: new Date().toISOString().slice(0,10),
+              date: new Date().toISOString().slice(0, 10),
               invoices: [{ invoice_id: itemForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
               reference_number: razorpay_payment_id,
               description: paymentNotes
@@ -1634,7 +1686,7 @@ export const handleRazorpaySuccess = async (req, res) => {
           // Apply locally on error
           await applyInvoicePayment(invoice._id, paymentInrFloor);
         }
-        
+
         // Only apply locally if we didn't already apply via Zoho success
         if (invoice && !appliedViaZohoSuccess) {
           await applyInvoicePayment(invoice._id, paymentInrFloor);
@@ -1642,7 +1694,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       }
     }
 
-    const responseMessage = dayPassId 
+    const responseMessage = dayPassId
       ? "Payment successful, day pass issued"
       : (bundleId ? "Payment successful, bundle and day passes issued" : "Payment successful, meeting room booked");
 
@@ -1664,8 +1716,8 @@ export const handleRazorpaySuccess = async (req, res) => {
     console.error("handleRazorpaySuccess error:", error);
     console.error("Error stack:", error.stack);
     await logErrorActivity(req, error, 'Handle Razorpay Success');
-    
-    const errorResponse = { 
+
+    const errorResponse = {
       error: "Internal Server Error",
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     };
@@ -1680,208 +1732,208 @@ export const handleRazorpayWebhook = async (req, res) => {
   const rawBuffer = Buffer.isBuffer(req.body)
     ? req.body
     : Buffer.from(
-        typeof req.body === 'string'
-          ? req.body
-          : JSON.stringify(req.body || {}),
-        'utf8'
-      );
- 
-   // Proper logging call using options object
-   const logEntry = await apiLogger.logIncomingWebhook({
-     service: 'razorpay',
-     operation: 'payment_webhook',
-     method: (req.method || 'POST').toUpperCase(),
-     url: req.originalUrl || req.url || '/api/payments/razorpay/webhook',
-     headers: req.headers || {},
-     requestBody: (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return rawBuffer.toString('utf8'); } })(),
-     webhookSignature: req.headers['x-razorpay-signature'] || '',
-     webhookVerified: false,
-     webhookEvent: undefined,
-     statusCode: 200,
-     responseBody: { received: true },
-     success: true,
-     userAgent: req.headers['user-agent'] || null,
-     ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
-   });
- 
-   const requestId = (logEntry && typeof logEntry === 'object') ? (logEntry.requestId || logEntry._id || '') : String(logEntry || '');
- 
-   try {
-     const parsed = (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return req.body || {}; } })();
-     const { event, payload } = parsed || {};
-     
-     // Verify signature using exact raw payload
-     const signature = req.headers['x-razorpay-signature'] || '';
-     const isValidSignature = await loggedRazorpay.verifyWebhookSignature(rawBuffer, signature);
-     
-     if (!isValidSignature) {
-       const errorResponse = { error: 'Invalid webhook signature' };
-       await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature', {
-         webhookVerified: false,
-         webhookEvent: event || null
-       });
-       return res.status(401).json(errorResponse);
-     }
-     
-     console.log('Razorpay webhook received:', event);
-     
-     if (event === 'payment.captured' || event === 'payment.authorized') {
-       const paymentId = payload?.payment?.entity?.id;
-       const amount = payload?.payment?.entity?.amount;
-       
-       if (paymentId && amount) {
-         console.log('Webhook payment details:', {
-           paymentId,
-           amount: amount / 100,
-           status: payload?.payment?.entity?.status
-         });
-         
-         // TODO: Implement automatic day pass status update based on payment ID
-         // This would require storing payment ID during order creation
-       }
-     }
-     
-     if (event && payload) {
-       try {
-         // Handle Payment Link success
-         if (String(event).startsWith('payment_link.')) {
-           const pl = payload?.payment_link?.entity;
-           if (pl && pl.status === 'paid') {
-             const notes = pl.notes || {};
-             const ref = pl.reference_id || '';
-             const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
-             const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
-             const invoiceId = notes?.invoiceId;
-             const amount = (typeof pl.amount === 'number')
-               ? Number(pl.amount)
-               : (pl.amount_paid || 0); // in paise
-          
-             if (isMeeting && bookingId) {
-               const booking = await MeetingBooking.findById(bookingId).populate('invoice');
-               if (booking) {
-               // Record payment against invoice and create Payment (idempotent)
-const paidAmountInr = Math.round(Number(amount || 0)) / 100;
-const rzpPaymentId = payload?.payment?.entity?.id || pl?.id || null;
+      typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body || {}),
+      'utf8'
+    );
 
-if (booking.invoice?._id && paidAmountInr > 0) {
-  // 1) Idempotency: avoid duplicate Payment for the same Razorpay payment id
-  let existing = null;
-  if (rzpPaymentId) {
-    existing = await Payment.findOne({ paymentGatewayRef: rzpPaymentId });
-  }
+  // Proper logging call using options object
+  const logEntry = await apiLogger.logIncomingWebhook({
+    service: 'razorpay',
+    operation: 'payment_webhook',
+    method: (req.method || 'POST').toUpperCase(),
+    url: req.originalUrl || req.url || '/api/payments/razorpay/webhook',
+    headers: req.headers || {},
+    requestBody: (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return rawBuffer.toString('utf8'); } })(),
+    webhookSignature: req.headers['x-razorpay-signature'] || '',
+    webhookVerified: false,
+    webhookEvent: undefined,
+    statusCode: 200,
+    responseBody: { received: true },
+    success: true,
+    userAgent: req.headers['user-agent'] || null,
+    ipAddress: (req.headers['x-forwarded-for'] || req.ip || '').toString()
+  });
 
-  // 2) Create local Payment if not existing
-  let paymentDoc = existing;
-  if (!paymentDoc) {
-    try {
-      paymentDoc = await Payment.create({
-        invoice: booking.invoice._id,
-        client: booking.client || undefined,
-        type: 'Razorpay',
-        paymentGatewayRef: rzpPaymentId || undefined,
-        amount: paidAmountInr,
-        paymentDate: new Date(),
-        referenceNumber: rzpPaymentId,
-        currency: 'INR',
-        notes: `Razorpay ${event} • meeting_booking:${bookingId}`,
-        source: 'webhook'
-      });
-    } catch (pcErr) {
-      console.error('Failed to create local Payment from webhook:', pcErr?.message || pcErr);
-    }
-  }
+  const requestId = (logEntry && typeof logEntry === 'object') ? (logEntry.requestId || logEntry._id || '') : String(logEntry || '');
 
-  // 3) Update local invoice totals/status
-  try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) {}
-
-  // 4) Zoho push: ensure Zoho invoice exists, then record a Customer Payment
   try {
-    // Load client to access zohoBooksContactId
-    const clientDoc = booking.client ? await Client.findById(booking.client) : null;
-    if (clientDoc?.zohoBooksContactId) {
-      // Create Zoho invoice if missing
-      if (!booking.invoice.zoho_invoice_id) {
-        try {
-          const created = await createZohoInvoiceFromLocal(booking.invoice.toObject(), clientDoc.toObject());
-          const inv = created?.invoice || created;
-          if (inv?.invoice_id) {
-            booking.invoice.zoho_invoice_id = inv.invoice_id;
-            booking.invoice.zoho_invoice_number = inv.invoice_number;
-            booking.invoice.zoho_status = inv.status || inv.status_formatted;
-            booking.invoice.zoho_pdf_url = inv.pdf_url;
-            booking.invoice.invoice_url = inv.invoice_url;
-            await booking.invoice.save();
-          }
-        } catch (e) {
-          console.warn('Zoho invoice creation failed (webhook path):', e?.message || e);
-        }
-      }
+    const parsed = (() => { try { return JSON.parse(rawBuffer.toString('utf8')); } catch { return req.body || {}; } })();
+    const { event, payload } = parsed || {};
 
-      // Record customer payment in Zoho
-      if (booking.invoice.zoho_invoice_id) {
-        try {
-          const zohoPayload = {
-            customer_id: clientDoc.zohoBooksContactId,
-            payment_mode: 'Razorpay',
-            amount: paidAmountInr,
-            date: new Date().toISOString().slice(0,10),
-            invoices: [{ invoice_id: booking.invoice.zoho_invoice_id, amount_applied: paidAmountInr }],
-            reference_number: rzpPaymentId || pl?.id,
-            description: `Meeting booking payment (${bookingId})`
-          };
+    // Verify signature using exact raw payload
+    const signature = req.headers['x-razorpay-signature'] || '';
+    const isValidSignature = await loggedRazorpay.verifyWebhookSignature(rawBuffer, signature);
 
-          const zohoResp = await recordZohoPayment(booking.invoice.zoho_invoice_id, zohoPayload);
-          const zp = zohoResp?.payment || zohoResp;
-          if (paymentDoc && zp?.payment_id) {
-            paymentDoc.zoho_payment_id = zp.payment_id;
-            paymentDoc.payment_number = zp.payment_number;
-            paymentDoc.zoho_status = zp.status;
-            paymentDoc.raw_zoho_response = zohoResp;
-            paymentDoc.source = 'zoho_books';
-            await paymentDoc.save();
-          }
-        } catch (ze) {
-          console.error('Zoho payment record failed (webhook path):', ze?.message || ze);
-        }
+    if (!isValidSignature) {
+      const errorResponse = { error: 'Invalid webhook signature' };
+      await apiLogger.logWebhookResponse(requestId, 401, errorResponse, false, 'Invalid signature', {
+        webhookVerified: false,
+        webhookEvent: event || null
+      });
+      return res.status(401).json(errorResponse);
+    }
+
+    console.log('Razorpay webhook received:', event);
+
+    if (event === 'payment.captured' || event === 'payment.authorized') {
+      const paymentId = payload?.payment?.entity?.id;
+      const amount = payload?.payment?.entity?.amount;
+
+      if (paymentId && amount) {
+        console.log('Webhook payment details:', {
+          paymentId,
+          amount: amount / 100,
+          status: payload?.payment?.entity?.status
+        });
+
+        // TODO: Implement automatic day pass status update based on payment ID
+        // This would require storing payment ID during order creation
       }
     }
-  } catch (syncErr) {
-    console.error('Webhook Zoho sync error:', syncErr?.message || syncErr);
-  }
-}
-                 // Update booking status to booked if payment was pending
-                 if (booking.status === 'payment_pending') {
-                   booking.status = 'booked';
-                   await booking.save();
-                   // Provision BHAiFi + Matrix access for the booked meeting timeslot
-                   try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
-                 }
-               }
-             }
-           }
-         }
-       } catch (eh) {
-         console.error('Webhook post-processing error:', eh);
-       }
-     }
-     
-     const response = { status: 'received' };
-     await apiLogger.logWebhookResponse(requestId, 200, response, true, null, {
-       webhookVerified: true,
-       webhookEvent: event || null
-     });
-     
-     res.status(200).json(response);
+
+    if (event && payload) {
+      try {
+        // Handle Payment Link success
+        if (String(event).startsWith('payment_link.')) {
+          const pl = payload?.payment_link?.entity;
+          if (pl && pl.status === 'paid') {
+            const notes = pl.notes || {};
+            const ref = pl.reference_id || '';
+            const isMeeting = notes?.type === 'meeting_booking' || String(ref).startsWith('meeting_booking_');
+            const bookingId = notes?.meetingBookingId || String(ref).replace('meeting_booking_', '');
+            const invoiceId = notes?.invoiceId;
+            const amount = (typeof pl.amount === 'number')
+              ? Number(pl.amount)
+              : (pl.amount_paid || 0); // in paise
+
+            if (isMeeting && bookingId) {
+              const booking = await MeetingBooking.findById(bookingId).populate('invoice');
+              if (booking) {
+                // Record payment against invoice and create Payment (idempotent)
+                const paidAmountInr = Math.round(Number(amount || 0)) / 100;
+                const rzpPaymentId = payload?.payment?.entity?.id || pl?.id || null;
+
+                if (booking.invoice?._id && paidAmountInr > 0) {
+                  // 1) Idempotency: avoid duplicate Payment for the same Razorpay payment id
+                  let existing = null;
+                  if (rzpPaymentId) {
+                    existing = await Payment.findOne({ paymentGatewayRef: rzpPaymentId });
+                  }
+
+                  // 2) Create local Payment if not existing
+                  let paymentDoc = existing;
+                  if (!paymentDoc) {
+                    try {
+                      paymentDoc = await Payment.create({
+                        invoice: booking.invoice._id,
+                        client: booking.client || undefined,
+                        type: 'Razorpay',
+                        paymentGatewayRef: rzpPaymentId || undefined,
+                        amount: paidAmountInr,
+                        paymentDate: new Date(),
+                        referenceNumber: rzpPaymentId,
+                        currency: 'INR',
+                        notes: `Razorpay ${event} • meeting_booking:${bookingId}`,
+                        source: 'webhook'
+                      });
+                    } catch (pcErr) {
+                      console.error('Failed to create local Payment from webhook:', pcErr?.message || pcErr);
+                    }
+                  }
+
+                  // 3) Update local invoice totals/status
+                  try { await applyInvoicePayment(booking.invoice._id, paidAmountInr); } catch (_) { }
+
+                  // 4) Zoho push: ensure Zoho invoice exists, then record a Customer Payment
+                  try {
+                    // Load client to access zohoBooksContactId
+                    const clientDoc = booking.client ? await Client.findById(booking.client) : null;
+                    if (clientDoc?.zohoBooksContactId) {
+                      // Create Zoho invoice if missing
+                      if (!booking.invoice.zoho_invoice_id) {
+                        try {
+                          const created = await createZohoInvoiceFromLocal(booking.invoice.toObject(), clientDoc.toObject());
+                          const inv = created?.invoice || created;
+                          if (inv?.invoice_id) {
+                            booking.invoice.zoho_invoice_id = inv.invoice_id;
+                            booking.invoice.zoho_invoice_number = inv.invoice_number;
+                            booking.invoice.zoho_status = inv.status || inv.status_formatted;
+                            booking.invoice.zoho_pdf_url = inv.pdf_url;
+                            booking.invoice.invoice_url = inv.invoice_url;
+                            await booking.invoice.save();
+                          }
+                        } catch (e) {
+                          console.warn('Zoho invoice creation failed (webhook path):', e?.message || e);
+                        }
+                      }
+
+                      // Record customer payment in Zoho
+                      if (booking.invoice.zoho_invoice_id) {
+                        try {
+                          const zohoPayload = {
+                            customer_id: clientDoc.zohoBooksContactId,
+                            payment_mode: 'Razorpay',
+                            amount: paidAmountInr,
+                            date: new Date().toISOString().slice(0, 10),
+                            invoices: [{ invoice_id: booking.invoice.zoho_invoice_id, amount_applied: paidAmountInr }],
+                            reference_number: rzpPaymentId || pl?.id,
+                            description: `Meeting booking payment (${bookingId})`
+                          };
+
+                          const zohoResp = await recordZohoPayment(booking.invoice.zoho_invoice_id, zohoPayload);
+                          const zp = zohoResp?.payment || zohoResp;
+                          if (paymentDoc && zp?.payment_id) {
+                            paymentDoc.zoho_payment_id = zp.payment_id;
+                            paymentDoc.payment_number = zp.payment_number;
+                            paymentDoc.zoho_status = zp.status;
+                            paymentDoc.raw_zoho_response = zohoResp;
+                            paymentDoc.source = 'zoho_books';
+                            await paymentDoc.save();
+                          }
+                        } catch (ze) {
+                          console.error('Zoho payment record failed (webhook path):', ze?.message || ze);
+                        }
+                      }
+                    }
+                  } catch (syncErr) {
+                    console.error('Webhook Zoho sync error:', syncErr?.message || syncErr);
+                  }
+                }
+                // Update booking status to booked if payment was pending
+                if (booking.status === 'payment_pending') {
+                  booking.status = 'booked';
+                  await booking.save();
+                  // Provision BHAiFi + Matrix access for the booked meeting timeslot
+                  try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
+                }
+              }
+            }
+          }
+        }
+      } catch (eh) {
+        console.error('Webhook post-processing error:', eh);
+      }
+    }
+
+    const response = { status: 'received' };
+    await apiLogger.logWebhookResponse(requestId, 200, response, true, null, {
+      webhookVerified: true,
+      webhookEvent: event || null
+    });
+
+    res.status(200).json(response);
   } catch (error) {
     console.error('Razorpay webhook error:', error);
     await logErrorActivity(req, error, 'Razorpay Webhook');
-     
+
     const errorResponse = { error: 'Webhook processing failed' };
     await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, error.message, {
       webhookVerified: false,
       webhookEvent: event || null
     });
-     
+
     res.status(500).json(errorResponse);
   }
 };
@@ -1904,7 +1956,7 @@ async function maybeProvisionAfterIssuanceForDayPassId(dayPassId) {
         });
         return; // gate: do not provision
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // TODO: Add Matrix/Bhaifi provisioning here for eligible customers
     // e.g., ensureBhaifiForMember / createMatrixUserForMember
@@ -1943,7 +1995,7 @@ export const payWithCredits = async (req, res) => {
       }
 
       // Find member associated with this client using phone number
-      member = await Member.findOne({ 
+      member = await Member.findOne({
         $or: [
           { client: clientId },
           { phone: client.phone }
@@ -1951,8 +2003,8 @@ export const payWithCredits = async (req, res) => {
       }).populate('client');
 
       if (!member) {
-        return res.status(404).json({ 
-          error: "No member found associated with this client. Member account required for credit payments." 
+        return res.status(404).json({
+          error: "No member found associated with this client. Member account required for credit payments."
         });
       }
       finalClientId = clientId;
@@ -1966,8 +2018,8 @@ export const payWithCredits = async (req, res) => {
     });
 
     if (!contract) {
-      return res.status(400).json({ 
-        error: "No active credit-enabled contract found for this client" 
+      return res.status(400).json({
+        error: "No active credit-enabled contract found for this client"
       });
     }
 
@@ -2016,7 +2068,7 @@ export const payWithCredits = async (req, res) => {
 
     // Check if sufficient credits
     if (currentBalance < creditsRequired) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Insufficient credits",
         required: creditsRequired,
         available: currentBalance,
@@ -2067,9 +2119,9 @@ export const payWithCredits = async (req, res) => {
     // Update wallet balance
     await ClientCreditWallet.findOneAndUpdate(
       { client: finalClientId },
-      { 
+      {
         $inc: { balance: -creditsRequired },
-        $set: { 
+        $set: {
           creditValue: creditValue,
           status: "active"
         }
@@ -2082,22 +2134,22 @@ export const payWithCredits = async (req, res) => {
       // For bundles, get all associated day passes and issue them
       const dayPasses = await DayPass.find({ bundle: bundleId });
       const dayPassIds = dayPasses.map(p => p._id.toString());
-      
+
       // Issue all passes in the bundle (this will create visitor records)
       await issueDayPassBatch(dayPassIds);
-      
+
       // Provision per issued pass (skip if Guest KYC pending)
       for (const pid of dayPassIds) {
-        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) {}
+        try { await maybeProvisionAfterIssuanceForDayPassId(pid); } catch (_) { }
       }
-      
+
       // Update bundle status
       item.status = "issued";
       await item.save();
     } else {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
-      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) {}
+      try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) { }
     }
 
     // Create payment record for tracking
@@ -2120,7 +2172,7 @@ export const payWithCredits = async (req, res) => {
       await applyInvoicePayment(item.invoice._id, totalAmount);
     }
 
-    const responseMessage = dayPassId 
+    const responseMessage = dayPassId
       ? "Day pass purchased successfully with credits"
       : "Bundle purchased successfully with credits";
 
@@ -2179,7 +2231,7 @@ export const getMemberCreditBalance = async (req, res) => {
     // Get credit wallet
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-    
+
     // Get creditValue from building instead of contract
     const building = contract.building;
     const creditValue = building?.creditValue || 500;
@@ -2233,7 +2285,7 @@ export const getClientCreditBalance = async (req, res) => {
     // Get credit wallet
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-    
+
     // Get creditValue from building instead of contract
     const building = contract.building;
     const creditValue = building?.creditValue || 500;
@@ -2277,7 +2329,7 @@ export const refundExcessPayment = async (req, res) => {
     // Refund via Zoho Books
     const refundPayload = {
       amount: refundAmount,
-      date: date ? new Date(date).toISOString().slice(0,10) : new Date().toISOString().slice(0,10),
+      date: date ? new Date(date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
       mode: mode || "BankTransfer",
       reference_number: reference_number || undefined,
       description: notes || undefined,
@@ -2299,7 +2351,7 @@ export const refundExcessPayment = async (req, res) => {
     await payment.save();
 
     if (payment.client?._id) {
-      try { await Client.findByIdAndUpdate(payment.client._id, { $inc: { extra_credits: -refundAmount } }); } catch (_) {}
+      try { await Client.findByIdAndUpdate(payment.client._id, { $inc: { extra_credits: -refundAmount } }); } catch (_) { }
     }
 
     await logPaymentActivity(req, 'PAYMENT_REFUND', 'Payment', payment._id, {
@@ -2362,7 +2414,7 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
       zohoOutstanding = Number(
         (zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0
       );
-    } catch (_) {}
+    } catch (_) { }
 
     let need = Math.max(0, Math.min(localOutstanding, zohoOutstanding));
     if (need < 0.01) {
@@ -2389,7 +2441,7 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
           invoice_id: ip.invoice_id,
           amount_applied: Number(ip.amount_applied || ip.applied_amount || 0)
         }));
-      } catch (_) {}
+      } catch (_) { }
 
       const alloc = Math.min(need, payUnused);
       if (alloc <= 0.009) continue;
@@ -2402,7 +2454,7 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
       try {
         console.log('[applyExcessPaymentToInvoice] payment:', pay.zoho_payment_id);
         console.log('[applyExcessPaymentToInvoice] PUT payload:', JSON.stringify({ invoices: newInvoices }, null, 2));
-      } catch (_) {}
+      } catch (_) { }
 
       // Update Zoho payment allocations
       await updateZohoCustomerPayment(pay.zoho_payment_id, { invoices: newInvoices });
@@ -2423,15 +2475,15 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
           pay.invoices = pay.invoices || [];
           pay.invoices.push({ invoice: invoiceId, amount_applied: alloc, zoho_invoice_id: zohoInvoiceId });
         }
-      } catch (_) {}
+      } catch (_) { }
       await pay.save();
 
       // Update client extra_credits down by alloc
-      try { await Client.findByIdAndUpdate(paymentClientId, { $inc: { extra_credits: -alloc } }); } catch (_) {}
+      try { await Client.findByIdAndUpdate(paymentClientId, { $inc: { extra_credits: -alloc } }); } catch (_) { }
 
       // Update local invoice
       await updateInvoiceAfterZohoPayment(invoiceId, alloc);
-      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) {}
+      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
 
       totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
       need = Math.max(0, Math.round((need - alloc) * 100) / 100);
@@ -2446,7 +2498,7 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
           zohoInvoiceId,
           mode: 'apply_all_credits'
         });
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const leftover = Math.max(0, Math.round(need * 100) / 100);
@@ -2489,7 +2541,7 @@ export const applyAllCreditsToInvoice = async (req, res) => {
       zohoOutstanding = Number(
         (zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0
       );
-    } catch (_) {}
+    } catch (_) { }
 
     let need = Math.max(0, Math.min(localOutstanding, zohoOutstanding));
     if (need < 0.01) {
@@ -2516,7 +2568,7 @@ export const applyAllCreditsToInvoice = async (req, res) => {
           invoice_id: ip.invoice_id,
           amount_applied: Number(ip.amount_applied || ip.applied_amount || 0)
         }));
-      } catch (_) {}
+      } catch (_) { }
 
       const alloc = Math.min(need, payUnused);
       if (alloc <= 0.009) continue;
@@ -2529,7 +2581,7 @@ export const applyAllCreditsToInvoice = async (req, res) => {
       try {
         console.log('[applyAllCreditsToInvoice] payment:', pay.zoho_payment_id);
         console.log('[applyAllCreditsToInvoice] PUT payload:', JSON.stringify({ invoices: newInvoices }, null, 2));
-      } catch (_) {}
+      } catch (_) { }
 
       // Update Zoho payment allocations
       await updateZohoCustomerPayment(pay.zoho_payment_id, { invoices: newInvoices });
@@ -2550,15 +2602,15 @@ export const applyAllCreditsToInvoice = async (req, res) => {
           pay.invoices = pay.invoices || [];
           pay.invoices.push({ invoice: invoiceId, amount_applied: alloc, zoho_invoice_id: zohoInvoiceId });
         }
-      } catch (_) {}
+      } catch (_) { }
       await pay.save();
 
       // Update client extra_credits down by alloc
-      try { await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: -alloc } }); } catch (_) {}
+      try { await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: -alloc } }); } catch (_) { }
 
       // Update local invoice
       await updateInvoiceAfterZohoPayment(invoiceId, alloc);
-      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) {}
+      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
 
       totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
       need = Math.max(0, Math.round((need - alloc) * 100) / 100);
@@ -2573,7 +2625,7 @@ export const applyAllCreditsToInvoice = async (req, res) => {
           zohoInvoiceId,
           mode: 'apply_all_credits'
         });
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const leftover = Math.max(0, Math.round(need * 100) / 100);

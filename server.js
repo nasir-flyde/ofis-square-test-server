@@ -15,6 +15,7 @@ import { initializeScheduler } from "./utils/scheduler.js";
 import notificationScheduler from "./services/notifications/scheduler.js";
 import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
 import { handleRazorpayWebhook } from "./controllers/paymentController.js";
+import bankDetailsRoutes from "./routes/bankDetailsRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +69,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // }));
 
 app.use("/api", apiRoutes);
+app.use("/api/bank-details", bankDetailsRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 mongoose
