@@ -1029,11 +1029,12 @@ export const importCabinsFromCSV = async (req, res) => {
 export const downloadSampleCSV = async (_req, res) => {
   try {
     const header = [
-      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities','deviceId','deviceType'
+      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities','images','primaryImage','deviceId','deviceType'
     ];
     // deviceType is optional during import and defaults to 16 if omitted. Provide 16 in sample for clarity.
-    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','d_10001','16'];
-    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','d_10002','16'];
+    // images: semicolon-separated URLs. primaryImage can be the 1-based index or the exact URL.
+    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','https://example.com/sample-cabin-1.jpg;https://example.com/sample-cabin-1b.jpg','1','d_10001','16'];
+    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','https://example.com/sample-cabin-2.jpg','1','d_10002','16'];
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="cabins_import_sample.csv"');
