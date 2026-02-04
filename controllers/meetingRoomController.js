@@ -552,7 +552,6 @@ export const getAvailableRoomsByTime = async (req, res) => {
       .populate('amenities', 'name iconUrl')
       .sort({ name: 1 });
 
-
     // Helper: check if time ranges overlap
     const timeRangesOverlap = (start1, end1, start2, end2) => start1 < end2 && end1 > start2;
 
@@ -569,6 +568,22 @@ export const getAvailableRoomsByTime = async (req, res) => {
       if (isPM && hour !== 12) hour += 12;
       if (isAM && hour === 12) hour = 0;
       return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+    };
+
+    // Helper: format numeric floor as ordinal (1 -> 1st, 2 -> 2nd, 3 -> 3rd, 4 -> 4th, 11 -> 11th, etc.)
+    const formatFloorLabel = (floor) => {
+      if (floor === undefined || floor === null) return null;
+      const num = Number(floor);
+      if (!Number.isFinite(num)) return String(floor);
+      const n = Math.trunc(num);
+      const v = n % 100;
+      if (v > 10 && v < 14) return `${n}th`;
+      switch (n % 10) {
+        case 1: return `${n}st`;
+        case 2: return `${n}nd`;
+        case 3: return `${n}rd`;
+        default: return `${n}th`;
+      }
     };
 
     // Branch 1: Daily slots mode (only date provided)
@@ -590,6 +605,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
       const roomsWithSlots = allRooms.map(room => {
         const roomObj = room.toObject();
+        const floorLabel = formatFloorLabel(room.floor);
 
         // Blackout or closed => no available slots
         const isBlackout = room.blackoutDates?.some(blackoutDate => {
@@ -650,6 +666,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
         return {
           ...roomObj,
+          floorLabel,
           reservedSlots: reservedSlotsForDate, // only for requested date
           availableTimeSlots: availableSlots,  // only for requested date after removals
           bookedIntervals,
@@ -753,8 +770,11 @@ export const getAvailableRoomsByTime = async (req, res) => {
             bookingId: b._id
           }));
 
+        const roomObj = room.toObject();
+        const floorLabel = formatFloorLabel(room.floor);
         return {
-          ...room.toObject(),
+          ...roomObj,
+          floorLabel,
           conflictingBookings: bookings
         };
       });
@@ -762,6 +782,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // Convert reserved and available slot times to 24-hour format for available rooms
     const availableRoomsFormatted = availableRooms.map(room => {
       const roomObj = room.toObject();
+      roomObj.floorLabel = formatFloorLabel(room.floor);
       if (roomObj.reservedSlots && roomObj.reservedSlots.length > 0) {
         roomObj.reservedSlots = roomObj.reservedSlots
           .filter(slot => isSameRequestedDate(slot.date))
