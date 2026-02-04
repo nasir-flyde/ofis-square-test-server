@@ -31,6 +31,7 @@ const corsOptions = {
     'http://localhost:5174',
     'http://localhost:3000',
     'http://localhost:4000',
+    'http://localhost:4001',
     'https://ofis-square-client.vercel.app',
     'https://ofis-square-client-git-backup-nasir-flydes-projects.vercel.app',
     'https://ofis-square-community.vercel.app',
@@ -39,7 +40,8 @@ const corsOptions = {
     'https://ofis-square-admin.vercel.app',
     'https://ofis-square-frontend.vercel.app',
     'https://ofis-square-new-admin.vercel.app',
-    'https://ofis-square-community-team.vercel.app'
+    'https://ofis-square-community-team.vercel.app',
+    'https://office-square.vercel.app'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

@@ -2,7 +2,7 @@ import fetch from "node-fetch";
 import { getValidAccessToken } from "./zohoTokenManager.js";
 import apiLogger from "./apiLogger.js";
 
-const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID || "60047183737";
+const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID;
 const BASE_URL = "https://www.zohoapis.in/books/v3";
 
 export async function getContacts() {
@@ -388,10 +388,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
   try {
     const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
-    
+
     console.log("🔗 Zoho Payment URL:", url);
     console.log("📤 Payment payload:", JSON.stringify(invoiceDoc, null, 2));
-    
+
     const {
       invoiceNumber,
       issueDate,
@@ -401,7 +401,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       notes = "",
       billingPeriod,
     } = invoiceDoc || {};
-    
+
     // Use the correct field names from the invoice document
     const actualIssueDate = invoiceDoc.date || issueDate;
     const actualDueDate = invoiceDoc.due_date || dueDate;
@@ -410,7 +410,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       throw new Error("Client must have a zohoBooksContactId to create invoice in Zoho Books");
     }
     const itemsArray = invoiceDoc.line_items || items || [];
-    
+
     // Derive default tax percent:
     // 1) If invoice explicitly has tax_total <= 0, treat as zero-tax
     // 2) Else use first line item's tax_percentage if provided
@@ -454,7 +454,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
         'ODISHA': 'OD', 'ORISSA': 'OD', 'PUDUCHERRY': 'PY', 'PUNJAB': 'PB', 'RAJASTHAN': 'RJ', 'SIKKIM': 'SK',
         'TAMIL NADU': 'TN', 'TELANGANA': 'TS', 'TRIPURA': 'TR', 'UTTAR PRADESH': 'UP', 'UTTARAKHAND': 'UK', 'WEST BENGAL': 'WB',
         // Already-alpha codes should map to themselves
-        'AN': 'AN','AP': 'AP','AR': 'AR','AS': 'AS','BR': 'BR','CH': 'CH','CT': 'CT','DD': 'DD','DL': 'DL','DN': 'DN','GA': 'GA','GJ': 'GJ','HP': 'HP','HR': 'HR','JH': 'JH','JK': 'JK','KA': 'KA','KL': 'KL','LA': 'LA','LD': 'LD','MH': 'MH','ML': 'ML','MN': 'MN','MP': 'MP','MZ': 'MZ','NL': 'NL','OD': 'OD','PB': 'PB','PY': 'PY','RJ': 'RJ','SK': 'SK','TN': 'TN','TR': 'TR','TS': 'TS','UK': 'UK','UP': 'UP','WB': 'WB'
+        'AN': 'AN', 'AP': 'AP', 'AR': 'AR', 'AS': 'AS', 'BR': 'BR', 'CH': 'CH', 'CT': 'CT', 'DD': 'DD', 'DL': 'DL', 'DN': 'DN', 'GA': 'GA', 'GJ': 'GJ', 'HP': 'HP', 'HR': 'HR', 'JH': 'JH', 'JK': 'JK', 'KA': 'KA', 'KL': 'KL', 'LA': 'LA', 'LD': 'LD', 'MH': 'MH', 'ML': 'ML', 'MN': 'MN', 'MP': 'MP', 'MZ': 'MZ', 'NL': 'NL', 'OD': 'OD', 'PB': 'PB', 'PY': 'PY', 'RJ': 'RJ', 'SK': 'SK', 'TN': 'TN', 'TR': 'TR', 'TS': 'TS', 'UK': 'UK', 'UP': 'UP', 'WB': 'WB'
       };
       return map[s] || s;
     };
@@ -551,7 +551,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       }
       try {
         console.log('[ZohoBooks] Taxes count:', taxes?.length || 0, 'TaxGroups count:', taxgroups?.length || 0, 'DefaultTax%:', defaultTaxPercent, 'isInterstate:', isInterstate, 'ChosenTax:', chosenTax, 'orgState:', orgStateCode, 'pos:', posCode);
-      } catch (_) {}
+      } catch (_) { }
       if (!chosenTax) {
         console.warn(`[ZohoBooks] No matching tax could be selected. Ensure taxes are configured in Zoho Books.`);
       }
@@ -599,8 +599,8 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       terms:
         billingPeriod && billingPeriod.start && billingPeriod.end
           ? `Billing Period: ${new Date(billingPeriod.start)
-              .toISOString()
-              .slice(0, 10)} to ${new Date(billingPeriod.end)
+            .toISOString()
+            .slice(0, 10)} to ${new Date(billingPeriod.end)
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",
@@ -834,10 +834,10 @@ export async function recordZohoPayment(invoiceId, paymentData) {
   try {
     const authToken = await getValidAccessToken();
     const url = `${BASE_URL}/customerpayments?organization_id=${ORG_ID}`;
-    
+
     console.log("🔗 Zoho Payment URL:", url);
     console.log("📤 Payment payload:", JSON.stringify(paymentData, null, 2));
-    
+
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -847,9 +847,9 @@ export async function recordZohoPayment(invoiceId, paymentData) {
       body: JSON.stringify(paymentData),
     });
     const data = await res.json();
-    
+
     console.log("📥 Zoho response:", JSON.stringify(data, null, 2));
-    
+
     if (!res.ok) throw new Error(data.message || "Zoho API error");
     return data;
   } catch (err) {
@@ -881,7 +881,7 @@ export async function updateZohoCustomerPayment(paymentId, payload) {
     try {
       console.log('[Zoho:updateCustomerPayment] URL:', url);
       console.log('[Zoho:updateCustomerPayment] Payload:', JSON.stringify(payload, null, 2));
-    } catch (_) {}
+    } catch (_) { }
     const res = await fetch(url, {
       method: "PUT",
       headers: { Authorization: `Zoho-oauthtoken ${authToken}`, "Content-Type": "application/json" },
@@ -1139,7 +1139,7 @@ export async function syncCreditCustomItemToZoho(creditCustomItem) {
     });
 
     let zohoResponse;
-    
+
     if (creditCustomItem.zohoItemId) {
       // Update existing item
       console.log("Updating existing Zoho item:", creditCustomItem.zohoItemId);
@@ -1148,7 +1148,7 @@ export async function syncCreditCustomItemToZoho(creditCustomItem) {
       // Create new item
       console.log("Creating new Zoho item");
       zohoResponse = await createZohoItem(zohoItemData);
-      
+
       // Update local record with Zoho item ID
       if (zohoResponse?.item?.item_id) {
         creditCustomItem.zohoItemId = zohoResponse.item.item_id;
@@ -1169,7 +1169,7 @@ export async function syncCreditCustomItemToZoho(creditCustomItem) {
 export async function findZohoItemByName(itemName) {
   try {
     const items = await getZohoItems();
-    return items?.items?.find(item => 
+    return items?.items?.find(item =>
       item.name?.toLowerCase() === itemName?.toLowerCase() ||
       item.sku?.toLowerCase() === itemName?.toLowerCase()
     );
@@ -1281,7 +1281,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       if (s.includes('-')) s = s.split('-').pop();
       s = s.replace(/[^A-Z]/g, '');
       const VALID_CODES = new Set([
-        'AN','AP','AR','AS','BR','CH','CT','DD','DL','DN','GA','GJ','HP','HR','JH','JK','KA','KL','LA','LD','MH','ML','MN','MP','MZ','NL','OD','OR','PB','PY','RJ','SK','TN','TR','TS','UK','UP','WB'
+        'AN', 'AP', 'AR', 'AS', 'BR', 'CH', 'CT', 'DD', 'DL', 'DN', 'GA', 'GJ', 'HP', 'HR', 'JH', 'JK', 'KA', 'KL', 'LA', 'LD', 'MH', 'ML', 'MN', 'MP', 'MZ', 'NL', 'OD', 'OR', 'PB', 'PY', 'RJ', 'SK', 'TN', 'TR', 'TS', 'UK', 'UP', 'WB'
       ]);
       if (VALID_CODES.has(s)) return s === 'OR' ? 'OD' : s;
       const NAME_TO_CODE = {
@@ -1372,7 +1372,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
           }
         }
       }
-      try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: normalizedPOS }); } catch (_) {}
+      try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: normalizedPOS }); } catch (_) { }
     }
 
     const liFormatted = itemsArray.map((it) => {
@@ -1407,8 +1407,8 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       terms:
         bp && bp.start && bp.end
           ? `Billing Period: ${new Date(bp.start)
-              .toISOString()
-              .slice(0, 10)} to ${new Date(bp.end)
+            .toISOString()
+            .slice(0, 10)} to ${new Date(bp.end)
               .toISOString()
               .slice(0, 10)}`
           : "Terms & Conditions apply",

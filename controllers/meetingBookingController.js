@@ -15,6 +15,8 @@ import Payment from "../models/paymentModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import { recordCancellation } from "./cancelledBookingController.js";
 import { getValidAccessToken } from "../utils/zohoTokenManager.js";
+import Contract from "../models/contractModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -132,14 +134,14 @@ async function checkAvailability(room, start, end) {
       if (b?.openingTime) openTime = b.openingTime;
       if (b?.closingTime) closeTime = b.closingTime;
     }
-  } catch (e) {}
+  } catch (e) { }
 
   const startHHMM = toHHMM(start);
   const endHHMM = toHHMM(end);
   if (startHHMM < openTime || endHHMM > closeTime) {
-    return { 
-      ok: false, 
-      reason: `Booking must be within operating hours ${openTime}-${closeTime} IST` 
+    return {
+      ok: false,
+      reason: `Booking must be within operating hours ${openTime}-${closeTime} IST`
     };
   }
 
@@ -161,22 +163,50 @@ async function checkAvailability(room, start, end) {
   return { ok: true };
 }
 
+// Helper: parse body-provided datetime as IST if timezone is missing
+function parseISTDateTime(input) {
+  if (input instanceof Date) return toIST(input);
+  if (typeof input === 'number') return toIST(new Date(input));
+  if (typeof input !== 'string') return new Date(NaN);
+
+  const trimmed = input.trim();
+  // If timezone is present (Z or +hh:mm), trust it
+  if (/Z|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const d = new Date(trimmed);
+    return isNaN(d) ? new Date(NaN) : d;
+  }
+  // Normalize common formats to ISO-like and append IST offset
+  // Accept: "YYYY-MM-DD HH:mm" or "YYYY-MM-DDTHH:mm" (optional :ss)
+  let iso = trimmed.replace(' ', 'T');
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(iso)) {
+    iso = iso + ':00';
+  }
+  if (!/:\d{2}$/.test(iso)) {
+    // If seconds still missing or format unexpected, let Date try to parse with IST locale fallback
+    const tentative = toIST(iso);
+    return tentative;
+  }
+  const withIST = `${iso}+05:30`;
+  const d = new Date(withIST);
+  return isNaN(d) ? new Date(NaN) : d;
+}
+
 // Create booking with conflict and availability checks
 export const createBooking = async (req, res) => {
   try {
-    const { 
-      room: roomId, 
-      member, 
-      memberId, 
-      client, 
-      paymentMethod, 
-      idempotencyKey, 
+    const {
+      room: roomId,
+      member,
+      memberId,
+      client,
+      paymentMethod,
+      idempotencyKey,
       visitors,
-      start, 
-      end, 
-      amenitiesRequested, 
-      currency, 
-      amount, 
+      start,
+      end,
+      amenitiesRequested,
+      currency,
+      amount,
       notes,
       discount, // { percent, reason }
       usingDefaultBuildingDiscount, // boolean
@@ -190,9 +220,16 @@ export const createBooking = async (req, res) => {
       guest: bodyGuest,
       guestId: bodyGuestId
     } = req.body || {};
-    
+
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
+
+    // Interpret provided start/end as IST wall time if no timezone provided
+    const startDt = parseISTDateTime(start);
+    const endDt = parseISTDateTime(end);
+    if (isNaN(startDt) || isNaN(endDt)) {
+      return res.status(400).json({ success: false, message: 'Invalid start or end datetime. Provide as IST (e.g., YYYY-MM-DD HH:mm) or include timezone.' });
+    }
 
     // Determine member/client/guest context (admin flow may not have a member)
     const currentMemberId = req.memberId || memberId || null;
@@ -233,14 +270,14 @@ export const createBooking = async (req, res) => {
     const room = await MeetingRoom.findById(roomId).populate('building');
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
-    const avail = await checkAvailability(room, new Date(start), new Date(end));
+    const avail = await checkAvailability(room, startDt, endDt);
     if (!avail.ok) return res.status(400).json({ success: false, message: avail.reason });
 
     // If external partner provides a primary booker and guests, create Visitor records
     const visitorIds = [];
     if (externalSource && (name || email || phone)) {
       try {
-        const expectedVisitDate = new Date(start);
+        const expectedVisitDate = new Date(startDt);
         const primaryVisitor = await Visitor.create({
           name: (name || 'Guest').trim(),
           email: email?.trim(),
@@ -250,8 +287,8 @@ export const createBooking = async (req, res) => {
           hostClient: clientId || undefined,
           purpose: 'Meeting Room Booking',
           expectedVisitDate,
-          expectedArrivalTime: new Date(start),
-          expectedDepartureTime: new Date(end),
+          expectedArrivalTime: new Date(startDt),
+          expectedDepartureTime: new Date(endDt),
           building: room.building?._id || room.building,
           status: 'invited',
           externalSource,
@@ -270,8 +307,8 @@ export const createBooking = async (req, res) => {
               hostClient: clientId || undefined,
               purpose: 'Meeting Room Booking',
               expectedVisitDate,
-              expectedArrivalTime: new Date(start),
-              expectedDepartureTime: new Date(end),
+              expectedArrivalTime: new Date(startDt),
+              expectedDepartureTime: new Date(endDt),
               building: room.building?._id || room.building,
               status: 'invited',
               externalSource,
@@ -288,10 +325,12 @@ export const createBooking = async (req, res) => {
     }
 
     // Calculate duration and pricing
-    const durationHours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
+    const durationHours = (endDt - startDt) / (1000 * 60 * 60);
     const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
-    // For cash/card payments we use daily pricing (quantity should be 1)
-    const dailyRate = room.pricing?.dailyRate || pricing?.dailyRate || 500; // Default daily rate fallback
+    // For cash/card payments we use hourly pricing
+    const hourlyRate = (room.pricing?.hourlyRate ?? 500); // Default hourly rate fallback
+    const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
+
     // Apply 18% GST on taxable base (after discount)
 
     // Handle credit payment
@@ -323,7 +362,7 @@ export const createBooking = async (req, res) => {
       requestedReason = discount.reason;
       if (requestedDiscountPercent <= discountCap) {
         // immediate apply
-        const totals = computeInvoiceTotals(dailyRate, requestedDiscountPercent);
+        const totals = computeInvoiceTotals(baseAmount, requestedDiscountPercent);
         appliedDiscountPercent = requestedDiscountPercent;
         discountAmount = totals.discountAmount;
         discountStatus = "approved";
@@ -349,9 +388,32 @@ export const createBooking = async (req, res) => {
         return res.status(403).json({ success: false, code: "CREDITS_NOT_ALLOWED", message: "This member is not allowed to use credits" });
       }
 
-      // Get pricing for this room (default to 1 credit per hour if not set)
-      const creditsPerHour = pricing?.creditsPerHour || 1;
-      const requiredCredits = Math.ceil(creditsPerHour * durationHours);
+      // Get pricing for this room (using contract's creditValue or default 500)
+      let creditValue = 500;
+      try {
+        const contract = await Contract.findOne({ client: clientId, status: "active", credit_enabled: true });
+        if (contract && contract.credit_value) {
+          creditValue = contract.credit_value;
+        }
+      } catch (_) { }
+
+      // Calculate total GST-inclusive amount to determine required credits
+      const totalsForCredits = computeInvoiceTotals(baseAmount, 0);
+      const requiredCredits = Math.ceil(totalsForCredits.total / creditValue);
+
+      // Check balance before attempting consumption
+      const wallet = await ClientCreditWallet.findOne({ client: clientId });
+      const currentBalance = wallet?.balance || 0;
+      if (currentBalance < requiredCredits) {
+        return res.status(400).json({
+          success: false,
+          code: "INSUFFICIENT_CREDITS",
+          message: `Insufficient credits. Required: ${requiredCredits}, Available: ${currentBalance}`,
+          required: requiredCredits,
+          available: currentBalance
+        });
+      }
+
 
       // Consume credits with overdraft support
       const result = await WalletService.consumeCreditsWithOverdraft({
@@ -361,12 +423,14 @@ export const createBooking = async (req, res) => {
         idempotencyKey,
         refType: "meeting_booking",
         refId: new mongoose.Types.ObjectId(), // Will be updated with booking ID after creation
-        meta: { 
-          roomId, 
-          durationHours, 
-          creditsPerHour,
+        meta: {
+          roomId,
+          durationHours,
+          creditValue,
+          totalAmount: totalsForCredits.total,
           visitorsCount: visitors?.length || 0
         }
+
       });
 
       paymentDetails = {
@@ -386,7 +450,7 @@ export const createBooking = async (req, res) => {
         paymentDetails = { method: paymentMethod || "cash" };
       } else {
         // Apply approved or no discount
-        const totals = computeInvoiceTotals(dailyRate, appliedDiscountPercent || 0);
+        const totals = computeInvoiceTotals(baseAmount, appliedDiscountPercent || 0);
         if (clientId || guestId) {
           invoice = new Invoice({
             ...(clientId ? { client: clientId } : {}),
@@ -395,11 +459,11 @@ export const createBooking = async (req, res) => {
             category: "meeting_room",
             invoice_number: `MR-${Date.now()}`,
             line_items: [{
-              description: `Meeting Room - ${room.name} (Daily)`,
-              quantity: 1,
-              unitPrice: dailyRate,
-              amount: dailyRate, // show gross amount in line item
-              rate: dailyRate
+              description: `Meeting Room - ${room.name} (Hourly)`,
+              quantity: Math.round(durationHours * 100) / 100,
+              unitPrice: hourlyRate,
+              amount: Number((hourlyRate * durationHours).toFixed(2)),
+              rate: hourlyRate
             }],
             sub_total: totals.sub_total,
             discount: totals.discountAmount || 0,
@@ -412,16 +476,16 @@ export const createBooking = async (req, res) => {
           await invoice.save();
         }
 
-        paymentDetails = { 
-          method: paymentMethod || "cash", 
+        paymentDetails = {
+          method: paymentMethod || "cash",
           amount: (invoice?.total ?? totals.total) // GST-inclusive total
         };
       }
     } else {
       // Other payment methods
-      paymentDetails = { 
-        method: paymentMethod || "cash", 
-        amount: amount || undefined 
+      paymentDetails = {
+        method: paymentMethod || "cash",
+        amount: amount || undefined
       };
     }
 
@@ -431,8 +495,8 @@ export const createBooking = async (req, res) => {
       client: clientId || undefined,
       guest: guestId || undefined,
       visitors: visitorIds.length ? visitorIds : (Array.isArray(visitors) ? visitors : undefined),
-      start: new Date(start),
-      end: new Date(end),
+      start: startDt,
+      end: endDt,
       amenitiesRequested: Array.isArray(amenitiesRequested) ? amenitiesRequested : undefined,
       status: bookingStatus,
       payment: paymentDetails,
@@ -453,9 +517,9 @@ export const createBooking = async (req, res) => {
     });
 
     // Add reserved slot to meeting room
-    const bookingStart = new Date(start);
-    const bookingEnd = new Date(end);
-    
+    const bookingStart = new Date(startDt);
+    const bookingEnd = new Date(endDt);
+
     // Convert booking times to 12-hour format with AM/PM
     const startTimeStr = bookingStart.toLocaleTimeString('en-US', {
       hour: '2-digit',
@@ -474,18 +538,20 @@ export const createBooking = async (req, res) => {
     const istYmd = formatYMDIST(bookingStart);
     const utcMidnightOfIstDay = new Date(`${istYmd}T00:00:00.000Z`);
 
-    // Add to reserved slots
-    const reservedSlot = {
-      // Store UTC midnight of the IST day + denormalized IST day string
-      date: utcMidnightOfIstDay,
-      dateISTYMD: istYmd,
-      startTime: startTimeStr,
-      endTime: endTimeStr,
-      bookingId: booking._id
-    };
+    // Add to reserved slots ONLY when booking is confirmed (not for payment_pending)
+    if (bookingStatus === 'booked') {
+      const reservedSlot = {
+        // Store UTC midnight of the IST day + denormalized IST day string
+        date: utcMidnightOfIstDay,
+        dateISTYMD: istYmd,
+        startTime: startTimeStr,
+        endTime: endTimeStr,
+        bookingId: booking._id
+      };
 
-    room.reservedSlots.push(reservedSlot);
-    await room.save();
+      room.reservedSlots.push(reservedSlot);
+      await room.save();
+    }
 
     // Notify on confirmed booking (status 'booked') using template 'meeting_booking_confirmed'
     try {
@@ -501,7 +567,7 @@ export const createBooking = async (req, res) => {
           try {
             const clientDoc = await Client.findById(clientId).select('email').lean();
             if (clientDoc?.email) emailTo = clientDoc.email;
-          } catch {}
+          } catch { }
         }
         if (emailTo) to.email = emailTo;
 
@@ -535,8 +601,8 @@ export const createBooking = async (req, res) => {
     // Schedule reminders for member and visitors before the meeting start
     try {
       const reminderMinutes = Number(process.env.MEETING_BOOKING_REMINDER_MINUTES_BEFORE || 30);
-      const startDt = new Date(start);
-      const scheduledAt = new Date(startDt.getTime() - reminderMinutes * 60000);
+      const startDtReminder = new Date(startDt);
+      const scheduledAt = new Date(startDtReminder.getTime() - reminderMinutes * 60000);
       const now = new Date();
       if (bookingStatus === 'booked' && scheduledAt > now) {
         // Member reminder
@@ -626,7 +692,7 @@ export const createBooking = async (req, res) => {
     if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay') && discountStatus !== 'pending') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
-        amount: Math.round((paymentDetails.amount || dailyRate) * 100), // Convert to paise (GST-inclusive)
+        amount: Math.round((paymentDetails.amount || baseAmount) * 100), // Convert to paise (GST-inclusive)
         currency: "INR",
         name: "Ofis Square",
         description: `Meeting Room - ${room.name}`,
@@ -715,7 +781,7 @@ export const cancelBooking = async (req, res) => {
       const v = booking?.room?.building?.meetingCancellationGraceMinutes;
       graceMinutes = (typeof v === 'number' && !Number.isNaN(v)) ? v : parseInt(process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
       if (!Number.isFinite(graceMinutes) || graceMinutes < 0) graceMinutes = 5;
-    } catch (_) {}
+    } catch (_) { }
 
     // Cutoff minutes (before start) sourced from building with env/default fallback
     let cutoffMinutes = 60;
@@ -723,7 +789,7 @@ export const cancelBooking = async (req, res) => {
       const cv = booking?.room?.building?.meetingCancellationCutoffMinutes;
       cutoffMinutes = (typeof cv === 'number' && !Number.isNaN(cv)) ? cv : parseInt(process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
       if (!Number.isFinite(cutoffMinutes) || cutoffMinutes < 0) cutoffMinutes = 60;
-    } catch (_) {}
+    } catch (_) { }
 
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
     const startIST = toIST(booking.start);
@@ -778,7 +844,7 @@ export const cancelBooking = async (req, res) => {
           try {
             const mem = await Member.findById(booking.member).select('client').lean();
             clientId = mem?.client || null;
-          } catch (_) {}
+          } catch (_) { }
         }
         const creditsToRefund = Number(booking?.payment?.coveredCredits || 0);
         if (clientId && creditsToRefund > 0) {
@@ -950,7 +1016,7 @@ export const cancelBooking = async (req, res) => {
           console.log('[CancelFlow] Reserved slot freed in room', { bookingId: String(booking._id), roomId: String(room._id) });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     console.log('[CancelFlow] Completed successfully', { bookingId: String(booking._id) });
     return res.json({ success: true, data: booking });
@@ -1069,14 +1135,14 @@ export const getBookingsByMember = async (req, res) => {
     const memberId = req.memberId || req.member?._id || req.params.memberId;
 
     if (!memberId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Member ID is required" 
+      return res.status(400).json({
+        success: false,
+        message: "Member ID is required"
       });
     }
 
     const { status, from, to, limit = 50, page = 1 } = req.query || {};
-    
+
     // Build filter
     const filter = { member: memberId };
     if (status) filter.status = status;
@@ -1159,8 +1225,8 @@ export const getBookingsByMember = async (req, res) => {
       timing: {
         start: booking.start,
         end: booking.end,
-        duration: booking.end && booking.start 
-          ? Math.round((new Date(booking.end) - new Date(booking.start)) / (1000 * 60)) 
+        duration: booking.end && booking.start
+          ? Math.round((new Date(booking.end) - new Date(booking.start)) / (1000 * 60))
           : null,
         durationUnit: 'minutes'
       },
@@ -1179,8 +1245,8 @@ export const getBookingsByMember = async (req, res) => {
       updatedAt: booking.updatedAt
     }));
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: {
         bookings: formattedBookings,
         pagination: {
@@ -1194,9 +1260,9 @@ export const getBookingsByMember = async (req, res) => {
 
   } catch (error) {
     console.error('Get bookings by member error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: error.message 
+    return res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };
@@ -1267,8 +1333,11 @@ export const requestDiscount = async (req, res) => {
 
     // Within cap -> auto-apply
     if (requestedDiscountPercent <= cap) {
-      const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
-      const totals = computeInvoiceTotals(dailyRate, requestedDiscountPercent);
+      const hourlyRate = (booking.room?.pricing?.hourlyRate ?? 500);
+
+      const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);
+      const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
+      const totals = computeInvoiceTotals(baseAmount, requestedDiscountPercent);
 
       booking.usingDefaultBuildingDiscount = !!usingDefaultBuildingDiscount;
       booking.discountStatus = 'approved';
@@ -1286,11 +1355,11 @@ export const requestDiscount = async (req, res) => {
           category: 'meeting_room',
           invoice_number: `MR-${Date.now()}`,
           line_items: [{
-            description: `Meeting Room - ${booking.room.name} (Daily)`,
-            quantity: 1,
-            unitPrice: dailyRate,
-            amount: dailyRate, // show gross amount in line item
-            rate: dailyRate
+            description: `Meeting Room - ${booking.room.name} (Hourly)`,
+            quantity: Math.round(durationHours * 100) / 100,
+            unitPrice: hourlyRate,
+            amount: Number((hourlyRate * durationHours).toFixed(2)),
+            rate: hourlyRate
           }],
           sub_total: totals.sub_total,
           discount: totals.discountAmount || 0,
@@ -1306,11 +1375,11 @@ export const requestDiscount = async (req, res) => {
         await Invoice.findByIdAndUpdate(booking.invoice, {
           $set: {
             line_items: [{
-              description: `Meeting Room - ${booking.room.name} (Daily)`,
-              quantity: 1,
-              unitPrice: dailyRate,
-              amount: dailyRate,
-              rate: dailyRate,
+              description: `Meeting Room - ${booking.room.name} (Hourly)`,
+              quantity: Math.round(durationHours * 100) / 100,
+              unitPrice: hourlyRate,
+              amount: Number((hourlyRate * durationHours).toFixed(2)),
+              rate: hourlyRate,
             }],
             sub_total: totals.sub_total,
             discount: totals.discountAmount || 0,
@@ -1359,9 +1428,12 @@ export const approveDiscount = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No pending discount request to approve' });
     }
     const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
-    const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
+    const hourlyRate = (booking.room?.pricing?.hourlyRate ?? 500);
+
+    const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);
+    const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
     const pct = Math.max(0, Math.min(100, Number(approvedPercent ?? booking.requestedDiscountPercent ?? 0)));
-    const totals = computeInvoiceTotals(dailyRate, pct);
+    const totals = computeInvoiceTotals(baseAmount, pct);
 
     booking.discountStatus = 'approved';
     booking.appliedDiscountPercent = pct;
@@ -1381,11 +1453,11 @@ export const approveDiscount = async (req, res) => {
         category: 'meeting_room',
         invoice_number: `MR-${Date.now()}`,
         line_items: [{
-          description: `Meeting Room - ${booking.room.name} (Daily)`,
-          quantity: 1,
-          unitPrice: dailyRate,
-          amount: dailyRate,
-          rate: dailyRate,
+          description: `Meeting Room - ${booking.room.name} (Hourly)`,
+          quantity: Math.round(durationHours * 100) / 100,
+          unitPrice: hourlyRate,
+          amount: Number((hourlyRate * durationHours).toFixed(2)),
+          rate: hourlyRate,
         }],
         sub_total: totals.sub_total,
         discount: totals.discountAmount || 0,
@@ -1400,11 +1472,11 @@ export const approveDiscount = async (req, res) => {
       await Invoice.findByIdAndUpdate(booking.invoice, {
         $set: {
           line_items: [{
-            description: `Meeting Room - ${booking.room.name} (Daily)`,
-            quantity: 1,
-            unitPrice: dailyRate,
-            amount: dailyRate,
-            rate: dailyRate,
+            description: `Meeting Room - ${booking.room.name} (Hourly)`,
+            quantity: Math.round(durationHours * 100) / 100,
+            unitPrice: hourlyRate,
+            amount: Number((hourlyRate * durationHours).toFixed(2)),
+            rate: hourlyRate,
           }],
           sub_total: totals.sub_total,
           discount: totals.discountAmount || 0,
@@ -1447,8 +1519,10 @@ export const rejectDiscount = async (req, res) => {
 
     // If no invoice exists yet, create base invoice so payment can proceed
     const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
-    const dailyRate = booking.room?.pricing?.dailyRate || pricing?.dailyRate || 500;
-    const totals = computeInvoiceTotals(dailyRate, 0);
+    const hourlyRate = (booking.room?.pricing?.hourlyRate ?? 500);
+
+    const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);
+    const totals = computeInvoiceTotals(Math.max(0, Number(hourlyRate) * Number(durationHours)), 0);
     if (!booking.invoice && booking.client) {
       const invoice = new Invoice({
         client: booking.client,
@@ -1456,11 +1530,11 @@ export const rejectDiscount = async (req, res) => {
         category: 'meeting_room',
         invoice_number: `MR-${Date.now()}`,
         line_items: [{
-          description: `Meeting Room - ${booking.room.name} (Daily)`,
-          quantity: 1,
-          unitPrice: dailyRate,
-          amount: dailyRate,
-          rate: dailyRate,
+          description: `Meeting Room - ${booking.room.name} (Hourly)`,
+          quantity: Math.round(durationHours * 100) / 100,
+          unitPrice: hourlyRate,
+          amount: Number((hourlyRate * durationHours).toFixed(2)),
+          rate: hourlyRate,
         }],
         sub_total: totals.sub_total,
         discount: 0,

@@ -5,8 +5,9 @@ const { Schema } = mongoose;
 const pricingSchema = new Schema(
   {
     currency: { type: String, default: "INR" },
-    dailyRate: { type: Number, default: 0 },
+    hourlyRate: { type: Number, default: 0 },
   },
+
   { _id: false }
 );
 
@@ -47,7 +48,9 @@ const meetingRoomSchema = new Schema(
     building: { type: Schema.Types.ObjectId, ref: "Building", index: true },
     name: { type: String, required: true, trim: true },
     capacity: { type: Number, required: true },
+    floor: { type: String, trim: true },
     amenities: {
+
       type: [{ type: Schema.Types.ObjectId, ref: "CabinAmenity" }],
       default: []
     },

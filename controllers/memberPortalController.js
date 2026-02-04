@@ -664,6 +664,9 @@ export const getHomePageData = async (req, res) => {
     let companyName = null;
     let notifications = [];
     let contractData = null;
+    let cabinType = null;
+    let buildingOpeningTime = null;
+    let buildingClosingTime = null;
 
     // --- 1. Identify User & Basic Info ---
     if (isClient) {
@@ -678,11 +681,14 @@ export const getHomePageData = async (req, res) => {
         const cabin = await Cabin.findOne({
           allocatedTo: req.client._id,
           status: { $ne: 'released' } // simple check
-        }).populate('building', 'name');
+        }).populate('building', 'name openingTime closingTime');
 
         if (cabin) {
           cabinNumber = cabin.number;
           buildingName = cabin.building?.name;
+          cabinType = cabin.type || null;
+          buildingOpeningTime = cabin.building?.openingTime || null;
+          buildingClosingTime = cabin.building?.closingTime || null;
         }
       }
     } else {
@@ -690,12 +696,12 @@ export const getHomePageData = async (req, res) => {
       const member = await Member.findById(req.memberId)
         .populate({
           path: 'desk',
-          populate: { path: 'cabin', select: 'number' }
+          populate: { path: 'cabin', select: 'number type category' }
         })
         .populate({
           path: 'client',
           select: 'membershipStatus building companyName',
-          populate: { path: 'building', select: 'name' }
+          populate: { path: 'building', select: 'name openingTime closingTime' }
         });
 
       if (member) {
@@ -708,9 +714,14 @@ export const getHomePageData = async (req, res) => {
           // Prefer building from client if available (usually consistent), else from desk relation if we populated it
           // In member populate above, we populated member -> client -> building
           buildingName = member.client?.building?.name;
+          cabinType = member.desk.cabin?.type || null;
+          buildingOpeningTime = member.client?.building?.openingTime || null;
+          buildingClosingTime = member.client?.building?.closingTime || null;
         } else if (member.client && member.client.building) {
           // If no desk, fallback to client's building
           buildingName = member.client.building.name;
+          buildingOpeningTime = member.client.building.openingTime || null;
+          buildingClosingTime = member.client.building.closingTime || null;
         }
       }
     }
@@ -831,6 +842,38 @@ export const getHomePageData = async (req, res) => {
       .limit(5)
       .select('title content type isRead createdAt metadata');
 
+    // --- 4. Today's Meeting Room Bookings (for member) ---
+    let bookingsToday = [];
+    try {
+      if (!isClient && req.memberId) {
+        const rawBookings = await MeetingBooking.find({
+          member: req.memberId,
+          start: { $gte: today, $lte: endOfToday },
+          status: { $ne: 'cancelled' }
+        })
+          .populate('room', 'name images')
+          .select('room start end status');
+
+        const fmt = (d) => {
+          try {
+            return new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+          } catch { return null; }
+        };
+
+        bookingsToday = rawBookings.map(b => ({
+          _id: b._id,
+          roomId: b.room?._id,
+          roomName: b.room?.name,
+          image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+          start: b.start,
+          end: b.end,
+          slot: `${fmt(b.start)} - ${fmt(b.end)}`,
+          status: b.status
+        }));
+      }
+    } catch (e) {
+      console.warn('getHomePageData: failed to fetch todays bookings', e?.message || e);
+    }
 
     res.json({
       success: true,
@@ -842,14 +885,18 @@ export const getHomePageData = async (req, res) => {
           buildingName,
           membershipStatus,
           role: isClient ? 'client' : 'member',
-          contract: contractData
+          contract: contractData,
+          cabinType,
+          buildingOpeningTime,
+          buildingClosingTime
         },
         events: {
           today: todaysEvents,
           thisWeek: weeksEvents,
           all: allEvents
         },
-        notifications
+        notifications,
+        bookingsToday
       }
     });
 

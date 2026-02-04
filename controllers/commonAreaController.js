@@ -1,6 +1,10 @@
 import CommonArea from "../models/commonAreaModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import Building from "../models/buildingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import csv from "csv-parser";
+import { Readable } from "stream";
+import imagekit from "../utils/imageKit.js";
 
 // Validate and map matrixDeviceIds -> matrixDevices array
 async function validateAndAttachDevices(payload) {
@@ -43,7 +47,34 @@ async function validateAndAttachDevices(payload) {
 // Create
 export const createCommonArea = async (req, res) => {
   try {
-    const data = await validateAndAttachDevices({ ...req.body });
+    const { images, ...payload } = req.body;
+    const data = await validateAndAttachDevices({ ...payload });
+
+    // Process images
+    const processedImages = [];
+    if (images && Array.isArray(images)) {
+      const bld = await Building.findById(data.buildingId);
+      for (const image of images) {
+        try {
+          const caption = (image.caption || '').trim();
+          if (image?.file) {
+            const uploadResult = await imagekit.upload({
+              file: image.file,
+              fileName: image.name || `${data.name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/common-areas",
+              useUniqueFileName: true,
+              tags: ["common-area", data.name.replace(/\s+/g, '-').toLowerCase(), bld?.name.replace(/\s+/g, '-').toLowerCase()].filter(Boolean)
+            });
+            processedImages.push({ url: uploadResult.url, caption, isPrimary: image.isPrimary || false });
+          } else if (image?.url) {
+            processedImages.push({ url: image.url, caption, isPrimary: image.isPrimary || false });
+          }
+        } catch (uploadError) {
+          console.warn("Failed to process image:", uploadError);
+        }
+      }
+    }
+    data.images = processedImages;
 
     const ca = await CommonArea.create(data);
     await logCRUDActivity(req, "CREATE", "CommonArea", ca._id, null, {
@@ -109,13 +140,41 @@ export const updateCommonArea = async (req, res) => {
     const existing = await CommonArea.findById(id);
     if (!existing) return res.status(404).json({ success: false, message: "Common area not found" });
 
-    const updateData = { ...req.body };
+    const { images, ...payload } = req.body;
+    const updateData = { ...payload };
     // Ensure buildingId used for validation is the updated one if provided, else existing
     if (updateData.buildingId === undefined) updateData.buildingId = existing.buildingId;
 
     // Validate devices when matrixDeviceIds is present (can be empty array to clear)
     if (updateData.matrixDeviceIds !== undefined) {
       await validateAndAttachDevices(updateData);
+    }
+
+    // Process images
+    if (images && Array.isArray(images)) {
+      const processedImages = [];
+      const bldId = updateData.buildingId || existing.buildingId;
+      const bld = await Building.findById(bldId);
+      for (const image of images) {
+        try {
+          const caption = (image.caption || '').trim();
+          if (image?.file) {
+            const uploadResult = await imagekit.upload({
+              file: image.file,
+              fileName: image.name || `${(updateData.name || existing.name).replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`,
+              folder: "/common-areas",
+              useUniqueFileName: true,
+              tags: ["common-area", (updateData.name || existing.name).replace(/\s+/g, '-').toLowerCase(), bld?.name.replace(/\s+/g, '-').toLowerCase()].filter(Boolean)
+            });
+            processedImages.push({ url: uploadResult.url, caption, isPrimary: image.isPrimary || false });
+          } else if (image?.url) {
+            processedImages.push({ url: image.url, caption, isPrimary: image.isPrimary || false });
+          }
+        } catch (uploadError) {
+          console.warn("Failed to process image:", uploadError);
+        }
+      }
+      updateData.images = processedImages;
     }
 
     const updated = await CommonArea.findByIdAndUpdate(id, updateData, { new: true });
@@ -144,5 +203,289 @@ export const deleteCommonArea = async (req, res) => {
   } catch (error) {
     await logErrorActivity(req, error, "CommonArea");
     return res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+export const exportMasterFileCommonAreas = async (req, res) => {
+  try {
+    const buildings = await Building.find().select('name').sort({ name: 1 });
+
+    const areaTypes = ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "OTHER"];
+    const statuses = ["active", "inactive"];
+
+    const masterData = {
+      buildings: buildings.map(b => b.name),
+      areaTypes,
+      statuses
+    };
+
+    const sampleRows = [];
+    if (buildings.length > 0) {
+      sampleRows.push({
+        buildingName: buildings[0].name,
+        name: 'Main Cafeteria',
+        areaType: 'CAFETERIA',
+        floor: '1',
+        zone: 'North',
+        notes: 'Near entrance',
+        description: 'Main dining area',
+        status: 'active',
+        image1: 'https://example.com/sample-cafe-1.jpg',
+        image2: 'https://example.com/sample-cafe-2.jpg'
+      });
+      sampleRows.push({
+        buildingName: buildings[0].name,
+        name: 'Executive Lounge',
+        areaType: 'LOUNGE',
+        floor: '2',
+        zone: 'East',
+        notes: 'Access restricted',
+        description: 'Premium lounge for members',
+        status: 'active',
+        image1: 'https://example.com/sample-lounge-1.jpg'
+      });
+    } else {
+      sampleRows.push({
+        buildingName: 'Main Building',
+        name: 'Main Cafeteria',
+        areaType: 'CAFETERIA',
+        floor: '1',
+        zone: 'North',
+        notes: 'Near entrance',
+        description: 'Main dining area',
+        status: 'active',
+        image1: 'https://example.com/sample-cafe.jpg'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        masterData,
+        sampleRows
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting master file:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const downloadSampleCSVCommonAreas = async (_req, res) => {
+  try {
+    const header = [
+      'buildingName', 'name', 'areaType', 'floor', 'zone', 'notes', 'description', 'status', 'images', 'deviceId', 'deviceType'
+    ];
+    const sample1 = ['Main Building', 'Main Cafeteria', 'CAFETERIA', '1', 'North', 'Near entrance', 'Main dining area', 'active', 'https://example.com/cafe-1.jpg,https://example.com/cafe-2.jpg', 'd_10001', '16'];
+    const sample2 = ['Main Building', 'Executive Lounge', 'LOUNGE', '2', 'East', 'Access restricted', 'Premium lounge', 'active', 'https://example.com/lounge-1.jpg', 'd_10002', '16'];
+
+    const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="common_areas_import_sample.csv"');
+    return res.send(csvText);
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const importCommonAreasFromCSV = async (req, res) => {
+  try {
+    const file = req.file;
+    const dryRun = String(req.query?.dryRun ?? req.body?.dryRun ?? 'false').toLowerCase() === 'true';
+    if (!file) return res.status(400).json({ success: false, message: 'CSV file is required (field name: file)' });
+
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      try {
+        const stream = Readable.from(file.buffer);
+        stream
+          .pipe(csv())
+          .on('data', (data) => rows.push(data))
+          .on('end', resolve)
+          .on('error', reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    const toNumber = (v) => {
+      if (v === undefined || v === null || v === '') return undefined;
+      const n = Number(String(v).trim());
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const norm = (s) => (s === undefined || s === null ? '' : String(s).trim());
+
+    const parseBool = (v) => {
+      if (v === undefined || v === null) return false;
+      const s = String(v).trim().toLowerCase();
+      return s === 'true' || s === '1' || s === 'yes' || s === 'y';
+    };
+
+    const parseImages = (obj) => {
+      const combined = norm(obj.images);
+      if (!combined) return [];
+
+      const urls = combined.split(',').map(x => x.trim()).filter(Boolean);
+      return urls.map((u, idx) => ({
+        url: u,
+        isPrimary: idx === 0,
+      }));
+    };
+
+    // Caching buildings to avoid repeated lookups
+    const buildings = await Building.find().select('name').lean();
+    const buildingNameToId = new Map(buildings.map(b => [norm(b.name).toLowerCase(), String(b._id)]));
+
+    const validAreaTypes = ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "OTHER"];
+
+    const perRow = [];
+    let validCount = 0;
+    let invalidCount = 0;
+    let createdCount = 0;
+
+    for (const [idx, originalRow] of rows.entries()) {
+      try {
+        const errors = [];
+        const payload = {};
+
+        // Building Lookup
+        const bName = norm(originalRow.buildingName);
+        const bId = originalRow.buildingId ? norm(originalRow.buildingId) : buildingNameToId.get(bName.toLowerCase());
+
+        if (!bId && bName) {
+          errors.push(`Building "${bName}" not found`);
+        } else if (!bId && !bName) {
+          errors.push("Building Name or Building ID is required");
+        } else {
+          payload.buildingId = bId;
+        }
+
+        // Name
+        const name = norm(originalRow.name);
+        if (!name) errors.push("Name is required");
+        else payload.name = name;
+
+        // Area Type
+        const areaType = norm(originalRow.areaType).toUpperCase();
+        if (areaType && !validAreaTypes.includes(areaType)) {
+          errors.push(`Invalid Area Type: ${areaType}. Must be one of ${validAreaTypes.join(', ')}`);
+        } else {
+          payload.areaType = areaType || "OTHER";
+        }
+
+        // Description
+        payload.description = norm(originalRow.description);
+
+        // Location
+        payload.location = {
+          floor: toNumber(originalRow.floor),
+          zone: norm(originalRow.zone),
+          notes: norm(originalRow.notes)
+        };
+
+        // Status
+        const status = norm(originalRow.status).toLowerCase();
+        if (status && !['active', 'inactive'].includes(status)) {
+          errors.push(`Invalid Status: ${status}. Must be active or inactive`);
+        } else {
+          payload.status = status || 'active';
+        }
+
+        // Images
+        payload.images = parseImages(originalRow);
+
+        // Matrix Device fields from CSV
+        const rawDeviceInput = norm(originalRow.deviceId || originalRow.device_id || originalRow["device id"] || originalRow["Device ID"] || originalRow.device);
+        const deviceTypeRaw = norm(originalRow.deviceType || originalRow["device type"] || originalRow["Device Type"]);
+        let deviceType = toNumber(deviceTypeRaw);
+        let deviceIdRaw = rawDeviceInput || '';
+        let deviceIdNormalized = undefined;
+        let numericDevice = undefined;
+
+        if (rawDeviceInput) {
+          const stripped = rawDeviceInput.startsWith('d_') ? rawDeviceInput.slice(2) : rawDeviceInput;
+          deviceIdNormalized = rawDeviceInput.startsWith('d_') ? rawDeviceInput : `d_${stripped}`;
+          const n = toNumber(stripped);
+          if (n !== undefined) numericDevice = n;
+          // default deviceType to 16 if not provided
+          if (deviceType === undefined) deviceType = 16;
+          const allowedTypes = new Set([1, 16, 17]);
+          if (!allowedTypes.has(deviceType)) {
+            errors.push(`Invalid deviceType: ${deviceType}. Allowed: 1, 16, 17`);
+          }
+        }
+
+        if (errors.length > 0) {
+          invalidCount++;
+          perRow.push({ index: idx + 1, success: false, errors, originalRow });
+          continue;
+        }
+
+        validCount++;
+        if (dryRun) {
+          payload.deviceId = deviceIdNormalized;
+          payload.deviceType = deviceType;
+          perRow.push({ index: idx + 1, success: true, preview: payload, originalRow });
+          continue;
+        }
+
+        // Actual Import
+        const ca = await CommonArea.create(payload);
+
+        // If device details provided, find or create/link MatrixDevice
+        if (deviceIdNormalized) {
+          let deviceDoc = await MatrixDevice.findOne({
+            $or: [
+              { device_id: deviceIdNormalized },
+              ...(numericDevice !== undefined ? [{ device: numericDevice }] : []),
+              ...(deviceIdRaw && deviceIdRaw !== deviceIdNormalized ? [{ device_id: deviceIdRaw }] : [])
+            ]
+          });
+
+          if (!deviceDoc) {
+            deviceDoc = await MatrixDevice.create({
+              buildingId: payload.buildingId,
+              name: `Common Area ${payload.name} Device`,
+              vendor: 'MATRIX_COSEC',
+              deviceType: deviceType || 16,
+              direction: 'BIDIRECTIONAL',
+              device_id: deviceIdNormalized,
+              device: numericDevice,
+              status: 'Active',
+              location: { floor: payload.location?.floor, zone: payload.location?.zone }
+            });
+          } else {
+            // Check if device is already active in another building/place? 
+            // For now, satisfy user request to implement "jst like its in importCabinsFromCSV"
+            if (deviceDoc.status !== 'Active') {
+              deviceDoc.status = 'Active';
+              await deviceDoc.save();
+            }
+          }
+
+          if (deviceDoc) {
+            ca.matrixDevices = [deviceDoc._id];
+            await ca.save();
+          }
+        }
+
+        createdCount++;
+        perRow.push({ index: idx + 1, success: true, id: ca._id, originalRow });
+      } catch (e) {
+        invalidCount++;
+        const errMsg = e.code === 11000 ? "A conflict occurred (record might already exist)" : (e.message || 'Failed to create common area');
+        perRow.push({ index: idx + 1, success: false, errors: [errMsg], originalRow });
+      }
+    }
+
+    return res.json({
+      success: true,
+      dryRun,
+      counts: { total: rows.length, valid: validCount, invalid: invalidCount, created: dryRun ? 0 : createdCount },
+      results: perRow,
+    });
+  } catch (error) {
+    await logErrorActivity(req, error, "CommonArea");
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

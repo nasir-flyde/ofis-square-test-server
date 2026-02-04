@@ -28,7 +28,7 @@ export const createRoom = async (req, res) => {
       roomData.matrixDevices = roomData.matrixDeviceIds;
       delete roomData.matrixDeviceIds;
     }
-    
+
     // Handle uploaded images with ImageKit
     if (req.files && req.files.length > 0) {
       const imageUploadPromises = req.files.map(async (file) => {
@@ -44,16 +44,16 @@ export const createRoom = async (req, res) => {
           throw uploadError;
         }
       });
-      
+
       roomData.images = await Promise.all(imageUploadPromises);
     }
-    
+
     const room = await MeetingRoom.create(roomData);
     await logCRUDActivity(req, 'CREATE', 'MeetingRoom', room._id, null, {
       roomName: room.name,
       buildingId: room.building,
       capacity: room.capacity,
-      dailyRate: room.pricing?.dailyRate,
+      hourlyRate: room.pricing?.hourlyRate,
       imagesCount: room.images?.length || 0
     });
     return res.status(201).json({ success: true, data: room });
@@ -134,7 +134,7 @@ export const getRoomById = async (req, res) => {
 export const updateRoom = async (req, res) => {
   try {
     const updateData = { ...req.body };
-    
+
     // Handle uploaded images with ImageKit
     if (req.files && req.files.length > 0) {
       const imageUploadPromises = req.files.map(async (file) => {
@@ -150,9 +150,9 @@ export const updateRoom = async (req, res) => {
           throw uploadError;
         }
       });
-      
+
       const newImageUrls = await Promise.all(imageUploadPromises);
-      
+
       // Get existing room to preserve existing images if needed
       const existingRoom = await MeetingRoom.findById(req.params.id);
       if (existingRoom) {
@@ -163,7 +163,7 @@ export const updateRoom = async (req, res) => {
         updateData.images = newImageUrls;
       }
     }
-    
+
     // If no new files uploaded, still honor existingImages (including empty array to clear all)
     if ((!req.files || req.files.length === 0) && typeof req.body.existingImages !== 'undefined') {
       try {
@@ -173,7 +173,7 @@ export const updateRoom = async (req, res) => {
         // If parsing fails, ignore and let it proceed without changing images
       }
     }
-    
+
     // Validate matrix devices if provided
     if (updateData.matrixDeviceIds !== undefined) {
       const ids = Array.isArray(updateData.matrixDeviceIds) ? updateData.matrixDeviceIds : [];
@@ -196,12 +196,12 @@ export const updateRoom = async (req, res) => {
 
     const room = await MeetingRoom.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
-    
+
     await logCRUDActivity(req, 'UPDATE', 'MeetingRoom', room._id, null, {
       roomName: room.name,
       imagesCount: room.images?.length || 0
     });
-    
+
     return res.json({ success: true, data: room });
   } catch (error) {
     await logErrorActivity(req, error);
@@ -238,7 +238,7 @@ export const getAvailableSlots = async (req, res) => {
   try {
     const { id } = req.params;
     const { date } = req.query;
-    
+
     if (!date) {
       return res.status(400).json({ success: false, message: "Date is required" });
     }
@@ -247,10 +247,10 @@ export const getAvailableSlots = async (req, res) => {
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
     if (room.isBookingClosed) {
-      return res.json({ 
-        success: true, 
-        data: [], 
-        message: "Booking is currently closed for this room" 
+      return res.json({
+        success: true,
+        data: [],
+        message: "Booking is currently closed for this room"
       });
     }
 
@@ -272,13 +272,13 @@ export const getAvailableSlots = async (req, res) => {
 
     // Filter available slots by removing reserved ones
     const availableSlots = room.availableTimeSlots.filter(slot => {
-      return !reservedTimes.some(reserved => 
+      return !reservedTimes.some(reserved =>
         reserved.startTime === slot.startTime && reserved.endTime === slot.endTime
       );
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: availableSlots,
       reservedSlots: reservedTimes,
       totalSlots: room.availableTimeSlots.length,
@@ -297,9 +297,9 @@ export const addReservedSlot = async (req, res) => {
     const { date, startTime, endTime, bookingId } = req.body;
 
     if (!date || !startTime || !endTime) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Date, startTime, and endTime are required" 
+      return res.status(400).json({
+        success: false,
+        message: "Date, startTime, and endTime are required"
       });
     }
 
@@ -307,9 +307,9 @@ export const addReservedSlot = async (req, res) => {
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
     if (room.isBookingClosed) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Booking is currently closed for this room" 
+      return res.status(400).json({
+        success: false,
+        message: "Booking is currently closed for this room"
       });
     }
 
@@ -323,15 +323,15 @@ export const addReservedSlot = async (req, res) => {
       slotDateIST.setHours(0, 0, 0, 0);
       const targetDateIST = new Date(targetDate.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       targetDateIST.setHours(0, 0, 0, 0);
-      return slotDateIST.getTime() === targetDateIST.getTime() && 
-             slot.startTime === startTime && 
-             slot.endTime === endTime;
+      return slotDateIST.getTime() === targetDateIST.getTime() &&
+        slot.startTime === startTime &&
+        slot.endTime === endTime;
     });
 
     if (isAlreadyReserved) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "This time slot is already reserved" 
+      return res.status(400).json({
+        success: false,
+        message: "This time slot is already reserved"
       });
     }
 
@@ -344,10 +344,10 @@ export const addReservedSlot = async (req, res) => {
       slotDetails: { date, startTime, endTime }
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Time slot reserved successfully",
-      data: room 
+      data: room
     });
   } catch (error) {
     await logErrorActivity(req, error);
@@ -362,9 +362,9 @@ export const removeReservedSlot = async (req, res) => {
     const { date, startTime, endTime } = req.body;
 
     if (!date || !startTime || !endTime) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Date, startTime, and endTime are required" 
+      return res.status(400).json({
+        success: false,
+        message: "Date, startTime, and endTime are required"
       });
     }
 
@@ -381,15 +381,15 @@ export const removeReservedSlot = async (req, res) => {
       const slotDate = new Date(slot.date);
       const slotDateIST = new Date(slotDate.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       slotDateIST.setHours(0, 0, 0, 0);
-      return !(slotDateIST.getTime() === targetDateIST.getTime() && 
-               slot.startTime === startTime && 
-               slot.endTime === endTime);
+      return !(slotDateIST.getTime() === targetDateIST.getTime() &&
+        slot.startTime === startTime &&
+        slot.endTime === endTime);
     });
 
     if (room.reservedSlots.length === initialLength) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Reserved slot not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Reserved slot not found"
       });
     }
 
@@ -401,10 +401,10 @@ export const removeReservedSlot = async (req, res) => {
       slotDetails: { date, startTime, endTime }
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Reserved slot removed successfully",
-      data: room 
+      data: room
     });
   } catch (error) {
     await logErrorActivity(req, error);
@@ -428,10 +428,10 @@ export const toggleBookingStatus = async (req, res) => {
       isBookingClosed: room.isBookingClosed
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: `Booking ${room.isBookingClosed ? 'closed' : 'opened'} successfully`,
-      data: room 
+      data: room
     });
   } catch (error) {
     await logErrorActivity(req, error);
@@ -512,7 +512,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
       try {
         const isoYMD = new Date(slotDate).toISOString().slice(0, 10);
         if (requestedYMD && isoYMD === requestedYMD) return true;
-      } catch (e) {}
+      } catch (e) { }
       // Fallback to IST day match
       const slotDateIST = new Date(new Date(slotDate).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       slotDateIST.setHours(0, 0, 0, 0);
@@ -549,7 +549,9 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // Get all active meeting rooms matching the filter
     const allRooms = await MeetingRoom.find(roomFilter)
       .populate('building', 'name address city')
+      .populate('amenities', 'name iconUrl')
       .sort({ name: 1 });
+
 
     // Helper: check if time ranges overlap
     const timeRangesOverlap = (start1, end1, start2, end2) => start1 < end2 && end1 > start2;
@@ -750,7 +752,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
             end: b.end,
             bookingId: b._id
           }));
-        
+
         return {
           ...room.toObject(),
           conflictingBookings: bookings
@@ -829,9 +831,9 @@ export const getAvailableRoomsByTime = async (req, res) => {
     });
   } catch (error) {
     await logErrorActivity(req, error);
-    return res.status(500).json({ 
-      success: false, 
-      message: error.message 
+    return res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };
@@ -861,8 +863,10 @@ export const exportMasterFile = async (_req, res) => {
         roomName: 'Conference A',
         capacity: '10',
         status: 'active',
-        dailyRate: '2500',
+        hourlyRate: '2500',
+        floor: '1st Floor',
         amenity1: amenityNames[0] || 'WiFi',
+
         amenity2: amenityNames[1] || 'Projector',
         amenity3: amenityNames[2] || 'Whiteboard'
       });
@@ -871,8 +875,10 @@ export const exportMasterFile = async (_req, res) => {
         roomName: 'Board Room 1',
         capacity: '8',
         status: 'active',
-        dailyRate: '1800',
+        hourlyRate: '1800',
+        floor: '2nd Floor',
         amenity1: amenityNames[0] || 'WiFi',
+
         amenity2: amenityNames[1] || 'Projector'
       });
     } else {
@@ -881,8 +887,10 @@ export const exportMasterFile = async (_req, res) => {
         roomName: 'Conference A',
         capacity: '10',
         status: 'active',
-        dailyRate: '2500',
+        hourlyRate: '2500',
+        floor: 'Ground Floor',
         amenity1: 'WiFi',
+
         amenity2: 'Projector',
         amenity3: 'Whiteboard'
       });
@@ -900,9 +908,10 @@ export const exportMasterFile = async (_req, res) => {
 // Download sample CSV for meeting rooms import
 export const downloadSampleCSV = async (_req, res) => {
   try {
-    const header = ['buildingName','roomName','capacity','status','dailyRate','amenities','deviceId','deviceType'];
-    const sample1 = ['Main Building','Conference A','10','active','2500','WiFi;Projector;Whiteboard','d_20001','16'];
-    const sample2 = ['Main Building','Board Room 1','8','active','1800','WiFi;Whiteboard','d_20002','16'];
+    const header = ['buildingName', 'roomName', 'capacity', 'floor', 'status', 'hourlyRate', 'amenities', 'deviceId', 'deviceType', 'images'];
+    const sample1 = ['Main Building', 'Conference A', '10', '1st Floor', 'active', '2500', 'WiFi;Projector;Whiteboard', 'd_20001', '16', 'https://example.com/a.jpg;https://example.com/b.png'];
+    const sample2 = ['Main Building', 'Board Room 1', '8', '2nd Floor', 'active', '1800', 'WiFi;Whiteboard', 'd_20002', '16', 'https://example.com/room1.jpg'];
+
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="meeting_rooms_import_sample.csv"');
@@ -961,6 +970,41 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
       return { ids, missing };
     };
 
+    // Parse image URLs from multiple possible fields
+    const parseImages = (obj) => {
+      const urls = [];
+      const addIfValid = (u) => {
+        const url = norm(u);
+        if (!url) return;
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            urls.push(parsed.toString());
+          }
+        } catch (_) {
+          // ignore invalid URLs
+        }
+      };
+      // combined column: images
+      const combined = norm(obj.images);
+      if (combined) {
+        combined.split(/[;,]/).map(x => x.trim()).filter(Boolean).forEach(addIfValid);
+      }
+      // single common names
+      ['imageUrl', 'imageURL', 'image'].forEach(k => addIfValid(obj[k]));
+      // image1..image10
+      for (let i = 1; i <= 10; i++) {
+        addIfValid(obj[`image${i}`]);
+      }
+      // de-duplicate while preserving order
+      const seen = new Set();
+      const deduped = [];
+      for (const u of urls) {
+        if (!seen.has(u)) { seen.add(u); deduped.push(u); }
+      }
+      return deduped;
+    };
+
     const perRow = [];
     let createdCount = 0;
     let validCount = 0;
@@ -992,12 +1036,17 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
       const capacity = toNumber(r.capacity);
       if (!capacity || capacity <= 0) errors.push('capacity must be a positive number');
       const status = (norm(r.status) || 'active').toLowerCase();
-      if (!['active','inactive'].includes(status)) errors.push(`Invalid status: ${status}`);
-      const dailyRate = toNumber(r.dailyRate);
+      if (!['active', 'inactive'].includes(status)) errors.push(`Invalid status: ${status}`);
+      const hourlyRate = toNumber(r.hourlyRate || r.dailyRate);
+      const floor = norm(r.floor);
+
       const { ids: amenityIds, missing: missingAmenityNames } = parseAmenities(r);
       if (missingAmenityNames.length) {
         errors.push(`Unknown amenities: ${missingAmenityNames.join(', ')}`);
       }
+
+      // Parse image URLs
+      const imageUrls = parseImages(r);
 
       // Optional Matrix Device fields from CSV (mirror cabin import behavior)
       const rawDeviceInput = norm(r.deviceId || r.device_id || r["device id"] || r["Device ID"] || r.device);
@@ -1036,7 +1085,8 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
         perRow.push({
           index: idx + 1,
           success: true,
-          preview: { building: buildingId, name: roomName, capacity, status, dailyRate, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined },
+          preview: { building: buildingId, name: roomName, capacity, floor, status, hourlyRate, amenities: amenityIds.length, deviceId: deviceIdNormalized || null, deviceType: deviceIdNormalized ? deviceType : undefined, imagesCount: imageUrls.length },
+
           originalRow
         });
         continue;
@@ -1048,9 +1098,11 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
           name: roomName,
           capacity,
           status,
-          pricing: dailyRate !== undefined ? { dailyRate } : undefined,
+          floor: floor || undefined,
+          pricing: hourlyRate !== undefined ? { hourlyRate } : undefined,
+
           amenities: amenityIds,
-          images: []
+          images: imageUrls
         });
 
         // If device details provided, create or link MatrixDevice and attach to meeting room
@@ -1105,7 +1157,9 @@ export const importMeetingRoomsFromCSV = async (req, res) => {
           name: roomName,
           capacity,
           status,
-          dailyRate: dailyRate || null,
+          hourlyRate: hourlyRate || null,
+          floor: floor || null,
+
           amenities: amenityIds.length,
           matrixDevices: (room.matrixDevices || []).length
         });
@@ -1144,7 +1198,7 @@ export const deleteRoom = async (req, res) => {
   try {
     const meetingRoom = await MeetingRoom.findById(req.params.id);
     if (!meetingRoom) return res.status(404).json({ success: false, message: "Room not found" });
-    
+
     await MeetingRoom.deleteOne({ _id: req.params.id });
     await logCRUDActivity(req, 'DELETE', 'MeetingRoom', meetingRoom._id, null, {
       roomName: meetingRoom.name

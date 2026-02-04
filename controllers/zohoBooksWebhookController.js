@@ -64,7 +64,7 @@ export const handleZohoBooksWebhook = async (req, res) => {
           console.log("Parsed form-urlencoded payload");
         } catch (e) {
           console.error("Failed to parse form-urlencoded payload:", e);
-          return res.status(400).json({ 
+          return res.status(400).json({
             error: "Invalid form-urlencoded payload",
             timestamp: new Date().toISOString()
           });
@@ -75,23 +75,23 @@ export const handleZohoBooksWebhook = async (req, res) => {
     // Basic webhook security - check for Zoho user agent and organization ID
     const userAgent = req.headers['user-agent'];
     const orgId = req.headers['x-com-zoho-organizationid'];
-    const expectedOrgId = process.env.ZOHO_ORG_ID || '60047183737';
+    const expectedOrgId = process.env.ZOHO_ORG_ID;
     const zohoFeature = req.headers['x-zoho-crm-feature'];
-    
+
     // Accept webhooks from both Zoho Books and Zoho CRM
     const isZohoBooks = userAgent?.includes('ZohoBooks');
     const isZohoCRM = userAgent?.includes('crm.zoho') || zohoFeature === 'webhook';
-    
+
     if (!isZohoBooks && !isZohoCRM) {
       console.warn("Webhook received from non-Zoho user agent:", userAgent);
       // Don't reject - log and continue for debugging
     } else {
       console.log(`Webhook source identified: ${isZohoBooks ? 'Zoho Books' : 'Zoho CRM'}`);
     }
-    
+
     if (orgId && orgId !== expectedOrgId) {
       console.error("Webhook from unauthorized organization:", orgId);
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: "Unauthorized organization",
         timestamp: new Date().toISOString()
       });
@@ -99,10 +99,10 @@ export const handleZohoBooksWebhook = async (req, res) => {
 
     // Verify webhook signature if secret is configured
     const secret = process.env.ZOHO_BOOKS_WEBHOOK_SECRET;
-    const sigHeader = req.headers["x-zoho-webhook-signature"] || 
-                     req.headers["x-zoho-signature"] || 
-                     req.headers["zoho-webhook-signature"];
-    
+    const sigHeader = req.headers["x-zoho-webhook-signature"] ||
+      req.headers["x-zoho-signature"] ||
+      req.headers["zoho-webhook-signature"];
+
     let rawBodyStr = "";
     if (Buffer.isBuffer(req.body)) {
       rawBodyStr = req.body.toString("utf8");
@@ -116,14 +116,14 @@ export const handleZohoBooksWebhook = async (req, res) => {
       try {
         const hmac = crypto.createHmac("sha256", secret).update(rawBodyStr).digest("hex");
         const expectedSignature = `sha256=${hmac}`;
-        
+
         if (sigHeader !== hmac && sigHeader !== expectedSignature) {
           console.error("Zoho Books webhook signature verification failed:", {
             received: sigHeader,
             expected: hmac,
             expectedWithPrefix: expectedSignature
           });
-          return res.status(401).json({ 
+          return res.status(401).json({
             error: "Invalid webhook signature",
             timestamp: new Date().toISOString()
           });
@@ -131,7 +131,7 @@ export const handleZohoBooksWebhook = async (req, res) => {
         console.log("Zoho Books webhook signature verified successfully");
       } catch (e) {
         console.error("Zoho Books webhook signature verification error:", e);
-        return res.status(401).json({ 
+        return res.status(401).json({
           error: "Webhook signature verification failed",
           timestamp: new Date().toISOString()
         });
@@ -142,7 +142,7 @@ export const handleZohoBooksWebhook = async (req, res) => {
 
     // Process the webhook event
     const result = await processZohoBooksEvent(payload);
-    
+
     const response = {
       message: "Zoho Books webhook processed successfully",
       result,
@@ -150,20 +150,20 @@ export const handleZohoBooksWebhook = async (req, res) => {
     };
 
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
-    
+
     return res.status(200).json(response);
 
   } catch (err) {
     console.error("Zoho Books webhook error:", err);
-    
-    const errorResponse = { 
+
+    const errorResponse = {
       error: "Webhook processing failed",
       message: err.message,
       timestamp: new Date().toISOString()
     };
 
     await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, err.message);
-    
+
     return res.status(500).json(errorResponse);
   }
 };
@@ -195,16 +195,16 @@ async function processZohoBooksEvent(payload) {
   // Handle direct customer payload (Zoho Books sends customer data directly without event_type)
   if (payload?.customer && !eventType) {
     console.log("Detected direct customer payload from Zoho Books webhook");
-    
+
     // Check if this is a new customer by looking at created_time vs last_modified_time
     const customer = payload.customer;
     const createdTime = new Date(customer.created_time);
     const modifiedTime = new Date(customer.last_modified_time);
-    
+
     // If created and modified times are very close (within 5 seconds), treat as creation
     const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
     const isNewCustomer = timeDiff < 5000; // 5 seconds threshold
-    
+
     if (isNewCustomer) {
       console.log("Processing as customer creation event");
       return await handleCustomerCreated({ customer });
@@ -218,8 +218,8 @@ async function processZohoBooksEvent(payload) {
     console.log("Detected invoice payload from Zoho Books webhook");
     return await handleInvoiceEvent(payload.invoice);
   }
-  if (eventType === "invoice_created" || eventType === "InvoiceCreated" || 
-      eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
+  if (eventType === "invoice_created" || eventType === "InvoiceCreated" ||
+    eventType === "invoice_updated" || eventType === "InvoiceUpdated") {
     return await handleInvoiceEvent(data.invoice || data);
   }
   if (payload?.payment && !eventType) {
@@ -227,23 +227,23 @@ async function processZohoBooksEvent(payload) {
     return await handlePaymentReceived(payload.payment);
   }
   if (eventType === "payment_created" || eventType === "PaymentCreated" ||
-      eventType === "payment_updated" || eventType === "PaymentUpdated" ||
-      eventType === "customerpayment_created" || eventType === "CustomerPaymentCreated" ||
-      eventType === "customerpayment_updated" || eventType === "CustomerPaymentUpdated") {
+    eventType === "payment_updated" || eventType === "PaymentUpdated" ||
+    eventType === "customerpayment_created" || eventType === "CustomerPaymentCreated" ||
+    eventType === "customerpayment_updated" || eventType === "CustomerPaymentUpdated") {
     return await handlePaymentReceived(data.payment || data);
   }
 
   // Handle item events (for credit custom items sync)
   if (payload?.item && !eventType) {
     console.log("Detected item payload from Zoho Books webhook");
-    
+
     const item = payload.item;
     const createdTime = new Date(item.created_time);
     const modifiedTime = new Date(item.last_modified_time);
-    
+
     const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
     const isNewItem = timeDiff < 5000;
-    
+
     if (isNewItem) {
       console.log("Processing item as creation event");
       return await handleItemCreated({ item });
@@ -264,14 +264,14 @@ async function processZohoBooksEvent(payload) {
 
   if (payload?.contact && !eventType) {
     console.log("Detected legacy contact payload from Zoho Books webhook");
-    
+
     const contact = payload.contact;
     const createdTime = new Date(contact.created_time);
     const modifiedTime = new Date(contact.last_modified_time);
-    
+
     const timeDiff = Math.abs(modifiedTime.getTime() - createdTime.getTime());
     const isNewContact = timeDiff < 5000;
-    
+
     if (isNewContact) {
       console.log("Processing legacy contact as creation event");
       return await handleContactCreated({ contact });
@@ -282,8 +282,8 @@ async function processZohoBooksEvent(payload) {
   }
 
   console.log(`Unhandled Zoho Books event type: ${eventType}`);
-  return { 
-    status: "ignored", 
+  return {
+    status: "ignored",
     reason: "Unhandled event type or missing customer/contact/invoice/payment/item data",
     event_type: eventType,
     has_contact: !!payload?.contact,
@@ -298,7 +298,7 @@ async function processZohoBooksEvent(payload) {
 async function handleCustomerCreated(customerData) {
   try {
     const customer = customerData?.customer || customerData;
-    
+
     if (!customer) {
       console.warn("No customer data found in webhook payload");
       return { status: "ignored", reason: "No customer data" };
@@ -314,10 +314,10 @@ async function handleCustomerCreated(customerData) {
     const existingClient = await Client.findOne({ zohoBooksContactId: customerId });
     if (existingClient) {
       console.log(`Client already exists for Zoho customer ID: ${customerId}`);
-      return { 
-        status: "ignored", 
+      return {
+        status: "ignored",
         reason: "Client already exists",
-        client_id: existingClient._id 
+        client_id: existingClient._id
       };
     }
 
@@ -329,10 +329,10 @@ async function handleCustomerCreated(customerData) {
         existingByEmail.zohoBooksContactId = customerId;
         await existingByEmail.save();
         console.log(`Updated existing client ${existingByEmail._id} with Zoho customer ID: ${customerId}`);
-        return { 
-          status: "updated", 
+        return {
+          status: "updated",
           reason: "Added Zoho ID to existing client",
-          client_id: existingByEmail._id 
+          client_id: existingByEmail._id
         };
       }
     }
@@ -361,7 +361,7 @@ async function handleCustomerCreated(customerData) {
           contactPerson: newClient.contactPerson,
           email: newClient.email
         });
-        
+
         if (emailResult.success) {
           console.log(`Welcome email sent to ${newClient.email} for Zoho-created client`);
         } else {
@@ -404,7 +404,7 @@ async function handleCustomerUpdated(customerData) {
 
     // Update client with new data from Zoho
     const updatedData = await mapZohoCustomerToClient(customer);
-    
+
     // Remove fields that shouldn't be overwritten
     delete updatedData.zohoBooksContactId; // Keep existing
     delete updatedData.kycStatus; // Don't reset KYC status
@@ -430,7 +430,7 @@ async function handleCustomerUpdated(customerData) {
 async function handleContactCreated(contactData) {
   try {
     const contact = contactData?.contact || contactData;
-    
+
     if (!contact) {
       console.warn("No contact data found in webhook payload");
       return { status: "ignored", reason: "No contact data" };
@@ -446,10 +446,10 @@ async function handleContactCreated(contactData) {
     const existingClient = await Client.findOne({ zohoBooksContactId: contactId });
     if (existingClient) {
       console.log(`Client already exists for Zoho contact ID: ${contactId}`);
-      return { 
-        status: "ignored", 
+      return {
+        status: "ignored",
         reason: "Client already exists",
-        client_id: existingClient._id 
+        client_id: existingClient._id
       };
     }
 
@@ -461,10 +461,10 @@ async function handleContactCreated(contactData) {
         existingByEmail.zohoBooksContactId = contactId;
         await existingByEmail.save();
         console.log(`Updated existing client ${existingByEmail._id} with Zoho contact ID: ${contactId}`);
-        return { 
-          status: "updated", 
+        return {
+          status: "updated",
           reason: "Added Zoho ID to existing client",
-          client_id: existingByEmail._id 
+          client_id: existingByEmail._id
         };
       }
     }
@@ -493,7 +493,7 @@ async function handleContactCreated(contactData) {
           contactPerson: newClient.contactPerson,
           email: newClient.email
         });
-        
+
         if (emailResult.success) {
           console.log(`Welcome email sent to ${newClient.email} for Zoho-created client`);
         } else {
@@ -536,7 +536,7 @@ async function handleContactUpdated(contactData) {
 
     // Update client with new data from Zoho
     const updatedData = await mapZohoContactToClient(contact);
-    
+
     // Remove fields that shouldn't be overwritten
     delete updatedData.zohoBooksContactId; // Keep existing
     delete updatedData.kycStatus; // Don't reset KYC status
@@ -562,7 +562,7 @@ async function handleContactUpdated(contactData) {
 async function handleItemCreated(itemData) {
   try {
     const item = itemData?.item || itemData;
-    
+
     if (!item) {
       console.warn("No item data found in webhook payload");
       return { status: "ignored", reason: "No item data" };
@@ -578,15 +578,15 @@ async function handleItemCreated(itemData) {
     const existingItem = await CreditCustomItem.findOne({ zohoItemId: itemId });
     if (existingItem) {
       console.log(`Credit custom item already exists for Zoho item ID: ${itemId}`);
-      return { 
-        status: "ignored", 
+      return {
+        status: "ignored",
         reason: "Credit custom item already exists",
-        item_id: existingItem._id 
+        item_id: existingItem._id
       };
     }
 
     // Check if item exists by name
-    const existingByName = await CreditCustomItem.findOne({ 
+    const existingByName = await CreditCustomItem.findOne({
       name: { $regex: new RegExp(`^${itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
     });
     if (existingByName) {
@@ -594,10 +594,10 @@ async function handleItemCreated(itemData) {
       existingByName.zohoItemId = itemId;
       await existingByName.save();
       console.log(`Updated existing credit custom item ${existingByName._id} with Zoho item ID: ${itemId}`);
-      return { 
-        status: "updated", 
+      return {
+        status: "updated",
         reason: "Added Zoho ID to existing item",
-        item_id: existingByName._id 
+        item_id: existingByName._id
       };
     }
 
@@ -640,7 +640,7 @@ async function handleItemUpdated(itemData) {
 
     // Update item with new data from Zoho
     const updatedData = await mapZohoItemToCreditCustomItem(item);
-    
+
     // Remove fields that shouldn't be overwritten
     delete updatedData.zohoItemId; // Keep existing
     delete updatedData.code; // Don't change existing code
@@ -668,18 +668,18 @@ async function handleItemUpdated(itemData) {
 async function mapZohoItemToCreditCustomItem(item) {
   const itemRate = parseFloat(item.rate || item.sales_rate || 0);
   const creditValue = 500; // Default credit value in INR
-  
+
   const itemData = {
     name: item.name || "Unknown Item",
     code: item.sku || undefined,
     unit: item.unit || "unit",
     pricingMode: "inr", // Always use INR mode as requested
-    
+
     // Set INR price (required for INR mode)
     unitPriceINR: itemRate,
-    
+
     // Optionally set equivalent credits for reference (not required for INR mode)
-    ...(itemRate > 0 && { 
+    ...(itemRate > 0 && {
       metadata: {
         equivalentCredits: Math.ceil(itemRate / creditValue),
         zoho_created_time: item.created_time,
@@ -694,14 +694,14 @@ async function mapZohoItemToCreditCustomItem(item) {
         zoho_purchase_description: item.purchase_description
       }
     }),
-    
+
     // Tax settings
     taxable: item.tax_percentage > 0 || item.is_default_tax_applied || true,
     gstRate: parseFloat(item.tax_percentage || 18),
-    
+
     // Status
     active: item.status === "active",
-    
+
     // Zoho linkage
     zohoItemId: item.item_id
   };
@@ -726,7 +726,7 @@ async function mapZohoCustomerToClient(customer) {
     email: customer.email && customer.email.trim() ? customer.email.toLowerCase().trim() : undefined,
     phone: customer.phone && customer.phone.trim() ? customer.phone.trim() : (customer.mobile && customer.mobile.trim() ? customer.mobile.trim() : undefined),
     website: customer.website && customer.website.trim() ? customer.website.trim() : undefined,
-    
+
     // Commercial details
     contactType: customer.contact_type || "customer",
     customerSubType: customer.customer_sub_type || "business",
@@ -766,7 +766,7 @@ async function mapZohoCustomerToClient(customer) {
     } : undefined,
 
     // Contact persons (if available)
-    contactPersons: Array.isArray(customer.contact_persons) ? 
+    contactPersons: Array.isArray(customer.contact_persons) ?
       customer.contact_persons.map(cp => ({
         salutation: cp.salutation || undefined,
         first_name: cp.first_name || undefined,
@@ -805,7 +805,7 @@ async function mapZohoContactToClient(contact) {
     email: contact.email && contact.email.trim() ? contact.email.toLowerCase().trim() : undefined,
     phone: contact.phone && contact.phone.trim() ? contact.phone.trim() : (contact.mobile && contact.mobile.trim() ? contact.mobile.trim() : undefined),
     website: contact.website && contact.website.trim() ? contact.website.trim() : undefined,
-    
+
     // Commercial details
     contactType: contact.contact_type || "customer",
     customerSubType: contact.customer_sub_type || "business",
@@ -845,7 +845,7 @@ async function mapZohoContactToClient(contact) {
     } : undefined,
 
     // Contact persons
-    contactPersons: Array.isArray(contact.contact_persons) ? 
+    contactPersons: Array.isArray(contact.contact_persons) ?
       contact.contact_persons.map(cp => ({
         salutation: cp.salutation || undefined,
         first_name: cp.first_name || undefined,
@@ -997,7 +997,7 @@ export const testZohoBooksWebhook = async (req, res) => {
         customer: {
           customer_id: "test_customer_123",
           customer_name: "Test Company",
-          company_name: "Test Company Ltd", 
+          company_name: "Test Company Ltd",
           email: "test@testcompany.com",
           phone: "1234567890",
           mobile: "1234567890",
@@ -1017,7 +1017,7 @@ export const testZohoBooksWebhook = async (req, res) => {
           },
           shipping_address: {
             attention: "Test Person",
-            address: "123 Test Street", 
+            address: "123 Test Street",
             city: "Test City",
             state: "Test State",
             zip: "12345",
@@ -1070,12 +1070,12 @@ async function handleInvoiceEvent(invoiceData) {
 
     // Check if invoice already exists
     let existingInvoice = await Invoice.findOne({ zoho_invoice_id: invoiceData.invoice_id });
-    
+
     // Check for idempotency - don't update if we have newer data
     if (existingInvoice && existingInvoice.zoho_last_modified_at) {
       const existingModifiedTime = new Date(existingInvoice.zoho_last_modified_at);
       const incomingModifiedTime = new Date(invoiceData.last_modified_time);
-      
+
       if (incomingModifiedTime <= existingModifiedTime) {
         console.log(`Skipping invoice ${invoiceData.invoice_id} - incoming data is not newer`);
         return {
@@ -1102,7 +1102,7 @@ async function handleInvoiceEvent(invoiceData) {
         const currentDate = new Date();
         return new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Last day of current month
       })(),
-      
+
       // Financial fields
       sub_total: parseFloat(invoiceData.sub_total || 0),
       tax_total: parseFloat(invoiceData.tax_total || 0),
@@ -1111,13 +1111,13 @@ async function handleInvoiceEvent(invoiceData) {
       balance: parseFloat(invoiceData.balance || 0),
       discount: parseFloat(invoiceData.discount_total || 0),
       discount_type: invoiceData.discount_type || "entity_level",
-      
+
       // Status and metadata
       status: mapZohoStatusToLocal(invoiceData.status),
       notes: invoiceData.notes || "",
       currency_code: invoiceData.currency_code || "INR",
       exchange_rate: parseFloat(invoiceData.exchange_rate || 1),
-      
+
       // Zoho-specific fields
       zoho_invoice_id: invoiceData.invoice_id,
       zoho_invoice_number: invoiceData.invoice_number,
@@ -1125,21 +1125,21 @@ async function handleInvoiceEvent(invoiceData) {
       invoice_url: invoiceData.invoice_url,
       zoho_pdf_url: invoiceData.pdf_url,
       zoho_last_modified_at: new Date(invoiceData.last_modified_time),
-      
+
       // Set source to indicate this came from Zoho webhook
       source: "webhook",
-      
+
       // Client reference
       client: client ? client._id : null,
       customer_id: invoiceData.customer_id,
-      
+
       // Additional Zoho fields
       gst_treatment: invoiceData.gst_treatment || "business_gst",
       place_of_supply: invoiceData.place_of_supply || "MH",
       payment_terms: parseInt(invoiceData.payment_terms || 30),
       payment_terms_label: invoiceData.payment_terms_label || "Net 30",
       is_inclusive_tax: invoiceData.is_inclusive_tax || false,
-      
+
       // Map line items if present
       line_items: (invoiceData.line_items || []).map(item => ({
         description: item.description || item.name || "",
@@ -1214,7 +1214,7 @@ function mapZohoStatusToLocal(zohoStatus) {
     'void': 'void',
     'partially_paid': 'issued'
   };
-  
+
   return statusMap[zohoStatus?.toLowerCase()] || 'draft';
 }
 
@@ -1228,11 +1228,11 @@ async function handleInvoiceStatusUpdate(invoiceData) {
     const zohoInvoiceId = invoiceData.invoice_id;
     console.log(`Processing invoice status update for Zoho invoice: ${zohoInvoiceId}`);
     const existingInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
-    
+
     if (!existingInvoice) {
       console.log(`Invoice ${zohoInvoiceId} not found locally - likely created directly in Zoho Books. Skipping update.`);
       return {
-        status: "ignored", 
+        status: "ignored",
         reason: "Invoice not found locally",
         invoice_id: zohoInvoiceId
       };
@@ -1242,31 +1242,31 @@ async function handleInvoiceStatusUpdate(invoiceData) {
     if (invoiceData.payment_made !== undefined) {
       updates.amount_paid = parseFloat(invoiceData.payment_made || 0);
     }
-    
+
     if (invoiceData.balance !== undefined) {
       updates.balance = parseFloat(invoiceData.balance || 0);
     }
-    
+
     // Update status if changed
     if (invoiceData.status) {
       updates.status = mapZohoStatusToLocal(invoiceData.status);
       updates.zoho_status = invoiceData.status;
     }
-    
+
     // Update URLs if available
     if (invoiceData.invoice_url) {
       updates.invoice_url = invoiceData.invoice_url;
     }
-    
+
     if (invoiceData.pdf_url) {
       updates.zoho_pdf_url = invoiceData.pdf_url;
     }
-    
+
     // Update last modified time
     if (invoiceData.last_modified_time) {
       updates.zoho_last_modified_at = new Date(invoiceData.last_modified_time);
     }
-    
+
     // Set paid date if fully paid
     if (updates.balance === 0 && existingInvoice.balance > 0) {
       updates.paid_at = new Date();
@@ -1276,7 +1276,7 @@ async function handleInvoiceStatusUpdate(invoiceData) {
     if (Object.keys(updates).length > 0) {
       await Invoice.findByIdAndUpdate(existingInvoice._id, updates);
       console.log(`Updated invoice ${zohoInvoiceId} with status/payment changes`);
-      
+
       return {
         status: "updated",
         invoice_id: zohoInvoiceId,
@@ -1319,13 +1319,13 @@ async function handlePaymentReceived(paymentData) {
 
     // Check if payment already exists to avoid duplicates
     const existingPayment = await Payment.findOne({ zoho_payment_id: paymentData.payment_id });
-    
+
     // Check for idempotency - don't update if we have newer data
     if (existingPayment && existingPayment.updatedAt) {
       const existingModifiedTime = new Date(existingPayment.updatedAt);
-      const incomingModifiedTime = paymentData.last_modified_time ? 
+      const incomingModifiedTime = paymentData.last_modified_time ?
         new Date(paymentData.last_modified_time) : new Date();
-      
+
       if (incomingModifiedTime <= existingModifiedTime) {
         console.log(`Skipping payment ${paymentData.payment_id} - incoming data is not newer`);
         return {
@@ -1344,18 +1344,18 @@ async function handlePaymentReceived(paymentData) {
     }
     const invoiceApplications = [];
     const invoiceUpdateResults = [];
-    
+
     if (paymentData.invoices && Array.isArray(paymentData.invoices)) {
       for (const invoiceApplication of paymentData.invoices) {
         const zohoInvoiceId = invoiceApplication.invoice_id;
         const amountApplied = parseFloat(invoiceApplication.amount_applied || 0);
         const localInvoice = await Invoice.findOne({ zoho_invoice_id: zohoInvoiceId });
-        
+
         if (localInvoice) {
           const currentAmountPaid = parseFloat(localInvoice.amount_paid || 0);
           const newAmountPaid = currentAmountPaid + amountApplied;
           const newBalance = Math.max(0, parseFloat(localInvoice.total || 0) - newAmountPaid);
-          
+
           const invoiceUpdateData = {
             amount_paid: newAmountPaid,
             balance: newBalance,
@@ -1369,16 +1369,16 @@ async function handlePaymentReceived(paymentData) {
           } else if (localInvoice.status !== "partially_paid" && localInvoice.status !== "paid") {
             invoiceUpdateData.status = "partially_paid";
           }
-          
+
           await Invoice.findByIdAndUpdate(localInvoice._id, invoiceUpdateData);
           console.log(`Updated invoice ${localInvoice.invoice_number} with payment of ${amountApplied}`);
-          
+
           invoiceApplications.push({
             invoice: localInvoice._id,
             amount_applied: amountApplied,
             zoho_invoice_id: zohoInvoiceId
           });
-          
+
           invoiceUpdateResults.push({
             invoice_id: localInvoice._id,
             invoice_number: localInvoice.invoice_number,
@@ -1409,7 +1409,7 @@ async function handlePaymentReceived(paymentData) {
         'online': 'Online Gateway',
         'other': 'Other'
       };
-      
+
       return modeMap[zohoMode?.toLowerCase()] || 'Other';
     };
 
@@ -1423,14 +1423,14 @@ async function handlePaymentReceived(paymentData) {
       referenceNumber: paymentData.reference_number || paymentData.payment_number,
       notes: paymentData.description || paymentData.notes || `Payment received via Zoho Books - ${paymentData.payment_number}`,
       currency: paymentData.currency_code || 'INR',
-      
+
       // Zoho-specific fields
       customer_id: paymentData.customer_id,
       zoho_payment_id: paymentData.payment_id,
       payment_number: paymentData.payment_number,
       zoho_status: paymentData.status,
       deposit_to_account_id: paymentData.account_id,
-      
+
       // Audit fields
       raw_zoho_response: paymentData,
       source: 'webhook'

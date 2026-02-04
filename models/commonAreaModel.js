@@ -21,12 +21,20 @@ const CommonAreaSchema = new Schema(
     // Matrix access devices associated with this common area
     matrixDevices: [{ type: Schema.Types.ObjectId, ref: "MatrixDevice", default: [] }],
 
+    images: [
+      {
+        url: { type: String },
+        caption: { type: String },
+        isPrimary: { type: Boolean, default: false },
+      },
+    ],
+
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     meta: { type: Schema.Types.Mixed },
   },
   { timestamps: true, collection: "common_areas" }
 );
 
-CommonAreaSchema.index({ buildingId: 1, name: 1 }, { unique: true, sparse: true });
+// CommonAreaSchema.index({ buildingId: 1, name: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("CommonArea", CommonAreaSchema);

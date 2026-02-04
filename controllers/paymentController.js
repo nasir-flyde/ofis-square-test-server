@@ -5,8 +5,10 @@ import Client from "../models/clientModel.js";
 import DayPass from "../models/dayPassModel.js";
 import DayPassBundle from "../models/dayPassBundleModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
+import MeetingRoom from "../models/meetingRoomModel.js";
 import Guest from "../models/guestModel.js";
 import Member from "../models/memberModel.js";
+
 import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import CreditTransaction from "../models/creditTransactionModel.js";
@@ -56,6 +58,140 @@ async function applyInvoicePayment(invoiceId, deltaAmount) {
   await invoice.save();
   return invoice;
 }
+
+/**
+ * Helper: add reserved slots to a meeting room for a given booking.
+ * Logic mirrored from meetingBookingController.js / createBooking snippet.
+ */
+async function addMeetingRoomReservedSlot(bookingId) {
+  try {
+    const item = await MeetingBooking.findById(bookingId);
+    if (!item || !item.room || !item.start || !item.end) return;
+
+    const startDate = new Date(item.start);
+    const endDate = new Date(item.end);
+
+    const startTimeStr = startDate.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
+    const endTimeStr = endDate.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
+    const istDateStr = startDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const utcMidnightOfIstDay = new Date(`${istDateStr}T00:00:00.000Z`);
+
+    const reservedSlot = {
+      date: utcMidnightOfIstDay,
+      dateISTYMD: istDateStr,
+      startTime: startTimeStr,
+      endTime: endTimeStr,
+      bookingId: item._id
+    };
+
+    // Use findByIdAndUpdate to push to reservedSlots array
+    await MeetingRoom.findByIdAndUpdate(item.room, {
+      $push: { reservedSlots: reservedSlot }
+    });
+    console.log(`[MeetingRoom] Reserved slot added for booking ${bookingId} in room ${item.room}`);
+  } catch (error) {
+    console.warn(`[MeetingRoom] Failed to add reserved slot for booking ${bookingId}:`, error.message);
+  }
+}
+
+/**
+ * Internal version of applyAllCreditsToInvoice.
+ * Automates the allocation of extra_credits (unused Zoho payments) to an invoice.
+ */
+async function applyExtraCreditsToInvoiceInternal(clientId, invoiceId) {
+  try {
+    const invoice = await Invoice.findById(invoiceId);
+    if (!invoice) return { success: false, message: 'Invoice not found' };
+
+    const zohoInvoiceId = invoice.zoho_invoice_id;
+    if (!zohoInvoiceId) return { success: false, message: 'Invoice not synced to Zoho' };
+
+    const localOutstanding = Number(invoice.balance || invoice.total || 0);
+    let zohoOutstanding = localOutstanding;
+    try {
+      const zohoInv = await getZohoInvoice(zohoInvoiceId);
+      zohoOutstanding = Number((zohoInv && (zohoInv.balance || zohoInv.balance_due || zohoInv.outstanding)) ?? 0);
+    } catch (_) { }
+
+    let need = Math.max(0, Math.min(localOutstanding, zohoOutstanding));
+    if (need < 0.01) return { success: true, allocated: 0 };
+
+    const payments = await Payment.find({ client: clientId, unused_amount: { $gt: 0 } }).sort({ createdAt: 1 });
+    let totalAllocated = 0;
+
+    for (const pay of payments) {
+      if (need < 0.01) break;
+      const payUnused = Number(pay.unused_amount || 0);
+      if (payUnused <= 0.009 || !pay.zoho_payment_id) continue;
+
+      let existingAllocations = [];
+      try {
+        const zohoPayment = await getZohoCustomerPayment(pay.zoho_payment_id);
+        existingAllocations = (zohoPayment?.invoices || zohoPayment?.invoice_payments || []).map(ip => ({
+          invoice_id: ip.invoice_id,
+          amount_applied: Number(ip.amount_applied || ip.applied_amount || 0)
+        }));
+      } catch (_) { }
+
+      const alloc = Math.min(need, payUnused);
+      const prevForTarget = (existingAllocations.find(a => a.invoice_id === zohoInvoiceId)?.amount_applied) || 0;
+      const newInvoices = [{ invoice_id: zohoInvoiceId, amount_applied: Math.round((prevForTarget + alloc) * 100) / 100 }];
+
+      await updateZohoCustomerPayment(pay.zoho_payment_id, { invoices: newInvoices });
+
+      pay.applied_total = Math.round(((Number(pay.applied_total || 0) + alloc)) * 100) / 100;
+      pay.unused_amount = Math.max(0, Math.round(((Number(pay.unused_amount || 0) - alloc)) * 100) / 100);
+
+      const invIdStr = invoiceId.toString();
+      pay.invoices = pay.invoices || [];
+      const existingLine = pay.invoices.find(pi => String(pi.invoice?._id || pi.invoice) === invIdStr);
+      if (existingLine) {
+        existingLine.amount_applied = Math.round((Number(existingLine.amount_applied || 0) + alloc) * 100) / 100;
+      } else {
+        pay.invoices.push({ invoice: invoiceId, amount_applied: alloc, zoho_invoice_id: zohoInvoiceId });
+      }
+      await pay.save();
+
+      try { await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: -alloc } }); } catch (_) { }
+      await updateInvoiceAfterZohoPayment(invoiceId, alloc);
+      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
+
+      totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
+      need = Math.max(0, Math.round((need - alloc) * 100) / 100);
+    }
+
+    return { success: true, allocated: totalAllocated };
+  } catch (error) {
+    console.error('applyExtraCreditsToInvoiceInternal failed:', error);
+    return { success: false, message: error.message };
+  }
+}
+
+/**
+ * Helper: compute invoice totals with 18% GST.
+ */
+function computeInvoiceTotals(baseAmount, percent) {
+  const discountAmount = Math.round((baseAmount * (percent / 100)) * 100) / 100;
+  const sub_total = Math.max(0, Math.round((baseAmount - discountAmount) * 100) / 100);
+  const tax_total = Math.round((sub_total * 0.18) * 100) / 100;
+  const total = Math.round((sub_total + tax_total) * 100) / 100;
+  return { sub_total, discountAmount, tax_total, total };
+}
+
+
+
 
 // POST /api/payments
 export const createPayment = async (req, res) => {
@@ -1033,10 +1169,13 @@ export const createRazorpayPaymentLink = async (req, res) => {
     if (booking.invoice && typeof booking.invoice.total === 'number') {
       amount = Number(booking.invoice.total);
     } else {
-      const dailyRate = booking.room?.pricing?.dailyRate || 500;
-      const totals = computeInvoiceTotals(dailyRate, booking.appliedDiscountPercent || 0);
+      const hourlyRate = booking.room?.pricing?.hourlyRate || 500;
+      const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);
+      const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
+      const totals = computeInvoiceTotals(baseAmount, booking.appliedDiscountPercent || 0);
       amount = Number(totals.total);
     }
+
     if (!amount || amount <= 0) {
       return res.status(400).json({ success: false, message: 'Invalid amount for booking' });
     }
@@ -1309,9 +1448,12 @@ export const createRazorpayOrder = async (req, res) => {
           } else if (item.type === 'meeting') {
             const bookingDoc = await MeetingBooking.findById(item.id);
             if (bookingDoc) { bookingDoc.status = 'booked'; await bookingDoc.save(); }
+            // Add reserved slot to meeting room
+            await addMeetingRoomReservedSlot(item.id);
             // Provision BHAiFi + Matrix access for the booked meeting timeslot
             try { await provisionAccessForMeetingBooking({ bookingId: item.id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on create-order (credits covered)', e?.message); }
           }
+
 
           const response = {
             success: true,
@@ -1521,9 +1663,12 @@ export const handleRazorpaySuccess = async (req, res) => {
       // For meeting room booking, update status to booked
       item.status = "booked";
       await item.save();
+      // Add reserved slot to meeting room
+      await addMeetingRoomReservedSlot(item._id);
       // Provision BHAiFi + Matrix access for the booked meeting timeslot
       try { await provisionAccessForMeetingBooking({ bookingId: item._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on razorpay success', e?.message); }
     }
+
 
     // Convert paise to INR and floor to avoid rounding up (e.g., 2033.99 -> 2033)
     const paymentInrFloor = Math.floor(Number(amount) / 100);
@@ -1905,9 +2050,12 @@ export const handleRazorpayWebhook = async (req, res) => {
                 if (booking.status === 'payment_pending') {
                   booking.status = 'booked';
                   await booking.save();
+                  // Add reserved slot to meeting room
+                  await addMeetingRoomReservedSlot(booking._id);
                   // Provision BHAiFi + Matrix access for the booked meeting timeslot
                   try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
                 }
+
               }
             }
           }
