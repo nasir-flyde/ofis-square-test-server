@@ -15,7 +15,7 @@ export const createJWT = (id, email, roleId, roleName, phone, clientId, memberId
     },
     process.env.JWT_SECRET || "ofis-square-secret-key",
     {
-      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
+      expiresIn: "100d",
     }
   );
 };
