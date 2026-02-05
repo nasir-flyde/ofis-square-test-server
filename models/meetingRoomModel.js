@@ -82,6 +82,4 @@ const meetingRoomSchema = new Schema(
   { timestamps: true, collection: "meeting_rooms" }
 );
 
-meetingRoomSchema.index({ building: 1, name: 1 }, { unique: true, sparse: true });
-
 export default mongoose.model("MeetingRoom", meetingRoomSchema);

@@ -663,6 +663,63 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       if (!response.ok) {
         const errMsg = data?.message || data?.code || `Zoho API error (status ${response.status})`;
         console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
+
+        // Fallback: if Zoho insists IGST must be applied, retry with IGST (single tax_id) instead of CGST/SGST group
+        const msgStr = String(errMsg || '').toLowerCase();
+        const isIgstError = msgStr.includes('igst has to be applied');
+        const wasGroupSelected = !!payload.tax_group_id && !payload.tax_id;
+        if (isIgstError) {
+          try {
+            // Fetch taxes to pick an IGST tax matching our rate
+            const { taxes } = await (async () => {
+              try { return await getZohoTaxesList(); } catch { return { taxes: [], taxgroups: [] }; }
+            })();
+            const norm = (v) => Number(v);
+            const rateEq = (r, x) => typeof r === 'number' && !Number.isNaN(r) && Math.abs(r - x) < 0.001;
+            const findIgst = (r) => taxes.find((t) => {
+              const tr = norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage);
+              const name = String(t?.tax_name || t?.name || '').toUpperCase();
+              return rateEq(tr, r) && (name.includes('IGST') || name.includes('INTEGRATED'));
+            });
+            const igstTax = findIgst(defaultTaxPercent) || taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), defaultTaxPercent));
+
+            if (igstTax?.tax_id) {
+              const retryPayload = {
+                ...payload,
+                tax_group_id: undefined,
+                tax_id: igstTax.tax_id,
+                line_items: Array.isArray(payload.line_items)
+                  ? payload.line_items.map((li) => ({ ...li, tax_id: igstTax.tax_id }))
+                  : payload.line_items
+              };
+
+              const retryRes = await fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(retryPayload)
+              });
+              const retryText = await retryRes.text();
+              let retryData;
+              try { retryData = retryText ? JSON.parse(retryText) : {}; } catch { retryData = retryText; }
+
+              await apiLogger.logResponse({
+                requestId,
+                statusCode: retryRes.status,
+                responseHeaders: Object.fromEntries(retryRes.headers.entries()),
+                responseBody: retryData,
+                success: retryRes.ok,
+                errorMessage: retryRes.ok ? null : (retryData?.message || `HTTP ${retryRes.status}`)
+              });
+
+              if (retryRes.ok) {
+                return retryData;
+              }
+            }
+          } catch (retryErr) {
+            console.warn('[ZohoBooks] IGST fallback retry failed:', retryErr?.message || retryErr);
+          }
+        }
+
         throw new Error(errMsg);
       }
 
@@ -1280,6 +1337,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       let s = raw.trim().toUpperCase();
       if (s.includes('-')) s = s.split('-').pop();
       s = s.replace(/[^A-Z]/g, '');
+      // Map names and already-alpha codes
       const VALID_CODES = new Set([
         'AN', 'AP', 'AR', 'AS', 'BR', 'CH', 'CT', 'DD', 'DL', 'DN', 'GA', 'GJ', 'HP', 'HR', 'JH', 'JK', 'KA', 'KL', 'LA', 'LD', 'MH', 'ML', 'MN', 'MP', 'MZ', 'NL', 'OD', 'OR', 'PB', 'PY', 'RJ', 'SK', 'TN', 'TR', 'TS', 'UK', 'UP', 'WB'
       ]);

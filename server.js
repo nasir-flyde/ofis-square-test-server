@@ -76,7 +76,7 @@ app.use("/api/bank-details", bankDetailsRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 mongoose
-  .connect(process.env.MONGODB_URI || "mongodb+srv://nasir-flyde:Nsa%4019786@ofis-square-db.xaajgtt.mongodb.net/test")
+  .connect(process.env.MONGODB_URI || "mongodb+srv://nasir-flyde:Nsa%4019786@ofis-square-db.xaajgtt.mongodb.net/ofis-test")
   .then(() => console.log("✅ MongoDB Connected DB"))
   .catch((err) => console.error("❌ MongoDB Error:", err));
 

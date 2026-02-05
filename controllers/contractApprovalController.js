@@ -1703,6 +1703,38 @@ export const markClientSigned = async (req, res) => {
 
     await contract.save();
 
+    // Ensure Bhaifi user exists for all active members (uses building NAS mapping via ensureBhaifiForMember)
+    try {
+      const members = await Member.find({ client: contract.client, status: 'active' })
+        .select('_id bhaifiUser firstName lastName email phone')
+        .lean();
+      let createdCount = 0;
+      for (const m of members || []) {
+        try {
+          if (m?.bhaifiUser) continue; // skip if already linked
+          const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
+          if (bhaifiDoc?._id) {
+            createdCount += 1;
+            try {
+              await Member.findByIdAndUpdate(m._id, {
+                $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName }
+              });
+            } catch {}
+          }
+        } catch (e) {
+          await logErrorActivity(req, e, 'MarkClientSigned:BhaifiProvision', { memberId: String(m?._id || '') });
+        }
+      }
+      if (createdCount > 0) {
+        await logContractActivity(req, 'UPDATE', id, contract.client, {
+          action: 'bhaifi_wifi_provisioned_on_signature',
+          count: createdCount,
+        });
+      }
+    } catch (wifiErr) {
+      console.warn('Bhaifi auto-provisioning on signature failed:', wifiErr?.message);
+    }
+
     // Auto-allocate any active blocks linked to this contract
     try {
       const cabinsToAllocate = await Cabin.find({

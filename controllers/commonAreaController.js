@@ -6,6 +6,20 @@ import csv from "csv-parser";
 import { Readable } from "stream";
 import imagekit from "../utils/imageKit.js";
 
+// Canonical area type mapping (CSV input -> model enum value)
+const AREA_TYPE_CANONICAL = {
+  CAFETERIA: "CAFETERIA",
+  CORRIDOR: "CORRIDOR",
+  LOBBY: "LOBBY",
+  PANTRY: "PANTRY",
+  LOUNGE: "LOUNGE",
+  RECEPTION: "Reception",
+  "SQUARE BOX": "Square Box",
+  "PHONE BOOTH": "Phone Booth",
+  "DAY PASS AREA": "Day Pass Area",
+  OTHER: "OTHER",
+};
+
 // Validate and map matrixDeviceIds -> matrixDevices array
 async function validateAndAttachDevices(payload) {
   if (Array.isArray(payload.matrixDeviceIds) && payload.matrixDeviceIds.length > 0) {
@@ -210,7 +224,7 @@ export const exportMasterFileCommonAreas = async (req, res) => {
   try {
     const buildings = await Building.find().select('name').sort({ name: 1 });
 
-    const areaTypes = ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "OTHER"];
+    const areaTypes = Object.keys(AREA_TYPE_CANONICAL);
     const statuses = ["active", "inactive"];
 
     const masterData = {
@@ -336,7 +350,7 @@ export const importCommonAreasFromCSV = async (req, res) => {
     const buildings = await Building.find().select('name').lean();
     const buildingNameToId = new Map(buildings.map(b => [norm(b.name).toLowerCase(), String(b._id)]));
 
-    const validAreaTypes = ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "OTHER"];
+    const validAreaTypes = Object.keys(AREA_TYPE_CANONICAL);
 
     const perRow = [];
     let validCount = 0;
@@ -370,7 +384,7 @@ export const importCommonAreasFromCSV = async (req, res) => {
         if (areaType && !validAreaTypes.includes(areaType)) {
           errors.push(`Invalid Area Type: ${areaType}. Must be one of ${validAreaTypes.join(', ')}`);
         } else {
-          payload.areaType = areaType || "OTHER";
+          payload.areaType = areaType ? AREA_TYPE_CANONICAL[areaType] : "OTHER";
         }
 
         // Description

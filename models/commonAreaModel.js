@@ -8,7 +8,7 @@ const CommonAreaSchema = new Schema(
     name: { type: String, required: true, trim: true },
     areaType: {
       type: String,
-      enum: ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "OTHER"],
+      enum: ["CAFETERIA", "CORRIDOR", "LOBBY", "PANTRY", "LOUNGE", "Reception", "Square Box", "Phone Booth", "Day Pass Area", "OTHER"],
       default: "OTHER",
       index: true,
     },
