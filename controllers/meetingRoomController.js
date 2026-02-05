@@ -677,7 +677,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           availableTimeSlots: availableSlots,  // only for requested date after removals
           bookedIntervals,
           isBlackout,
-          isBookingClosed: isClosed
+          isBookingClosed: isClosed,
+          date: targetDateIST
         };
       });
 
@@ -812,6 +813,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
           roomObj.availableTimeSlots = normalized;
         }
       }
+      roomObj.date = targetDateIST;
       return roomObj;
     });
 
@@ -832,6 +834,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
           endTime: convertTo24Hour(slot.endTime)
         }));
       }
+      room.date = targetDateIST;
       return room;
     });
 
