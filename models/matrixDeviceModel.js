@@ -24,10 +24,10 @@ const MatrixDeviceSchema = new Schema(
       notes: { type: String, trim: true },
     },
     // Modified: Updated default and enum to handle "Active" (Title Case) from Excel
-    status: { 
-      type: String, 
-      enum: ["active", "inactive", "Active", "Inactive"], 
-      default: "Active", 
+    status: {
+      type: String,
+      enum: ["active", "inactive", "Active", "Inactive"],
+      default: "Active",
       index: true,
       // Optional: setter to normalize case if you prefer all lowercase in DB
       // set: (v) => v.toLowerCase() 

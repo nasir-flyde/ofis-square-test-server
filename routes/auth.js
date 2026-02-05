@@ -15,7 +15,9 @@ import {
   refreshAccessToken,
   logout,
   logoutAllDevices,
-  companyAccessLogin
+  companyAccessLogin,
+  sendStaffOtp,
+  verifyStaffOtp
 } from "../controllers/authController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import { populateUserRole } from "../middlewares/rbacMiddleware.js";
@@ -37,6 +39,9 @@ router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);
 // Company Access login
 router.post("/company-access/login", companyAccessLogin);
+// Staff OTP login
+router.post("/staff/send-otp", sendStaffOtp);
+router.post("/staff/verify-otp", verifyStaffOtp);
 
 // Refresh token routes
 router.post("/refresh", refreshAccessToken);

@@ -6,6 +6,8 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import QRCode from "qrcode";
+import imagekit from "../utils/imageKit.js";
+import path from "path";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
@@ -18,13 +20,13 @@ const generateQRToken = (visitorId, validOn) => {
     validOn: validOn.toISOString().split('T')[0],
     exp: Math.floor(validOn.getTime() / 1000) + (24 * 60 * 60)
   };
-  
+
   // For now, return a simple token format until JWT is properly configured
   return `${visitorId}-${validOn.toISOString().split('T')[0]}-${Date.now().toString(36)}`;
 };
 
 const emailTransporter = nodemailer.createTransport({
-  host:'bulk.smtp.mailtrap.io',
+  host: 'bulk.smtp.mailtrap.io',
   port: 587,
   auth: {
     user: 'smtp@mailtrap.io',
@@ -38,14 +40,14 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
   const hostName = hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : 'your host';
   const subject = `Your visit invitation to Ofis Square – ${visitDate}`;
 
-  const text = `Hello ${visitor?.name || ''},\n\n`+
-    `You have been invited to visit Ofis Square by ${hostName}.\n`+
-    (visitor?.purpose ? `Purpose: ${visitor.purpose}\n` : '')+
-    `Date: ${visitDate}\n`+
-    (visitor?.expectedArrivalTime ? `Expected Arrival: ${new Date(visitor.expectedArrivalTime).toLocaleTimeString()}\n` : '')+
-    (visitor?.building?.name ? `Building: ${visitor.building.name}\n` : '')+
-    `\nQuick Check-in:\nShow the attached QR at reception to check in quickly.\n`+
-    `You can also tap this link to open check-in: ${qrUrl}\n\n`+
+  const text = `Hello ${visitor?.name || ''},\n\n` +
+    `You have been invited to visit Ofis Square by ${hostName}.\n` +
+    (visitor?.purpose ? `Purpose: ${visitor.purpose}\n` : '') +
+    `Date: ${visitDate}\n` +
+    (visitor?.expectedArrivalTime ? `Expected Arrival: ${new Date(visitor.expectedArrivalTime).toLocaleTimeString()}\n` : '') +
+    (visitor?.building?.name ? `Building: ${visitor.building.name}\n` : '') +
+    `\nQuick Check-in:\nShow the attached QR at reception to check in quickly.\n` +
+    `You can also tap this link to open check-in: ${qrUrl}\n\n` +
     `Thank you!`;
 
   let qrPngBuffer = null;
@@ -101,19 +103,57 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
   }
 }
 
+async function sendHostNotificationEmail({ to, visitor, hostMember }) {
+  if (!to) return;
+  const vName = visitor?.name || 'Visitor';
+  const arrival = visitor?.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString() : 'now';
+  const building = visitor?.building?.name ? ` at ${visitor.building.name}` : '';
+  const subject = `Visitor waiting at reception: ${vName}`;
+  const text = `Hello ${hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : ''},\n\n` +
+    `${vName} is waiting for you in the reception${building}.\n` +
+    `Arrival time: ${arrival}\n` +
+    (visitor?.companyName ? `Company: ${visitor.companyName}\n` : '') +
+    (visitor?.phone ? `Phone: ${visitor.phone}\n` : '') +
+    (visitor?.email ? `Email: ${visitor.email}\n` : '') +
+    `\nPlease visit the reception to meet your guest.`;
+
+  const html = `<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;">`
+    + `<h3 style="margin:0 0 12px;">Visitor waiting at reception</h3>`
+    + `<p><strong>${vName}</strong> is waiting for you${building}.</p>`
+    + `<p><strong>Arrival:</strong> ${arrival}</p>`
+    + (visitor?.companyName ? `<p><strong>Company:</strong> ${visitor.companyName}</p>` : '')
+    + (visitor?.phone ? `<p><strong>Phone:</strong> ${visitor.phone}</p>` : '')
+    + (visitor?.email ? `<p><strong>Email:</strong> ${visitor.email}</p>` : '')
+    + (visitor?.profile_picture ? `<div style="margin-top:12px"><img src="${visitor.profile_picture}" alt="Visitor Photo" width="160" style="border:1px solid #eee;border-radius:6px;"/></div>` : '')
+    + `<p style="margin-top:16px;color:#555;">Please visit the reception to meet your guest.</p>`
+    + `</body></html>`;
+
+  try {
+    await emailTransporter.sendMail({
+      from: process.env.MAIL_FROM || 'nasir@flyde.in',
+      to,
+      subject,
+      text,
+      html,
+    });
+  } catch (err) {
+    console.error('[sendHostNotificationEmail] Failed:', err?.message || err);
+  }
+}
+
 export const requestCheckin = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const visitor = await Visitor.findById(id);
     if (!visitor) {
       return res.status(404).json({ success: false, message: "Visitor not found" });
     }
 
     if (visitor.status !== "invited") {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Cannot request check-in from status: ${visitor.status}` 
+      return res.status(400).json({
+        success: false,
+        message: `Cannot request check-in from status: ${visitor.status}`
       });
     }
 
@@ -137,23 +177,35 @@ export const requestCheckin = async (req, res) => {
 
 export const requestCheckinNew = async (req, res) => {
   try {
-    const {
-      name,
-      email,
-      phone,
-      companyName,
-      hostMemberId,
-      purpose,
-      numberOfGuests,
-      expectedVisitDate,
-      expectedArrivalTime,
-      expectedDepartureTime,
-      building,
-      notes
-    } = req.body || {};
+    // Accept both kiosk payload and admin payload
+    const body = req.body || {};
 
-    if (!name || !expectedVisitDate) {
-      return res.status(400).json({ success: false, message: 'name and expectedVisitDate are required' });
+    const name = body.name?.trim();
+    const email = body.email?.trim();
+    const phone = body.phone?.trim();
+    const companyName = body.companyName?.trim?.() || body.company?.trim?.();
+
+    // Support hostId (kiosk) as alias for hostMemberId
+    const hostMemberId = body.hostMemberId || body.hostId;
+
+    const purpose = body.purpose?.trim?.();
+    const numberOfGuests = Number(body.numberOfGuests) || 1;
+
+    // expectedVisitDate is optional for kiosk; default to today
+    let expectedVisitDate = body.expectedVisitDate ? new Date(body.expectedVisitDate) : new Date();
+    // expectedArrivalTime defaults to now for kiosk
+    const expectedArrivalTime = body.expectedArrivalTime ? new Date(body.expectedArrivalTime) : new Date();
+    const expectedDepartureTime = body.expectedDepartureTime ? new Date(body.expectedDepartureTime) : null;
+
+    const building = body.building;
+
+    // Notes: append gender if provided by kiosk
+    const baseNotes = body.notes?.trim?.();
+    const genderNote = body.gender ? `Gender: ${body.gender}` : null;
+    const notes = [baseNotes, genderNote].filter(Boolean).join(" | ") || undefined;
+
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'name is required' });
     }
 
     let hostMemberDoc = null;
@@ -171,14 +223,14 @@ export const requestCheckinNew = async (req, res) => {
       }
     }
 
-    const visitor = await Visitor.create({
+    const visitorData = {
       name,
       email,
       phone,
       companyName,
       hostMember: hostMemberId || undefined,
       purpose,
-      numberOfGuests: Number(numberOfGuests) || 1,
+      numberOfGuests,
       expectedVisitDate,
       expectedArrivalTime,
       expectedDepartureTime,
@@ -186,14 +238,41 @@ export const requestCheckinNew = async (req, res) => {
       notes,
       status: 'pending_checkin',
       checkinRequestedAt: new Date(),
-      createdBy: req.user?.id || null
-    });
+      // Allow kiosk to send staff user id explicitly
+      createdBy: body.createdBy || req.user?.id || null
+    };
+
+    // Handle profile picture upload (kiosk sends as `profile_picture`)
+    if (req.file) {
+      try {
+        const result = await imagekit.upload({
+          file: req.file.buffer,
+          fileName: `visitor-profile-${Date.now()}${path.extname(req.file.originalname)}`,
+          folder: '/visitor-profiles'
+        });
+        visitorData.profile_picture = result.url;
+      } catch (uploadError) {
+        console.error('ImageKit upload error for visitor:', uploadError);
+      }
+    }
+
+    const visitor = await Visitor.create(visitorData);
 
     await createAuditLog(visitor._id, 'CHECKIN_REQUESTED', 'invited', 'pending_checkin', req.user?.id, 'New visitor requested check-in');
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone' },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Notify host member via email
+    try {
+      const hostEmail = visitor?.hostMember?.email;
+      if (hostEmail) {
+        await sendHostNotificationEmail({ to: hostEmail, visitor, hostMember: visitor.hostMember });
+      }
+    } catch (e) {
+      console.warn('[requestCheckinNew] Host email notify failed', e?.message || e);
+    }
 
     return res.json({ success: true, message: 'Check-in request created', data: visitor });
   } catch (error) {
@@ -205,20 +284,20 @@ export const requestCheckinNew = async (req, res) => {
 export const approveCheckin = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const visitor = await Visitor.findById(id).populate([
       { path: 'hostMember', select: 'firstName lastName email phone' },
       { path: 'building', select: 'name address' }
     ]);
-    
+
     if (!visitor) {
       return res.status(404).json({ success: false, message: "Visitor not found" });
     }
 
     if (visitor.status !== "pending_checkin") {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Cannot approve from status: ${visitor.status}` 
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve from status: ${visitor.status}`
       });
     }
 
@@ -228,7 +307,7 @@ export const approveCheckin = async (req, res) => {
     const qrToken = generateQRToken(visitor._id, visitor.expectedVisitDate);
     visitor.qrToken = qrToken;
     visitor.qrExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    
+
     await visitor.save();
 
     const qrUrl = `${req.protocol}://${req.get('host')}/api/visitors/scan?token=${qrToken}`;
@@ -274,12 +353,12 @@ export const getPendingCheckinRequests = async (req, res) => {
       status: "pending_checkin",
       deletedAt: null
     })
-    .populate('hostMember', 'firstName lastName email phone')
-    .populate('building', 'name address')
-    // .populate('createdBy', 'name email')
-    .sort({ checkinRequestedAt: -1 })
-    .skip(skip)
-    .limit(parseInt(limit));
+      .populate('hostMember', 'firstName lastName email phone')
+      .populate('building', 'name address')
+      // .populate('createdBy', 'name email')
+      .sort({ checkinRequestedAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
     const total = await Visitor.countDocuments({
       status: "pending_checkin",
@@ -342,8 +421,7 @@ export const createVisitor = async (req, res) => {
       }
     }
 
-    // Create visitor
-    const visitor = await Visitor.create({
+    const visitorData = {
       name: name.trim(),
       email: email?.trim(),
       phone: phone?.trim(),
@@ -358,11 +436,28 @@ export const createVisitor = async (req, res) => {
       notes: notes?.trim(),
       createdBy: req.user?.id,
       status: "invited"
-    });
+    };
+
+    // Handle profile picture upload
+    if (req.file) {
+      try {
+        const result = await imagekit.upload({
+          file: req.file.buffer,
+          fileName: `visitor-profile-${Date.now()}${path.extname(req.file.originalname)}`,
+          folder: '/visitor-profiles'
+        });
+        visitorData.profile_picture = result.url;
+      } catch (uploadError) {
+        console.error('ImageKit upload error for visitor:', uploadError);
+      }
+    }
+
+    // Create visitor
+    const visitor = await Visitor.create(visitorData);
 
     const qrToken = generateQRToken(visitor._id, visitor.expectedVisitDate);
     const qrUrl = `${req.protocol}://${req.get('host')}/api/visitors/scan?token=${qrToken}`;
-    
+
     await createAuditLog(visitor._id, "CREATED", null, "invited", req.user?.id, "Visitor invitation created");
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone' },
@@ -456,7 +551,7 @@ export const getVisitors = async (req, res) => {
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
+
     const [visitors, totalCount] = await Promise.all([
       Visitor.find(filters)
         .populate('hostMember', 'firstName lastName email phone')
@@ -493,9 +588,9 @@ export const getTodaysVisitors = async (req, res) => {
   try {
     const { date } = req.query;
     const targetDate = date ? new Date(date) : new Date();
-    
+
     const visitors = await Visitor.findTodaysVisitors(targetDate);
-    
+
     res.json({
       success: true,
       data: visitors,
@@ -520,7 +615,7 @@ export const getVisitorById = async (req, res) => {
     if (!/^[0-9a-fA-F]{24}$/.test(id)) {
       return res.status(400).json({ success: false, message: "Invalid visitor ID format" });
     }
-    
+
     const visitor = await Visitor.findOne({ _id: id, deletedAt: null })
       .populate('hostMember', 'firstName lastName email phone')
       .populate('building', 'name address')
@@ -578,11 +673,11 @@ export const checkinVisitor = async (req, res) => {
     visitor.checkInTime = checkInTimestamp;
     visitor.checkInMethod = 'manual';
     visitor.processedByCheckin = req.user?.id;
-    
+
     if (badgeId?.trim()) {
       visitor.badgeId = badgeId.trim();
     }
-    
+
     if (notes?.trim()) {
       visitor.notes = visitor.notes ? `${visitor.notes}\n${notes.trim()}` : notes.trim();
     }
@@ -640,7 +735,7 @@ export const checkoutVisitor = async (req, res) => {
     visitor.status = 'checked_out';
     visitor.checkOutTime = checkOutTimestamp;
     visitor.processedByCheckout = req.user?.id;
-    
+
     if (notes?.trim()) {
       visitor.notes = visitor.notes ? `${visitor.notes}\n${notes.trim()}` : notes.trim();
     }
@@ -674,7 +769,7 @@ export const scanQRCode = async (req, res) => {
     }
     const secret = process.env.JWT_SECRET || "your-jwt-secret";
     let decoded;
-    
+
     try {
       decoded = jwt.verify(token, secret);
     } catch (jwtError) {
@@ -691,9 +786,9 @@ export const scanQRCode = async (req, res) => {
     const tokenDate = decoded.validOn;
     const expectedDate = visitor.expectedVisitDate.toISOString().split('T')[0];
     if (tokenDate !== expectedDate) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "QR code is not valid for today's visit" 
+      return res.status(400).json({
+        success: false,
+        message: "QR code is not valid for today's visit"
       });
     }
     if (visitor.status === 'checked_in') {
@@ -701,7 +796,7 @@ export const scanQRCode = async (req, res) => {
         { path: 'hostMember', select: 'firstName lastName email phone' },
         { path: 'building', select: 'name address' }
       ]);
-      
+
       return res.json({
         success: true,
         data: visitor,
@@ -763,7 +858,7 @@ export const cancelVisitor = async (req, res) => {
     const oldStatus = visitor.status;
     visitor.status = 'cancelled';
     visitor.cancelReason = cancelReason?.trim();
-    
+
     if (notes?.trim()) {
       visitor.notes = visitor.notes ? `${visitor.notes}\n${notes.trim()}` : notes.trim();
     }
@@ -786,9 +881,9 @@ export const cancelVisitor = async (req, res) => {
 export const getVisitorStats = async (req, res) => {
   try {
     const { date, startDate, endDate } = req.query;
-    
+
     let dateFilter = { deletedAt: null };
-    
+
     if (date) {
       const targetDate = new Date(date);
       const startOfDay = new Date(targetDate);
@@ -847,13 +942,13 @@ export const getVisitorStats = async (req, res) => {
 export const deleteVisitor = async (req, res) => {
   try {
     const { id } = req.params;
-  
-  const visitor = await Visitor.findById(id);
-  if (!visitor) {
-    return res.status(404).json({ success: false, message: "Visitor not found" });
-  }
 
-  visitor.deletedAt = new Date();
+    const visitor = await Visitor.findById(id);
+    if (!visitor) {
+      return res.status(404).json({ success: false, message: "Visitor not found" });
+    }
+
+    visitor.deletedAt = new Date();
     visitor.deletedBy = req.user?.id;
     await visitor.save();
 
@@ -899,16 +994,16 @@ export const markNoShows = async () => {
 };
 
 export const getallpendings = async () => {
-    try {
-        const visitors = Visitor.find({
-            status : "pending_checkin"
-        })
-        res.json ({
-            success : true,
-            data : visitors,
-        });
-    }
-    catch(error){
-        res.status(404).json({success : false, message : "no vistors found"})
-    }
+  try {
+    const visitors = Visitor.find({
+      status: "pending_checkin"
+    })
+    res.json({
+      success: true,
+      data: visitors,
+    });
+  }
+  catch (error) {
+    res.status(404).json({ success: false, message: "no vistors found" })
+  }
 }

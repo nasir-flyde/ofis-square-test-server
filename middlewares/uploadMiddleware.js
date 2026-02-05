@@ -6,6 +6,7 @@ const uploadsDir = 'uploads/screenshots';
 const buildingPhotosDir = 'uploads/buildings';
 const meetingRoomImagesDir = 'uploads/meeting-rooms';
 const eventImagesDir = 'uploads/events';
+const visitorProfilePictureDir = 'uploads/visitors';
 
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -21,6 +22,10 @@ if (!fs.existsSync(meetingRoomImagesDir)) {
 
 if (!fs.existsSync(eventImagesDir)) {
   fs.mkdirSync(eventImagesDir, { recursive: true });
+}
+
+if (!fs.existsSync(visitorProfilePictureDir)) {
+  fs.mkdirSync(visitorProfilePictureDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
@@ -122,6 +127,16 @@ const kycDocumentsUpload = multer({
   }
 });
 
+// Visitor profile picture upload configuration (using memory storage for ImageKit)
+const visitorProfilePictureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit for profile picture
+    files: 1
+  },
+  fileFilter: fileFilter
+});
+
 export const uploadScreenshots = upload.array('screenshots', 5);
 export const uploadBuildingPhotos = buildingPhotosUpload.array('photos', 10);
 export const uploadMeetingRoomImages = meetingRoomImagesUpload.array('images', 10);
@@ -131,35 +146,36 @@ export const uploadEventImages = eventImagesUpload.fields([
 ]);
 export const uploadStampPaper = stampPaperUpload.single('stampPaper');
 export const uploadKYCDocuments = kycDocumentsUpload.array('kycDocuments', 10);
+export const uploadVisitorProfilePicture = visitorProfilePictureUpload.single('profile_picture');
 
 export const handleUploadError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'File too large. Maximum size is 5MB per file.' 
+      return res.status(400).json({
+        success: false,
+        message: 'File too large. Maximum size is 5MB per file.'
       });
     }
     if (error.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Too many files. Maximum 5 files allowed.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Too many files. Maximum 5 files allowed.'
       });
     }
     if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Unexpected field name for file upload.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Unexpected field name for file upload.'
       });
     }
   }
-  
+
   if (error.message === 'Only image files are allowed!') {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Only image files are allowed.' 
+    return res.status(400).json({
+      success: false,
+      message: 'Only image files are allowed.'
     });
   }
-  
+
   next(error);
 };
