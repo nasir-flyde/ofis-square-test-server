@@ -357,7 +357,9 @@ export const whitelistBhaifiUser = async (req, res) => {
 
 // Orchestrator to auto-provision for a member (internal use)
 export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
-  const member = await Member.findById(memberId).populate("client");
+  const member = await Member.findById(memberId).populate([
+    { path: "client", populate: { path: "building" } }
+  ]);
   if (!member) {
     console.warn("[BHAIFI] ensureBhaifiForMember: Member not found", { memberId: String(memberId) });
     throw new Error("Member not found");
@@ -376,14 +378,37 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       memberId: String(member._id),
       emailPresent: !!email,
       phonePresent: !!member.phone,
-      rawPhone: member.phone,
     });
     throw new Error("Missing email or phone for member");
   }
-
-  const nasId = getEnvNasId();
+  
+  // Try to get building's NAS ID first, fallback to environment default
+  let nasId = getEnvNasId();
+  const building = member.client?.building;
+  
+  if (building?.wifiAccess?.enterpriseLevel?.enabled && 
+      Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+      building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
+    
+    const nasDocs = await BhaifiNas.find({
+      _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
+      isActive: true
+    }).select('nasId').lean();
+    
+    if (nasDocs.length > 0) {
+      // Use the first active NAS ID from building mapping
+      nasId = nasDocs[0].nasId;
+      console.log(`[BHAIFI] Using building NAS mapping for member ${member._id}:`, { 
+        buildingId: building._id, 
+        nasId,
+        totalActiveNas: nasDocs.length 
+      });
+    }
+  } else {
+    console.log(`[BHAIFI] Using default NAS ID for member ${member._id} (no building mapping found)`, { nasId });
+  }
+  
   const idType = 1;
-
   let doc = await BhaifiUser.findOne({ member: member._id, userName });
   if (doc) return doc;
 
