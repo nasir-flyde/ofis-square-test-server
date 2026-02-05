@@ -9,6 +9,22 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import csv from "csv-parser";
 import { Readable } from "stream";
 
+// Helper: format numeric floor as ordinal (1 -> 1st, 2 -> 2nd, 3 -> 3rd, 4 -> 4th, 11 -> 11th, etc.)
+const formatFloorLabel = (floor) => {
+  if (floor === undefined || floor === null || floor === "") return null;
+  const num = Number(floor);
+  if (!Number.isFinite(num)) return String(floor);
+  const n = Math.trunc(num);
+  const v = n % 100;
+  if (v > 10 && v < 14) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+};
+
 // Create a meeting room
 export const createRoom = async (req, res) => {
   try {
@@ -84,7 +100,11 @@ export const listRooms = async (req, res) => {
 
     return res.json({
       success: true,
-      data: meetingRooms,
+      data: meetingRooms.map(r => {
+        const obj = r.toObject();
+        obj.floor = formatFloorLabel(obj.floor);
+        return obj;
+      }),
       count: meetingRooms.length
     });
   } catch (error) {
@@ -119,10 +139,13 @@ export const getRoomById = async (req, res) => {
       updatedFields: ['name', 'building', 'capacity', 'amenities', 'pricing', 'status']
     });
 
+    const roomObj = meetingRoom.toObject();
+    roomObj.floor = formatFloorLabel(roomObj.floor);
+
     return res.json({
       success: true,
       message: 'Meeting room updated successfully',
-      data: meetingRoom
+      data: roomObj
     });
   } catch (error) {
     await logErrorActivity(req, error);
@@ -570,22 +593,6 @@ export const getAvailableRoomsByTime = async (req, res) => {
       return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
     };
 
-    // Helper: format numeric floor as ordinal (1 -> 1st, 2 -> 2nd, 3 -> 3rd, 4 -> 4th, 11 -> 11th, etc.)
-    const formatFloorLabel = (floor) => {
-      if (floor === undefined || floor === null) return null;
-      const num = Number(floor);
-      if (!Number.isFinite(num)) return String(floor);
-      const n = Math.trunc(num);
-      const v = n % 100;
-      if (v > 10 && v < 14) return `${n}th`;
-      switch (n % 10) {
-        case 1: return `${n}st`;
-        case 2: return `${n}nd`;
-        case 3: return `${n}rd`;
-        default: return `${n}th`;
-      }
-    };
-
     // Branch 1: Daily slots mode (only date provided)
     if (!timesProvided) {
       // Fetch all bookings that overlap this date
@@ -605,7 +612,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
       const roomsWithSlots = allRooms.map(room => {
         const roomObj = room.toObject();
-        const floorLabel = formatFloorLabel(room.floor);
+        roomObj.floor = formatFloorLabel(roomObj.floor);
 
         // Blackout or closed => no available slots
         const isBlackout = room.blackoutDates?.some(blackoutDate => {
@@ -666,7 +673,6 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
         return {
           ...roomObj,
-          floorLabel,
           reservedSlots: reservedSlotsForDate, // only for requested date
           availableTimeSlots: availableSlots,  // only for requested date after removals
           bookedIntervals,
@@ -771,10 +777,9 @@ export const getAvailableRoomsByTime = async (req, res) => {
           }));
 
         const roomObj = room.toObject();
-        const floorLabel = formatFloorLabel(room.floor);
+        roomObj.floor = formatFloorLabel(roomObj.floor);
         return {
           ...roomObj,
-          floorLabel,
           conflictingBookings: bookings
         };
       });
@@ -782,7 +787,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // Convert reserved and available slot times to 24-hour format for available rooms
     const availableRoomsFormatted = availableRooms.map(room => {
       const roomObj = room.toObject();
-      roomObj.floorLabel = formatFloorLabel(room.floor);
+      roomObj.floor = formatFloorLabel(roomObj.floor);
       if (roomObj.reservedSlots && roomObj.reservedSlots.length > 0) {
         roomObj.reservedSlots = roomObj.reservedSlots
           .filter(slot => isSameRequestedDate(slot.date))
