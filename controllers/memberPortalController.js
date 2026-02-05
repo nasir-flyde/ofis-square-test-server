@@ -880,6 +880,7 @@ export const getHomePageData = async (req, res) => {
       data: {
         profile: {
           name,
+          memberId: req.memberId || null,
           companyName,
           cabinNumber,
           buildingName,
