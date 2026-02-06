@@ -20,7 +20,8 @@ import {
   addComment,
   getSectionComments,
   getDefaultTermsAndConditions,
-  setWorkflowMode
+  setWorkflowMode,
+  allocateCabins
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -45,7 +46,7 @@ const router = express.Router();
 
 // Configure memory storage for ImageKit upload
 const storage = multer.memoryStorage();
-const upload = multer({ 
+const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
@@ -110,8 +111,8 @@ router.get("/debug/zoho-token", authMiddleware, async (req, res) => {
     const token = await getAccessToken();
     res.json({ success: true, tokenLength: token?.length || 0 });
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       envVars: {
         hasRefreshToken: !!process.env.ZOHO_REFRESH_TOKEN,
@@ -181,5 +182,7 @@ router.put(
   requirePermission(PERMISSIONS.CONTRACT_LEGAL_APPROVE),
   setWorkflowMode
 );
+// Manual cabin allocation
+router.post("/:id/allocate-cabins", allocateCabins);
 
 export default router;

@@ -107,7 +107,7 @@ export const createContract = async (req, res) => {
       billingEndDate,
       terms,
       termsandconditions,
-      
+
       commencementDate,
       legalExpenses,
       allocationSeatsNumber,
@@ -165,7 +165,7 @@ export const createContract = async (req, res) => {
     }
 
     const start = contractStartDate ? new Date(contractStartDate) : new Date();
-    const end = contractEndDate ? new Date(contractEndDate) : new Date(Date.now() + 365*24*60*60*1000);
+    const end = contractEndDate ? new Date(contractEndDate) : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
     const billStart = billingStartDate ? new Date(billingStartDate) : start;
     const billEnd = billingEndDate ? new Date(billingEndDate) : end;
     // Compute duration in months between start and end (inclusive of months boundary)
@@ -183,8 +183,8 @@ export const createContract = async (req, res) => {
     const normalizedTermsAndConditions = Array.isArray(termsandconditions)
       ? termsandconditions
       : (termsandconditions && typeof termsandconditions === 'object'
-          ? [termsandconditions]
-          : undefined);
+        ? [termsandconditions]
+        : undefined);
 
     const payload = {
       client: clientId,
@@ -569,9 +569,9 @@ export const getContractById = async (req, res) => {
       .populate("building", "name address perSeatPricing city state")
       .populate("comments.by", "name email")
       .populate("comments.mentionedUsers", "name email");
-    
+
     if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
-    
+
     // Filter comments based on user access
     const currentUserId = req.user?._id?.toString();
     if (currentUserId && contract.comments) {
@@ -579,34 +579,34 @@ export const getContractById = async (req, res) => {
       const User = (await import('../models/userModel.js')).default;
       const currentUser = await User.findById(currentUserId).populate('role', 'roleName');
       const userRole = currentUser?.role?.roleName;
-      
+
       contract.comments = contract.comments.filter(comment => {
         // Show all review and client comments
         if (comment.type === 'review' || comment.type === 'client') return true;
-        
+
         // Handle legal_only comments
         if (comment.type === 'legal_only') {
           return ['Legal Team', 'System Admin'].includes(userRole);
         }
-        
+
         // Handle internal comments
         if (comment.type === 'internal') {
           // Show internal comments if user is the author
           if (comment.by?._id?.toString() === currentUserId) return true;
-          
+
           // Show internal comments if user is mentioned
           if (comment.mentionedUsers && comment.mentionedUsers.some(u => u._id?.toString() === currentUserId)) {
             return true;
           }
-          
+
           // Hide other internal comments
           return false;
         }
-        
+
         return true;
       });
     }
-    
+
     return res.json({ success: true, data: contract });
   } catch (err) {
     console.error("getContractById error:", err);
@@ -632,13 +632,13 @@ export const deleteContract = async (req, res) => {
     }
 
     await Contract.deleteOne({ _id: id });
-    
+
     // Log activity
     await logCRUDActivity(req, 'DELETE', 'Contract', id, null, {
       clientId: existing.client,
       buildingId: existing.building
     });
-    
+
     return res.json({ success: true, message: "Contract deleted" });
   } catch (err) {
     console.error("deleteContract error:", err);
@@ -783,8 +783,8 @@ export const updateContract = async (req, res) => {
     const normalizedTermsAndConditions = Array.isArray(termsandconditions)
       ? termsandconditions
       : (termsandconditions && typeof termsandconditions === 'object'
-          ? [termsandconditions]
-          : undefined);
+        ? [termsandconditions]
+        : undefined);
 
     const updateData = {
       client: clientId,
@@ -803,10 +803,12 @@ export const updateContract = async (req, res) => {
       ...(parkingSpaces && { parkingSpaces }),
       // Parking fees (keep existing if not provided, else default to schema defaults)
       ...(parkingFees !== undefined
-        ? { parkingFees: {
+        ? {
+          parkingFees: {
             twoWheeler: parkingFees?.twoWheeler !== undefined ? Number(parkingFees.twoWheeler) : (existing.parkingFees?.twoWheeler ?? 1500),
             fourWheeler: parkingFees?.fourWheeler !== undefined ? Number(parkingFees.fourWheeler) : (existing.parkingFees?.fourWheeler ?? 5000),
-          } }
+          }
+        }
         : (existing.parkingFees ? {} : { parkingFees: { twoWheeler: 1500, fourWheeler: 5000 } })
       ),
       // Always derive duration from dates
@@ -880,10 +882,10 @@ export const updateContract = async (req, res) => {
       const populatedContract = await Contract.findById(id)
         .populate("client")
         .populate("building", "name address perSeatPricing");
-      
+
       const pdfBuffer = await generateContractPDFBuffer(populatedContract);
       const fileName = `contract_${id}_${Date.now()}.pdf`;
-      
+
       // Ensure the buffer is properly formatted for ImageKit
       let fileForUpload = pdfBuffer;
       if (Buffer.isBuffer(pdfBuffer)) {
@@ -899,17 +901,17 @@ export const updateContract = async (req, res) => {
         fileName: fileName,
         folder: "/contracts"
       });
-      
+
       // Update contract with the new PDF URL
       await Contract.findByIdAndUpdate(id, { fileUrl: uploadResponse.url });
       updated.fileUrl = uploadResponse.url;
-      
+
       console.log(`Contract PDF regenerated and uploaded: ${uploadResponse.url}`);
     } catch (pdfError) {
       console.error("Failed to regenerate/upload contract PDF:", pdfError);
       // Don't fail contract update if PDF generation fails
     }
-    
+
     await logCRUDActivity(req, 'UPDATE', 'Contract', id, {
       before: existing.toObject(),
       after: updated.toObject(),
@@ -919,7 +921,7 @@ export const updateContract = async (req, res) => {
       buildingId,
       updatedFields: Object.keys(updateData)
     });
-    
+
     return res.json({ success: true, message: "Contract updated", contract: updated });
   } catch (err) {
     console.error("updateContract error:", err);
@@ -936,15 +938,15 @@ export const submitContract = async (req, res) => {
     const contract = await Contract.findById(id)
       .populate("client")
       .populate("building", "name address pricing");
-    
+
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
-    
+
     if (contract.status !== "draft") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Only draft contracts can be submitted" 
+      return res.status(400).json({
+        success: false,
+        message: "Only draft contracts can be submitted"
       });
     }
 
@@ -956,17 +958,17 @@ export const submitContract = async (req, res) => {
       contract.approvedAt = new Date();
       contract.submittedBy = req.user?._id || null;
       contract.submittedAt = new Date();
-      
+
       await contract.save();
-      
+
       // Log activity
       await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
         event: 'CONTRACT_AUTO_APPROVED',
         approvedBy: req.user?._id,
         autoApproved: true
       });
-      
-      return res.json({ 
+
+      return res.json({
         success: true,
         message: "Contract auto-approved and ready to send for signature",
         contract,
@@ -977,19 +979,19 @@ export const submitContract = async (req, res) => {
       contract.status = "pending_approval";
       contract.submittedBy = req.user?._id || null;
       contract.submittedAt = new Date();
-      
+
       await contract.save();
-      
+
       // Log activity
       await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
         event: 'CONTRACT_SUBMITTED',
         submittedBy: req.user?._id,
         requiresApproval: true
       });
-      
+
       // TODO: Send notification to approvers
-      
-      return res.json({ 
+
+      return res.json({
         success: true,
         message: "Contract submitted for approval",
         contract,
@@ -1003,39 +1005,50 @@ export const submitContract = async (req, res) => {
   }
 };
 
+export const allocateCabins = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await allocateBlockedCabinsForContract(id);
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    console.error("allocateCabins error:", err);
+    return res.status(500).json({ success: false, message: "Failed to allocate cabins", error: err.message });
+  }
+};
+
 // Approve contract (requires contract:approve permission)
 export const approveContract = async (req, res) => {
   try {
     const { id } = req.params;
     const contract = await Contract.findById(id);
-    
+
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
-    
+
     if (contract.status !== "pending_approval") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Only contracts pending approval can be approved" 
+      return res.status(400).json({
+        success: false,
+        message: "Only contracts pending approval can be approved"
       });
     }
-    
+
     contract.status = "approved";
     contract.approvedBy = req.user?._id || null;
     contract.approvedAt = new Date();
-    
+
     await contract.save();
-    
+
     // Log activity
     await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
       event: 'CONTRACT_APPROVED',
       approvedBy: req.user?._id,
       previousStatus: "pending_approval"
     });
-    
+
     // TODO: Send notification to contract creator
-    
-    return res.json({ 
+
+    return res.json({
       success: true,
       message: "Contract approved. Ready to send for signature.",
       contract
@@ -1052,27 +1065,27 @@ export const rejectContract = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body || {};
-    
+
     const contract = await Contract.findById(id);
-    
+
     if (!contract) {
       return res.status(404).json({ success: false, message: "Contract not found" });
     }
-    
+
     if (contract.status !== "pending_approval") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Only contracts pending approval can be rejected" 
+      return res.status(400).json({
+        success: false,
+        message: "Only contracts pending approval can be rejected"
       });
     }
-    
+
     contract.status = "rejected";
     contract.rejectedBy = req.user?._id || null;
     contract.rejectedAt = new Date();
     contract.rejectionReason = reason || "No reason provided";
-    
+
     await contract.save();
-    
+
     // Log activity
     await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
       event: 'CONTRACT_REJECTED',
@@ -1080,10 +1093,10 @@ export const rejectContract = async (req, res) => {
       rejectionReason: reason,
       previousStatus: "pending_approval"
     });
-    
+
     // TODO: Send notification to contract creator
-    
-    return res.json({ 
+
+    return res.json({
       success: true,
       message: "Contract rejected",
       contract
@@ -1104,7 +1117,7 @@ export const getPendingApprovalContracts = async (req, res) => {
       .populate("createdBy", "name email")
       .populate("submittedBy", "name email")
       .sort({ submittedAt: -1 });
-    
+
     return res.json({ success: true, data: contracts });
   } catch (err) {
     console.error("getPendingApprovalContracts error:", err);
@@ -1120,10 +1133,10 @@ export const sendForSignature = async (req, res) => {
     const contract = await Contract.findById(id)
       .populate("client")
       .populate("building", "name address pricing");
-    
+
     if (!contract) return res.status(404).json({ error: "Contract not found" });
     if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
-    
+
     // Require an active cabin block for this client in this building before sending for signature
     try {
       const hasActiveBlock = await Cabin.exists({
@@ -1144,8 +1157,8 @@ export const sendForSignature = async (req, res) => {
     // Use stampPaperUrl if available, otherwise fallback to fileUrl
     const documentUrl = contract.stampPaperUrl || contract.fileUrl;
     if (!documentUrl) {
-      return res.status(400).json({ 
-        error: "Contract must have a stampPaperUrl or fileUrl before it can be sent for signature. Please generate the contract PDF first." 
+      return res.status(400).json({
+        error: "Contract must have a stampPaperUrl or fileUrl before it can be sent for signature. Please generate the contract PDF first."
       });
     }
 
@@ -1158,7 +1171,7 @@ export const sendForSignature = async (req, res) => {
     });
     const requestId = await loggedZohoSign.createDocument(contract);
     console.log("Document created with request ID:", requestId);
-    
+
     // Step 2: Verify document exists and get document ID
     const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
     const documentId = documentDetails?.document_ids?.[0]?.document_id;
@@ -1166,7 +1179,7 @@ export const sendForSignature = async (req, res) => {
       throw new Error("Failed to get document ID from Zoho Sign");
     }
     console.log("Document verified with ID:", documentId);
-    
+
     // Step 3: Add recipient to document
     const client = contract.client || {};
     let recipient = client;
@@ -1179,7 +1192,7 @@ export const sendForSignature = async (req, res) => {
     }
     await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
     console.log("Recipient added to document");
-    
+
     // Step 4: Submit document for signature
     await loggedZohoSign.submitDocument(requestId);
     console.log("Document submitted for signature");
@@ -1187,9 +1200,9 @@ export const sendForSignature = async (req, res) => {
     // Update contract status and store Zoho Sign request ID
     const updatedContract = await Contract.findByIdAndUpdate(
       id,
-      { 
+      {
         status: "pending_signature",
-        iscontractsentforsignature : true,
+        iscontractsentforsignature: true,
         zohoSignRequestId: requestId,
         sentForSignatureAt: new Date()
       },
@@ -1203,8 +1216,8 @@ export const sendForSignature = async (req, res) => {
       clientName: contract.client.companyName
     });
 
-    return res.json({ 
-      message: "Contract sent for digital signature", 
+    return res.json({
+      message: "Contract sent for digital signature",
       contract: updatedContract,
       zohoSignRequestId: requestId
     });
@@ -1220,23 +1233,23 @@ export const checkSignatureStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const contract = await Contract.findById(id);
-    
+
     if (!contract) return res.status(404).json({ error: "Contract not found" });
     if (!contract.zohoSignRequestId) {
       return res.status(400).json({ error: "Contract not sent for signature yet" });
     }
 
     const status = await loggedZohoSign.getDocumentStatus(contract.zohoSignRequestId);
-    
+
     // Update contract status based on Zoho Sign status
     let newStatus = contract.status;
     if (status.request_status === "completed") {
       newStatus = "active";
-      await Contract.findByIdAndUpdate(id, { 
+      await Contract.findByIdAndUpdate(id, {
         status: "active",
         signedAt: new Date()
       });
-      
+
       // Log contract completion
       await logContractActivity(req, 'CONTRACT_SIGNED', id, contract.client?._id, {
         zohoSignRequestId: contract.zohoSignRequestId,
@@ -1269,7 +1282,7 @@ export const checkSignatureStatus = async (req, res) => {
       }
     }
 
-    return res.json({ 
+    return res.json({
       contractStatus: newStatus,
       zohoSignStatus: status.request_status,
       signatureDetails: status
@@ -1288,15 +1301,15 @@ export const uploadAndSendForSignature = async (req, res) => {
     const contract = await Contract.findById(id)
       .populate("client")
       .populate("building", "name address pricing");
-    
+
     if (!contract) {
       return res.status(404).json({ error: "Contract not found" });
     }
 
     // Check if contract is in approved status
     if (contract.status !== 'approved' && contract.status !== 'draft') {
-      return res.status(400).json({ 
-        error: `Contract must be approved before sending for signature. Current status: ${contract.status}` 
+      return res.status(400).json({
+        error: `Contract must be approved before sending for signature. Current status: ${contract.status}`
       });
     }
 
@@ -1353,7 +1366,7 @@ export const uploadAndSendForSignature = async (req, res) => {
       // Step 1: Create document in Zoho Sign
       const requestId = await loggedZohoSign.createDocument(contract);
       console.log("Document created with request ID:", requestId);
-      
+
       // Step 2: Verify document exists and get document ID
       const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
       const documentId = documentDetails?.document_ids?.[0]?.document_id;
@@ -1361,7 +1374,7 @@ export const uploadAndSendForSignature = async (req, res) => {
         throw new Error("Failed to get document ID from Zoho Sign");
       }
       console.log("Document verified with ID:", documentId);
-      
+
       // Step 3: Add recipient to document
       const client = contract.client || {};
       let recipient = client;
@@ -1374,7 +1387,7 @@ export const uploadAndSendForSignature = async (req, res) => {
       }
       await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
       console.log("Recipient added to document");
-      
+
       // Step 4: Submit document for signature
       await loggedZohoSign.submitDocument(requestId);
       console.log("Document submitted for signature");
@@ -1405,10 +1418,10 @@ export const uploadAndSendForSignature = async (req, res) => {
       });
     } catch (zohoError) {
       console.error("Zoho Sign error:", zohoError);
-      return res.status(500).json({ 
+      return res.status(500).json({
         error: "Contract uploaded but failed to send for signature",
         details: zohoError.message,
-        fileUrl 
+        fileUrl
       });
     }
   } catch (err) {
@@ -1442,7 +1455,7 @@ export const uploadSignedContract = async (req, res) => {
       if (uploadedFile.mimetype && !allowed.includes(uploadedFile.mimetype)) {
         return res.status(400).json({ error: "Unsupported file type" });
       }
-      
+
       // Upload to ImageKit
       try {
         const fileName = `contract_${id}_${Date.now()}_${uploadedFile.originalname}`;
@@ -1470,7 +1483,7 @@ export const uploadSignedContract = async (req, res) => {
     // contract.zohoSignRequestId = undefined;
 
     await contract.save();
-    
+
     // Log contract activation
     await logContractActivity(req, 'UPDATE', id, contract.client?._id, {
       event: 'CONTRACT_ACTIVATED',
@@ -1653,15 +1666,15 @@ export const handleZohoSignWebhook = async (req, res) => {
 
     const response = { message: "Webhook processed successfully" };
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
-    
+
     return res.status(200).json(response);
   } catch (err) {
     console.error("handleZohoSignWebhook error:", err);
     await logErrorActivity(req, err, 'Zoho Sign Webhook');
-    
+
     const errorResponse = { error: "Webhook processing failed" };
     await apiLogger.logWebhookResponse(requestId, 500, errorResponse, false, err.message);
-    
+
     return res.status(500).json(errorResponse);
   }
 }
@@ -1887,7 +1900,7 @@ async function buildContractHtmlFromTemplate(contract) {
 
     const fourW = (contract.parkingSpaces?.noOf4WheelerParking ?? '');
     const twoW = (contract.parkingSpaces?.noOf2WheelerParking ?? '');
-    const noticePeriod = contract.noticePeriodDays ? `${Math.round(contract.noticePeriodDays/30)} months` : '……………..';
+    const noticePeriod = contract.noticePeriodDays ? `${Math.round(contract.noticePeriodDays / 30)} months` : '……………..';
 
     const commence = contract.commencementDate ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(contract.commencementDate)) : '………………';
     const duration = (contract.durationMonths ?? '') || '';
@@ -2318,7 +2331,7 @@ async function createZohoSignDocument(contract) {
     console.error("Zoho Sign create error payload:", result);
     throw new Error(`Zoho Sign API error: ${msg}`);
   }
-  
+
   // Return only the request_id to avoid shape confusion
   return result.requests?.request_id;
 }
@@ -2401,7 +2414,7 @@ async function submitDocumentForSignature(requestId) {
     console.error("Zoho Sign submit error payload:", { requestId, result });
     throw new Error(`Failed to submit document: ${msg}`);
   }
-  
+
   return result;
 }
 
@@ -2430,7 +2443,7 @@ async function verifyDocumentExists(requestId) {
         console.log(`Document ${requestId} verified on attempt ${attempt}`);
         return result.requests;
       }
-      
+
       console.log(`Document ${requestId} not ready, attempt ${attempt}/${maxRetries}:`, result);
       if (attempt < maxRetries) {
         await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
@@ -2442,7 +2455,7 @@ async function verifyDocumentExists(requestId) {
       }
     }
   }
-  
+
   throw new Error(`Document ${requestId} not available after ${maxRetries} attempts`);
 }
 
@@ -2461,7 +2474,7 @@ async function getZohoSignDocumentStatus(requestId) {
     const msg = result.message || "Failed to get document status";
     throw new Error(`Failed to get document status: ${msg}`);
   }
-  
+
   return result.requests;
 }
 
@@ -2516,7 +2529,7 @@ export const generateContractPDF = async (req, res) => {
     const contract = await Contract.findById(id)
       .populate("client")
       .populate("building", "name address pricing");
-    
+
     if (!contract) {
       return res.status(404).json({ error: "Contract not found" });
     }
@@ -2605,12 +2618,12 @@ function buildContractTemplate(contractData) {
       ]
     },
     layout: {
-      hLineWidth: function(i, node) { return (i === 0 || i === node.table.body.length) ? 0 : 0.4; },
-      vLineWidth: function() { return 0; },
-      paddingLeft: function() { return 4; },
-      paddingRight: function() { return 4; },
-      paddingTop: function() { return 4; },
-      paddingBottom: function() { return 4; }
+      hLineWidth: function (i, node) { return (i === 0 || i === node.table.body.length) ? 0 : 0.4; },
+      vLineWidth: function () { return 0; },
+      paddingLeft: function () { return 4; },
+      paddingRight: function () { return 4; },
+      paddingTop: function () { return 4; },
+      paddingBottom: function () { return 4; }
     },
     margin: [0, 0, 0, 10]
   });
@@ -2941,14 +2954,14 @@ export const addComment = async (req, res) => {
       if (!termsSection) {
         return res.status(400).json({ success: false, message: "Terms section is required for section-specific comments" });
       }
-      
+
       const validSections = [
         "denotations", "scope", "rightsGrantedToClient", "payments",
         "consequencesOfNonPayment", "obligationsOfClient", "obligationsOfOfisSquare",
         "termination", "consequencesOfTermination", "renewal", "miscellaneous",
         "parking", "disputeResolution", "governingLaw", "electronicSignature"
       ];
-      
+
       if (!validSections.includes(termsSection)) {
         return res.status(400).json({ success: false, message: "Invalid terms section" });
       }
@@ -3062,7 +3075,7 @@ export const getSectionComments = async (req, res) => {
 
           // mentioned users
           if (Array.isArray(comment.mentionedUsers) &&
-              comment.mentionedUsers.some(u => u?._id?.toString && u._id.toString() === currentUserId)) {
+            comment.mentionedUsers.some(u => u?._id?.toString && u._id.toString() === currentUserId)) {
             return true;
           }
 
