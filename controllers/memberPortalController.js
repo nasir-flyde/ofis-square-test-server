@@ -152,7 +152,19 @@ export const getMemberDashboard = async (req, res) => {
 // Get member profile with desk details
 export const getMyProfile = async (req, res) => {
   try {
-    const member = await Member.findById(req.memberId)
+    // Detect role via universalAuthVerify/memberMiddleware
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+    const isClient = roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients';
+
+    // For client-auth requests, req.memberId may be undefined. In that case,
+    // either require a memberId to be present on the token or provided via query/params.
+    let targetMemberId = req.memberId || req.params?.memberId || req.query?.memberId;
+    if (isClient && !targetMemberId) {
+      return res.status(400).json({ success: false, message: "memberId is required for client-auth to view a member profile. Alternatively call /api/member-portal/me/home for a client-centric overview." });
+    }
+
+    const member = await Member.findById(targetMemberId || req.memberId)
       .populate({
         path: 'desk',
         populate: [
@@ -166,9 +178,23 @@ export const getMyProfile = async (req, res) => {
       return res.status(404).json({ success: false, message: "Member not found" });
     }
 
-    // Ensure member belongs to the client from token
-    if (member.client._id.toString() !== req.clientId) {
-      return res.status(403).json({ success: false, message: "Access denied" });
+    // Role-aware access checks
+    if (isClient) {
+      // Client-auth: ensure the member belongs to this client
+      if (!req.clientId) {
+        return res.status(403).json({ success: false, message: "Access denied: missing clientId in request context" });
+      }
+      if (String(member.client?._id || '') !== String(req.clientId || '')) {
+        return res.status(403).json({ success: false, message: `Access denied: member.clientId (${String(member.client?._id)}) does not match req.clientId (${String(req.clientId)})` });
+      }
+    } else {
+      // Member-auth: ensure the member is accessing their own profile and within same client (if clientId present)
+      if (String(member._id || '') !== String(req.memberId || '')) {
+        return res.status(403).json({ success: false, message: `Access denied: token memberId (${String(req.memberId)}) does not match requested member (${String(member._id)})` });
+      }
+      if (req.clientId && String(member.client?._id || '') !== String(req.clientId || '')) {
+        return res.status(403).json({ success: false, message: `Access denied: member.clientId (${String(member.client?._id)}) does not match req.clientId (${String(req.clientId)})` });
+      }
     }
 
     // Fetch upcoming/active events (show all published events)

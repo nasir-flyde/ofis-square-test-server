@@ -58,8 +58,6 @@ router.get(
 router.put(
   "/:id",
   authMiddleware,
-  populateUserRole,
-  requirePermission(PERMISSIONS.MEMBER_UPDATE),
   updateMember
 );
 

@@ -27,11 +27,11 @@ router.post("/me/notifications/read-all", universalMiddleware, markAllNotificati
 
 // Allow clients and members to get homepage data via universal auth
 router.get("/me/home", universalMiddleware, getHomePageData);
-
+router.get("/me",universalMiddleware, getMyProfile);
 // All other routes require member authentication
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
-router.get("/me", getMyProfile);
+
 router.get("/me/bookings", getMyBookings);
 
 export default router;
