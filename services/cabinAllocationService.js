@@ -33,7 +33,7 @@ export async function allocateBlockedCabinsForContract(contractId) {
         from.setHours(0, 0, 0, 0);
         to.setHours(23, 59, 59, 999);
         const now = new Date();
-        return now >= from && now <= to;
+        return now <= to;
       } catch {
         return true;
       }
