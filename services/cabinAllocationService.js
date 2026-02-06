@@ -22,19 +22,22 @@ export async function allocateBlockedCabinsForContract(contractId) {
     if (!contract) return results;
 
     const today = new Date();
+
+    // Day-based inclusive range check to avoid timezone boundary issues
     const inRange = (blk) => {
       try {
-        const from = blk.fromDate ? new Date(blk.fromDate) : null;
-        const to = blk.toDate ? new Date(blk.toDate) : null;
-        if (from && today < from) return false;
-        if (to && today > to) return false;
-        return true;
+        if (!blk?.fromDate || !blk?.toDate) return true; // if dates missing, be lenient
+        const from = new Date(blk.fromDate);
+        const to = new Date(blk.toDate);
+        // Expand to full-day boundaries in server local time
+        from.setHours(0, 0, 0, 0);
+        to.setHours(23, 59, 59, 999);
+        const now = new Date();
+        return now >= from && now <= to;
       } catch {
         return true;
       }
     };
-
-    // Candidate cabins in same building that are blocked/available with an active block for this client
     const cabins = await Cabin.find({
       building: contract.building,
       status: { $in: ["blocked", "available"] },
