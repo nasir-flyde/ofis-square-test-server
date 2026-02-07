@@ -42,7 +42,8 @@ const corsOptions = {
     'https://ofis-square-new-admin.vercel.app',
     'https://ofis-square-community-team.vercel.app',
     'https://office-square.vercel.app',
-    'https://ofis-square-visitor-checkin.vercel.app'
+    'https://ofis-square-visitor-checkin.vercel.app',
+    'https://ofis-square-member.vercel.app'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
