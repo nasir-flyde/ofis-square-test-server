@@ -9,11 +9,27 @@ export const createBuilding = async (req, res) => {
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
     }
+
     const processedPhotos = [];
     if (photos && Array.isArray(photos)) {
+      const categoryMap = new Map();
       for (const photo of photos) {
         try {
+          if (photo.category && Array.isArray(photo.images)) {
+            const category = photo.category.trim();
+            const images = photo.images.map(img => ({
+              url: img.url || img.imageUrl,
+              uploadedAt: img.uploadedAt || new Date()
+            })).filter(img => img.url);
+            if (images.length > 0) {
+              if (!categoryMap.has(category)) categoryMap.set(category, []);
+              categoryMap.get(category).push(...images);
+            }
+            continue;
+          }
+
           const category = (photo.category || 'General').trim();
+          let url = '';
           if (photo?.file) {
             const uploadResult = await imagekit.upload({
               file: photo.file,
@@ -22,21 +38,21 @@ export const createBuilding = async (req, res) => {
               useUniqueFileName: true,
               tags: ["building", name.replace(/\s+/g, '-').toLowerCase(), category.replace(/\s+/g, '-').toLowerCase()]
             });
-            processedPhotos.push({
-              category,
-              imageUrl: uploadResult.url,
-              uploadedAt: new Date()
-            });
+            url = uploadResult.url;
           } else if (photo?.imageUrl) {
-            processedPhotos.push({
-              category,
-              imageUrl: photo.imageUrl,
-              uploadedAt: new Date()
-            });
+            url = photo.imageUrl;
+          }
+
+          if (url) {
+            if (!categoryMap.has(category)) categoryMap.set(category, []);
+            categoryMap.get(category).push({ url, uploadedAt: new Date() });
           }
         } catch (uploadError) {
           console.warn("Failed to process photo:", uploadError);
         }
+      }
+      for (const [category, images] of categoryMap.entries()) {
+        processedPhotos.push({ category, images });
       }
     }
 
@@ -176,7 +192,7 @@ export const getBuildings = async (req, res) => {
     const buildings = await Building.find(filter)
       .populate('amenities', 'name icon iconUrl description')
       .sort({ createdAt: -1 });
-    
+
     res.json({ success: true, data: buildings });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -188,11 +204,11 @@ export const getBuildingById = async (req, res) => {
     const { id } = req.params;
     const building = await Building.findById(id)
       .populate('amenities', 'name icon iconUrl description');
-    
+
     if (!building) {
       return res.status(404).json({ success: false, message: "Building not found" });
     }
-    
+
     res.json({ success: true, data: building });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -209,9 +225,24 @@ export const updateBuilding = async (req, res) => {
     let processedPhotos;
     if (photos && Array.isArray(photos)) {
       processedPhotos = [];
+      const categoryMap = new Map();
       for (const photo of photos) {
         try {
+          if (photo.category && Array.isArray(photo.images)) {
+            const category = photo.category.trim();
+            const images = photo.images.map(img => ({
+              url: img.url || img.imageUrl,
+              uploadedAt: img.uploadedAt || new Date()
+            })).filter(img => img.url);
+            if (images.length > 0) {
+              if (!categoryMap.has(category)) categoryMap.set(category, []);
+              categoryMap.get(category).push(...images);
+            }
+            continue;
+          }
+
           const category = (photo.category || 'General').trim();
+          let url = '';
           if (photo?.file) {
             const uploadResult = await imagekit.upload({
               file: photo.file,
@@ -220,13 +251,21 @@ export const updateBuilding = async (req, res) => {
               useUniqueFileName: true,
               tags: ["building", (name || oldBuilding?.name || 'building').replace(/\s+/g, '-').toLowerCase(), category.replace(/\s+/g, '-').toLowerCase()]
             });
-            processedPhotos.push({ category, imageUrl: uploadResult.url, uploadedAt: new Date() });
+            url = uploadResult.url;
           } else if (photo?.imageUrl) {
-            processedPhotos.push({ category, imageUrl: photo.imageUrl, uploadedAt: new Date() });
+            url = photo.imageUrl;
+          }
+
+          if (url) {
+            if (!categoryMap.has(category)) categoryMap.set(category, []);
+            categoryMap.get(category).push({ url, uploadedAt: new Date() });
           }
         } catch (uploadError) {
           console.warn("Failed to process photo:", uploadError);
         }
+      }
+      for (const [category, images] of categoryMap.entries()) {
+        processedPhotos.push({ category, images });
       }
     }
 
@@ -458,10 +497,10 @@ export const updateBuildingCreditValue = async (req, res) => {
       newValue: building.creditValue
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: "Building credit value updated successfully",
-      data: { 
+      data: {
         creditValue: building.creditValue,
         building: {
           id: building._id,
@@ -506,8 +545,8 @@ export const activateBuilding = async (req, res) => {
       updatedFields: ['status']
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: "Building activated successfully",
       data: updatedBuilding
     });
@@ -589,9 +628,9 @@ export const updateBuildingInvoiceSettings = async (req, res) => {
 
     try {
       if (updatePayload.lateFeePolicy) {
-        recomputeLateFeesForBuilding(id).catch(() => {});
+        recomputeLateFeesForBuilding(id).catch(() => { });
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({ success: true, message: "Invoice settings updated", data: building });
   } catch (error) {

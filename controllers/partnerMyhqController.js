@@ -416,7 +416,9 @@ export async function getBookingDetails(req, res) {
 
 export async function cancelBooking(req, res) {
   try {
-    const booking = await MeetingBooking.findById(req.params.id).populate('room');
+    const booking = await MeetingBooking.findById(req.params.id)
+      .populate({ path: 'room', populate: { path: 'building' } });
+
     if (!booking) return res.status(404).json({ status: 404, success: false, message: "Invalid Booking ID" });
     if (booking.status === 'cancelled') {
       return res.status(409).json({ status: 409, success: false, message: "Already cancelled" });
@@ -424,9 +426,16 @@ export async function cancelBooking(req, res) {
     const createdAt = new Date(booking.createdAt || booking.start);
     const now = new Date();
 
-    // Configurable windows
-    const graceMinutes = parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
-    const cutoffMinutes = parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+    const building = booking.room?.building;
+
+    // Configurable windows (prefer building settings, fallback to env)
+    const graceMinutes = typeof building?.meetingCancellationGraceMinutes === 'number'
+      ? building.meetingCancellationGraceMinutes
+      : parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
+
+    const cutoffMinutes = typeof building?.meetingCancellationCutoffMinutes === 'number'
+      ? building.meetingCancellationCutoffMinutes
+      : parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
 
     // Allow immediate grace window from creation
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;

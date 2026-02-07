@@ -35,10 +35,10 @@ const BuildingSchema = new Schema(
 
     totalFloors: { type: Number },
     amenities: [{ type: Schema.Types.ObjectId, ref: "BuildingAmenity" }],
-    perSeatPricing: { 
-      type: Number, 
+    perSeatPricing: {
+      type: Number,
       min: 0,
-      default: null 
+      default: null
     },
     openSpacePricing: {
       type: Number,
@@ -88,10 +88,12 @@ const BuildingSchema = new Schema(
     },
     photos: [{
       category: { type: String, required: true, trim: true },
-      imageUrl: { type: String, required: true },
-      uploadedAt: { type: Date, default: Date.now }
+      images: [{
+        url: { type: String, required: true },
+        uploadedAt: { type: Date, default: Date.now }
+      }]
     }],
-    securityDepositThreshold : {type : Number,default:20},
+    securityDepositThreshold: { type: Number, default: 20 },
     sdNoteSettings: {
       enabled: { type: Boolean, default: true },
       templateType: { type: String, enum: ['html', 'structured'], default: 'structured' },
