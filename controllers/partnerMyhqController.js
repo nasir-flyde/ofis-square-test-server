@@ -646,15 +646,20 @@ export async function cancelDayPassBooking(req, res) {
       return res.status(409).json({ status: 409, success: false, message: 'Booking Already Cancelled' });
     }
 
-    const now = new Date();
-    const createdAt = new Date(pass.createdAt);
-    const graceMinutes = parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || '5', 10);
-    const cutoffMinutes = parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+    const building = pass.building;
+    const graceMinutes = typeof building?.meetingCancellationGraceMinutes === 'number'
+      ? building.meetingCancellationGraceMinutes
+      : parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || '5', 10);
+
+    const cutoffMinutes = typeof building?.meetingCancellationCutoffMinutes === 'number'
+      ? building.meetingCancellationCutoffMinutes
+      : parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
 
     // Determine the effective start time on the pass date using building openingTime
     const baseDate = startOfDayIST(pass.date || now);
-    const [hh, mm] = String(pass.building?.openingTime || '09:00').split(':').map(Number);
+    const [hh, mm] = String(building?.openingTime || '09:00').split(':').map(Number);
     const startTime = new Date(baseDate);
     startTime.setHours(hh || 9, mm || 0, 0, 0);
     const cutoffTime = new Date(startTime.getTime() - cutoffMinutes * 60 * 1000);
@@ -666,6 +671,14 @@ export async function cancelDayPassBooking(req, res) {
 
     pass.status = 'cancelled';
     await pass.save();
+
+    // Record cancellation snapshot (idempotent)
+    try {
+      const reason = req.body?.reason || req.query?.reason;
+      await recordCancellation(pass, { cancelledBy: 'partner:myhq', cancellationReason: reason });
+    } catch (e) {
+      console.error('Failed to record cancelled daypass snapshot:', e?.message);
+    }
 
     // decrement the reserved usage slot
     try {
