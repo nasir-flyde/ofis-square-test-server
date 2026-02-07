@@ -13,6 +13,17 @@ function hhmmToMinutes(hhmm = "09:00") {
   const [h, m] = String(hhmm).split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
 }
+function ampmToMinutes(timeStr) {
+  if (!timeStr) return 0;
+  const match = String(timeStr).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return 0;
+  let [_, h, m, p] = match;
+  h = parseInt(h, 10);
+  m = parseInt(m, 10);
+  if (p.toUpperCase() === "PM" && h < 12) h += 12;
+  if (p.toUpperCase() === "AM" && h === 12) h = 0;
+  return h * 60 + m;
+}
 function toIST(date) {
   try {
     return new Date(new Date(date).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
@@ -22,12 +33,12 @@ function toIST(date) {
 }
 function startOfDayIST(date) {
   const d = toIST(date);
-  d.setHours(0,0,0,0);
+  d.setHours(0, 0, 0, 0);
   return d;
 }
 function endOfDayIST(date) {
   const d = toIST(date);
-  d.setHours(23,59,59,999);
+  d.setHours(23, 59, 59, 999);
   return d;
 }
 function minutesSinceMidnightIST(date) {
@@ -78,7 +89,7 @@ export async function issueToken(req, res) {
     }
     const payload = {
       partner: 'myhq',
-      scopes: ['read:centers','read:rooms','read:availability','write:bookings']
+      scopes: ['read:centers', 'read:rooms', 'read:availability', 'write:bookings']
     };
     const secret = process.env.PARTNER_JWT_SECRET || process.env.JWT_SECRET || "ofis-square-secret-key";
     const expiresIn = 3600; // 1 hour
@@ -108,7 +119,7 @@ export async function listCenters(req, res) {
         daypass: { isActive: Number(b.dayPassDailyCapacity || 0) > 0 },
         meeting_room: { isActive: (countMap.get(String(b._id)) || 0) > 0 }
       },
-      image_gallery: []
+      image_gallery: (b.photos || []).flatMap(p => (p.images || []).map(img => img.url)).slice(0, 10)
     }));
     return res.json({ status: 1, message: "success", data });
   } catch (e) {
@@ -133,6 +144,7 @@ export async function listRoomsInCenter(req, res) {
       closing_time: building.closingTime || "19:00:00",
       city: building.city,
       isActive: r.status === 'active',
+      images: r.images || [],
       other_details: {}
     }));
     return res.json({ status: 1, message: "success", data });
@@ -173,7 +185,7 @@ export async function bulkAvailabilities(req, res) {
       if (!room) continue;
       const buildingOpen = hhmmToMinutes(room.building?.openingTime || '09:00');
       const buildingClose = hhmmToMinutes(room.building?.closingTime || '19:00');
-      const daysOfWeek = room.availability?.daysOfWeek || [1,2,3,4,5];
+      const daysOfWeek = room.availability?.daysOfWeek || [1, 2, 3, 4, 5];
       const blackoutDates = room.blackoutDates || [];
 
       for (const dateISO of dates) {
@@ -208,15 +220,29 @@ export async function bulkAvailabilities(req, res) {
           const eIdx = Math.min(48, Math.ceil(eMin / 30));
           for (let i = sIdx; i < eIdx; i++) if (timeline[i] !== 'CLOSED') timeline[i] = 'SOLD_OUT';
         }
+
+        // Mark SOLD_OUT for reservedSlots in the room document
+        const reservedSlots = room.reservedSlots || [];
+        const dateStrYMD = formatYMDIST(dateISO);
+        for (const slot of reservedSlots) {
+          const slotDateYMD = slot.dateISTYMD || (slot.date ? formatYMDIST(slot.date) : null);
+          if (slotDateYMD === dateStrYMD) {
+            const sMin = ampmToMinutes(slot.startTime);
+            const eMin = ampmToMinutes(slot.endTime);
+            const sIdx = Math.max(0, Math.floor(sMin / 30));
+            const eIdx = Math.min(48, Math.ceil(eMin / 30));
+            for (let i = sIdx; i < eIdx; i++) if (timeline[i] !== 'CLOSED') timeline[i] = 'SOLD_OUT';
+          }
+        }
         // Merge into ranges
         let cur = null; const ranges = [];
         for (let i = 0; i <= 48; i++) {
           const status = i < 48 ? timeline[i] : null;
           if (!cur) {
-            if (status) cur = { start: i*30, status };
+            if (status) cur = { start: i * 30, status };
           } else if (status !== cur.status) {
-            ranges.push({ startTimeInMinutes: cur.start, endTimeInMinutes: i*30, status: cur.status });
-            cur = status ? { start: i*30, status } : null;
+            ranges.push({ startTimeInMinutes: cur.start, endTimeInMinutes: i * 30, status: cur.status });
+            cur = status ? { start: i * 30, status } : null;
           }
         }
         data.push({ room_id: String(roomId), date: new Date(dateISO), availability: ranges });
@@ -257,16 +283,16 @@ export async function bookRoom(req, res) {
     const sMin = minutesSinceMidnightIST(start);
     const eMin = minutesSinceMidnightIST(end);
     if (sMin < openM || eMin > closeM) {
-      return res.status(400).json({ status: 400, success: false, message: `Booking must be within operating hours ${(room.building?.openingTime||'09:00')}-${(room.building?.closingTime||'19:00')} IST` });
+      return res.status(400).json({ status: 400, success: false, message: `Booking must be within operating hours ${(room.building?.openingTime || '09:00')}-${(room.building?.closingTime || '19:00')} IST` });
     }
     // Blackout
-    const dayStr = start.toISOString().slice(0,10);
-    const blackout = (room.blackoutDates || []).some(d => new Date(d).toISOString().slice(0,10) === dayStr);
+    const dayStr = start.toISOString().slice(0, 10);
+    const blackout = (room.blackoutDates || []).some(d => new Date(d).toISOString().slice(0, 10) === dayStr);
     if (blackout) return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
     // Conflict
     const overlap = await MeetingBooking.findOne({
       room: room._id,
-      status: { $in: ['booked','payment_pending'] },
+      status: { $in: ['booked', 'payment_pending'] },
       start: { $lt: end },
       end: { $gt: start },
     }).select('_id').lean();
@@ -432,7 +458,7 @@ export async function cancelBooking(req, res) {
         room.reservedSlots = (room.reservedSlots || []).filter(slot => String(slot.bookingId) !== String(booking._id));
         await room.save();
       }
-    } catch (e) {}
+    } catch (e) { }
 
     return res.json({ status: 200, success: true, message: "Booking Cancelled Successfully", data: { booking_id: String(booking._id), status: 'CANCELLED' } });
   } catch (e) {
@@ -454,7 +480,7 @@ export async function listDayPassBuildings(req, res) {
         closing_time: b.closingTime || '19:00:00',
         city_id: null,
         city_name: b.city,
-        image_gallery: (b.photos || []).map(p => p.imageUrl).slice(0, 5)
+        image_gallery: (b.photos || []).flatMap(p => (p.images || []).map(img => img.url)).slice(0, 5)
       }));
     return res.json({ status: true, data });
   } catch (e) {
@@ -496,7 +522,7 @@ export async function buildingDayPassAvailability(req, res) {
           }).select('numberOfGuests').lean();
           bookedSeats = (passes || []).reduce((sum, p) => sum + Number(p.numberOfGuests || 1), 0);
         }
-      } catch (_) {}
+      } catch (_) { }
 
       const availableSeats = Math.max(0, totalCapacity - bookedSeats);
       const availability = totalCapacity > 0 && availableSeats > 0
@@ -636,7 +662,7 @@ export async function cancelDayPassBooking(req, res) {
     try {
       const d = startOfDayIST(pass.date);
       await DayPassDailyUsage.updateOne({ building: pass.building._id || pass.building, date: d }, { $inc: { bookedCount: -1 } });
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({ status: 200, success: true, message: 'Booking Cancelled Successfully', data: { booking_id: String(pass._id), status: 'CANCELLED' } });
   } catch (e) {
