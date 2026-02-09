@@ -24,14 +24,15 @@ router.post("/me/tickets", universalMiddleware, upload.any(), createMyTicket);
 router.get("/me/notifications", universalMiddleware, getMyNotifications);
 router.post("/me/notifications/:id/read", universalMiddleware, markNotificationRead);
 router.post("/me/notifications/read-all", universalMiddleware, markAllNotificationsRead);
+router.get("/me/bookings", universalMiddleware, getMyBookings);
 
 // Allow clients and members to get homepage data via universal auth
 router.get("/me/home", universalMiddleware, getHomePageData);
-router.get("/me",universalMiddleware, getMyProfile);
+router.get("/me", universalMiddleware, getMyProfile);
 // All other routes require member authentication
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 
-router.get("/me/bookings", getMyBookings);
+
 
 export default router;

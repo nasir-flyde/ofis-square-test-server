@@ -496,7 +496,14 @@ export const getMyBookings = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const bookings = await MeetingBooking.find(filter)
-      .populate('room', 'name capacity amenities')
+      .populate({
+        path: 'room',
+        select: 'name capacity images amenities',
+        populate: {
+          path: 'amenities',
+          select: 'name iconUrl'
+        }
+      })
       .sort({ start: -1 })
       .skip(skip)
       .limit(parseInt(limit));
