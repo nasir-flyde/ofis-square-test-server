@@ -135,35 +135,15 @@ router.post(
 
 // Get contracts by status (for dashboard filtering)
 router.get("/status/:status", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContractsByStatus);
-
-// Submit to Legal (Sales → Legal)
 router.post("/:id/submit-to-legal", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToLegal);
-
-// Submit to Admin (Legal → Admin)
 router.post("/:id/submit-to-admin", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToAdmin);
-
-// Admin approve contract
 router.post("/:id/admin-approve", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_APPROVE), adminApprove);
-
-// Admin reject contract
 router.post("/:id/admin-reject", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_REJECT), adminReject);
-
-// Send to client for review (Legal → Client)
 router.post("/:id/send-to-client", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_TO_CLIENT), sendToClient);
-
-// Mark client as approved
 router.post("/:id/mark-client-approved", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_MARK_CLIENT_APPROVED), markClientApproved);
-
-// Record client feedback (with file attachments)
 router.post("/:id/client-feedback", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), upload.array('files', 10), recordClientFeedback);
-
-// Generate stamp paper version
 router.post("/:id/generate-stamp-paper", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_GENERATE_STAMP_PAPER), uploadStampPaper, generateStampPaper);
-
-// Send for e-signature (Zoho Sign)
 router.post("/:id/send-for-esignature", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_SIGNATURE), sendForESignature);
-
-// Mark contract as signed
 router.post("/:id/mark-signed", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_UPDATE), markSigned);
 
 // Add comment to contract (general or section-specific)

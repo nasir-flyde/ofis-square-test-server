@@ -1,6 +1,14 @@
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+import { SendMailClient } from "zeptomail";
+
 dotenv.config();
+
+// Initialize ZeptoMail client
+const zeptoClient = new SendMailClient({
+  url: process.env.ZEPTOMAIL_URL || "https://api.zeptomail.in/v1.1/email",
+  token: process.env.ZEPTOMAIL_TOKEN,
+});
 
 // Create transporter using Gmail SMTP from .env
 const createTransporter = () => {
@@ -17,7 +25,7 @@ const createTransporter = () => {
 
 const getWelcomeEmailTemplate = (clientData) => {
   const { companyName, contactPerson, email } = clientData;
-  
+
   return {
     subject: `Welcome to Ofis Square - ${companyName || 'Your Company'}!`,
     html: `
@@ -90,25 +98,25 @@ const getWelcomeEmailTemplate = (clientData) => {
       </html>
     `,
     text: `
-Welcome to Ofis Square!
+      Welcome to Ofis Square!
 
-Hello ${contactPerson || 'there'}!
+      Hello ${contactPerson || 'there'}!
 
-We're thrilled to welcome ${companyName || 'your company'} to the Ofis Square family!
+      We're thrilled to welcome ${companyName || 'your company'} to the Ofis Square family!
 
-What's Next:
-- Complete your KYC verification process
-- Review and sign your workspace contract  
-- Schedule a tour of your allocated space
-- Set up your team members and access
-- Explore our premium amenities
+      What's Next:
+      - Complete your KYC verification process
+      - Review and sign your workspace contract  
+      - Schedule a tour of your allocated space
+      - Set up your team members and access
+      - Explore our premium amenities
 
-Need Help?
-Email: support@ofissquare.com
-Phone: +91-XXXX-XXXXXX
-Hours: Monday - Friday, 9 AM - 6 PM
+      Need Help?
+      Email: support@ofissquare.com
+      Phone: +91-XXXX-XXXXXX
+      Hours: Monday - Friday, 9 AM - 6 PM
 
-© 2024 Ofis Square. All rights reserved.
+      © 2024 Ofis Square. All rights reserved.
     `
   };
 };
@@ -116,31 +124,53 @@ Hours: Monday - Friday, 9 AM - 6 PM
 // Send welcome email function
 export const sendWelcomeEmail = async (clientData) => {
   try {
-    // For demo purposes, we'll just log the email instead of actually sending
-    // In production, you would uncomment the actual sending logic below
-    
     const emailTemplate = getWelcomeEmailTemplate(clientData);
-    
-    // Send actual email using Mailtrap (same provider as visitor emails)
-    const transporter = createTransporter();
-    
-    const mailOptions = {
-      from: process.env.MAIL_FROM || '"Ofis Square" <nasir@demomailtrap.co>',
-      to: clientData.email,
-      subject: emailTemplate.subject,
-      html: emailTemplate.html,
-      text: emailTemplate.text
-    };
-    
-    const result = await transporter.sendMail(mailOptions);
-    console.log('Welcome email sent successfully to:', clientData.email, 'MessageID:', result.messageId);
-    return { success: true, messageId: result.messageId };
-    
+
+    // If ZeptoMail is configured, use it
+    if (process.env.ZEPTOMAIL_TOKEN) {
+      const result = await zeptoClient.sendMail({
+        "from": {
+          "address": process.env.ZEPTOMAIL_FROM_ADDRESS || "hello@ofisspaces.com",
+          "name": process.env.ZEPTOMAIL_FROM_NAME || "noreply"
+        },
+        "to": [
+          {
+            "email_address": {
+              "address": clientData.email,
+              "name": clientData.contactPerson || clientData.companyName || "Client"
+            }
+          }
+        ],
+        "subject": emailTemplate.subject,
+        "htmlbody": emailTemplate.html,
+      });
+
+      console.log('Welcome email sent successfully via ZeptoMail to:', clientData.email);
+      return { success: true, messageId: result?.config?.messageId || 'zepto-sent' };
+    }
+
+    // Fallback to Nodemailer
+    else {
+      const transporter = createTransporter();
+
+      const mailOptions = {
+        from: process.env.MAIL_FROM || '"Ofis Square" <nasir@demomailtrap.co>',
+        to: clientData.email,
+        subject: emailTemplate.subject,
+        html: emailTemplate.html,
+        text: emailTemplate.text
+      };
+
+      const result = await transporter.sendMail(mailOptions);
+      console.log('Welcome email sent successfully to:', clientData.email, 'MessageID:', result.messageId);
+      return { success: true, messageId: result.messageId };
+    }
+
   } catch (error) {
     console.error('Error sending welcome email:', error);
-    return { 
-      success: false, 
-      error: error.message 
+    return {
+      success: false,
+      error: error.message
     };
   }
 };

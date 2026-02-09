@@ -258,7 +258,7 @@ export const createNasForBuilding = async (req, res) => {
         const { nasId } = req.body || {};
         const existing = await BhaifiNas.findOne({ building: buildingId, nasId: String(nasId).trim() });
         if (existing) return res.status(200).json({ success: true, data: existing, message: 'Already exists' });
-      } catch (_) {}
+      } catch (_) { }
     }
     return res.status(500).json({ success: false, message: 'Failed to create NAS mapping', error: err?.message });
   }
@@ -381,44 +381,72 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
     });
     throw new Error("Missing email or phone for member");
   }
-  
+
   // Try to get building's NAS ID first, fallback to environment default
   let nasId = getEnvNasId();
   const building = member.client?.building;
-  
-  if (building?.wifiAccess?.enterpriseLevel?.enabled && 
-      Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
-      building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
-    
+
+  if (building?.wifiAccess?.enterpriseLevel?.enabled &&
+    Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+    building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
+
     const nasDocs = await BhaifiNas.find({
       _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
       isActive: true
     }).select('nasId').lean();
-    
+
     if (nasDocs.length > 0) {
       // Use the first active NAS ID from building mapping
       nasId = nasDocs[0].nasId;
-      console.log(`[BHAIFI] Using building NAS mapping for member ${member._id}:`, { 
-        buildingId: building._id, 
+      console.log(`[BHAIFI] Using building NAS mapping for member ${member._id}:`, {
+        buildingId: building._id,
         nasId,
-        totalActiveNas: nasDocs.length 
+        totalActiveNas: nasDocs.length
       });
     }
   } else {
     console.log(`[BHAIFI] Using default NAS ID for member ${member._id} (no building mapping found)`, { nasId });
   }
-  
+
   const idType = 1;
   let doc = await BhaifiUser.findOne({ member: member._id, userName });
-  if (doc) return doc;
 
-  try {
-    console.log("[BHAIFI] ensureBhaifiForMember creating user", {
-      memberId: String(member._id),
-      payload: { email, idType, name, nasId, userName }
-    });
-    const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
-    console.log("[BHAIFI] ensureBhaifiForMember create success", { memberId: String(member._id), responseKeys: Object.keys(apiRes?.data || {}) });
+  // If not found locally, try to create (or link if exists remotely)
+  if (!doc) {
+    let apiUserId = null;
+    let apiResponseData = null;
+    let apiRequestPayload = null;
+
+    try {
+      console.log("[BHAIFI] ensureBhaifiForMember creating user", {
+        memberId: String(member._id),
+        payload: { email, idType, name, nasId, userName }
+      });
+      const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
+      apiUserId = apiRes?.data?.id || apiRes?.data?.userId;
+      apiResponseData = apiRes?.data;
+      apiRequestPayload = apiRes?.payload;
+      console.log("[BHAIFI] ensureBhaifiForMember create success", { memberId: String(member._id) });
+    } catch (e) {
+      // If error is "already exists", we proceed to create local record anyway
+      const status = e?.response?.status;
+      const msg = e?.response?.data?.message || e?.message || '';
+      const isAlreadyExists = status === 409 || status === 400 || msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('duplicate');
+
+      if (isAlreadyExists) {
+        console.warn("[BHAIFI] ensureBhaifiForMember: User already exists on Bhaifi, creating local record only.", { memberId: String(member._id), userName });
+        // We might not get the ID back in an error, so we leave apiUserId null or undefined
+      } else {
+        console.error("[BHAIFI] ensureBhaifiForMember create failed", {
+          memberId: String(member._id),
+          payload: { email, idType, name, nasId, userName },
+          error: msg,
+          status,
+        });
+        throw e;
+      }
+    }
+
     doc = await BhaifiUser.create({
       member: member._id,
       client: member.client || null,
@@ -428,57 +456,50 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       userName,
       idType,
       nasId,
-      bhaifiUserId: apiRes?.data?.id || apiRes?.data?.userId || null,
+      bhaifiUserId: apiUserId || null,
       status: "active",
       lastSyncAt: new Date(),
-      meta: { request: apiRes?.payload, response: apiRes?.data },
+      meta: { request: apiRequestPayload, response: apiResponseData },
     });
-    // Immediately whitelist if contractId provided and contract has endDate
-    if (contractId) {
-      try {
-        const contract = await Contract.findById(contractId).select('endDate');
-        if (contract?.endDate) {
-          const startDate = formatDateTime(new Date());
-          const endDate = endOfDayString(new Date(contract.endDate));
-          console.log('[BHAIFI] Whitelisting after creation (auto-provision)', { memberId: String(member._id), startDate, endDate, userName, nasId });
-          await bhaifiWhitelist({ nasId, startDate, endDate, userName });
-          // Persist whitelist record on auto-provision path
-          const startAt = new Date(startDate.replace(' ', 'T'));
-          const endAt = new Date(endDate.replace(' ', 'T'));
-          doc.lastWhitelistedAt = new Date();
-          doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
-          doc.lastSyncAt = new Date();
-          doc.status = "active";
-          doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate, endDate } };
-          doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
-          doc.whitelistHistory.push({
-            startDateString: startDate,
-            endDateString: endDate,
-            startAt: isNaN(startAt.getTime()) ? undefined : startAt,
-            endAt: isNaN(endAt.getTime()) ? undefined : endAt,
-            requestedBy: null,
-            source: 'auto_provision',
-            response: undefined,
-          });
-          await doc.save();
-        } else {
-          console.warn('[BHAIFI] Skipping whitelist (auto-provision): contract has no endDate', { contractId });
-        }
-      } catch (wErr) {
-        console.warn('[BHAIFI] Whitelist after creation failed (auto-provision)', { message: wErr?.message, status: wErr?.response?.status, data: wErr?.response?.data });
-      }
-    }
-    return doc;
-  } catch (e) {
-    console.error("[BHAIFI] ensureBhaifiForMember create failed", {
-      memberId: String(member._id),
-      payload: { email, idType, name, nasId, userName },
-      error: e?.message,
-      status: e?.response?.status,
-      data: e?.response?.data,
-    });
-    throw e;
   }
+
+  // Always ensure whitelist if contractId provided (whether doc existed or was just created)
+  if (contractId) {
+    try {
+      const contract = await Contract.findById(contractId).select('endDate');
+      if (contract?.endDate) {
+        const startDate = formatDateTime(new Date());
+        const endDate = endOfDayString(new Date(contract.endDate));
+        console.log('[BHAIFI] Whitelisting after creation (auto-provision)', { memberId: String(member._id), startDate, endDate, userName, nasId });
+        await bhaifiWhitelist({ nasId, startDate, endDate, userName });
+        // Persist whitelist record on auto-provision path
+        const startAt = new Date(startDate.replace(' ', 'T'));
+        const endAt = new Date(endDate.replace(' ', 'T'));
+        doc.lastWhitelistedAt = new Date();
+        doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
+        doc.lastSyncAt = new Date();
+        doc.status = "active";
+        doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate, endDate } };
+        doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
+        doc.whitelistHistory.push({
+          startDateString: startDate,
+          endDateString: endDate,
+          startAt: isNaN(startAt.getTime()) ? undefined : startAt,
+          endAt: isNaN(endAt.getTime()) ? undefined : endAt,
+          requestedBy: null,
+          source: 'auto_provision',
+          response: undefined,
+        });
+        await doc.save();
+      } else {
+        console.warn('[BHAIFI] Skipping whitelist (auto-provision): contract has no endDate', { contractId });
+      }
+    } catch (wErr) {
+      console.warn('[BHAIFI] Whitelist after creation failed (auto-provision)', { message: wErr?.message, status: wErr?.response?.status, data: wErr?.response?.data });
+    }
+  }
+
+  return doc;
 };
 
 // Grant enterprise-level Bhaifi access across all NAS refs for a building

@@ -699,6 +699,7 @@ export const sendMemberClientOtp = async (req, res) => {
     // Import OTP model and SMS service dynamically
     const OTP = (await import("../models/otpModel.js")).default;
     const { SendSMS, generateOtp } = await import("../services/smsService.js");
+    const { sendWhatsAppOTP } = await import("../services/interaktService.js");
 
     // Generate OTP
     const otp = normalizedPhone === '7982294822' ? '123456' : generateOtp();
@@ -718,11 +719,13 @@ export const sendMemberClientOtp = async (req, res) => {
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
 
     try {
-      await SendSMS({ phone: normalizedPhone, message: smsText });
-      console.log('SMS sent successfully');
+      await Promise.allSettled([
+        SendSMS({ phone: normalizedPhone, message: smsText }).then(() => console.log('SMS sent successfully')),
+        sendWhatsAppOTP({ phone: normalizedPhone, otp }).then(() => console.log('WhatsApp OTP sent successfully'))
+      ]);
     } catch (err) {
-      console.error('SMS sending failed:', err);
-      console.log('SMS delivery failed, but OTP is logged above for testing');
+      console.error('Message sending failed:', err);
+      console.log('Delivery failed, but OTP is logged above for testing');
     }
 
     await logAuthActivity(req, 'OTP_SENT', 'SUCCESS', null, {

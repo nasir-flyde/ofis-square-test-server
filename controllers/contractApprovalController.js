@@ -263,7 +263,7 @@ export const finalApprove = async (req, res) => {
               .select("building")
               .lean();
             buildingId = cli?.building || null;
-          } catch {}
+          } catch { }
 
           ensuredPolicy = await AccessPolicy.create({
             buildingId,
@@ -440,7 +440,7 @@ export const finalApprove = async (req, res) => {
                 .select("building")
                 .lean();
               buildingIdForJobs = cliForJobs?.building || null;
-            } catch {}
+            } catch { }
           }
 
           membersForJobs = await Member.find({
@@ -461,7 +461,7 @@ export const finalApprove = async (req, res) => {
                   .select("_id externalUserId")
                   .lean();
                 matrixUserId = m.matrixExternalUserId || existingMuByMember?.externalUserId;
-              } catch {}
+              } catch { }
 
               // Create a Matrix user only if none exists
               if (!matrixUserId) {
@@ -642,11 +642,9 @@ export const finalApprove = async (req, res) => {
           const wifiProvisioned = [];
           for (const m of membersForJobs || []) {
             try {
-              // Skip creating Bhaifi user if already linked
-              if (m?.bhaifiUser) {
-                continue;
-              }
-              const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id });
+              // Skip removed: allow calling ensureBhaifiForMember to trigger whitelisting if needed
+              // if (m?.bhaifiUser) { continue; }
+              const bhaifiDoc = await ensureBhaifiForMember({ memberId: m._id, contractId: contract._id });
               wifiProvisioned.push(String(m._id));
 
               // Attach Bhaifi references on Member (bhaifiUser, bhaifiUserName)
@@ -688,8 +686,8 @@ export const finalApprove = async (req, res) => {
               const nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
               if (nasIds.length > 0) {
                 const pad = (n) => String(n).padStart(2, '0');
-                const formatDateTime = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-                const endOfDayString = (d) => { const dd = new Date(d); dd.setHours(23,59,59,0); return formatDateTime(dd); };
+                const formatDateTime = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                const endOfDayString = (d) => { const dd = new Date(d); dd.setHours(23, 59, 59, 0); return formatDateTime(dd); };
 
                 const startDate = formatDateTime(new Date());
                 let endDateStr = null;
@@ -1703,6 +1701,68 @@ export const markClientSigned = async (req, res) => {
 
     await contract.save();
 
+    console.log(`[Contract ${id}] Starting cabin allocation for contract ${id}`);
+    try {
+      const cabinsToAllocate = await Cabin.find({
+        'blocks.contract': contract._id,
+        'blocks.status': 'active',
+        status: { $in: ['blocked', 'available'] }
+      });
+
+      console.log(`[Contract ${id}] Found ${cabinsToAllocate.length} cabins to process for allocation`);
+
+      if (cabinsToAllocate.length > 0) {
+        for (const cabin of cabinsToAllocate) {
+          const block = (cabin.blocks || []).find(
+            (b) => String(b.contract) === String(id) && b.status === "active"
+          );
+
+          if (!block) {
+            console.log(`[Contract ${id}] No active block found for cabin ${cabin._id} (${cabin.number})`);
+            continue;
+          }
+          console.log(`[Contract ${id}] Processing cabin ${cabin._id} (${cabin.number}) with block ${block._id}`);
+          try {
+            // Allocate cabin to client
+            cabin.status = "occupied";
+            cabin.allocatedTo = block.client;
+            cabin.contract = contract._id;
+            cabin.allocatedAt = new Date();
+            block.status = "allocated";
+            block.updatedAt = new Date();
+            console.log(`[Contract ${id}] Saving cabin ${cabin._id} with new status:`, {
+              status: cabin.status,
+              allocatedTo: cabin.allocatedTo,
+              contract: cabin.contract,
+              blockStatus: block.status
+            });
+            await cabin.save();
+            console.log(`[Contract ${id}] Successfully allocated cabin ${cabin._id} (${cabin.number})`);
+          } catch (saveErr) {
+            console.error(`[Contract ${id}] Failed to save cabin ${cabin._id}:`, saveErr);
+            console.error('Error details:', {
+              cabinId: cabin._id,
+              blockId: block._id,
+              error: saveErr.message,
+              stack: saveErr.stack
+            });
+          }
+        }
+      } else {
+        console.log(`[Contract ${id}] No cabins found for allocation`);
+      }
+    } catch (allocErr) {
+      console.error(`[Contract ${id}] Error in cabin allocation process:`, allocErr);
+      console.error('Allocation error details:', {
+        message: allocErr.message,
+        stack: allocErr.stack,
+        contractId: id,
+        clientId: contract.client
+      });
+    }
+
+    console.log(`[Contract ${id}] Cabin allocation process completed`);
+
     // Ensure Bhaifi user exists for all active members (uses building NAS mapping via ensureBhaifiForMember)
     try {
       const members = await Member.find({ client: contract.client, status: 'active' })
@@ -1719,7 +1779,7 @@ export const markClientSigned = async (req, res) => {
               await Member.findByIdAndUpdate(m._id, {
                 $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName }
               });
-            } catch {}
+            } catch { }
           }
         } catch (e) {
           await logErrorActivity(req, e, 'MarkClientSigned:BhaifiProvision', { memberId: String(m?._id || '') });
@@ -1733,33 +1793,6 @@ export const markClientSigned = async (req, res) => {
       }
     } catch (wifiErr) {
       console.warn('Bhaifi auto-provisioning on signature failed:', wifiErr?.message);
-    }
-
-    // Auto-allocate any active blocks linked to this contract
-    try {
-      const cabinsToAllocate = await Cabin.find({
-        "blocks.contract": id,
-        "blocks.status": "active",
-        status: { $in: ["available", "blocked"] },
-      });
-
-      for (const cabin of cabinsToAllocate) {
-        const blk = (cabin.blocks || []).find(
-          (b) => String(b.contract) === String(id) && b.status === "active"
-        );
-        if (!blk) continue;
-
-        // Allocate cabin to client
-        cabin.status = "occupied";
-        cabin.allocatedTo = blk.client;
-        cabin.contract = contract._id;
-        cabin.allocatedAt = new Date();
-        blk.status = "allocated";
-        blk.updatedAt = new Date();
-        await cabin.save();
-      }
-    } catch (allocErr) {
-      console.warn("Auto-allocation from blocks failed:", allocErr?.message);
     }
 
     // Log activity

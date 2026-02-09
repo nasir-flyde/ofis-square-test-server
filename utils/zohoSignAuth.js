@@ -15,9 +15,6 @@ export async function getAccessToken() {
   if (cached.accessToken && cached.expiresAt - now > 60 * 1000) {
     return cached.accessToken;
   }
-
-  // IMPORTANT: Use a dedicated Zoho Sign refresh token generated with Zoho Sign scopes.
-  // Do NOT fallback to Books/Generic tokens as scopes won't include Zoho Sign and will cause 9040 Invalid Oauth Scope.
   const refresh_token = process.env.ZOHO_SIGN_REFRESH_TOKEN;
   const client_id = process.env.ZOHO_CLIENT_ID;
   const client_secret = process.env.ZOHO_CLIENT_SECRET;
