@@ -7,12 +7,17 @@ import {
   getMatrixDeviceById,
   updateMatrixDevice,
   deleteMatrixDevice,
+
+  getAvailableDevices,
 } from "../controllers/matrixDeviceController.js";
 
 const router = express.Router();
 
 // List devices
 router.get("/", authMiddleware, populateUserRole, listMatrixDevices);
+
+// Get available devices
+router.get("/available", getAvailableDevices);
 
 // Create device (restricted)
 router.post("/", authMiddleware, populateUserRole, requireSystemAdmin, createMatrixDevice);

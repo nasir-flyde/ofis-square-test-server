@@ -1,6 +1,9 @@
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import Building from "../models/buildingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import Cabin from "../models/cabinModel.js";
+import MeetingRoom from "../models/meetingRoomModel.js";
+import CommonArea from "../models/commonAreaModel.js";
 
 export const createMatrixDevice = async (req, res) => {
   try {
@@ -84,7 +87,7 @@ export const listMatrixDevices = async (req, res) => {
       MatrixDevice.countDocuments(filter)
     ]);
 
-    return res.json({ success: true, data: items, pagination: { currentPage: Number(page)||1, totalPages: Math.ceil(total/Number(limit||1)), totalRecords: total } });
+    return res.json({ success: true, data: items, pagination: { currentPage: Number(page) || 1, totalPages: Math.ceil(total / Number(limit || 1)), totalRecords: total } });
   } catch (err) {
     await logErrorActivity(req, err, 'MatrixDevice:List');
     return res.status(500).json({ success: false, message: 'Failed to list matrix devices' });
@@ -145,10 +148,65 @@ export const deleteMatrixDevice = async (req, res) => {
   }
 };
 
+export const getAvailableDevices = async (req, res) => {
+  try {
+    const { buildingId, status } = req.query;
+
+    // Base filter for devices
+    const deviceFilter = {};
+    if (buildingId) deviceFilter.buildingId = buildingId;
+    if (status) deviceFilter.status = status;
+
+    // 1. Fetch search criteria for assigned devices
+    // Note: Cabin/MeetingRoom use 'building' (ObjectId), CommonArea uses 'buildingId' (ObjectId)
+    const cabinFilter = { matrixDevices: { $exists: true, $not: { $size: 0 } } };
+    const roomFilter = { matrixDevices: { $exists: true, $not: { $size: 0 } } };
+    const commonAreaFilter = { matrixDevices: { $exists: true, $not: { $size: 0 } } };
+
+    if (buildingId) {
+      cabinFilter.building = buildingId;
+      roomFilter.building = buildingId;
+      commonAreaFilter.buildingId = buildingId;
+    }
+
+    // 2. Fetch all potentially assigned devices and all candidate devices in parallel
+    const [allDevices, cabins, rooms, commonAreas] = await Promise.all([
+      MatrixDevice.find(deviceFilter).lean(),
+      Cabin.find(cabinFilter).select('matrixDevices').lean(),
+      MeetingRoom.find(roomFilter).select('matrixDevices').lean(),
+      CommonArea.find(commonAreaFilter).select('matrixDevices').lean()
+    ]);
+
+    // 3. Collect IDs of assigned devices
+    const assignedIds = new Set();
+
+    const addToSet = (docs) => {
+      docs.forEach(doc => {
+        if (doc.matrixDevices && Array.isArray(doc.matrixDevices)) {
+          doc.matrixDevices.forEach(id => assignedIds.add(String(id)));
+        }
+      });
+    };
+
+    addToSet(cabins);
+    addToSet(rooms);
+    addToSet(commonAreas);
+
+    // 4. Filter out assigned devices
+    const availableDevices = allDevices.filter(device => !assignedIds.has(String(device._id)));
+
+    return res.json({ success: true, data: availableDevices });
+  } catch (err) {
+    await logErrorActivity(req, err, 'MatrixDevice:GetAvailable');
+    return res.status(500).json({ success: false, message: 'Failed to fetch available devices' });
+  }
+};
+
 export default {
   createMatrixDevice,
   listMatrixDevices,
   getMatrixDeviceById,
   updateMatrixDevice,
   deleteMatrixDevice,
+  getAvailableDevices,
 };
