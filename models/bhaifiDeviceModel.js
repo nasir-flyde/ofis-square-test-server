@@ -7,7 +7,7 @@ const bhaifiDeviceSchema = new Schema(
     bhaifiUser: { type: Schema.Types.ObjectId, ref: "BhaifiUser", required: true, index: true },
     macAddress: { type: String, required: true, trim: true },
     label: { type: String, trim: true },
-    status: { type: String, enum: ["whitelisted", "revoked"], default: "whitelisted", index: true },
+    status: { type: String, enum: ["whitelisted", "revoked", "dewhitelist"], default: "whitelisted", index: true },
     lastSyncAt: { type: Date },
     lastError: { type: String },
     meta: { type: Schema.Types.Mixed },
