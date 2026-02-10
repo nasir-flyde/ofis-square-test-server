@@ -1482,6 +1482,24 @@ export const createRazorpayOrder = async (req, res) => {
       description
     };
 
+    // Create actual Razorpay order
+    try {
+      const rzpOrder = await loggedRazorpay.createOrder({
+        amount: response.amount,
+        currency: response.currency,
+        receipt: `receipt_${item.type}_${item.id}`
+      }, {
+        userId: req.user?._id,
+        clientId: clientForZoho?._id || bodyClientId || null,
+        relatedEntity: item.type === 'daypass' ? 'DayPass' : (item.type === 'bundle' ? 'DayPassBundle' : (item.type === 'meeting' ? 'MeetingBooking' : null)),
+        relatedEntityId: item.id
+      });
+      response.order_id = rzpOrder.id;
+    } catch (rzpErr) {
+      console.error("Failed to create Razorpay order in createRazorpayOrder:", rzpErr);
+    }
+
+
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
     res.json(response);
   } catch (error) {
