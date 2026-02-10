@@ -466,9 +466,9 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
   // Always ensure whitelist if contractId provided (whether doc existed or was just created)
   if (contractId) {
     try {
-      const contract = await Contract.findById(contractId).select('endDate');
+      const contract = await Contract.findById(contractId).select('startDate endDate');
       if (contract?.endDate) {
-        const startDate = formatDateTime(new Date());
+        const startDate = contract.startDate ? formatDateTime(new Date(contract.startDate)) : formatDateTime(new Date());
         const endDate = endOfDayString(new Date(contract.endDate));
         console.log('[BHAIFI] Whitelisting after creation (auto-provision)', { memberId: String(member._id), startDate, endDate, userName, nasId });
         await bhaifiWhitelist({ nasId, startDate, endDate, userName });

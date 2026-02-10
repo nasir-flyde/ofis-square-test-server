@@ -28,6 +28,7 @@ import {
   createClientMember,
   updateClientMember,
   deleteClientMember,
+  getClientRfidCards,
   getClientAvailableDesks,
   allocateDeskToMember,
   getClientDashboard,
@@ -77,6 +78,7 @@ router.get("/members", clientMiddleware, getClientMembers);
 router.post("/members", clientMiddleware, createClientMember);
 router.put("/members/:id", clientMiddleware, updateClientMember);
 router.delete("/members/:id", clientMiddleware, deleteClientMember);
+router.get("/rfid-cards", clientMiddleware, getClientRfidCards);
 
 router.get("/desks", clientMiddleware, getClientAvailableDesks); // Desk allocation
 router.post('/desks/allocate', clientMiddleware, allocateDeskToMember);
@@ -86,8 +88,8 @@ router.get("/", getClients);
 router.get("/:id", getClientById);
 router.put("/:id", updateClient);
 router.delete("/:id", deleteClient);
-router.post("/:id/kyc",authMiddleware, kycUploads, submitKycDocuments);
-router.post("/:id/kyc/verify",authMiddleware, verifyKyc);
+router.post("/:id/kyc", authMiddleware, kycUploads, submitKycDocuments);
+router.post("/:id/kyc/verify", authMiddleware, verifyKyc);
 router.post("/:id/kyc/reject", authMiddleware, rejectKyc);
 
 // Onboarding status and approval

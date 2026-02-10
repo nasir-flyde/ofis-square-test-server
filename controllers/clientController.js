@@ -11,6 +11,14 @@ import Member from "../models/memberModel.js";
 import Desk from "../models/deskModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
+import RFIDCard from "../models/rfidCardModel.js";
+import MatrixUser from "../models/matrixUserModel.js";
+import ProvisioningJob from "../models/provisioningJobModel.js";
+import AccessPoint from "../models/accessPointModel.js";
+import AccessPolicy from "../models/accessPolicyModel.js";
+import MatrixDevice from "../models/matrixDeviceModel.js";
+import Building from "../models/buildingModel.js";
+import { matrixApi } from "../utils/matrixApi.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
 import { createContact, updateContact, getContact } from "../utils/zohoBooks.js";
@@ -18,6 +26,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
 import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
 import DocumentEntity from "../models/documentEntityModel.js";
+import { ensureBhaifiForMember } from "./bhaifiController.js";
 
 export const createClient = async (req, res) => {
   try {
@@ -51,8 +60,8 @@ export const createClient = async (req, res) => {
     try {
       console.log('createClient: files count =', files.length, 'file fields =', Array.isArray(files) ? files.map(f => f.fieldname) : []);
       console.log('createClient: uploadsByField keys =', Object.keys(uploadsByField || {}));
-      console.log('createClient: sample body keys (first 20) =', Object.keys(req.body || {}).slice(0,20));
-    } catch (_) {}
+      console.log('createClient: sample body keys (first 20) =', Object.keys(req.body || {}).slice(0, 20));
+    } catch (_) { }
 
     // Build normalized KYC document items from uploaded files
     let kycDocumentItems = [];
@@ -91,7 +100,7 @@ export const createClient = async (req, res) => {
           });
         }
       }
-      try { console.log('createClient: built kycDocumentItems count =', kycDocumentItems.length); } catch (_) {}
+      try { console.log('createClient: built kycDocumentItems count =', kycDocumentItems.length); } catch (_) { }
     } catch (e) {
       console.warn('createClient: failed to map KYC items via DocumentEntity:', e?.message || e);
     }
@@ -317,17 +326,17 @@ export const createClient = async (req, res) => {
 
         const additionalContacts = Array.isArray(client.contactPersons)
           ? client.contactPersons.map((cp) => ({
-              salutation: cp?.salutation || undefined,
-              first_name: cp?.first_name || cp?.firstName || undefined,
-              last_name: cp?.last_name || cp?.lastName || undefined,
-              email: cp?.email || undefined,
-              phone: cp?.phone || undefined,
-              mobile: cp?.mobile || cp?.phone || undefined,
-              designation: cp?.designation || undefined,
-              department: cp?.department || undefined,
-              is_primary_contact: cp?.is_primary_contact ?? cp?.isPrimaryContact ?? false,
-              enable_portal: cp?.enable_portal ?? cp?.enablePortal ?? false,
-            }))
+            salutation: cp?.salutation || undefined,
+            first_name: cp?.first_name || cp?.firstName || undefined,
+            last_name: cp?.last_name || cp?.lastName || undefined,
+            email: cp?.email || undefined,
+            phone: cp?.phone || undefined,
+            mobile: cp?.mobile || cp?.phone || undefined,
+            designation: cp?.designation || undefined,
+            department: cp?.department || undefined,
+            is_primary_contact: cp?.is_primary_contact ?? cp?.isPrimaryContact ?? false,
+            enable_portal: cp?.enable_portal ?? cp?.enablePortal ?? false,
+          }))
           : [];
 
         // If primary is NOT the authority signee, append authoritySignee as a non-primary contact
@@ -382,7 +391,7 @@ export const createClient = async (req, res) => {
           });
           return cleanContact;
         });
-        
+
         // Ensure at least one contact has is_primary_contact: true
         if (!primaryContactSet && contactPersonsForZoho.length > 0) {
           contactPersonsForZoho[0].is_primary_contact = true;
@@ -421,7 +430,7 @@ export const createClient = async (req, res) => {
 
         console.log("createClient: Creating Zoho contact for client:", client._id);
         const zohoResponse = await createContact(zohoPayload);
-        
+
         if (zohoResponse?.contact?.contact_id) {
           client.zohoBooksContactId = zohoResponse.contact.contact_id;
           await client.save();
@@ -514,7 +523,7 @@ export const upsertBasicDetails = async (req, res) => {
 
     const client = await Client.findByIdAndUpdate(clientId, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: basic details updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
@@ -542,10 +551,10 @@ export const updateCommercialDetails = async (req, res) => {
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-    
+
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: commercial details updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
@@ -568,10 +577,10 @@ export const updateAddressDetails = async (req, res) => {
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-    
+
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: address details updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
@@ -593,14 +602,14 @@ export const updateContactPersons = async (req, res) => {
     if (!Array.isArray(contactPersons)) {
       return res.status(400).json({ error: "Contact persons must be an array" });
     }
-    
+
     const client = await Client.findByIdAndUpdate(
-      id, 
-      { $set: { contactPersons } }, 
+      id,
+      { $set: { contactPersons } },
       { new: true }
     );
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: contact persons updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: ['contactPersons'],
@@ -628,10 +637,10 @@ export const updateTaxDetails = async (req, res) => {
     };
 
     Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-    
+
     const client = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!client) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: tax details updated
     await logCRUDActivity(req, 'UPDATE', 'Client', client._id, null, {
       updatedFields: Object.keys(payload)
@@ -650,14 +659,14 @@ export const updateTaxDetails = async (req, res) => {
 
         // Pull existing contact to merge tax_info_list
         let existingContact = null;
-        try { existingContact = await getContact(client.zohoBooksContactId); } catch (_) {}
+        try { existingContact = await getContact(client.zohoBooksContactId); } catch (_) { }
         const existingList = Array.isArray(existingContact?.tax_info_list)
           ? existingContact.tax_info_list.map((t) => ({
-              tax_info_id: t?.tax_info_id || undefined,
-              tax_registration_no: (t?.tax_registration_no || '').toString().trim(),
-              place_of_supply: (t?.place_of_supply || '').toString().trim(),
-              is_primary: Boolean(t?.is_primary)
-            })).filter(x => x.tax_registration_no && x.place_of_supply)
+            tax_info_id: t?.tax_info_id || undefined,
+            tax_registration_no: (t?.tax_registration_no || '').toString().trim(),
+            place_of_supply: (t?.place_of_supply || '').toString().trim(),
+            is_primary: Boolean(t?.is_primary)
+          })).filter(x => x.tax_registration_no && x.place_of_supply)
           : [];
 
         // Normalize incoming additional GST registrations
@@ -732,7 +741,7 @@ export const updateTaxDetails = async (req, res) => {
           // Attempt a single full update (Zoho UI does this). If it fails, fall back to base-only update.
           try {
             const zohoRes = await updateContact(client.zohoBooksContactId, zohoTaxPayload);
-            try { console.log('updateTaxDetails: pushed Zoho tax fields (full list with ids):', JSON.stringify(zohoTaxPayload)); } catch(_) {}
+            try { console.log('updateTaxDetails: pushed Zoho tax fields (full list with ids):', JSON.stringify(zohoTaxPayload)); } catch (_) { }
             client.taxInfoList = finalList;
             await client.save();
             return res.json({ message: "Tax details updated and synced to Zoho", client, zoho: zohoRes });
@@ -741,7 +750,7 @@ export const updateTaxDetails = async (req, res) => {
             const { tax_info_list: _drop, ...baseOnly } = zohoTaxPayload;
             try {
               const zohoRes2 = await updateContact(client.zohoBooksContactId, baseOnly);
-              try { console.log('updateTaxDetails: pushed Zoho base-only tax fields as fallback:', JSON.stringify(baseOnly)); } catch(_) {}
+              try { console.log('updateTaxDetails: pushed Zoho base-only tax fields as fallback:', JSON.stringify(baseOnly)); } catch (_) { }
               // Persist locally even if Zoho couldn't accept all list entries
               client.taxInfoList = finalList;
               await client.save();
@@ -838,7 +847,7 @@ export const getClients = async (_req, res) => {
         $sort: { createdAt: -1 }
       }
     ]);
-    
+
     return res.json({ success: true, data: clients });
   } catch (err) {
     console.error("getClients error:", err);
@@ -946,7 +955,7 @@ export const updateClient = async (req, res) => {
 
     const updated = await Client.findByIdAndUpdate(id, { $set: payload }, { new: true });
     if (!updated) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: client updated (generic)
     await logCRUDActivity(req, 'UPDATE', 'Client', id, null, {
       updatedFields: Object.keys(payload)
@@ -1007,7 +1016,7 @@ export const deleteClient = async (req, res) => {
     const { id } = req.params;
     const deleted = await Client.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ error: "Client not found" });
-    
+
     // Activity log: client deleted
     await logCRUDActivity(req, 'DELETE', 'Client', id, null, {
       companyName: deleted?.companyName,
@@ -1017,6 +1026,45 @@ export const deleteClient = async (req, res) => {
   } catch (err) {
     console.error("deleteClient error:", err);
     return res.status(500).json({ error: "Failed to delete client" });
+  }
+};
+
+// // Delete client member
+// export const deleteClientMember = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const member = await Member.findByIdAndDelete(id);
+//     if (!member) return res.status(404).json({ error: "Member not found" });
+
+//     // Activity log: member deleted
+//     await logCRUDActivity(req, 'DELETE', 'Member', id, null, {
+//       name: `${member.firstName} ${member.lastName || ''}`.trim()
+//     });
+
+//     return res.json({ message: "Member deleted" });
+//   } catch (err) {
+//     console.error("deleteClientMember error:", err);
+//     return res.status(500).json({ error: "Failed to delete member" });
+//   }
+// };
+
+// Get client-assigned RFID cards
+export const getClientRfidCards = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    if (!clientId) {
+      return res.status(400).json({ error: "Client ID not found in token" });
+    }
+
+    const cards = await RFIDCard.find({ clientId })
+      .populate({ path: 'currentMemberId', select: 'firstName lastName email' })
+      .populate({ path: 'buildingId', select: 'name' })
+      .lean();
+
+    return res.json({ success: true, data: cards });
+  } catch (err) {
+    console.error("getClientRfidCards error:", err);
+    return res.status(500).json({ error: "Failed to fetch RFID cards" });
   }
 };
 
@@ -1490,7 +1538,7 @@ export const approveClientContract = async (req, res) => {
     }
 
     // Allow approval if contract is draft, sent_to_client, or client_feedback_pending
-    const validStatuses = ['draft', 'sent_to_client', 'client_feedback_pending','sent_for_signature'];
+    const validStatuses = ['draft', 'sent_to_client', 'client_feedback_pending', 'sent_for_signature'];
     if (!validStatuses.includes(contract.status)) {
       return res.status(400).json({ error: `Cannot approve contract with status: ${contract.status}. Valid statuses: ${validStatuses.join(', ')}` });
     }
@@ -1683,7 +1731,7 @@ export const submitClientContractFeedback = async (req, res) => {
     try {
       if (!Array.isArray(contract.clientFeedbackHistory)) contract.clientFeedbackHistory = [];
       contract.clientFeedbackHistory.push({ text: feedback, submittedAt: new Date(), submittedBy: clientId });
-    } catch {}
+    } catch { }
 
     await contract.save();
 
@@ -1873,7 +1921,7 @@ export const createClientMember = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    const { firstName, lastName, email, phone, role, password } = req.body || {};
+    const { firstName, lastName, email, phone, role, password, cardId } = req.body || {};
 
     if (!firstName) {
       return res.status(400).json({ error: "firstName is required" });
@@ -1917,6 +1965,195 @@ export const createClientMember = async (req, res) => {
       user: userId,
       status: "active"
     });
+
+    // Handle RFID card assignment if provided
+    if (cardId) {
+      console.log(`createClientMember: cardId ${cardId} provided, starting assignment flow.`);
+      try {
+        const card = await RFIDCard.findById(cardId);
+        if (card) {
+          console.log(`createClientMember: found RFID card with UID ${card.cardUid}`);
+          // Identify/Normalize Matrix User ID (e.g. 91 prefixed phone)
+          let externalUserId = null;
+          if (phone) {
+            let p = String(phone).replace(/\D/g, "");
+            p = p.replace(/^0+/, "");
+            const last10 = p.length > 10 ? p.slice(-10) : p;
+            if (last10.length === 10) externalUserId = `91${last10}`;
+            console.log(`createClientMember: normalized phone ${phone} to externalUserId ${externalUserId}`);
+          }
+
+          if (externalUserId) {
+            // Find or create MatrixUser
+            let mUser = await MatrixUser.findOne({ externalUserId });
+            if (!mUser) {
+              console.log(`createClientMember: creating new MatrixUser for ${externalUserId}`);
+              mUser = await MatrixUser.create({
+                name: `${firstName} ${lastName || ''}`.trim(),
+                phone: phone,
+                email: email,
+                externalUserId: externalUserId,
+                memberId: member._id,
+                clientId: clientId,
+                status: 'active'
+              });
+            } else {
+              console.log(`createClientMember: found existing MatrixUser ${mUser._id} for ${externalUserId}`);
+            }
+
+            // Link card to MatrixUser
+            console.log(`createClientMember: adding card ${cardId} to MatrixUser ${mUser._id}`);
+            await MatrixUser.findByIdAndUpdate(mUser._id, {
+              $addToSet: { cards: cardId }
+            });
+
+            // Update card ownership
+            console.log(`createClientMember: updating RFID card ${cardId} status to ACTIVE and setting currentMemberId`);
+            await RFIDCard.findByIdAndUpdate(cardId, {
+              currentMemberId: member._id,
+              clientId: clientId,
+              status: "ACTIVE",
+              activatedAt: new Date()
+            });
+
+            // 1. Direct Matrix API User Creation
+            console.log(`createClientMember: calling matrixApi.createUser for ${externalUserId}`);
+            try {
+              await matrixApi.createUser({
+                id: externalUserId,
+                name: `${firstName} ${lastName || ''}`.trim(),
+                email: email || undefined,
+                phone: phone || undefined,
+                status: "active"
+              });
+            } catch (apiErr) {
+              console.error("createClientMember: Matrix createUser failed:", apiErr.message);
+              // We continue even if API fails, as it might already exist or job will retry
+            }
+
+            // 2. Automatic Device Assignment based on building policy
+            try {
+              const clientDoc = await Client.findById(clientId).select("building").lean();
+              const buildingId = clientDoc?.building;
+              if (buildingId) {
+                // Find default policy for building
+                const policy = await AccessPolicy.findOne({
+                  buildingId,
+                  isDefaultForBuilding: true,
+                  status: "active"
+                }).lean();
+
+                if (policy && policy.accessPointIds?.length) {
+                  console.log(`createClientMember: found default policy ${policy._id}, assigning devices...`);
+                  const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } }).select("deviceBindings").lean();
+
+                  const deviceObjIds = [];
+                  for (const ap of accessPoints) {
+                    for (const b of ap.deviceBindings || []) {
+                      if (b.vendor === "MATRIX_COSEC" && b.deviceId) {
+                        deviceObjIds.push(b.deviceId);
+                      }
+                    }
+                  }
+
+                  const uniqueDeviceObjIds = [...new Set(deviceObjIds.map(id => String(id)))];
+                  if (uniqueDeviceObjIds.length) {
+                    const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } }).select("device_id").lean();
+                    let assignedCount = 0;
+                    for (const d of devices) {
+                      if (d.device_id) {
+                        try {
+                          const resAssign = await matrixApi.assignUserToDevice({ device_id: d.device_id, externalUserId });
+                          if (resAssign?.ok) assignedCount++;
+                        } catch (e) {
+                          console.error(`createClientMember: failed to assign device ${d.device_id}:`, e.message);
+                        }
+                      }
+                    }
+
+                    if (assignedCount > 0) {
+                      await MatrixUser.findByIdAndUpdate(mUser._id, {
+                        $set: { isDeviceAssigned: true, isEnrolled: true, policyId: policy._id }
+                      });
+                      console.log(`createClientMember: assigned ${assignedCount} devices to user.`);
+                    }
+                  }
+                } else {
+                  console.warn(`createClientMember: no default policy found for building ${buildingId}`);
+                }
+              }
+            } catch (policyErr) {
+              console.error("createClientMember: device assignment flow failed:", policyErr.message);
+            }
+
+            // 3. Direct Card Credential Setting
+            console.log(`createClientMember: setting card credential ${card.cardUid} for ${externalUserId}`);
+            try {
+              await matrixApi.setCardCredential({ externalUserId, data: card.cardUid });
+              await MatrixUser.findByIdAndUpdate(mUser._id, { $set: { isCardCredentialVerified: true } });
+            } catch (cardErr) {
+              console.error("createClientMember: Matrix setCardCredential failed:", cardErr.message);
+            }
+
+            // 4. Final local updates & Job Enqueue
+            console.log(`createClientMember: linking MatrixUser ${mUser._id} back to Member ${member._id}`);
+            await Member.findByIdAndUpdate(member._id, {
+              matrixUser: mUser._id,
+              matrixExternalUserId: externalUserId
+            });
+
+            // Enqueue provisioning for assignment to Matrix API (as background record/retry)
+            console.log(`createClientMember: enqueuing ASSIGN_CARD ProvisioningJob for card ${cardId}`);
+            try {
+              await ProvisioningJob.create({
+                vendor: "MATRIX_COSEC",
+                jobType: "ASSIGN_CARD",
+                memberId: member._id,
+                cardId: card._id,
+                payload: { cardUid: card.cardUid, memberId: member._id }
+              });
+            } catch (jobErr) {
+              console.error("createClientMember: failed to enqueue provisioning job:", jobErr.message);
+            }
+
+            console.log(`createClientMember: RFID assignment flow completed successfully.`);
+
+            // 5. Automated BHAiFi Provisioning
+            console.log(`createClientMember: starting BHAiFi provisioning for member ${member._id}`);
+            try {
+              const activeContract = await Contract.findOne({
+                client: clientId,
+                status: "active"
+              }).sort({ createdAt: -1 }).select("_id").lean();
+
+              const bhaifiDoc = await ensureBhaifiForMember({
+                memberId: member._id,
+                contractId: activeContract?._id
+              });
+
+              if (bhaifiDoc) {
+                console.log(`createClientMember: BHAiFi provisioning successful, user: ${bhaifiDoc.userName}`);
+                await Member.findByIdAndUpdate(member._id, {
+                  $set: {
+                    bhaifiUser: bhaifiDoc._id,
+                    bhaifiUserName: bhaifiDoc.userName
+                  }
+                });
+              }
+            } catch (bhaifiErr) {
+              console.error("createClientMember: BHAiFi provisioning failed:", bhaifiErr.message);
+              // We do not fail the whole request if BHAiFi provisioning fails
+            }
+          } else {
+            console.warn(`createClientMember: could not normalize phone for MatrixUser assignment.`);
+          }
+        } else {
+          console.warn(`createClientMember: RFID card ${cardId} not found in database.`);
+        }
+      } catch (rfidErr) {
+        console.error("createClientMember: failed to assign RFID card:", rfidErr.message);
+      }
+    }
 
     // Send platform access welcome email to the new member (template-based)
     try {
