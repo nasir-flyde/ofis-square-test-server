@@ -224,8 +224,8 @@ export const createSingleDayPass = async (req, res) => {
 
       const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
       let invoice = null;
+      let clientIdForInvoice = req.clientId || null;
       if (paymentMethod !== 'credits') {
-        let clientIdForInvoice = req.clientId || null;
         if (!clientIdForInvoice) {
           const memberLookupId = customerType === 'member' ? customerId : (memberId || null);
           if (memberLookupId) {
@@ -327,7 +327,6 @@ export const createSingleDayPass = async (req, res) => {
           currency: 'INR',
           name: 'Ofis Square',
           description: `Day Pass - ${building.name}`,
-          order_id: `daypass_${dayPass._id}`,
           prefill: {
             name: customer.companyName,
             email: customer.email,
@@ -344,14 +343,18 @@ export const createSingleDayPass = async (req, res) => {
             receipt: `receipt_dp_${dayPass._id}`
           }, {
             userId: req.user?._id,
-            clientId: clientIdForInvoice,
+            clientId: clientIdForInvoice || (customerType === 'client' ? customerId : null),
             relatedEntity: 'DayPass',
             relatedEntityId: dayPass._id
           });
           responseData.razorpayConfig.order_id = rzpOrder.id;
         } catch (rzpErr) {
           console.error("Failed to create Razorpay order for DayPass:", rzpErr);
-          // Fallback or handle error - for now we continue but checkout might fail on frontend if order_id is missing or invalid
+          return res.status(500).json({
+            error: "Failed to initialize Razorpay payment",
+            reason: rzpErr.message,
+            message: "A valid Razorpay order could not be created. Please check backend credentials."
+          });
         }
 
       }

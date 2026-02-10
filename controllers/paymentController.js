@@ -1497,6 +1497,11 @@ export const createRazorpayOrder = async (req, res) => {
       response.order_id = rzpOrder.id;
     } catch (rzpErr) {
       console.error("Failed to create Razorpay order in createRazorpayOrder:", rzpErr);
+      return res.status(500).json({
+        error: "Failed to initialize Razorpay payment",
+        reason: rzpErr.message,
+        message: "A valid Razorpay order could not be created. Please check backend credentials."
+      });
     }
 
 

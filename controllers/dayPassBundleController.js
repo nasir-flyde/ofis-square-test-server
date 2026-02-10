@@ -374,7 +374,6 @@ export const createDayPassBundle = async (req, res) => {
           currency: 'INR',
           name: 'Ofis Square',
           description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
-          order_id: `bundle_${bundle._id}`,
           prefill: {
             name: customer.name || customer.companyName,
             email: customer.email,
@@ -398,6 +397,11 @@ export const createDayPassBundle = async (req, res) => {
           resp.razorpayConfig.order_id = rzpOrder.id;
         } catch (rzpErr) {
           console.error("Failed to create Razorpay order for Bundle:", rzpErr);
+          return res.status(500).json({
+            error: "Failed to initialize Razorpay payment",
+            reason: rzpErr.message,
+            message: "A valid Razorpay order could not be created for this bundle. Please check backend credentials."
+          });
         }
 
       }
