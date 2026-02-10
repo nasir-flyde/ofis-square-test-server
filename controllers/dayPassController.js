@@ -15,6 +15,8 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
+import loggedRazorpay from "../utils/loggedRazorpay.js";
+
 
 // Helpers: normalize date and check capacity for building/inventory/date
 const normalizeStartOfDay = (d) => {
@@ -66,22 +68,22 @@ export const createSingleDayPass = async (req, res) => {
     const { customerId, memberId, buildingId, notes, bookingFor, visitDate, inventoryId } = req.body;
 
     if (!customerId || !buildingId) {
-      return res.status(400).json({ 
-        error: "Customer ID and Building ID are required" 
+      return res.status(400).json({
+        error: "Customer ID and Building ID are required"
       });
     }
 
     // Validate new required fields
     if (!bookingFor || !['self', 'other'].includes(bookingFor)) {
-      return res.status(400).json({ 
-        error: "bookingFor must be 'self' or 'other'" 
+      return res.status(400).json({
+        error: "bookingFor must be 'self' or 'other'"
       });
     }
 
     // Only require visitDate for "self" bookings
     if (bookingFor === "self" && !visitDate) {
-      return res.status(400).json({ 
-        error: "visitDate is required for self bookings" 
+      return res.status(400).json({
+        error: "visitDate is required for self bookings"
       });
     }
 
@@ -89,8 +91,8 @@ export const createSingleDayPass = async (req, res) => {
     if (visitDate) {
       parsedVisitDate = new Date(visitDate);
       if (isNaN(parsedVisitDate.getTime())) {
-        return res.status(400).json({ 
-          error: "Invalid visitDate format" 
+        return res.status(400).json({
+          error: "Invalid visitDate format"
         });
       }
     }
@@ -98,10 +100,10 @@ export const createSingleDayPass = async (req, res) => {
     // Verify customer exists - could be Guest, Member, or Client
     let customer = null;
     let customerType = 'guest';
-    
+
     // First try to find as Guest
     customer = await Guest.findById(customerId);
-    
+
     // If not found as Guest, try as Member
     if (!customer) {
       const Member = (await import('../models/memberModel.js')).default;
@@ -110,7 +112,7 @@ export const createSingleDayPass = async (req, res) => {
         customerType = 'member';
       }
     }
-    
+
     // If still not found, try as Client
     if (!customer) {
       const Client = (await import('../models/clientModel.js')).default;
@@ -119,7 +121,7 @@ export const createSingleDayPass = async (req, res) => {
         customerType = 'client';
       }
     }
-    
+
     if (!customer) {
       return res.status(404).json({ error: "Customer not found" });
     }
@@ -154,8 +156,8 @@ export const createSingleDayPass = async (req, res) => {
     }
 
     if (!building.openSpacePricing && !(Array.isArray(building.dayPassInventories) && building.dayPassInventories.length)) {
-      return res.status(400).json({ 
-        error: "Day pass pricing/inventory not configured for this building" 
+      return res.status(400).json({
+        error: "Day pass pricing/inventory not configured for this building"
       });
     }
 
@@ -219,7 +221,7 @@ export const createSingleDayPass = async (req, res) => {
       });
 
       await dayPass.save({ session });
-      
+
       const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
       let invoice = null;
       if (paymentMethod !== 'credits') {
@@ -230,7 +232,7 @@ export const createSingleDayPass = async (req, res) => {
             try {
               const memberDoc = await Member.findById(memberLookupId).select('client');
               if (memberDoc?.client) clientIdForInvoice = memberDoc.client;
-            } catch (_) {}
+            } catch (_) { }
           }
         }
         if (!clientIdForInvoice && customerType === 'client') {
@@ -293,7 +295,7 @@ export const createSingleDayPass = async (req, res) => {
             templateKey: 'day_pass_booking_confirmed',
             templateVariables: {
               buildingName: dayPass.building?.name,
-              date: bookingDate.toISOString().slice(0,10),
+              date: bookingDate.toISOString().slice(0, 10),
               dayPassId: String(dayPass._id)
             },
             title: 'Day Pass Booking Confirmed',
@@ -333,6 +335,25 @@ export const createSingleDayPass = async (req, res) => {
           },
           theme: { color: '#3399cc' }
         };
+
+        // Create actual Razorpay order
+        try {
+          const rzpOrder = await loggedRazorpay.createOrder({
+            amount: totalAmount * 100,
+            currency: 'INR',
+            receipt: `receipt_dp_${dayPass._id}`
+          }, {
+            userId: req.user?._id,
+            clientId: clientIdForInvoice,
+            relatedEntity: 'DayPass',
+            relatedEntityId: dayPass._id
+          });
+          responseData.razorpayConfig.order_id = rzpOrder.id;
+        } catch (rzpErr) {
+          console.error("Failed to create Razorpay order for DayPass:", rzpErr);
+          // Fallback or handle error - for now we continue but checkout might fail on frontend if order_id is missing or invalid
+        }
+
       }
 
       res.status(201).json({
@@ -359,10 +380,10 @@ export const inviteVisitor = async (req, res) => {
   try {
     try {
       const { dayPassId } = req.params;
-      const { 
-        date, 
-        visitorName, 
-        visitorPhone, 
+      const {
+        date,
+        visitorName,
+        visitorPhone,
         visitorEmail,
         visitorCompany,
         purpose,
@@ -386,7 +407,7 @@ export const inviteVisitor = async (req, res) => {
 
       // Check if day pass is issued (payment completed)
       if (dayPass.status !== 'issued') {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Day pass must be paid for before inviting visitors",
           currentStatus: dayPass.status,
           requiredStatus: 'issued'
@@ -473,7 +494,7 @@ export const inviteVisitor = async (req, res) => {
         dayPass.expectedDepartureTime = departureDT || null;
         dayPass.status = "invited";
         dayPass.invitedAt = new Date();
-        
+
         // Generate QR code and set expiry
         const qrData = {
           passId: dayPass._id,
@@ -482,14 +503,14 @@ export const inviteVisitor = async (req, res) => {
           buildingId: dayPass.building._id,
           type: 'day_pass'
         };
-        
+
         dayPass.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
-        
+
         // Set QR expiry to end of pass date
         const qrExpiry = new Date(passDate);
         qrExpiry.setHours(23, 59, 59, 999);
         dayPass.qrExpiresAt = qrExpiry;
-        
+
         await dayPass.save({ session });
 
         // Populate building for response (host details are stored on Visitor)
@@ -542,7 +563,7 @@ export const inviteVisitor = async (req, res) => {
               templateKey: 'day_pass_booking_confirmed',
               templateVariables: {
                 buildingName: dayPass.building?.name,
-                date: passDate.toISOString().slice(0,10),
+                date: passDate.toISOString().slice(0, 10),
                 dayPassId: String(dayPass._id)
               },
               title: 'Day Pass Booking Confirmed',
@@ -571,7 +592,7 @@ export const inviteVisitor = async (req, res) => {
               templateKey: 'day_pass_booking_confirmed',
               templateVariables: {
                 buildingName: dayPass.building?.name,
-                date: passDate.toISOString().slice(0,10),
+                date: passDate.toISOString().slice(0, 10),
                 dayPassId: String(dayPass._id)
               },
               title: 'Day Pass Booking Confirmed',
@@ -601,7 +622,7 @@ export const inviteVisitor = async (req, res) => {
           const now = new Date();
           if (scheduledAt > now) {
             const arrivalTimeStr = arrivalTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
-            const dateStr = passDate.toISOString().slice(0,10);
+            const dateStr = passDate.toISOString().slice(0, 10);
 
             // Visitor reminder
             if (visitorEmail) {
@@ -665,7 +686,7 @@ export const inviteVisitor = async (req, res) => {
         }
 
         // TODO: Send invitation email with QR code similar to visitor system
-        
+
         res.json({
           message: "Visitor invited successfully",
           dayPass,
@@ -719,14 +740,14 @@ export const checkInWithQR = async (req, res) => {
     // Check if pass is valid for today
     const today = new Date();
     const passDate = new Date(dayPass.date);
-    
+
     if (passDate.toDateString() !== today.toDateString()) {
       return res.status(400).json({ error: "Day pass is not valid for today" });
     }
 
     if (dayPass.status !== "invited") {
-      return res.status(400).json({ 
-        error: `Cannot check-in. Pass status: ${dayPass.status}` 
+      return res.status(400).json({
+        error: `Cannot check-in. Pass status: ${dayPass.status}`
       });
     }
 
@@ -775,8 +796,8 @@ export const checkOutWithQR = async (req, res) => {
     }
 
     if (dayPass.status !== "checked_in") {
-      return res.status(400).json({ 
-        error: `Cannot check-out. Pass status: ${dayPass.status}` 
+      return res.status(400).json({
+        error: `Cannot check-out. Pass status: ${dayPass.status}`
       });
     }
 
@@ -831,7 +852,7 @@ export const scanQR = async (req, res) => {
     // Check if pass is valid for today
     const today = new Date();
     const passDate = new Date(dayPass.date);
-    
+
     if (passDate.toDateString() !== today.toDateString()) {
       return res.status(400).json({ error: "Day pass is not valid for today" });
     }
@@ -853,8 +874,8 @@ export const scanQR = async (req, res) => {
       action = "check_out";
       timestamp = dayPass.checkOutTime;
     } else {
-      return res.status(400).json({ 
-        error: `Cannot process scan. Pass status: ${dayPass.status}` 
+      return res.status(400).json({
+        error: `Cannot process scan. Pass status: ${dayPass.status}`
       });
     }
 
@@ -943,8 +964,8 @@ export const getDayPassDetails = async (req, res) => {
     res.json({
       dayPass,
       canInvite: dayPass.status === "pending",
-      canCheckIn: dayPass.status === "invited" && dayPass.date && 
-                  new Date(dayPass.date).toDateString() === new Date().toDateString(),
+      canCheckIn: dayPass.status === "invited" && dayPass.date &&
+        new Date(dayPass.date).toDateString() === new Date().toDateString(),
       canCheckOut: dayPass.status === "checked_in"
     });
 
@@ -957,13 +978,13 @@ export const getDayPassDetails = async (req, res) => {
 // Admin: Get all day passes
 export const getAllDayPasses = async (req, res) => {
   try {
-    const { 
-      status, 
-      buildingId, 
+    const {
+      status,
+      buildingId,
       customerId,
       bundleId,
       date,
-      page = 1, 
+      page = 1,
       limit = 20,
       sortBy = 'createdAt',
       sortOrder = 'desc'
@@ -1010,7 +1031,7 @@ export const getAllDayPasses = async (req, res) => {
           if (val.id && Buffer.isBuffer(val.id)) return val.id.toString('hex');
           if (val.buffer && Array.isArray(val.buffer.data)) return Buffer.from(val.buffer.data).toString('hex');
         }
-      } catch (_) {}
+      } catch (_) { }
       return null;
     };
 
@@ -1058,7 +1079,7 @@ export const getAllDayPasses = async (req, res) => {
           if (fallbackPhone) normalized.phone = fallbackPhone;
         }
         dp.customer = normalized;
-      } catch (_) {}
+      } catch (_) { }
       return dp;
     });
 

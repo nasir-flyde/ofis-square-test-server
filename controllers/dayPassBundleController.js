@@ -9,15 +9,17 @@ import mongoose from "mongoose";
 import crypto from "crypto";
 import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
+import loggedRazorpay from "../utils/loggedRazorpay.js";
+
 
 // Create a new day pass bundle
 export const createDayPassBundle = async (req, res) => {
   try {
-    const { 
-      customerId, 
-      memberId, 
-      buildingId, 
-      no_of_dayPasses, 
+    const {
+      customerId,
+      memberId,
+      buildingId,
+      no_of_dayPasses,
       validityDays = 60,
       notes,
       splitSelf = 0,
@@ -27,33 +29,33 @@ export const createDayPassBundle = async (req, res) => {
     } = req.body;
 
     if (!customerId || !buildingId || !no_of_dayPasses) {
-      return res.status(400).json({ 
-        error: "Customer ID, Building ID, and number of day passes are required" 
+      return res.status(400).json({
+        error: "Customer ID, Building ID, and number of day passes are required"
       });
     }
 
     if (no_of_dayPasses < 1 || no_of_dayPasses > 50) {
-      return res.status(400).json({ 
-        error: "Number of day passes must be between 1 and 50" 
+      return res.status(400).json({
+        error: "Number of day passes must be between 1 and 50"
       });
     }
 
     // Validate split counts
     if (splitSelf + splitOther > no_of_dayPasses) {
-      return res.status(400).json({ 
-        error: "splitSelf + splitOther cannot exceed no_of_dayPasses" 
+      return res.status(400).json({
+        error: "splitSelf + splitOther cannot exceed no_of_dayPasses"
       });
     }
 
     if (splitSelf + splitOther === 0) {
-      return res.status(400).json({ 
-        error: "At least one pass must be allocated (splitSelf or splitOther)" 
+      return res.status(400).json({
+        error: "At least one pass must be allocated (splitSelf or splitOther)"
       });
     }
 
     if (splitSelf > 0 && datesSelf.length !== splitSelf) {
-      return res.status(400).json({ 
-        error: "datesSelf array length must match splitSelf count" 
+      return res.status(400).json({
+        error: "datesSelf array length must match splitSelf count"
       });
     }
 
@@ -80,14 +82,14 @@ export const createDayPassBundle = async (req, res) => {
     // Verify customer exists (could be Guest, Member, or Client)
     let customer = await Guest.findById(customerId);
     let customerType = 'guest';
-    
+
     if (!customer) {
       customer = await Member.findById(customerId);
       if (customer) {
         customerType = 'member';
       }
     }
-    
+
     if (!customer) {
       const Client = (await import('../models/clientModel.js')).default;
       customer = await Client.findById(customerId);
@@ -95,7 +97,7 @@ export const createDayPassBundle = async (req, res) => {
         customerType = 'client';
       }
     }
-    
+
     if (!customer) {
       return res.status(404).json({ error: "Customer not found" });
     }
@@ -123,7 +125,7 @@ export const createDayPassBundle = async (req, res) => {
       const dateCounts = {};
       for (const ds of parsedDatesSelf) {
         const d = new Date(ds);
-        d.setHours(0,0,0,0);
+        d.setHours(0, 0, 0, 0);
         const key = d.toISOString();
         dateCounts[key] = (dateCounts[key] || 0) + 1;
       }
@@ -134,9 +136,9 @@ export const createDayPassBundle = async (req, res) => {
           .lean();
         const booked = (usages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
         if (booked + reqCount > cap) {
-          return res.status(409).json({ 
+          return res.status(409).json({
             error: 'Insufficient capacity for one or more selected dates',
-            details: { date: iso.slice(0,10), capacity: cap, requested: reqCount, booked, remaining: Math.max(0, cap - booked) }
+            details: { date: iso.slice(0, 10), capacity: cap, requested: reqCount, booked, remaining: Math.max(0, cap - booked) }
           });
         }
       }
@@ -197,7 +199,7 @@ export const createDayPassBundle = async (req, res) => {
 
       // Create individual day pass records (status: pending)
       const dayPasses = [];
-      
+
       // Create passes for "self" bookings
       for (let i = 0; i < splitSelf; i++) {
         const dayPass = new DayPass({
@@ -215,7 +217,7 @@ export const createDayPassBundle = async (req, res) => {
         });
         dayPasses.push(dayPass);
       }
-      
+
       // Create passes for "other" bookings
       for (let i = 0; i < splitOther; i++) {
         const dayPass = new DayPass({
@@ -243,7 +245,7 @@ export const createDayPassBundle = async (req, res) => {
         const selfPasses = dayPasses.filter(dp => dp.bookingFor === 'self');
         for (const dp of selfPasses) {
           const d = new Date(dp.visitDate);
-          d.setHours(0,0,0,0);
+          d.setHours(0, 0, 0, 0);
           const key = d.toISOString();
           incCounts[key] = (incCounts[key] || 0) + 1;
         }
@@ -258,7 +260,7 @@ export const createDayPassBundle = async (req, res) => {
             if (booked + add > cap) {
               const err = new Error('Capacity exceeded for selected date');
               err.status = 409;
-              err.details = { date: iso.slice(0,10), capacity: cap, requested: add, booked, remaining: Math.max(0, cap - booked) };
+              err.details = { date: iso.slice(0, 10), capacity: cap, requested: add, booked, remaining: Math.max(0, cap - booked) };
               throw err;
             }
           }
@@ -380,6 +382,24 @@ export const createDayPassBundle = async (req, res) => {
           },
           theme: { color: '#3399cc' }
         };
+
+        // Create actual Razorpay order
+        try {
+          const rzpOrder = await loggedRazorpay.createOrder({
+            amount: finalAmount * 100,
+            currency: 'INR',
+            receipt: `receipt_bundle_${bundle._id}`
+          }, {
+            userId: req.user?._id,
+            clientId: bundle.customer?.constructor.modelName === 'Client' ? bundle.customer?._id : (req.user?.clientId || null),
+            relatedEntity: 'DayPassBundle',
+            relatedEntityId: bundle._id
+          });
+          resp.razorpayConfig.order_id = rzpOrder.id;
+        } catch (rzpErr) {
+          console.error("Failed to create Razorpay order for Bundle:", rzpErr);
+        }
+
       }
       res.status(201).json(resp);
 
@@ -527,11 +547,11 @@ export const cancelBundle = async (req, res) => {
 // Admin: Get all bundles
 export const getAllBundles = async (req, res) => {
   try {
-    const { 
-      status, 
-      buildingId, 
+    const {
+      status,
+      buildingId,
       customerId,
-      page = 1, 
+      page = 1,
       limit = 20,
       sortBy = 'createdAt',
       sortOrder = 'desc'
