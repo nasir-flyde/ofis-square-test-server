@@ -6,6 +6,8 @@ import imagekit from "../utils/imageKit.js";
 import { recordZohoPayment } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import Client from "../models/clientModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
 
 // Helper: apply amount delta to invoice and set status fields (aligned with current model)
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -46,49 +48,67 @@ function getZohoPaymentMode(paymentType) {
     'rtgs': 'banktransfer',
     'imps': 'banktransfer'
   };
-  
+
   return modeMap[paymentType?.toLowerCase()] || 'banktransfer';
 }
-
 export const createDraftPayment = async (req, res) => {
   try {
-    const { invoice: invoiceId, client, amount, paymentDate, type, referenceNumber, currency, notes, screenshots } = req.body || {};
+    const {
+      invoice: invoiceId,
+      client,
+      amount,
+      paymentDate,
+      type,
+      referenceNumber,
+      currency,
+      notes,
+      screenshots
+    } = req.body || {};
 
-    // Role-based restriction: Finance Junior can only create draft payments
     const userRole = req.userRole?.roleName || "";
     if (userRole === "finance_junior") {
-      console.log(`Finance Junior ${req.user?.name || 'user'} creating draft payment (approval required)`);
+      console.log(
+        `Finance Junior ${req.user?.name || "user"} creating draft payment (approval required)`
+      );
     }
 
-    if (!invoiceId) return res.status(400).json({ success: false, message: "invoice is required" });
-    if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: "amount must be > 0" });
-    if (!paymentDate) return res.status(400).json({ success: false, message: "paymentDate is required" });
+    if (!invoiceId)
+      return res.status(400).json({ success: false, message: "invoice is required" });
+
+    if (!amount || Number(amount) <= 0)
+      return res.status(400).json({ success: false, message: "amount must be > 0" });
+
+    if (!paymentDate)
+      return res.status(400).json({ success: false, message: "paymentDate is required" });
 
     const invoice = await Invoice.findById(invoiceId);
-    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!invoice)
+      return res.status(404).json({ success: false, message: "Invoice not found" });
 
     const submittingClient = req.clientId || client || invoice.client;
-    
-    // Handle file uploads to ImageKit
+
     let screenshotUrls = [];
+
     if (req.files && req.files.length > 0) {
       const folder = process.env.IMAGEKIT_PAYMENT_FOLDER || "/ofis-square/payments";
+
       const uploadPromises = req.files.map(async (file) => {
         try {
           const result = await imagekit.upload({
             file: file.buffer,
             fileName: `payment_${Date.now()}_${file.originalname}`,
-            folder,
+            folder
           });
           return result.url;
         } catch (error) {
-          console.error('ImageKit upload error:', error);
+          console.error("ImageKit upload error:", error);
           throw new Error(`Failed to upload ${file.originalname}`);
         }
       });
+
       screenshotUrls = await Promise.all(uploadPromises);
+
     } else if (screenshots && Array.isArray(screenshots)) {
-      // Handle base64 screenshots (fallback)
       screenshotUrls = screenshots;
     }
 
@@ -103,48 +123,120 @@ export const createDraftPayment = async (req, res) => {
       notes: notes || undefined,
       screenshots: screenshotUrls,
       status: "pending",
-      submittedByClient: req.clientId || undefined,
+      submittedByClient: req.clientId || undefined
     });
 
-    // Notify client: draft payment submitted
+    // Notify client
     try {
       const to = { clientId: submittingClient };
-      try {
-        const clientDoc = await Client.findById(submittingClient).select('email').lean();
-        if (clientDoc?.email) to.email = clientDoc.email;
-      } catch {}
+
+      const clientDoc = await Client.findById(submittingClient)
+        .select("email companyName primaryFirstName")
+        .lean();
+
+      if (clientDoc?.email) {
+        to.email = clientDoc.email;
+      }
 
       await sendNotification({
         to,
         channels: { email: Boolean(to.email), sms: false },
-        templateKey: 'draft_payment_submitted',
+        templateKey: "draft_payment_submitted",
         templateVariables: {
-          invoiceNumber: invoice?.invoice_number || invoice?.reference_number || String(invoice?._id || invoiceId),
+          greeting: clientDoc?.companyName || "Ofis Square",
+          memberName:
+            clientDoc?.primaryFirstName ||
+            clientDoc?.companyName ||
+            "Member",
+          invoiceNumber:
+            invoice?.invoice_number ||
+            invoice?.reference_number ||
+            String(invoice?._id || invoiceId),
           amount: Number(amount),
-          paymentDate: paymentDate ? new Date(paymentDate).toISOString().slice(0,10) : undefined,
-          type: type || '',
-          referenceNumber: referenceNumber || ''
+          paymentDate: paymentDate
+            ? new Date(paymentDate).toISOString().slice(0, 10)
+            : undefined,
+          type: type || "",
+          draftPaymentId: referenceNumber || "draft"
         },
-        title: 'Draft Payment Submitted',
+        title: "Draft Payment Submitted",
         metadata: {
-          category: 'payments',
-          tags: ['draft_payment_submitted'],
+          category: "payments",
+          tags: ["draft_payment_submitted"],
           route: `/draft-payments/${draft._id}`,
           deepLink: `ofis://draft-payments/${draft._id}`,
           routeParams: { id: String(draft._id) }
         },
-        source: 'system',
-        type: 'transactional'
+        source: "system",
+        type: "transactional"
       });
+
     } catch (notifyErr) {
-      console.warn('createDraftPayment: failed to send draft_payment_submitted notification:', notifyErr?.message || notifyErr);
+      console.warn(
+        "createDraftPayment: failed to send notification:",
+        notifyErr?.message || notifyErr
+      );
+    }
+
+    // Notify finance users
+    try {
+      const financeRoles = await Role.find({ name: { $in: ['finance_junior', 'finance_senior'] } }).select('_id');
+      if (financeRoles.length > 0) {
+        const financeUsers = await User.find({ role: { $in: financeRoles.map(r => r._id) } }).select('email');
+        const clientDoc = await Client.findById(submittingClient).select('companyName contactPerson').lean();
+
+        let buildingName = 'Ofis Square';
+        if (invoice?.building) { // Optimistic check if populated, else default
+          // If invoice.building is ObjectId, we might need to populate or just use default.
+          // Given constraint, we use default or try to get it if available
+        }
+
+        for (const user of financeUsers) {
+          if (user.email) {
+            await sendNotification({
+              to: { email: user.email },
+              channels: { email: true, sms: false },
+              templateKey: 'finance_draft_payment_review_required',
+              templateVariables: {
+                greeting: 'Ofis Square',
+                companyName: clientDoc?.companyName || 'Unknown Company',
+                clientName: clientDoc?.contactPerson || 'Client',
+                buildingName: buildingName,
+                invoiceNumber: invoice?.invoice_number || invoice?.reference_number || String(invoice?._id || invoiceId),
+                amount: Number(amount),
+                paymentMode: type || 'N/A',
+                transactionReference: referenceNumber || 'N/A',
+                submittedDate: paymentDate ? new Date(paymentDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                draftPaymentId: referenceNumber
+              },
+              title: 'Action Required – Draft Payment Submitted',
+              metadata: {
+                category: 'payments',
+                tags: ['finance', 'draft-payment', 'approval-required'],
+                route: `/payments/drafts/${draft._id}`,
+                deepLink: `ofis://payments/drafts/${draft._id}`,
+                routeParams: { id: String(draft._id) }
+              },
+              source: 'system',
+              type: 'transactional'
+            });
+          }
+        }
+      }
+    } catch (financeNotifyErr) {
+      console.warn('createDraftPayment: failed to send finance_draft_payment_review_required notification:', financeNotifyErr?.message || financeNotifyErr);
     }
 
     return res.status(201).json({ success: true, data: draft });
+
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
   }
 };
+
 
 export const approveDraftPayment = async (req, res) => {
   const session = await mongoose.startSession();
@@ -158,9 +250,9 @@ export const approveDraftPayment = async (req, res) => {
     if (userRole === "finance_junior") {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only Finance Senior users can approve draft payments. Please contact your Finance Senior." 
+      return res.status(403).json({
+        success: false,
+        message: "Only Finance Senior users can approve draft payments. Please contact your Finance Senior."
       });
     }
 
@@ -241,7 +333,7 @@ export const approveDraftPayment = async (req, res) => {
         });
 
         const zohoResponse = await recordZohoPayment(updatedInvoice.zoho_invoice_id, zohoPaymentData);
-        
+
         // Update payment record with Zoho Books payment ID
         if (zohoResponse?.payment?.payment_id) {
           await Payment.findByIdAndUpdate(payment[0]._id, {
@@ -270,10 +362,8 @@ export const approveDraftPayment = async (req, res) => {
     // Notify client: draft payment approved
     try {
       const to = { clientId: draft.client };
-      try {
-        const clientDoc = await Client.findById(draft.client).select('email').lean();
-        if (clientDoc?.email) to.email = clientDoc.email;
-      } catch {}
+      const clientDoc = await Client.findById(draft.client).select('email companyName contactPerson').lean();
+      if (clientDoc?.email) to.email = clientDoc.email;
 
       const paymentDoc = Array.isArray(payment) ? payment[0] : payment;
 
@@ -282,9 +372,11 @@ export const approveDraftPayment = async (req, res) => {
         channels: { email: Boolean(to.email), sms: false },
         templateKey: 'draft_payment_approved',
         templateVariables: {
+          greeting: clientDoc?.companyName || 'Ofis Square',
+          memberName: clientDoc?.contactPerson || clientDoc?.companyName || 'Member',
           invoiceNumber: updatedInvoice?.invoice_number || updatedInvoice?.reference_number || String(updatedInvoice?._id || draft.invoice),
           amount: Number(draft.amount),
-          paymentDate: draft.paymentDate ? new Date(draft.paymentDate).toISOString().slice(0,10) : undefined,
+          paymentDate: draft.paymentDate ? new Date(draft.paymentDate).toISOString().slice(0, 10) : undefined,
           type: draft.type || '',
           referenceNumber: draft.referenceNumber || '',
           paymentNumber: paymentDoc?.payment_number || ''
@@ -302,6 +394,56 @@ export const approveDraftPayment = async (req, res) => {
       });
     } catch (notifyErr) {
       console.warn('approveDraftPayment: failed to send draft_payment_approved notification:', notifyErr?.message || notifyErr);
+    }
+
+    // Send payment success notification (Generic template)
+    try {
+      const clientDoc = await Client.findById(draft.client).select('email companyName contactPerson').lean();
+      const paymentDoc = Array.isArray(payment) ? payment[0] : payment;
+
+      let serviceType = "Other Service";
+      if (updatedInvoice?.category === 'meeting_room') {
+        serviceType = "Meeting Room";
+      } else if (updatedInvoice?.category === 'day_pass') {
+        serviceType = "Day Pass";
+      } else if (updatedInvoice?.category === 'cabin') {
+        serviceType = "Cabin";
+      }
+
+      await sendNotification({
+        to: {
+          clientId: draft.client,
+          email: clientDoc?.email
+        },
+        channels: { email: true, sms: true },
+        templateKey: "service_payment_success",
+        title: "Payment Successful",
+        templateVariables: {
+          greeting: "Ofis Square",
+          serviceType,
+          serviceName: updatedInvoice?.invoice_number || "Service",
+          buildingName: "Ofis Square",
+          serviceDate: draft.paymentDate ? new Date(draft.paymentDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+          timeSlot: "N/A",
+          amount: Number(draft.amount),
+          paymentMode: draft.type || "Other",
+          transactionId: draft.referenceNumber || "N/A",
+          invoiceNumber: updatedInvoice?.invoice_number || updatedInvoice?.reference_number || "N/A",
+          paymentDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+          paymentId: paymentDoc?._id
+        },
+        metadata: {
+          category: "payments",
+          tags: ["payment", "success", "booking"],
+          route: `/payments/receipts/${paymentDoc?._id}`,
+          deepLink: `ofis://payments/receipts/${paymentDoc?._id}`,
+          routeParams: { id: String(paymentDoc?._id) }
+        },
+        source: "system",
+        type: "transactional"
+      });
+    } catch (notifyErr) {
+      console.warn('approveDraftPayment: failed to send service_payment_success notification:', notifyErr?.message || notifyErr);
     }
 
     return res.json({ success: true, message: "Draft approved and payment recorded", data: { draft, payment: payment?.[0] } });
@@ -322,9 +464,9 @@ export const rejectDraftPayment = async (req, res) => {
     // Role-based restriction: Only Finance Senior can reject draft payments
     const userRole = req.userRole?.roleName || "";
     if (userRole === "finance_junior") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only Finance Senior users can reject draft payments. Please contact your Finance Senior." 
+      return res.status(403).json({
+        success: false,
+        message: "Only Finance Senior users can reject draft payments. Please contact your Finance Senior."
       });
     }
 

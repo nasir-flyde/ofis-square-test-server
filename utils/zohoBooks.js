@@ -1545,6 +1545,7 @@ export async function getZohoEstimate(estimateId) {
   }
 }
 
+
 export async function markZohoEstimateAsSent(estimateId) {
   try {
     const authToken = await getValidAccessToken();
@@ -1555,6 +1556,33 @@ export async function markZohoEstimateAsSent(estimateId) {
     return data;
   } catch (err) {
     console.error("❌ Error marking estimate as sent:", err.message);
+    throw err;
+  }
+}
+
+export async function fetchZohoEstimatePdfBinary(zohoEstimateId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates/pdf?organization_id=${ORG_ID}&estimate_ids=${encodeURIComponent(zohoEstimateId)}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const arrayBuf = await res.arrayBuffer();
+    if (!res.ok) {
+      let errJson;
+      try {
+        errJson = JSON.parse(Buffer.from(arrayBuf).toString("utf8"));
+      } catch (_) {
+        errJson = null;
+      }
+      throw new Error(errJson?.message || `Zoho API error fetching Estimate PDF (status ${res.status})`);
+    }
+
+    return Buffer.from(arrayBuf);
+  } catch (err) {
+    console.error("❌ Error fetching Zoho Estimate PDF:", err.message);
     throw err;
   }
 }

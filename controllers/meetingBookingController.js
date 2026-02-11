@@ -17,6 +17,7 @@ import { recordCancellation } from "./cancelledBookingController.js";
 import { getValidAccessToken } from "../utils/zohoTokenManager.js";
 import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import { createZohoInvoiceFromLocal, fetchZohoInvoicePdfBinary, recordZohoPayment } from "../utils/zohoBooks.js";
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
@@ -441,6 +442,39 @@ export const createBooking = async (req, res) => {
         valuePerCredit: result.valuePerCredit,
         idempotencyKey
       };
+
+      // Create paid invoice for credit payment to allow attachment
+      if (clientId) {
+        const invoiceId = new mongoose.Types.ObjectId();
+        invoice = new Invoice({
+          _id: invoiceId,
+          client: clientId,
+          type: "regular",
+          category: "meeting_room",
+          invoice_number: `MR-${Date.now()}`,
+          line_items: [{
+            description: `Meeting Room - ${room.name} (Hourly)`,
+            quantity: Math.round(durationHours * 100) / 100,
+            unitPrice: hourlyRate,
+            amount: Number((hourlyRate * durationHours).toFixed(2)),
+            rate: hourlyRate
+          }],
+          sub_total: totalsForCredits.sub_total,
+          discount: totalsForCredits.discountAmount || 0,
+          tax_total: totalsForCredits.tax_total,
+          total: totalsForCredits.total,
+          amount_paid: totalsForCredits.total,
+          balance: 0,
+          status: "paid",
+          paid_at: new Date(),
+          due_date: new Date()
+        });
+        await invoice.save();
+
+        // Update wallet transaction to link this invoice (if possible/needed)
+        // Note: WalletService transaction creation happened above, might need update if we want strict linking
+      }
+
     } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay") {
       // Cash/Card payment - create invoice and set payment_pending status for Razorpay create-order flow
       bookingStatus = "payment_pending";
@@ -469,7 +503,8 @@ export const createBooking = async (req, res) => {
             discount: totals.discountAmount || 0,
             tax_total: totals.tax_total,
             total: totals.total,
-            status: "draft",
+            status: "sent",
+            sent_at: new Date(),
             due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
           });
 
@@ -553,6 +588,91 @@ export const createBooking = async (req, res) => {
       await room.save();
     }
 
+    // Verify or Push Invoice to Zoho, then fetch PDF
+    let invoicePdfBuffer = null;
+    let invoicePdfName = `Invoice_${booking._id}.pdf`;
+
+    if (invoice) {
+      try {
+        // 1. Push to Zoho if not already synced
+        if (!invoice.zoho_invoice_id && invoice.client) {
+          const clientDoc = await Client.findById(invoice.client);
+          if (clientDoc) {
+            // Create Zoho invoice
+            const zohoInv = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
+            if (zohoInv?.invoice?.invoice_id) {
+              invoice.zoho_invoice_id = zohoInv.invoice.invoice_id;
+              invoice.zoho_invoice_number = zohoInv.invoice.invoice_number;
+              await invoice.save();
+              console.log(`[createBooking] Pushed invoice ${invoice._id} to Zoho: ${invoice.zoho_invoice_id}`);
+            }
+          }
+        }
+
+        // 2. If paid via credits, record payment in Zoho to mark as paid
+        if (invoice.zoho_invoice_id && paymentMethod === 'credits' && invoice.status === 'paid') {
+          // Check if already paid in Zoho (balance check or just try record)
+          // We simply record the full amount as 'Credits' payment mode
+          try {
+            // Ensure we have the Zoho Contact ID
+            let zohoContactId = null;
+            if (invoice.client) {
+              const cDoc = await Client.findById(invoice.client).select('zohoBooksContactId');
+              zohoContactId = cDoc?.zohoBooksContactId;
+            }
+
+            if (zohoContactId) {
+              // Determine invoice IDs to apply payment to
+              // If this is a consolidated payment (e.g. multiple invoices), we might need logic
+              // But here it's 1-to-1 for the booking
+              await recordZohoPayment(invoice.zoho_invoice_id, {
+                customer_id: zohoContactId,
+                payment_mode: "Credits",
+                amount: invoice.total,
+                date: new Date().toISOString().slice(0, 10),
+                reference_number: idempotencyKey || `CREDIT-${booking._id}`,
+                description: `Paid via Credits for booking ${booking._id}`,
+                invoices: [{
+                  invoice_id: invoice.zoho_invoice_id,
+                  amount_applied: invoice.total
+                }]
+              });
+              console.log(`[createBooking] Recorded credit payment in Zoho for invoice ${invoice.zoho_invoice_id}`);
+            } else {
+              console.warn(`[createBooking] Skipping Zoho payment recording: No zohoBooksContactId found for client ${invoice.client}`);
+            }
+          } catch (payErr) {
+            console.warn(`[createBooking] Failed to record credit payment in Zoho:`, payErr.message);
+          }
+        }
+
+        // 3. Fetch PDF binary
+        if (invoice.zoho_invoice_id) {
+          try {
+            const { buffer } = await fetchZohoInvoicePdfBinary(invoice.zoho_invoice_id);
+            if (buffer) {
+              invoicePdfBuffer = buffer;
+              invoicePdfName = `${invoice.invoice_number || 'Invoice'}.pdf`;
+            }
+          } catch (pdfErr) {
+            console.warn(`[createBooking] Failed to fetch PDF from Zoho:`, pdfErr.message);
+          }
+        }
+
+      } catch (err) {
+        console.error(`[createBooking] Error processing Zoho invoice/PDF:`, err);
+      }
+    }
+
+    // Prepare attachments
+    const notificationAttachments = [];
+    if (invoicePdfBuffer) {
+      notificationAttachments.push({
+        filename: invoicePdfName,
+        content: invoicePdfBuffer
+      });
+    }
+
     // Notify on confirmed booking (status 'booked') using template 'meeting_booking_confirmed'
     try {
       if (bookingStatus === 'booked') {
@@ -576,10 +696,13 @@ export const createBooking = async (req, res) => {
           channels: { email: Boolean(emailTo), sms: false },
           templateKey: 'meeting_booking_confirmed',
           templateVariables: {
-            roomName: room?.name,
+            greeting: memberDoc?.companyName || 'Ofis Square',
+            memberName: memberDoc?.firstName || 'Member',
+            companyName: memberDoc?.companyName || 'Ofis Square',
+            meetingRoom: room?.name,
+            building: room?.building?.name || 'Ofis Square',
+            timeSlot: `${startTimeStr} - ${endTimeStr}`,
             date: istYmd,
-            startTime: startTimeStr,
-            endTime: endTimeStr,
             bookingId: String(booking._id)
           },
           title: 'Meeting Booking Confirmed',
@@ -590,12 +713,68 @@ export const createBooking = async (req, res) => {
             deepLink: `ofis://meeting-bookings/${booking._id}`,
             routeParams: { id: String(booking._id) }
           },
+          attachments: notificationAttachments,
           source: 'system',
           type: 'transactional'
         });
       }
     } catch (notifyErr) {
       console.warn('createBooking: failed to send meeting_booking_confirmed notification:', notifyErr?.message || notifyErr);
+    }
+
+    // Send credits usage notification for credit-based bookings
+    if (bookingStatus === 'booked' && paymentMethod === 'credits') {
+      try {
+        const to = {};
+        let emailTo = null;
+        if (currentMemberId) {
+          to.memberId = currentMemberId;
+          if (memberDoc?.client?._id) to.clientId = memberDoc.client._id;
+          if (memberDoc?.email) emailTo = memberDoc.email;
+        } else if (clientId) {
+          to.clientId = clientId;
+          try {
+            const clientDoc = await Client.findById(clientId).select('email').lean();
+            if (clientDoc?.email) emailTo = clientDoc.email;
+          } catch { }
+        }
+        if (emailTo) to.email = emailTo;
+
+        // Fetch remaining credits balance
+        let remainingCredits = 0;
+        if (clientId) {
+          const wallet = await ClientCreditWallet.findOne({ client: clientId }).lean();
+          remainingCredits = wallet?.balance || 0;
+        }
+
+        await sendNotification({
+          to,
+          channels: { email: Boolean(emailTo), sms: false },
+          templateKey: 'service_credits_used',
+          templateVariables: {
+            greeting: memberDoc?.companyName || 'Ofis Square',
+            serviceType: 'Meeting Room',
+            serviceName: room?.name || 'Meeting Room',
+            buildingName: room?.building?.name || 'Ofis Square',
+            serviceDate: istYmd,
+            timeSlot: `${startTimeStr} - ${endTimeStr}`,
+            creditsUsed: booking.payment?.coveredCredits || 0,
+            remainingCredits
+          },
+          title: 'Credits Used for Booking',
+          metadata: {
+            category: 'credits',
+            tags: ['credits', 'usage', 'booking'],
+            route: `/credits`,
+            deepLink: `ofis://credits`,
+            routeParams: {}
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      } catch (creditsNotifyErr) {
+        console.warn('createBooking: failed to send service_credits_used notification:', creditsNotifyErr?.message || creditsNotifyErr);
+      }
     }
 
     // Schedule reminders for member and visitors before the meeting start
@@ -617,10 +796,13 @@ export const createBooking = async (req, res) => {
             channels: { email: Boolean(to.email), sms: false },
             templateKey: 'meeting_booking_reminder',
             templateVariables: {
-              roomName: room?.name,
+              greeting: memberDoc?.companyName || 'Ofis Square',
+              memberName: memberDoc?.firstName || 'Member',
+              companyName: memberDoc?.companyName || 'Ofis Square',
+              meetingRoom: room?.name,
+              building: room?.building?.name || 'Ofis Square',
+              timeSlot: `${startTimeStr} - ${endTimeStr}`,
               date: istYmd,
-              startTime: startTimeStr,
-              endTime: endTimeStr,
               bookingId: String(booking._id)
             },
             title: 'Meeting Reminder',
@@ -650,10 +832,13 @@ export const createBooking = async (req, res) => {
                 channels: { email: true, sms: false },
                 templateKey: 'meeting_booking_reminder',
                 templateVariables: {
-                  roomName: room?.name,
+                  greeting: memberDoc?.companyName || 'Ofis Square',
+                  memberName: v?.name || 'Guest',
+                  companyName: memberDoc?.companyName || 'Ofis Square',
+                  meetingRoom: room?.name,
+                  building: room?.building?.name || 'Ofis Square',
+                  timeSlot: `${startTimeStr} - ${endTimeStr}`,
                   date: istYmd,
-                  startTime: startTimeStr,
-                  endTime: endTimeStr,
                   bookingId: String(booking._id)
                 },
                 title: 'Meeting Reminder',

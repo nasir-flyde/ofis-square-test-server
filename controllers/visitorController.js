@@ -8,6 +8,7 @@ import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
@@ -274,6 +275,37 @@ export const requestCheckinNew = async (req, res) => {
       console.warn('[requestCheckinNew] Host email notify failed', e?.message || e);
     }
 
+    // Notify visitor about check-in confirmation
+    try {
+      if (visitor.email) {
+        await sendNotification({
+          to: { email: visitor.email },
+          channels: { email: true, sms: false },
+          templateKey: 'visitor_checkin_confirmation',
+          templateVariables: {
+            greeting: 'Ofis Square',
+            visitorName: visitor.name,
+            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
+            buildingName: visitor.building?.name || 'Ofis Square',
+            purpose: visitor.purpose || 'Visit',
+            arrivalTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+          },
+          title: 'Visit Confirmation',
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_checkin_confirmation'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (e) {
+      console.warn('[requestCheckinNew] Visitor email notify failed', e?.message || e);
+    }
+
     return res.json({ success: true, message: 'Check-in request created', data: visitor });
   } catch (error) {
     console.error('requestCheckinNew error:', error);
@@ -460,9 +492,44 @@ export const createVisitor = async (req, res) => {
 
     await createAuditLog(visitor._id, "CREATED", null, "invited", req.user?.id, "Visitor invitation created");
     await visitor.populate([
-      { path: 'hostMember', select: 'firstName lastName email phone' },
+      { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Notify host about scheduled visit
+    try {
+      const hostEmail = visitor.hostMember?.email;
+      if (hostEmail) {
+        await sendNotification({
+          to: { email: hostEmail, memberId: visitor.hostMember?._id },
+          channels: { email: true, sms: true },
+          templateKey: 'visitor_scheduled_notify_host',
+          templateVariables: {
+            greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
+            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
+            visitorName: visitor.name,
+            visitorCompany: visitor.companyName || 'N/A',
+            purpose: visitor.purpose || 'Visit',
+            buildingName: visitor.building?.name || 'Ofis Square',
+            visitDate: new Date(visitor.expectedVisitDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+            visitTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'N/A'
+          },
+          title: 'Visitor Scheduled',
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_scheduled_notify_host'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (hostNotifyErr) {
+      console.warn('createVisitor: failed to send visitor_scheduled_notify_host:', hostNotifyErr?.message || hostNotifyErr);
+    }
+
     if (visitor?.email) {
       try {
         await sendInvitationEmail({
@@ -472,6 +539,32 @@ export const createVisitor = async (req, res) => {
           qrUrl,
           qrToken,
         });
+
+        // Also send the new confirmation notification as requested
+        await sendNotification({
+          to: { email: visitor.email },
+          channels: { email: true, sms: false },
+          templateKey: 'visitor_checkin_confirmation',
+          templateVariables: {
+            greeting: "Ofis Square",
+            visitorName: visitor.name,
+            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
+            buildingName: visitor.building?.name || 'Ofis Square',
+            purpose: visitor.purpose || 'Visit',
+            arrivalTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+          },
+          title: 'Visit Confirmation',
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_checkin_confirmation'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+
       } catch (e) {
         console.error('[createVisitor] Email send failed:', e?.message || e);
       }
@@ -686,9 +779,39 @@ export const checkinVisitor = async (req, res) => {
     await createAuditLog(visitor._id, "CHECKIN", oldStatus, "checked_in", req.user?.id, notes);
 
     await visitor.populate([
-      { path: 'hostMember', select: 'firstName lastName email phone' },
+      { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Notify host about guest arrival
+    try {
+      const hostEmail = visitor.hostMember?.email;
+      if (hostEmail) {
+        await sendNotification({
+          to: { email: hostEmail, memberId: visitor.hostMember?._id },
+          channels: { email: true, sms: false },
+          templateKey: 'guest_arrival',
+          templateVariables: {
+            greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
+            memberName: visitor.hostMember?.firstName || 'Member',
+            companyName: 'Ofis Square',
+            guestName: visitor.name
+          },
+          title: 'Guest Arrived',
+          metadata: {
+            category: 'visitor',
+            tags: ['guest_arrival'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('checkinVisitor: failed to send guest_arrival notification:', notifyErr?.message || notifyErr);
+    }
 
     res.json({
       success: true,
@@ -821,9 +944,39 @@ export const scanQRCode = async (req, res) => {
     await createAuditLog(visitor._id, "QR_CHECKIN", oldStatus, "checked_in", req.user?.id, "Checked in via QR scan");
 
     await visitor.populate([
-      { path: 'hostMember', select: 'firstName lastName email phone' },
+      { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Notify host about guest arrival
+    try {
+      const hostEmail = visitor.hostMember?.email;
+      if (hostEmail) {
+        await sendNotification({
+          to: { email: hostEmail, memberId: visitor.hostMember?._id },
+          channels: { email: true, sms: false },
+          templateKey: 'guest_arrival',
+          templateVariables: {
+            greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
+            memberName: visitor.hostMember?.firstName || 'Member',
+            companyName: 'Ofis Square',
+            guestName: visitor.name
+          },
+          title: 'Guest Arrived',
+          metadata: {
+            category: 'visitor',
+            tags: ['guest_arrival'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('scanQRCode: failed to send guest_arrival notification:', notifyErr?.message || notifyErr);
+    }
 
     res.json({
       success: true,

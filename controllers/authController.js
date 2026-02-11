@@ -109,6 +109,10 @@ export const adminLogin = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+
+    if (user.isAdminVerified === false) {
+      return res.status(403).json({ error: "Your account is pending GM verification. Please contact GM." });
+    }
     const role = await Role.findById(user.role).lean();
     if (!role) {
       return res.status(401).json({ error: "User role not found" });

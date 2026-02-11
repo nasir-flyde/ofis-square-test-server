@@ -15,8 +15,11 @@ class EmailProvider {
     });
   }
 
-  async send({ toEmail, subject, html, text }) {
+  async send(options) {
     try {
+      const { toEmail, subject, html, text } = options;
+      console.log(`[EmailProvider:send] Sending to ${toEmail} with ${options.attachments?.length || 0} attachments`);
+
       if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
         throw new Error('SMTP credentials not configured');
       }
@@ -28,6 +31,10 @@ class EmailProvider {
         html: html,
         text: text || this.stripHtml(html)
       };
+
+      if (options.attachments && options.attachments.length > 0) {
+        mailOptions.attachments = options.attachments;
+      }
 
       const info = await this.transporter.sendMail(mailOptions);
 
@@ -77,9 +84,19 @@ class ZeptoMailProvider {
     this.fromName = process.env.ZEPTOMAIL_FROM_NAME || "Ofis Square";
   }
 
-  async send({ toEmail, subject, html, text }) {
+  async send(options) {
+    const { toEmail, subject, html, text } = options;
     try {
-      const result = await this.client.sendMail({
+      console.log(`[ZeptoMailProvider:send] Sending to ${toEmail} with ${options.attachments?.length || 0} attachments`);
+      if (options.attachments && options.attachments.length > 0) {
+        options.attachments.forEach((att, idx) => {
+          try {
+            const b64 = att.content.toString('base64');
+            console.log(`[ZeptoMailProvider] Attachment ${idx}: Name=${att.filename}, Base64Len=${b64.length}, Start=${b64.substring(0, 50)}...`);
+          } catch (e) { console.error(`[ZeptoMailProvider] Error logging attachment ${idx}:`, e); }
+        });
+      }
+      const mailPayload = {
         "from": {
           "address": this.fromAddress,
           "name": this.fromName
@@ -92,8 +109,18 @@ class ZeptoMailProvider {
           }
         ],
         "subject": subject,
-        "htmlbody": html,
-      });
+        "htmlbody": html || (text ? text.replace(/\n/g, '<br/>') : 'No content')
+      };
+
+      if (options.attachments && options.attachments.length > 0) {
+        mailPayload.attachments = options.attachments.map(att => ({
+          content: att.content.toString('base64'),
+          mime_type: att.contentType || 'application/pdf',
+          name: att.filename
+        }));
+      }
+
+      const result = await this.client.sendMail(mailPayload);
 
       return {
         success: true,

@@ -46,6 +46,10 @@ const userSchema = new mongoose.Schema(
       url: { type: String },
       fileId: { type: String },
     },
+    isAdminVerified: {
+      type: Boolean,
+      default: true,
+    },
   },
   {
     timestamps: true,

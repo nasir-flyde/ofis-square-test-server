@@ -294,9 +294,12 @@ export const createSingleDayPass = async (req, res) => {
             channels: { email: true, sms: false },
             templateKey: 'day_pass_booking_confirmed',
             templateVariables: {
-              buildingName: dayPass.building?.name,
+              greeting: "Ofis Sqaure",
+              memberName: dayPass.customer?.companyName || dayPass.customer?.name || 'Member',
+              companyName: dayPass.customer?.companyName || 'Ofis Square',
+              building: dayPass.building?.name,
               date: bookingDate.toISOString().slice(0, 10),
-              dayPassId: String(dayPass._id)
+              bookingId: String(dayPass._id)
             },
             title: 'Day Pass Booking Confirmed',
             metadata: {
@@ -565,9 +568,11 @@ export const inviteVisitor = async (req, res) => {
               channels: { email: true, sms: false },
               templateKey: 'day_pass_booking_confirmed',
               templateVariables: {
-                buildingName: dayPass.building?.name,
+                memberName: visitorName || 'Guest',
+                companyName: 'Ofis Square',
+                building: dayPass.building?.name,
                 date: passDate.toISOString().slice(0, 10),
-                dayPassId: String(dayPass._id)
+                bookingId: String(dayPass._id)
               },
               title: 'Day Pass Booking Confirmed',
               metadata: {
@@ -594,9 +599,11 @@ export const inviteVisitor = async (req, res) => {
               channels: { email: true, sms: false },
               templateKey: 'day_pass_booking_confirmed',
               templateVariables: {
-                buildingName: dayPass.building?.name,
+                memberName: hostEmail === dayPass.customer?.email ? (dayPass.customer?.companyName || dayPass.customer?.name) : 'Host',
+                companyName: 'Ofis Square',
+                building: dayPass.building?.name,
                 date: passDate.toISOString().slice(0, 10),
-                dayPassId: String(dayPass._id)
+                bookingId: String(dayPass._id)
               },
               title: 'Day Pass Booking Confirmed',
               metadata: {
@@ -634,10 +641,12 @@ export const inviteVisitor = async (req, res) => {
                 channels: { email: true, sms: false },
                 templateKey: 'day_pass_booking_reminder',
                 templateVariables: {
-                  buildingName: dayPass.building?.name,
+                  memberName: visitorName || 'Guest',
+                  companyName: 'Ofis Square',
+                  building: dayPass.building?.name,
                   date: dateStr,
                   time: arrivalTimeStr,
-                  dayPassId: String(dayPass._id)
+                  bookingId: String(dayPass._id)
                 },
                 title: 'Day Pass Reminder',
                 metadata: {
@@ -665,10 +674,12 @@ export const inviteVisitor = async (req, res) => {
                 channels: { email: true, sms: false },
                 templateKey: 'day_pass_booking_reminder',
                 templateVariables: {
-                  buildingName: dayPass.building?.name,
+                  memberName: hostEmailForReminder === dayPass.customer?.email ? (dayPass.customer?.companyName || dayPass.customer?.name) : 'Host',
+                  companyName: 'Ofis Square',
+                  building: dayPass.building?.name,
                   date: dateStr,
                   time: arrivalTimeStr,
-                  dayPassId: String(dayPass._id)
+                  bookingId: String(dayPass._id)
                 },
                 title: 'Day Pass Reminder',
                 metadata: {

@@ -11,25 +11,21 @@ import {
   getMyBookings,
   getMyNotifications,
   markNotificationRead,
-  markAllNotificationsRead
+  markAllNotificationsRead,
+  getMyVisitors
 } from "../controllers/memberPortalController.js";
 
 const router = express.Router();
 
-// Allow clients and members to fetch tickets via universal auth
 router.get("/me/tickets", universalMiddleware, getMyTickets);
+router.get("/me/visitors", universalMiddleware, getMyVisitors);
 router.post("/me/tickets", universalMiddleware, upload.any(), createMyTicket);
-
-// Allow clients and members to access notifications via universal auth
 router.get("/me/notifications", universalMiddleware, getMyNotifications);
 router.post("/me/notifications/:id/read", universalMiddleware, markNotificationRead);
 router.post("/me/notifications/read-all", universalMiddleware, markAllNotificationsRead);
 router.get("/me/bookings", universalMiddleware, getMyBookings);
-
-// Allow clients and members to get homepage data via universal auth
 router.get("/me/home", universalMiddleware, getHomePageData);
 router.get("/me", universalMiddleware, getMyProfile);
-// All other routes require member authentication
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 

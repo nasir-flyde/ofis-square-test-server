@@ -1,6 +1,8 @@
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
+import Cabin from "../models/cabinModel.js";
+import loggedZohoSign from "../utils/loggedZohoSign.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import { createBillingDocumentFromContract } from "../services/invoiceService.js";
@@ -306,13 +308,17 @@ export const createBySales = async (req, res) => {
 
     // Notify Sales role users: commercials submitted for senior approval
     try {
-      const populatedForNotify = await Contract.findById(contract._id).populate("client", "companyName");
-      const clientName = populatedForNotify?.client?.companyName || 'Client';
+      const populatedForNotify = await Contract.findById(contract._id)
+        .populate("client", "companyName")
+        .populate("building", "name");
+      const companyName = populatedForNotify?.client?.companyName || 'Client';
+      const buildingName = populatedForNotify?.building?.name || 'Building';
+
       const salesRole = await Role.findOne({ roleName: 'Sales' }).lean();
       if (!salesRole?._id) {
         console.warn('createBySales: Sales role not found');
       } else {
-        const salesUsers = await User.find({ role: salesRole._id }).select('email _id').lean();
+        const salesUsers = await User.find({ role: salesRole._id }).select('email _id name').lean();
         for (const u of salesUsers) {
           const to = { userId: u._id };
           if (u.email) to.email = u.email;
@@ -321,7 +327,9 @@ export const createBySales = async (req, res) => {
             channels: { email: Boolean(to.email), sms: false },
             templateKey: 'sales_senior_commercials_approval',
             templateVariables: {
-              clientName,
+              managerName: u.name || 'Manager',
+              building: buildingName,
+              companyName: companyName,
               contractId: String(contract._id)
             },
             title: 'Commercials Submitted for Senior Approval',
@@ -450,7 +458,7 @@ export const salesEditCommercials = async (req, res) => {
           contract.lockInPeriodMonths = contract.durationMonths;
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // monthlyRent: if provided, validate and set; otherwise derive from Building perSeatPricing
     if (typeof monthlyRent !== 'undefined' && monthlyRent !== null && monthlyRent !== "") {
@@ -598,7 +606,7 @@ export const salesSeniorUpdateAndApprove = async (req, res) => {
       // Notify Legal Team users only about legal stage kickoff
       try {
         const populated = await Contract.findById(id).populate("client", "companyName");
-        const clientName = populated?.client?.companyName || 'Client';
+        const companyName = populated?.client?.companyName || 'Client';
         const legalRole = await Role.findOne({ roleName: 'Legal Team' }).lean();
         if (!legalRole?._id) {
           console.warn('salesSeniorUpdateAndApprove: Legal Team role not found');
@@ -612,7 +620,7 @@ export const salesSeniorUpdateAndApprove = async (req, res) => {
               channels: { email: Boolean(to.email), sms: false },
               templateKey: 'legal_team_contract_upload',
               templateVariables: {
-                clientName,
+                companyName: companyName,
                 contractId: String(id)
               },
               title: 'Legal Team Stage Initiated',
@@ -688,8 +696,14 @@ export const salesSeniorReject = async (req, res) => {
 
     // Notify Sales role users about rejection
     try {
-      const populatedForNotify = await Contract.findById(id).populate("client", "companyName");
-      const clientName = populatedForNotify?.client?.companyName || 'Client';
+      const populatedForNotify = await Contract.findById(id)
+        .populate("client", "companyName")
+        .populate("building", "name")
+        .populate("createdBy", "name email");
+      const companyName = populatedForNotify?.client?.companyName || 'Client';
+      const buildingName = populatedForNotify?.building?.name || 'Building';
+      const salesAssociateName = populatedForNotify?.createdBy?.name || 'Sales Associate';
+
       const salesRole = await Role.findOne({ roleName: 'Sales' }).lean();
       if (!salesRole?._id) {
         console.warn('salesSeniorReject: Sales role not found');
@@ -701,16 +715,18 @@ export const salesSeniorReject = async (req, res) => {
           await sendNotification({
             to,
             channels: { email: Boolean(to.email), sms: false },
-            templateKey: 'sales_senior_commercials_rejected',
+            templateKey: 'sales_junior_commercials_rejected',
             templateVariables: {
-              clientName,
-              contractId: String(id),
-              notes: String(notes).trim()
+              salesAssociateName,
+              building: buildingName,
+              companyName,
+              reason: String(notes).trim(),
+              contractId: String(id)
             },
             title: 'Sales Senior Rejected Commercials',
             metadata: {
               category: 'contract',
-              tags: ['sales_senior_commercials_rejected'],
+              tags: ['sales_junior_commercials_rejected'],
               route: `/contracts/${id}`,
               deepLink: `ofis://contracts/${id}`,
               routeParams: { id: String(id) }
@@ -774,30 +790,31 @@ export const legalUploadDocument = async (req, res) => {
       fileName: file.originalname,
     });
 
-    // Notify System Admin users (role) about next approval step using 'sales_senior_commercials_approval'
+    // Notify System Admin users (role) about next approval step using 'senior_management_contract_approval'
     try {
-      const populatedClient = await Contract.findById(id).populate("client", "companyName");
-      const clientName = populatedClient?.client?.companyName || 'Client';
+      const populatedContract = await Contract.findById(id).populate("client", "companyName");
+      const companyName = populatedContract?.client?.companyName || 'Client';
       const adminRole = await Role.findOne({ roleName: 'System Admin' }).lean();
       if (!adminRole?._id) {
         console.warn('legalUploadDocument: System Admin role not found');
       } else {
-        const adminUsers = await User.find({ role: adminRole._id }).select('email _id').lean();
+        const adminUsers = await User.find({ role: adminRole._id }).select('email _id name').lean();
         for (const u of adminUsers) {
           const to = { userId: u._id };
           if (u.email) to.email = u.email;
           await sendNotification({
             to,
             channels: { email: Boolean(to.email), sms: false },
-            templateKey: 'sales_senior_commercials_approval',
+            templateKey: 'senior_management_contract_approval',
             templateVariables: {
-              clientName,
+              managerName: u.name || 'Manager',
+              companyName: companyName,
               contractId: String(id)
             },
-            title: 'Commercials Submitted for Senior Approval',
+            title: 'Contract Pending Senior Management Approval',
             metadata: {
               category: 'contract',
-              tags: ['sales_senior_commercials_approval'],
+              tags: ['senior_management_contract_approval'],
               route: `/contracts/${id}`,
               deepLink: `ofis://contracts/${id}`,
               routeParams: { id: String(id) }
@@ -838,11 +855,37 @@ export const adminApproveCustom = async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body || {};
 
-    const contract = await Contract.findById(id);
+    const contract = await Contract.findById(id)
+      .populate("client")
+      .populate("building", "name address pricing");
     if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
 
-    if (!contract.fileUrl || contract.fileUrl === "placeholder") {
-      return res.status(400).json({ success: false, message: "Contract document (fileUrl) must be uploaded before admin approval" });
+    if (!contract.client) return res.status(400).json({ error: "Contract client not found" });
+
+    // Require an active cabin block for this client in this building before sending for signature
+    try {
+      const hasActiveBlock = await Cabin.exists({
+        building: contract.building,
+        "blocks.status": "active",
+        "blocks.client": contract.client,
+      });
+      if (!hasActiveBlock) {
+        return res.status(400).json({
+          error: "No active cabin block found for this client. Please block a cabin before sending for signature.",
+        });
+      }
+    } catch (blkErr) {
+      console.error("Block pre-check failed:", blkErr);
+      return res.status(500).json({ error: "Failed to validate cabin block status" });
+    }
+
+    // Use stampPaperUrl if available, otherwise fallback to fileUrl
+    const documentUrl = contract.stampPaperUrl || contract.fileUrl;
+    if (!documentUrl || documentUrl === "placeholder") {
+      return res.status(400).json({
+        success: false,
+        message: "Contract must have a stampPaperUrl or fileUrl before it can be approved. Please generate the contract PDF first."
+      });
     }
 
     // Optional hard role gate: System Admin only
@@ -854,9 +897,60 @@ export const adminApproveCustom = async (req, res) => {
     contract.adminApprovalReason = reason || null;
     contract.adminApprovedBy = req.user?._id || null;
     contract.adminApprovedAt = new Date();
-    if (contract.status === "legal_reviewed" || contract.status === "pending_admin_approval") {
-      contract.status = "admin_approved";
+
+    // Keep status as admin_approved per request
+    contract.status = "admin_approved";
+
+    // Signature Logic Merged
+    try {
+      console.log('Sending contract for signature (via admin approve):', {
+        contractId: contract._id,
+        clientName: contract.client.companyName,
+        fileUrl: documentUrl,
+        usingStampPaper: !!contract.stampPaperUrl,
+        status: contract.status
+      });
+
+      const requestId = await loggedZohoSign.createDocument(contract);
+      console.log("Document created with request ID:", requestId);
+
+      const documentDetails = await loggedZohoSign.verifyDocumentExists(requestId);
+      const documentId = documentDetails?.document_ids?.[0]?.document_id;
+      if (!documentId) {
+        throw new Error("Failed to get document ID from Zoho Sign");
+      }
+
+      const client = contract.client || {};
+      let recipient = client;
+      if (client && client.isPrimaryContactauthoritySignee === false && client.authoritySignee) {
+        const a = client.authoritySignee || {};
+        const nameParts = [a.firstName, a.lastName].filter(Boolean);
+        const recipient_name = (nameParts.join(' ').trim()) || client.contactPerson || client.companyName || 'Client';
+        const recipient_email = a.email || client.email;
+        recipient = { contactPerson: recipient_name, email: recipient_email };
+      }
+      await loggedZohoSign.addRecipient(requestId, recipient, documentId, { clientId: client?._id || contract.client });
+
+      await loggedZohoSign.submitDocument(requestId);
+      console.log("Document submitted for signature via admin approve");
+
+      contract.iscontractsentforsignature = true;
+      contract.zohoSignRequestId = requestId;
+      contract.sentForSignatureAt = new Date();
+
+      await logContractActivity(req, 'CONTRACT_SENT_FOR_SIGNATURE', contract._id, contract.client?._id, {
+        zohoSignRequestId: requestId,
+        clientEmail: contract.client.email,
+        clientName: contract.client.companyName
+      });
+    } catch (sigErr) {
+      console.error("Zoho Sign integration failed during admin approval:", sigErr);
+      // We continue with approval even if sign fails?
+      // Usually it's better to fail the whole thing if signature is critical.
+      // But user said "merge", so I'll throw to catch block if it fails significantly.
+      throw new Error(`Signature initiation failed: ${sigErr.message}`);
     }
+
     contract.lastActionBy = req.user?._id || contract.lastActionBy;
     contract.lastActionAt = new Date();
 

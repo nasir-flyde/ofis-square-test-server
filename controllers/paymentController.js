@@ -22,6 +22,7 @@ import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
 import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment } from "../utils/zohoBooks.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Helper: update invoice aggregates after a payment change
 async function applyInvoicePayment(invoiceId, deltaAmount) {
@@ -560,7 +561,7 @@ async function createInvoiceInZoho(invoice, client) {
     terms: invoice.terms || '',
 
     // Line items
-    line_items: invoice.line_items.map(item => ({
+    line_items: (invoice.line_items || []).map(item => ({
       name: item.name || item.description,
       description: item.description,
       rate: item.unitPrice || item.rate,
@@ -741,8 +742,14 @@ export const recordCustomerPayment = async (req, res) => {
         console.log(`Creating invoice ${dbInvoice.invoice_number} in Zoho Books...`);
 
         try {
-          const zohoResult = await createInvoiceInZoho(dbInvoice, client);
-          console.log(`Updated local invoice ${dbInvoice.invoice_number} with Zoho invoice number: ${zohoResult.zoho_invoice_number}`);
+          const zohoResult = await createZohoInvoiceFromLocal(dbInvoice, client);
+          if (zohoResult?.invoice) {
+            dbInvoice.zoho_invoice_id = zohoResult.invoice.invoice_id;
+            dbInvoice.zoho_invoice_number = zohoResult.invoice.invoice_number;
+            dbInvoice.source = 'zoho';
+            await dbInvoice.save();
+            console.log(`Updated local invoice ${dbInvoice.invoice_number} with Zoho invoice number: ${dbInvoice.zoho_invoice_number}`);
+          }
         } catch (error) {
           console.error(`Failed to create invoice ${dbInvoice.invoice_number} in Zoho:`, error.message);
           return res.status(400).json({
@@ -843,44 +850,8 @@ export const recordCustomerPayment = async (req, res) => {
       });
     }
 
-    // Get Zoho access token
-    const accessToken = await getValidAccessToken();
-    const orgId = getOrgId();
-
-    if (!orgId) {
-      return res.status(500).json({
-        success: false,
-        message: 'ZOHO_ORG_ID not configured'
-      });
-    }
-
-    // Call Zoho Books API
-    const zohoUrl = `${getBooksBaseUrl()}/customerpayments?organization_id=${orgId}`;
-    try {
-      console.log('[recordCustomerPayment] POST URL:', zohoUrl);
-      console.log('[recordCustomerPayment] Full payload:', JSON.stringify(zohoPayload, null, 2));
-    } catch (_) { }
-    const zohoResponse = await fetch(zohoUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Zoho-oauthtoken ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(zohoPayload)
-    });
-
-    const zohoData = await zohoResponse.json();
-
-    if (!zohoResponse.ok) {
-      console.error('Zoho Books API error:', zohoData);
-      return res.status(400).json({
-        success: false,
-        message: `Zoho Books error: ${zohoData.message || 'Unknown error'}`,
-        details: zohoData
-      });
-    }
-
-    // Compute applied_total and unused_amount using Zoho response when available
+    // Call Zoho Books API via utility
+    const zohoData = await recordZohoPayment(null, zohoPayload);
     const zohoPayment = zohoData.payment || {};
     const totalAllocatedRounded = Math.round(totalAllocated * 100) / 100;
     const appliedTotal = (typeof zohoPayment.applied_amount === 'number')
@@ -1354,49 +1325,47 @@ export const createRazorpayOrder = async (req, res) => {
       } catch (_) { }
     }
 
-    // Mixed payment: optionally apply client's extra credits before creating Razorpay order
-    if (useExtraCredits && invoice) {
-      // Resolve client for allocation
-      let clientForZoho = null;
-      if (bodyClientId) {
-        clientForZoho = await Client.findById(bodyClientId);
-      } else if (item?.type === 'daypass') {
-        const dp = await DayPass.findById(item.id)
-          .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
-          .populate('invoice');
-        if (dp?.customer) {
-          const ctor = dp.customer.constructor?.modelName;
-          if (ctor === 'Client') clientForZoho = dp.customer;
-          else if (ctor === 'Member') {
-            const mem = await Member.findById(dp.customer._id).populate('client');
-            clientForZoho = mem?.client || null;
-          }
-        }
-      } else if (item?.type === 'bundle') {
-        const b = await DayPassBundle.findById(item.id)
-          .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
-          .populate('invoice');
-        if (b?.customer) {
-          const ctor = b.customer.constructor?.modelName;
-          if (ctor === 'Client') clientForZoho = b.customer;
-          else if (ctor === 'Member') {
-            const mem = await Member.findById(b.customer._id).populate('client');
-            clientForZoho = mem?.client || null;
-          }
-        }
-      } else if (item?.type === 'meeting') {
-        const mb = await MeetingBooking.findById(item.id).populate({ path: 'member', select: 'client' }).populate('client').populate('invoice');
-        clientForZoho = mb?.client || null;
-        if (!clientForZoho && mb?.member) {
-          const mem = await Member.findById(mb.member._id).populate('client');
+    // Resolve client for allocation/logging
+    let clientForZoho = null;
+    if (bodyClientId) {
+      clientForZoho = await Client.findById(bodyClientId);
+    } else if (item?.type === 'daypass') {
+      const dp = await DayPass.findById(item.id)
+        .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+        .populate('invoice');
+      if (dp?.customer) {
+        const ctor = dp.customer.constructor?.modelName;
+        if (ctor === 'Client') clientForZoho = dp.customer;
+        else if (ctor === 'Member') {
+          const mem = await Member.findById(dp.customer._id).populate('client');
           clientForZoho = mem?.client || null;
         }
-        // Fallback to body client id if still not resolved
-        if (!clientForZoho && bodyClientId) {
-          clientForZoho = await Client.findById(bodyClientId);
+      }
+    } else if (item?.type === 'bundle') {
+      const b = await DayPassBundle.findById(item.id)
+        .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+        .populate('invoice');
+      if (b?.customer) {
+        const ctor = b.customer.constructor?.modelName;
+        if (ctor === 'Client') clientForZoho = b.customer;
+        else if (ctor === 'Member') {
+          const mem = await Member.findById(b.customer._id).populate('client');
+          clientForZoho = mem?.client || null;
         }
       }
+    } else if (item?.type === 'meeting') {
+      const mb = await MeetingBooking.findById(item.id).populate({ path: 'member', select: 'client' }).populate('client').populate('invoice');
+      clientForZoho = mb?.client || null;
+      if (!clientForZoho && mb?.member) {
+        const mem = await Member.findById(mb.member._id).populate('client');
+        clientForZoho = mem?.client || null;
+      }
+      if (!clientForZoho && bodyClientId) {
+        clientForZoho = await Client.findById(bodyClientId);
+      }
+    }
 
+    if (useExtraCredits && invoice) {
       if (clientForZoho?._id) {
         // Ensure invoice exists in Zoho before allocation
         if (!invoice.zoho_invoice_id) {
@@ -1693,6 +1662,93 @@ export const handleRazorpaySuccess = async (req, res) => {
     }
 
 
+    // Send payment success notification
+    try {
+      let serviceType = "Other Service";
+      let serviceName = "Service";
+      let buildingName = "Ofis Square";
+      let serviceDate = new Date().toISOString().slice(0, 10);
+      let timeSlot = "N/A";
+
+      if (dayPassId) {
+        serviceType = "Day Pass";
+        serviceName = "Day Pass";
+        buildingName = item.building?.name || "Ofis Square";
+        serviceDate = item.date ? new Date(item.date).toISOString().slice(0, 10) : serviceDate;
+        timeSlot = "Full Day";
+      } else if (bundleId) {
+        serviceType = "Day Pass Bundle";
+        serviceName = item.name || "Day Pass Bundle";
+        buildingName = "Ofis Square"; // Bundles might be multi-building
+        timeSlot = "N/A";
+      } else if (meetingBookingId) {
+        serviceType = "Meeting Room";
+        serviceName = item.room?.name || "Meeting Room";
+        buildingName = item.room?.building?.name || "Ofis Square";
+        serviceDate = item.start ? new Date(item.start).toISOString().slice(0, 10) : serviceDate;
+
+        // Format time slot
+        if (item.start && item.end) {
+          const startStr = new Date(item.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+          const endStr = new Date(item.end).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+          timeSlot = `${startStr} - ${endStr}`;
+        }
+      }
+
+      // Fetch email address for notification
+      let customerEmail = null;
+      if (customer) {
+        if (customer.constructor.modelName === 'Client') {
+          const clientDoc = await Client.findById(customer._id).select('email').lean();
+          customerEmail = clientDoc?.email;
+        } else if (customer.constructor.modelName === 'Member') {
+          const memberDoc = await Member.findById(customer._id).select('email').lean();
+          customerEmail = memberDoc?.email;
+        } else if (customer.constructor.modelName === 'Guest') {
+          const guestDoc = await Guest.findById(customer._id).select('email').lean();
+          customerEmail = guestDoc?.email;
+        }
+      }
+
+      await sendNotification({
+        to: {
+          clientId: customer?.constructor?.modelName === 'Client' ? customer._id : undefined,
+          memberId: customer?.constructor?.modelName === 'Member' ? customer._id : undefined,
+          guestId: customer?.constructor?.modelName === 'Guest' ? customer._id : undefined,
+          email: customerEmail
+        },
+        channels: { email: true, sms: true },
+        templateKey: "service_payment_success",
+        title: "Payment Successful",
+        templateVariables: {
+          greeting: "Ofis Square",
+          serviceType,
+          serviceName,
+          buildingName,
+          serviceDate,
+          timeSlot,
+          amount: paymentData.amount,
+          paymentMode: "Razorpay",
+          transactionId: razorpay_payment_id,
+          invoiceNumber: invoice?.invoice_number || invoice?.reference_number || "N/A",
+          paymentDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+          paymentId: payment._id
+        },
+        metadata: {
+          category: "payments",
+          tags: ["payment", "success", "booking"],
+          route: `/payments/receipts/${payment._id}`,
+          deepLink: `ofis://payments/receipts/${payment._id}`,
+          routeParams: { id: String(payment._id) }
+        },
+        source: "system",
+        type: "transactional"
+      });
+    } catch (notifyErr) {
+      console.warn('handleRazorpaySuccess: failed to send service_payment_success notification:', notifyErr?.message || notifyErr);
+    }
+
+
     // Convert paise to INR and floor to avoid rounding up (e.g., 2033.99 -> 2033)
     const paymentInrFloor = Math.floor(Number(amount) / 100);
 
@@ -1717,50 +1773,114 @@ export const handleRazorpaySuccess = async (req, res) => {
             const mem = await Member.findById(bookingForZoho.member._id).populate('client');
             clientForZoho = mem?.client || null;
           }
-          if (clientForZoho && !bookingForZoho.invoice?.zoho_invoice_id) {
-            await createInvoiceInZoho(bookingForZoho.invoice, clientForZoho);
+          if (clientForZoho && !invoice?.zoho_invoice_id) {
+            try {
+              const zohoData = await createZohoInvoiceFromLocal(invoice, clientForZoho);
+              if (zohoData?.invoice) {
+                invoice.zoho_invoice_id = zohoData.invoice.invoice_id;
+                invoice.zoho_invoice_number = zohoData.invoice.invoice_number;
+                invoice.source = 'zoho';
+                await invoice.save();
+              }
+            } catch (invoiceErr) {
+              console.error('Zoho invoice creation failed for meeting booking:', invoiceErr.message);
+            }
           }
 
           // If we have client and a zoho invoice id, record customer payment in Zoho
-          if (clientForZoho?.zohoBooksContactId && bookingForZoho.invoice?.zoho_invoice_id) {
-            const accessToken = await getValidAccessToken();
-            const orgId = getOrgId();
-            const zohoUrl = `${getBooksBaseUrl()}/customerpayments?organization_id=${orgId}`;
-            const zohoPayload = {
-              customer_id: clientForZoho.zohoBooksContactId,
-              payment_mode: 'Razorpay',
-              amount: paymentInrFloor,
-              date: new Date().toISOString().slice(0, 10),
-              invoices: [{ invoice_id: bookingForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
-              reference_number: razorpay_payment_id,
-              description: paymentNotes
-            };
+          if (clientForZoho?.zohoBooksContactId && invoice?.zoho_invoice_id) {
+            try {
+              const zohoPayload = {
+                customer_id: clientForZoho.zohoBooksContactId,
+                payment_mode: 'Razorpay',
+                amount: paymentInrFloor,
+                date: new Date().toISOString().slice(0, 10),
+                invoices: [{ invoice_id: invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
+                reference_number: razorpay_payment_id,
+                description: paymentNotes
+              };
 
-            const zohoResp = await fetch(zohoUrl, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Zoho-oauthtoken ${accessToken}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify(zohoPayload)
-            });
-
-            const zohoData = await zohoResp.json();
-            if (zohoResp.ok) {
-              // Update local payment with Zoho details
-              payment.zoho_payment_id = zohoData.payment?.payment_id;
-              payment.payment_number = zohoData.payment?.payment_number;
-              payment.zoho_status = zohoData.payment?.status;
-              payment.raw_zoho_response = zohoData;
-              payment.source = 'zoho_books';
-              await payment.save();
-              // Apply locally now with the same floored amount
-              await applyInvoicePayment(invoice._id, paymentInrFloor);
-            } else {
-              console.error('Zoho customer payment failed for meeting booking:', zohoData);
+              const zohoData = await recordZohoPayment(invoice.zoho_invoice_id, zohoPayload);
+              if (zohoData?.payment) {
+                // Update local payment with Zoho details
+                payment.zoho_payment_id = zohoData.payment.payment_id;
+                payment.payment_number = zohoData.payment.payment_number;
+                payment.zoho_status = zohoData.payment.status;
+                payment.raw_zoho_response = zohoData;
+                payment.source = 'zoho_books';
+                await payment.save();
+                // Apply locally now with the same floored amount
+                await applyInvoicePayment(invoice._id, paymentInrFloor);
+              }
+            } catch (paymentErr) {
+              console.error('Zoho customer payment failed for meeting booking:', paymentErr.message);
               // Even if Zoho fails, apply locally
               await applyInvoicePayment(invoice._id, paymentInrFloor);
             }
+          }
+
+          // Send meeting booking confirmation notification after invoice is created
+          try {
+            const bookingForNotif = await MeetingBooking.findById(meetingBookingId)
+              .populate('member')
+              .populate({ path: 'room', populate: { path: 'building' } });
+
+            if (bookingForNotif && bookingForNotif.status === 'booked') {
+              const memberDoc = bookingForNotif.member;
+              const room = bookingForNotif.room;
+
+              const to = {};
+              let emailTo = null;
+              if (memberDoc?._id) {
+                to.memberId = memberDoc._id;
+                if (memberDoc?.client) to.clientId = memberDoc.client;
+                if (memberDoc?.email) emailTo = memberDoc.email;
+              }
+              if (emailTo) to.email = emailTo;
+
+              // Format time slots
+              const startTimeStr = new Date(bookingForNotif.start).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true,
+                timeZone: 'Asia/Kolkata'
+              });
+              const endTimeStr = new Date(bookingForNotif.end).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true,
+                timeZone: 'Asia/Kolkata'
+              });
+              const istYmd = new Date(bookingForNotif.start).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+              await sendNotification({
+                to,
+                channels: { email: Boolean(emailTo), sms: false },
+                templateKey: 'meeting_booking_confirmed',
+                templateVariables: {
+                  greeting: memberDoc?.companyName || 'Ofis Square',
+                  memberName: memberDoc?.firstName || 'Member',
+                  companyName: memberDoc?.companyName || 'Ofis Square',
+                  meetingRoom: room?.name,
+                  building: room?.building?.name || 'Ofis Square',
+                  timeSlot: `${startTimeStr} - ${endTimeStr}`,
+                  date: istYmd,
+                  bookingId: String(bookingForNotif._id)
+                },
+                title: 'Meeting Booking Confirmed',
+                metadata: {
+                  category: 'meeting_booking',
+                  tags: ['meeting_booking_confirmed'],
+                  route: `/meeting-bookings/${bookingForNotif._id}`,
+                  deepLink: `ofis://meeting-bookings/${bookingForNotif._id}`,
+                  routeParams: { id: String(bookingForNotif._id) }
+                },
+                source: 'system',
+                type: 'transactional'
+              });
+            }
+          } catch (notifyErr) {
+            console.warn('handleRazorpaySuccess: failed to send meeting_booking_confirmed notification:', notifyErr?.message || notifyErr);
           }
         } catch (zohoErr) {
           console.error('Meeting booking Zoho sync error:', zohoErr);

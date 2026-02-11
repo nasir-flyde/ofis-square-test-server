@@ -458,6 +458,33 @@ export const createClient = async (req, res) => {
       zohoContactId
     });
 
+    // Send onboarding notification
+    try {
+      const memberName = `${basicInfo.primarySalutation || ''} ${basicInfo.primaryFirstName || ''} ${basicInfo.primaryLastName || ''}`.trim();
+      await sendNotification({
+        to: {
+          email: basicInfo.email,
+          phone: basicInfo.phone,
+          clientId: client._id
+        },
+        channels: { sms: !!basicInfo.phone, email: !!basicInfo.email },
+        templateKey: 'onboarding_initiated',
+        templateVariables: {
+          greeting: basicInfo.companyName,
+          companyName: basicInfo.companyName,
+          memberName: memberName || basicInfo.contactPerson || 'Member',
+          ctaLink: "https://office-square.vercel.app/",
+          ctaText: "access portal"
+        },
+        title: 'Welcome to Ofis Square',
+        source: 'system',
+        type: 'transactional'
+      });
+      console.log(`Onboarding notification sent to ${basicInfo.email}`);
+    } catch (notificationErr) {
+      console.warn("Failed to send onboarding notification:", notificationErr.message);
+    }
+
     return res.status(201).json({ message: "Client created", client, ownerUserId: createdOwnerUserId, ownerUserInfo, zohoContactId });
   } catch (err) {
     console.error("createClient error:", err);

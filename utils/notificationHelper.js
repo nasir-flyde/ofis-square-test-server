@@ -33,8 +33,12 @@ export const sendNotification = async (options) => {
       createdBy,
       source = 'system',
       scheduledAt,
-      type = 'system'
+
+      type = 'system',
+      attachments = []
     } = options;
+
+    console.log(`[notificationHelper:sendNotification] Attachments received: ${attachments?.length || 0}`);
 
     // Validate required fields
     if (!channels || (!channels.sms && !channels.email)) {
@@ -66,6 +70,8 @@ export const sendNotification = async (options) => {
     }
 
     // Create notification
+    // Note: We do NOT save attachments to the DB to avoid size limits and schema issues.
+    // They are passed directly to the dispatcher.
     const notification = new Notification({
       type,
       channels,
@@ -73,7 +79,7 @@ export const sendNotification = async (options) => {
       templateKey,
       templateVariables,
       content: renderedContent,
-      metadata,
+      metadata: { ...metadata }, // attachments removed from persistence
       to,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
       createdBy,
@@ -87,7 +93,7 @@ export const sendNotification = async (options) => {
     // If scheduled for now or past, dispatch immediately
     const now = new Date();
     if (!scheduledAt || new Date(scheduledAt) <= now) {
-      await dispatchNotification(notification);
+      await dispatchNotification(notification, attachments);
     }
 
     return notification;
@@ -109,10 +115,11 @@ export const sendWelcomeNotification = async (user, options = {}) => {
       userId: user._id
     },
     channels: { sms: !!user.phone, email: !!user.email },
-    templateKey: 'welcome_email',
+    templateKey: 'welcome_mail',
     templateVariables: {
-      name: user.name,
-      companyName: options.companyName || 'Ofis Square'
+      memberName: user.name,
+      companyName: options.companyName || 'Ofis Square',
+      portalLink: options.portalLink || process.env.PORTAL_URL || 'https://portal.ofissquare.com'
     },
     title: 'Welcome to Ofis Square',
     metadata: {
@@ -210,7 +217,7 @@ export const sendOTPNotification = async (phone, email, otp, options = {}) => {
  */
 export const sendCustomNotification = async (recipient, message, options = {}) => {
   const { title, channels = { sms: true, email: false }, metadata = {} } = options;
-  
+
   return sendNotification({
     to: recipient,
     channels,
@@ -231,7 +238,8 @@ export const sendCustomNotification = async (recipient, message, options = {}) =
 };
 
 // Helper function to dispatch notification immediately
-async function dispatchNotification(notification) {
+async function dispatchNotification(notification, attachments = []) {
+  console.log(`[notificationHelper:dispatchNotification] Dispatching with ${attachments?.length || 0} attachments`);
   const promises = [];
 
   // Dispatch SMS
@@ -241,7 +249,7 @@ async function dispatchNotification(notification) {
 
   // Dispatch Email
   if (notification.channels.email && notification.emailDelivery.status === 'pending') {
-    promises.push(sendEmail(notification));
+    promises.push(sendEmail(notification, attachments));
   }
 
   await Promise.allSettled(promises);
@@ -286,8 +294,9 @@ async function sendSMS(notification) {
 }
 
 // Helper function to send Email
-async function sendEmail(notification) {
+async function sendEmail(notification, attachments = []) {
   try {
+    console.log(`[notificationHelper:sendEmail] Sending email with ${attachments?.length || 0} attachments`);
     if (!notification.to.email) {
       throw new Error('Email address not provided');
     }
@@ -299,7 +308,8 @@ async function sendEmail(notification) {
       toEmail: notification.to.email,
       subject: notification.content.emailSubject,
       html: notification.content.emailHtml,
-      text: notification.content.emailText
+      text: notification.content.emailText,
+      attachments: attachments || []
     });
 
     if (result.success) {

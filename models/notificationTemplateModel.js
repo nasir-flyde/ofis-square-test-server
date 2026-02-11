@@ -20,6 +20,8 @@ const notificationTemplateSchema = new Schema(
       emailSubject: { type: String },
       emailHtml: { type: String },
       emailText: { type: String },
+      buttonText: { type: String },
+      buttonLink: { type: String },
     },
 
     // Classification
@@ -45,6 +47,9 @@ const notificationTemplateSchema = new Schema(
         tags: [{ type: String }],
       },
     },
+
+    // Layout Design
+    templateDesignId: { type: Schema.Types.ObjectId, ref: "TemplateDesign" },
 
     // Audit
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },

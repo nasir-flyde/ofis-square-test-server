@@ -16,7 +16,7 @@ class NotificationRenderer {
         `,
         text: 'Welcome {{name}}! Thank you for joining {{companyName}}. Your account has been successfully created.'
       },
-      
+
       booking_confirmation: {
         subject: 'Booking Confirmation - {{bookingId}}',
         html: `
@@ -36,7 +36,7 @@ class NotificationRenderer {
         text: 'Hi {{name}}, your booking {{bookingId}} has been confirmed for {{date}} at {{time}}.',
         sms: 'Hi {{name}}, your booking {{bookingId}} is confirmed for {{date}} at {{time}}. Location: {{location}}'
       },
-      
+
       payment_reminder: {
         subject: 'Payment Reminder - Invoice {{invoiceNumber}}',
         html: `
@@ -55,7 +55,7 @@ class NotificationRenderer {
         text: 'Payment reminder: Invoice {{invoiceNumber}} for ₹{{amount}} is due on {{dueDate}}.',
         sms: 'Payment reminder: Invoice {{invoiceNumber}} for ₹{{amount}} is due on {{dueDate}}. Please pay soon.'
       },
-      
+
       otp_verification: {
         subject: 'Your OTP Code',
         html: `
@@ -96,19 +96,19 @@ class NotificationRenderer {
 
   renderContent(content, variables = {}) {
     const rendered = {};
-    
+
     if (content.smsText) {
       rendered.smsText = this.interpolate(content.smsText, variables);
     }
-    
+
     if (content.emailSubject) {
       rendered.emailSubject = this.interpolate(content.emailSubject, variables);
     }
-    
+
     if (content.emailHtml) {
       rendered.emailHtml = this.interpolate(content.emailHtml, variables);
     }
-    
+
     if (content.emailText) {
       rendered.emailText = this.interpolate(content.emailText, variables);
     }
@@ -118,9 +118,28 @@ class NotificationRenderer {
 
   interpolate(template, variables) {
     if (!template) return '';
-    
-    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-      return variables[key] !== undefined ? variables[key] : match;
+
+    // Handle {{#if key}}...{{/if}} or {#if key}...{/if}
+    let processed = template.replace(/\{{1,2}#if\s+([^{}]+?)\s*\}{1,2}([\s\S]*?)\{{1,2}\/if\s*\}{1,2}/g, (match, key, content) => {
+      const trimmedKey = key.trim();
+      return variables[trimmedKey] ? content : '';
+    });
+
+    // Handle {{key}} or {key} with support for spaces and special characters in keys
+    // This regex matches things like {{greeting}}, {Member Name}, {{ Category }}
+    return processed.replace(/\{{1,2}\s*([^{}]+?)\s*\}{1,2}/g, (match, key) => {
+      const trimmedKey = key.trim();
+      // Try exact match first
+      if (variables[trimmedKey] !== undefined) {
+        return variables[trimmedKey];
+      }
+      // Try case-insensitive match if exact match fails
+      const lowerKey = trimmedKey.toLowerCase();
+      const foundKey = Object.keys(variables).find(k => k.toLowerCase() === lowerKey);
+      if (foundKey && variables[foundKey] !== undefined) {
+        return variables[foundKey];
+      }
+      return match;
     });
   }
 

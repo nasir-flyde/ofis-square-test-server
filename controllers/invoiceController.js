@@ -23,6 +23,7 @@ import {
 } from "../utils/zohoBooks.js";
 import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 // Helper: compute totals (recomputes amounts to be safe)
 function computeTotals(payload) {
@@ -91,11 +92,11 @@ export const createInvoice = async (req, res) => {
     // Role-based restrictions: Finance Junior can only create draft invoices
     const userRole = req.userRole?.roleName || "";
     let invoiceStatus = body.status || "draft";
-    
+
     if (userRole === "finance_junior" && invoiceStatus !== "draft") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Finance Junior users can only create draft invoices. Please contact Finance Senior to send invoices." 
+      return res.status(403).json({
+        success: false,
+        message: "Finance Junior users can only create draft invoices. Please contact Finance Senior to send invoices."
       });
     }
 
@@ -269,7 +270,7 @@ export const pushInvoiceToZoho = async (req, res) => {
   try {
     const { id } = req.params;
     const { sendStatus } = req.body; // 'draft' or 'sent'
-    
+
     // Role-based restriction: Only Finance Senior can push as 'sent'
     const userRole = req.userRole?.roleName || "";
     if (sendStatus === 'sent') {
@@ -280,7 +281,7 @@ export const pushInvoiceToZoho = async (req, res) => {
         });
       }
     }
-    
+
     const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (invoice.zoho_invoice_id) {
@@ -353,7 +354,7 @@ export const pushInvoiceToZoho = async (req, res) => {
 
     // Ensure invoice has a client and Zoho contact
     let client = invoice.client ? invoice.client : await Client.findById(invoice.client);
-    
+
     // If no client found and clientId provided in request body, use that
     if (!client && req.body.clientId) {
       client = await Client.findById(req.body.clientId);
@@ -362,24 +363,24 @@ export const pushInvoiceToZoho = async (req, res) => {
         invoice.client = client._id;
         await invoice.save();
 
-    // If this invoice is linked to a contract, check if all invoices for that contract are paid
-    try {
-      if (invoice.contract) {
-        const remaining = await Invoice.countDocuments({ contract: invoice.contract, status: { $ne: 'paid' } });
-        if (remaining === 0) {
-          await Contract.findByIdAndUpdate(invoice.contract, { isfinalapproval: true }, { new: true });
-          await logCRUDActivity(req, 'UPDATE', 'Contract', invoice.contract, null, {
-            isfinalapproval: true,
-            reason: 'All invoices paid'
-          });
+        // If this invoice is linked to a contract, check if all invoices for that contract are paid
+        try {
+          if (invoice.contract) {
+            const remaining = await Invoice.countDocuments({ contract: invoice.contract, status: { $ne: 'paid' } });
+            if (remaining === 0) {
+              await Contract.findByIdAndUpdate(invoice.contract, { isfinalapproval: true }, { new: true });
+              await logCRUDActivity(req, 'UPDATE', 'Contract', invoice.contract, null, {
+                isfinalapproval: true,
+                reason: 'All invoices paid'
+              });
+            }
+          }
+        } catch (flagErr) {
+          console.warn('Failed to set contract.isfinalapproval on payment:', flagErr?.message || flagErr);
         }
       }
-    } catch (flagErr) {
-      console.warn('Failed to set contract.isfinalapproval on payment:', flagErr?.message || flagErr);
     }
-      }
-    }
-    
+
     if (!client) {
       return res.status(400).json({ success: false, message: "Invoice has no linked client or client not found" });
     }
@@ -428,7 +429,7 @@ export const pushInvoiceToZoho = async (req, res) => {
         invoice.zoho_invoice_id = zohoId;
         invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
         invoice.source = invoice.source || "zoho";
-        
+
         await invoice.save();
       } catch (zErr) {
         await logErrorActivity(req, zErr, "Push Invoice to Zoho");
@@ -438,10 +439,10 @@ export const pushInvoiceToZoho = async (req, res) => {
       // After pushing invoice to Zoho, also push any associated payments
       try {
         const payments = await Payment.find({ invoice: id }).populate('client');
-        
+
         if (payments && payments.length > 0) {
           console.log(`Found ${payments.length} payment(s) for invoice ${id}, pushing to Zoho...`);
-          
+
           for (const payment of payments) {
             // Skip if payment already has zoho_payment_id
             if (payment.zoho_payment_id) {
@@ -453,10 +454,10 @@ export const pushInvoiceToZoho = async (req, res) => {
             const zohoInvoiceDetails = await getZohoInvoice(invoice.zoho_invoice_id);
             const zohoBalance = Number(zohoInvoiceDetails?.balance || zohoInvoiceDetails?.total || 0);
             const paymentAmount = Number(payment.amount || 0);
-            
+
             // Only apply up to the balance due in Zoho
             const amountToApply = Math.min(paymentAmount, zohoBalance);
-            
+
             if (amountToApply <= 0) {
               console.log(`Payment ${payment._id} amount is 0 or invoice already paid in Zoho, skipping`);
               continue;
@@ -479,7 +480,7 @@ export const pushInvoiceToZoho = async (req, res) => {
             // Push payment to Zoho Books
             const accessToken = await getValidAccessToken();
             const orgId = process.env.ZOHO_ORG_ID;
-            
+
             if (orgId && accessToken) {
               const zohoUrl = `https://www.zohoapis.in/books/v3/customerpayments?organization_id=${orgId}`;
               const zohoPaymentResponse = await fetch(zohoUrl, {
@@ -511,21 +512,21 @@ export const pushInvoiceToZoho = async (req, res) => {
         console.warn('Failed to push payments to Zoho (non-blocking):', paymentPushError.message);
         // Don't fail the invoice push if payment push fails
       }
-      
+
       // If user chose to send, update status and send email
       if (sendStatus === 'sent') {
         console.log(`Attempting to send invoice ${invoice._id} to client email: ${client.email}`);
-        
+
         if (!client.email) {
           console.error(`Cannot send invoice - client has no email address`);
           invoice.status = 'draft';
           await invoice.save();
-          return res.status(400).json({ 
-            success: false, 
-            message: 'Cannot send invoice: Client has no email address. Invoice pushed as draft.' 
+          return res.status(400).json({
+            success: false,
+            message: 'Cannot send invoice: Client has no email address. Invoice pushed as draft.'
           });
         }
-        
+
         try {
           // Send the invoice via Zoho
           console.log(`Sending invoice email via Zoho to ${client.email}`);
@@ -534,16 +535,16 @@ export const pushInvoiceToZoho = async (req, res) => {
             subject: `Invoice ${invoice.invoice_number || invoice.zoho_invoice_number}`,
             body: 'Please find attached your invoice.'
           });
-          
+
           invoice.status = 'sent';
           invoice.sent_at = new Date();
           invoice.zoho_status = 'sent';
           await invoice.save();
           console.log(`✅ Invoice ${invoice._id} pushed to Zoho and sent to client ${client.email}`);
-          
-          return res.json({ 
-            success: true, 
-            data: invoice, 
+
+          return res.json({
+            success: true,
+            data: invoice,
             zoho_invoice_id: invoice.zoho_invoice_id,
             zoho_invoice_number: invoice.zoho_invoice_number,
             sent: true
@@ -554,9 +555,9 @@ export const pushInvoiceToZoho = async (req, res) => {
           // Still save the invoice but keep as draft
           invoice.status = 'draft';
           await invoice.save();
-          return res.status(400).json({ 
-            success: false, 
-            message: `Invoice pushed to Zoho but failed to send email: ${emailError.message}` 
+          return res.status(400).json({
+            success: false,
+            message: `Invoice pushed to Zoho but failed to send email: ${emailError.message}`
           });
         }
       } else {
@@ -567,9 +568,9 @@ export const pushInvoiceToZoho = async (req, res) => {
         await invoice.save();
       }
 
-      return res.json({ 
-        success: true, 
-        data: invoice, 
+      return res.json({
+        success: true,
+        data: invoice,
         zoho_invoice_id: invoice.zoho_invoice_id,
         zoho_invoice_number: invoice.zoho_invoice_number,
         sent: invoice.status === 'sent'
@@ -588,16 +589,16 @@ export const sendInvoiceEmail = async (req, res) => {
   try {
     const { id } = req.params;
     const { to, subject, customMessage } = req.body || {};
-    
+
     // Role-based restriction: Only Finance Senior can send invoices
     const userRole = req.userRole?.roleName || "";
     if (userRole === "System Admin") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior." 
+      return res.status(403).json({
+        success: false,
+        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior."
       });
     }
-    
+
     const invoice = await Invoice.findById(id).populate("client", "email");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
     if (!invoice.zoho_invoice_id) return res.status(400).json({ success: false, message: "Invoice not synced to Zoho yet" });
@@ -752,7 +753,7 @@ export const recordInvoicePayment = async (req, res) => {
     await invoice.save();
 
     // Update linked security deposit if this is a deposit invoice
-    try { await applyPaymentToDeposit(id, Number(amount)); } catch (_) {}
+    try { await applyPaymentToDeposit(id, Number(amount)); } catch (_) { }
 
     // If this invoice is linked to a contract, check if all invoices for that contract are paid
     try {
@@ -862,7 +863,7 @@ export const zohoWebhook = async (req, res) => {
           }
           await invoice.save();
           // Update deposit mirror
-          try { await applyPaymentToDeposit(invoice._id, amount); } catch (_) {}
+          try { await applyPaymentToDeposit(invoice._id, amount); } catch (_) { }
         }
       }
     }
@@ -1190,6 +1191,37 @@ export const consolidateInvoices = async (req, res) => {
       }
     );
 
+    // Notify client about consolidated invoice generation
+    if (consolidatedInvoice.status !== 'draft' && client.email) {
+      try {
+        await sendNotification({
+          to: { email: client.email, clientId: client._id },
+          channels: { email: true, sms: false },
+          templateKey: 'invoice_generated',
+          templateVariables: {
+            memberName: client.companyName || client.contactPerson || 'Member',
+            companyName: 'Ofis Square',
+            invoiceNumber: consolidatedInvoice.invoice_number,
+            amount: consolidatedInvoice.total,
+            dueDate: consolidatedInvoice.due_date ? new Date(consolidatedInvoice.due_date).toLocaleDateString('en-IN') : 'N/A',
+            billingPeriod: `${new Date(startDate).toLocaleDateString('en-IN')} - ${new Date(endDate).toLocaleDateString('en-IN')}`
+          },
+          title: 'Consolidated Invoice Generated',
+          metadata: {
+            category: 'invoice',
+            tags: ['invoice_generated', 'consolidated'],
+            route: `/invoices/${consolidatedInvoice._id}`,
+            deepLink: `ofis://invoices/${consolidatedInvoice._id}`,
+            routeParams: { id: String(consolidatedInvoice._id) }
+          },
+          source: 'system',
+          type: 'transactional'
+        });
+      } catch (notifyErr) {
+        console.warn('consolidateInvoices: failed to send invoice_generated notification:', notifyErr?.message || notifyErr);
+      }
+    }
+
     console.log(`Consolidated ${invoicesToConsolidate.length} invoices into ${consolidatedInvoiceNumber}`);
 
     try {
@@ -1266,16 +1298,16 @@ export const sendInvoiceViaEmail = async (req, res) => {
   try {
     const { id } = req.params;
     const { email } = req.body;
-    
+
     // Role-based restriction: Only Finance Senior can send invoices
     const userRole = req.userRole?.roleName || "";
     if (userRole === "finance_junior") {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior." 
+      return res.status(403).json({
+        success: false,
+        message: "Only Finance Senior users can send invoices. Please contact your Finance Senior."
       });
     }
-    
+
     const invoice = await Invoice.findById(id).populate("client");
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
@@ -1343,7 +1375,7 @@ export const markInvoiceAsPaid = async (req, res) => {
     invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) + Number(paymentAmount));
     invoice.tax_withheld_total = Math.max(0, Number(invoice.tax_withheld_total || 0) + Number(withheld));
     invoice.balance = Math.max(0, Number(invoice.total || 0) - Number(invoice.amount_paid || 0) - Number(invoice.tax_withheld_total || 0));
-    
+
     if (invoice.balance === 0) {
       invoice.status = "paid";
       invoice.paid_at = new Date();
@@ -1561,9 +1593,9 @@ export const pushInvoiceToZohoGuest = async (req, res) => {
         console.warn('Failed to push payments to Zoho (guest flow):', paymentErr?.message || paymentErr);
       }
 
-      return res.json({ 
-        success: true, 
-        data: invoice, 
+      return res.json({
+        success: true,
+        data: invoice,
         zoho_invoice_id: invoice.zoho_invoice_id,
         zoho_invoice_number: invoice.zoho_invoice_number,
         sent: false,
@@ -1576,5 +1608,83 @@ export const pushInvoiceToZohoGuest = async (req, res) => {
   } catch (error) {
     await logErrorActivity(req, error, "Push Invoice to Zoho (Guest)");
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Send a payment reminder for a specific invoice
+ */
+export const sendPaymentReminder = async (invoiceId, req = null) => {
+  try {
+    const invoice = await Invoice.findById(invoiceId).populate('client');
+    if (!invoice || !invoice.client || !invoice.client.email) {
+      return { success: false, message: 'Invoice or client email not found' };
+    }
+
+    await sendNotification({
+      to: { email: invoice.client.email, clientId: invoice.client._id },
+      channels: { email: true, sms: false },
+      templateKey: 'payment_reminder',
+      templateVariables: {
+        memberName: invoice.client.companyName || invoice.client.contactPerson || 'Member',
+        companyName: 'Ofis Square',
+        invoiceNumber: invoice.invoice_number,
+        amount: invoice.balance || invoice.total,
+        dueDate: invoice.due_date ? new Date(invoice.due_date).toLocaleDateString('en-IN') : 'N/A',
+        invoiceId: String(invoice._id)
+      },
+      title: 'Payment Reminder',
+      metadata: {
+        category: 'invoice',
+        tags: ['payment_reminder'],
+        route: `/invoices/${invoice._id}`,
+        deepLink: `ofis://invoices/${invoice._id}`,
+        routeParams: { id: String(invoice._id) }
+      },
+      source: 'system',
+      type: 'transactional'
+    });
+
+    if (req) {
+      await logCRUDActivity(req, "UPDATE", "Invoice", invoice._id, null, {
+        action: "sent_payment_reminder",
+        email: invoice.client.email,
+      });
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.error(`[sendPaymentReminder] Failed for invoice ${invoiceId}:`, err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
+ * Process payment reminders for all overdue/issued invoices
+ */
+export const processPaymentReminders = async () => {
+  try {
+    console.log('[PaymentReminders] Starting automated reminder process...');
+
+    // Find invoices that are issued or overdue and have a balance > 0
+    const pendingInvoices = await Invoice.find({
+      status: { $in: ['issued', 'overdue', 'sent'] },
+      balance: { $gt: 0 },
+      due_date: { $lt: new Date() } // Only send reminders for past due invoices
+    }).populate('client');
+
+    console.log(`[PaymentReminders] Found ${pendingInvoices.length} invoices requiring reminders.`);
+
+    let successCount = 0;
+    for (const inv of pendingInvoices) {
+      const res = await sendPaymentReminder(inv._id);
+      if (res.success) successCount++;
+    }
+
+    console.log(`[PaymentReminders] Process completed. Sent ${successCount} reminders.`);
+    return { success: true, processed: pendingInvoices.length, sent: successCount };
+  } catch (err) {
+    console.error('[PaymentReminders] Global error:', err.message);
+    return { success: false, error: err.message };
   }
 };

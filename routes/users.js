@@ -10,16 +10,20 @@ import {
   updateUser,
   deleteUser,
   getInternalUsers,
-  createClientLegalUser
+  createClientLegalUser,
+  verifyCreateUserOTP,
+  verifyDeleteUserOTP
 } from "../controllers/userController.js";
 
 const router = express.Router();
 
 router.get("/", authMiddleware, getUsers);
 router.get("/internal", authMiddleware, getInternalUsers);
-router.get("/staff",getStaffUsers);
+router.get("/staff", getStaffUsers);
 router.get("/:id", getUserById);
 router.post("/", authMiddleware, createUser);
+router.post("/verify-create", authMiddleware, verifyCreateUserOTP);
+router.post("/verify-delete", authMiddleware, verifyDeleteUserOTP);
 router.put("/:id", updateUser);
 router.delete("/:id", authMiddleware, deleteUser);
 

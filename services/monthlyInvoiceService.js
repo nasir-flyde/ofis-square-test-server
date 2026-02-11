@@ -3,7 +3,10 @@ import Estimate from "../models/estimateModel.js";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 /**
  * Create monthly invoices for all active contracts
@@ -11,12 +14,12 @@ import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
  */
 export const createMonthlyInvoices = async () => {
   const results = { created: 0, errors: 0, details: [] };
-  
+
   try {
     const now = new Date();
 
     // Get all active contracts
-    const activeContracts = await Contract.find({ 
+    const activeContracts = await Contract.find({
       status: 'active',
       startDate: { $lte: new Date() },
       $or: [
@@ -24,9 +27,9 @@ export const createMonthlyInvoices = async () => {
         { endDate: null }
       ]
     })
-    .populate("client")
-    // Include building-level invoice scheduling fields
-    .populate("building", "name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy");
+      .populate("client")
+      // Include building-level invoice scheduling fields
+      .populate("building", "name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy");
 
     console.log(`Found ${activeContracts.length} active contracts for monthly billing`);
 
@@ -50,10 +53,10 @@ export const createMonthlyInvoices = async () => {
       } catch (error) {
         console.error(`Error creating monthly invoice for contract ${contract._id}:`, error);
         results.errors++;
-        results.details.push({ 
-          contractId: contract._id, 
-          status: 'error', 
-          error: error.message 
+        results.details.push({
+          contractId: contract._id,
+          status: 'error',
+          error: error.message
         });
       }
     }
@@ -102,7 +105,7 @@ function toDateYMD(year, month0, day) { return new Date(year, month0, day); }
 function clampDate(date, min, max) { return date < min ? min : (date > max ? max : date); }
 function diffDaysInclusive(a, b) {
   const ms = toDateYMD(a.getFullYear(), a.getMonth(), a.getDate()) - toDateYMD(b.getFullYear(), b.getMonth(), b.getDate());
-  const abs = Math.floor(Math.abs(ms) / (24*60*60*1000));
+  const abs = Math.floor(Math.abs(ms) / (24 * 60 * 60 * 1000));
   return abs + 1;
 }
 
@@ -355,11 +358,11 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
-  
+
   // Check if invoice already exists for this month
   const billingPeriodStart = new Date(currentYear, currentMonth, 1);
   const billingPeriodEnd = new Date(currentYear, currentMonth + 1, 0); // Last day of current month
-  
+
   const existingInvoice = await Invoice.findOne({
     contract: contract._id,
     "billing_period.start": billingPeriodStart,
@@ -372,7 +375,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
       const clientDoc = contract.client;
       const buildingDoc = contract.building;
       // Ensure provisional late fees are up-to-date for last month
-      try { await upsertProvisionalLateFeesForLastMonth(contract, clientDoc, buildingDoc); } catch (_) {}
+      try { await upsertProvisionalLateFeesForLastMonth(contract, clientDoc, buildingDoc); } catch (_) { }
       const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(contract);
 
       if (Array.isArray(lineItems) && lineItems.length > 0 && existingInvoice.status === 'draft') {
@@ -426,9 +429,9 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
 
   // Skip if this is the first month and contract started mid-month (already has prorated invoice)
   const contractStartDate = new Date(contract.startDate);
-  const isFirstMonth = contractStartDate.getMonth() === currentMonth && 
-                      contractStartDate.getFullYear() === currentYear;
-  
+  const isFirstMonth = contractStartDate.getMonth() === currentMonth &&
+    contractStartDate.getFullYear() === currentYear;
+
   if (isFirstMonth && contractStartDate.getDate() !== 1) {
     console.log(`Skipping monthly invoice for contract ${contract._id} - first month already has prorated invoice`);
     return null;
@@ -460,7 +463,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
   const msPerDay = 24 * 60 * 60 * 1000;
   let paymentTermsDays = Math.ceil((computedDueDate - computedIssueDate) / msPerDay);
   if (!Number.isFinite(paymentTermsDays) || paymentTermsDays <= 0) paymentTermsDays = 7;
-  
+
   const items = [];
   let subtotal = 0;
 
@@ -515,7 +518,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
       start: billingPeriodStart,
       end: billingPeriodEnd
     },
-    
+
     line_items: items.map(item => ({
       description: item.description,
       quantity: item.quantity,
@@ -526,7 +529,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
       unit: item.unit || "nos",
       item_total: item.amount
     })),
-    
+
     sub_total: round2(subtotal),
     tax_total: taxTotal,
     total,
@@ -534,7 +537,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
     balance: total,
     status: "draft",
     notes: `Monthly invoice for ${billingPeriodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`,
-    
+
     // Zoho Books specific fields
     currency_code: "INR",
     exchange_rate: 1,
@@ -542,7 +545,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
     place_of_supply: "MH",
     payment_terms: paymentTermsDays,
     payment_terms_label: `Net ${paymentTermsDays}`,
-    
+
     // Client address mapping
     ...(contract.client.billingAddress && {
       billing_address: {
@@ -555,13 +558,13 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
         phone: contract.client.phone
       }
     }),
-    
+
     customer_id: contract.client.zohoBooksContactId,
     gst_no: contract.client.gstNo
   };
 
   const invoice = await Invoice.create(invoiceData);
-  
+
   console.log(`Created monthly invoice ${invoice._id} for contract ${contract._id}`);
 
   // Mark provisional late fees as merged into this invoice
@@ -571,14 +574,14 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
       { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_invoice': invoice._id, 'late_fee.merged_at': new Date() } }
     );
   }
-  
+
   // Push to Zoho Books if client is synced
   try {
     if (contract.client.zohoBooksContactId) {
       const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
       const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), contract.client.toObject());
       const invoiceData = zohoResponse.invoice || zohoResponse;
-      
+
       if (invoiceData && invoiceData.invoice_id) {
         invoice.zoho_invoice_id = invoiceData.invoice_id;
         invoice.zoho_invoice_number = invoiceData.invoice_number;
@@ -586,7 +589,7 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
         invoice.zoho_pdf_url = invoiceData.pdf_url;
         invoice.invoice_url = invoiceData.invoice_url;
         await invoice.save();
-        
+
         console.log(`Pushed monthly invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
       }
     }
@@ -594,12 +597,12 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
     console.error(`Failed to push monthly invoice ${invoice._id} to Zoho Books:`, zohoError.message);
     // Don't fail the invoice creation if Zoho push fails
   }
-  
+
   return invoice;
 }
 
-function round2(n) { 
-  return Math.round(n * 100) / 100; 
+function round2(n) {
+  return Math.round(n * 100) / 100;
 }
 
 export const createMonthlyInvoicesConsolidated = async () => {
@@ -668,7 +671,7 @@ export const createMonthlyInvoicesConsolidated = async () => {
               let appended = 0;
               let provisionalToMark = [];
               for (const c of contracts) {
-                try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) {}
+                try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
                 const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
                 if (Array.isArray(lineItems) && lineItems.length > 0) {
                   for (const li of lineItems) {
@@ -763,7 +766,7 @@ export const createMonthlyInvoicesConsolidated = async () => {
         // Late fee items across contracts
         let allProvisionalIds = [];
         for (const c of contracts) {
-          try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) {}
+          try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
           try {
             const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
             for (const li of lineItems) {
@@ -912,8 +915,8 @@ export const createMonthlyEstimates = async () => {
         }
       ]
     })
-    .populate('client')
-    .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
+      .populate('client')
+      .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
 
     for (const contract of activeContracts) {
       try {
@@ -1017,8 +1020,74 @@ export const createMonthlyEstimates = async () => {
         // Push to Zoho as estimate (draft)
         try {
           if (contract.client.zohoBooksContactId) {
-            const { createZohoEstimateFromLocal } = await import('../utils/zohoBooks.js');
-            await createZohoEstimateFromLocal(estimateDoc.toObject(), contract.client.toObject());
+            const { createZohoEstimateFromLocal, fetchZohoEstimatePdfBinary } = await import('../utils/zohoBooks.js');
+            const zohoResp = await createZohoEstimateFromLocal(estimateDoc.toObject(), contract.client.toObject());
+
+            if (zohoResp?.estimate?.estimate_id) {
+              const zId = zohoResp.estimate.estimate_id;
+              // Update local estimate with Zoho ID
+              estimateDoc.zoho_estimate_id = zId;
+              estimateDoc.estimate_number = zohoResp.estimate.estimate_number;
+              await estimateDoc.save();
+
+              // --- Notification Logic ---
+              let pdfBuffer = null;
+              try {
+                pdfBuffer = await fetchZohoEstimatePdfBinary(zId);
+              } catch (pdfErr) {
+                console.warn(`[MonthlyEstimateSingle] Failed to fetch PDF for estimate ${zId}:`, pdfErr.message);
+              }
+
+              const financeRoles = await Role.find({
+                roleName: { $in: ['Finance Senior', 'Finance Junior'] }
+              }).select('_id roleName');
+
+              if (financeRoles.length > 0) {
+                const roleIds = financeRoles.map(r => r._id);
+                const financeUsers = await User.find({ role: { $in: roleIds } }).select('email name phone');
+
+                if (financeUsers.length > 0) {
+                  const attachments = pdfBuffer ? [{
+                    filename: `${estimateDoc.estimate_number || 'Estimate'}.pdf`,
+                    content: pdfBuffer
+                  }] : [];
+
+                  const generatedDate = new Date().toLocaleDateString('en-IN');
+                  const billingPeriodDates = `${contract.billingStartDate ? new Date(contract.billingStartDate).toLocaleDateString('en-IN') : 'N/A'}`; // Simplified for single contract
+
+                  await Promise.allSettled(financeUsers.map(u =>
+                    sendNotification({
+                      to: { email: u.email, userId: u._id },
+                      channels: { email: true, sms: false },
+                      templateKey: 'proforma_invoice_approval_required',
+                      templateVariables: {
+                        companyName: contract.client.companyName || contract.client.contactPerson || 'Client',
+                        clientName: contract.client.contactPerson || 'Valued Client',
+                        buildingName: contract.building.name,
+                        billingPeriod: billingPeriodDates,
+                        proformaNumber: estimateDoc.estimate_number || 'PENDING',
+                        totalAmount: estimateDoc.total,
+                        dueDate: estimateDoc.expiry_date ? new Date(estimateDoc.expiry_date).toLocaleDateString('en-IN') : 'N/A',
+                        generatedDate: generatedDate,
+                        proformaId: estimateDoc._id
+                      },
+                      title: 'Approval Required – Pro Forma Invoice',
+                      attachments,
+                      metadata: {
+                        deepLink: `ofis://invoices/proforma/${estimateDoc._id}`,
+                        route: `/invoices/proforma/${estimateDoc._id}`,
+                        routeParams: { id: String(estimateDoc._id) },
+                        priority: "high",
+                        category: "billing",
+                        tags: ["invoice", "approval", "proforma"]
+                      },
+                      source: 'system',
+                      type: 'transactional'
+                    })
+                  ));
+                }
+              }
+            }
           }
         } catch (e) {
           console.warn('Failed to push monthly estimate to Zoho (non-blocking):', e?.message || e);
@@ -1073,8 +1142,8 @@ export const createMonthlyEstimatesConsolidated = async () => {
         }
       ]
     })
-    .populate('client')
-    .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
+      .populate('client')
+      .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
 
     // Group by building+client
     const groups = new Map();
@@ -1199,13 +1268,91 @@ export const createMonthlyEstimatesConsolidated = async () => {
         });
 
         // Push to Zoho (non-blocking)
+
+        // Push to Zoho (non-blocking)
         try {
           if (client.zohoBooksContactId) {
-            const { createZohoEstimateFromLocal } = await import('../utils/zohoBooks.js');
-            await createZohoEstimateFromLocal(estimateDoc.toObject(), client.toObject());
+            const { createZohoEstimateFromLocal, fetchZohoEstimatePdfBinary } = await import('../utils/zohoBooks.js');
+            const zohoResp = await createZohoEstimateFromLocal(estimateDoc.toObject(), client.toObject());
+
+            if (zohoResp?.estimate?.estimate_id) {
+              const zId = zohoResp.estimate.estimate_id;
+              // Update local estimate with Zoho ID
+              estimateDoc.zoho_estimate_id = zId;
+              estimateDoc.estimate_number = zohoResp.estimate.estimate_number; // Sync number if generated by Zoho
+              await estimateDoc.save();
+
+              // --- Notification Logic ---
+              // 1. Fetch PDF
+              let pdfBuffer = null;
+              try {
+                pdfBuffer = await fetchZohoEstimatePdfBinary(zId);
+              } catch (pdfErr) {
+                console.warn(`[MonthlyEstimate] Failed to fetch PDF for estimate ${zId}:`, pdfErr.message);
+              }
+
+              // 2. Find Finance Users (Senior & Junior)
+              // We look for roles with names "Finance Senior" or "Finance Junior"
+              const financeRoles = await Role.find({
+                roleName: { $in: ['Finance Senior', 'Finance Junior'] }
+              }).select('_id roleName');
+
+              if (financeRoles.length > 0) {
+                const roleIds = financeRoles.map(r => r._id);
+                const financeUsers = await User.find({ role: { $in: roleIds } }).select('email name phone');
+
+                if (financeUsers.length > 0) {
+                  // 3. Send Notification to each finance user
+                  const attachments = pdfBuffer ? [{
+                    filename: `${estimateDoc.estimate_number || 'Estimate'}.pdf`,
+                    content: pdfBuffer
+                  }] : [];
+
+                  const generatedDate = new Date().toLocaleDateString('en-IN');
+                  const billingPeriodDates = `${periodStart.toLocaleDateString('en-IN')} - ${periodEnd.toLocaleDateString('en-IN')}`;
+
+                  console.log(`[MonthlyEstimate] Sending approval notification to ${financeUsers.length} finance users.`);
+
+                  await Promise.allSettled(financeUsers.map(u =>
+                    sendNotification({
+                      to: { email: u.email, userId: u._id },
+                      channels: { email: true, sms: false },
+                      templateKey: 'proforma_invoice_approval_required',
+                      templateVariables: {
+                        companyName: client.companyName || client.contactPerson || 'Client',
+                        clientName: client.contactPerson || 'Valued Client',
+                        buildingName: building.name,
+                        billingPeriod: billingPeriodDates,
+                        proformaNumber: estimateDoc.estimate_number || 'PENDING',
+                        totalAmount: estimateDoc.total,
+                        dueDate: estimateDoc.expiry_date ? new Date(estimateDoc.expiry_date).toLocaleDateString('en-IN') : 'N/A',
+                        generatedDate: generatedDate,
+                        proformaId: estimateDoc._id
+                      },
+                      title: 'Approval Required – Pro Forma Invoice',
+                      attachments, // Pass PDF
+                      metadata: {
+                        deepLink: `ofis://invoices/proforma/${estimateDoc._id}`,
+                        route: `/invoices/proforma/${estimateDoc._id}`,
+                        routeParams: { id: String(estimateDoc._id) },
+                        priority: "high",
+                        category: "billing",
+                        tags: ["invoice", "approval", "proforma"]
+                      },
+                      source: 'system',
+                      type: 'transactional'
+                    })
+                  ));
+                } else {
+                  console.log('[MonthlyEstimate] No users found with Finance roles.');
+                }
+              } else {
+                console.log('[MonthlyEstimate] Finance roles not found in DB.');
+              }
+            }
           }
         } catch (e) {
-          console.warn('Failed to push consolidated monthly estimate to Zoho (non-blocking):', e?.message || e);
+          console.warn('Failed to push consolidated monthly estimate to Zoho or send notification (non-blocking):', e?.message || e);
         }
 
         results.created++; results.details.push({ group: key, status: 'created', estimateId: estimateDoc._id });

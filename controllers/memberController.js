@@ -13,11 +13,12 @@ import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 export const createMember = async (req, res) => {
   try {
     const { firstName, lastName, email, phone, companyName, role, client, status } = req.body || {};
-    
+
     if (!firstName) {
       return res.status(400).json({ success: false, message: "firstName is required" });
     }
@@ -57,6 +58,32 @@ export const createMember = async (req, res) => {
         createdUserId = createdUser._id;
 
         console.log(`Created user for member: ${email} with default password: ${defaultPassword}`);
+
+        // Notify member about platform access
+        try {
+          await sendNotification({
+            to: { email, userId: createdUserId },
+            channels: { email: true, sms: false },
+            templateKey: 'platform_access_welcome',
+            templateVariables: {
+              greeting: 'Ofis Square',
+              memberName: companyName || `${firstName} ${lastName || ''}`.trim(),
+              companyName: 'Ofis Square',
+              loginId: email,
+              password: defaultPassword,
+              portalLink: process.env.PORTAL_URL || 'https://portal.ofissquare.com'
+            },
+            title: 'Welcome to Ofis Square Portal',
+            metadata: {
+              category: 'onboarding',
+              tags: ['platform_access', 'welcome'],
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        } catch (notifyErr) {
+          console.warn('createMember: failed to send platform_access_welcome notification:', notifyErr?.message || notifyErr);
+        }
       } catch (userErr) {
         console.warn("Failed to create user for member:", userErr.message);
       }
@@ -89,7 +116,7 @@ export const createMember = async (req, res) => {
         try {
           const cli = await Client.findById(clientId).select('building').lean();
           buildingIdForJobs = cli?.building || null;
-        } catch {}
+        } catch { }
       }
 
       // MATRIX: create/upsert user, attach to member, enqueue job
@@ -268,13 +295,13 @@ export const createMember = async (req, res) => {
 export const getMembers = async (req, res) => {
   try {
     const { client, status, page = 1, limit = 20 } = req.query;
-    
+
     const filter = {};
     if (client) filter.client = client;
     if (status) filter.status = status;
 
     const skip = (page - 1) * limit;
-    
+
     const members = await Member.find(filter)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
@@ -306,7 +333,7 @@ export const getMemberById = async (req, res) => {
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
       .populate('user', 'name email');
-    
+
     if (!member) {
       return res.status(404).json({ success: false, message: "Member not found" });
     }
@@ -425,8 +452,8 @@ export const getMemberProfile = async (req, res) => {
 
     if (!memberId) {
       console.log('No memberId found in request');
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         message: "Member ID is required. Please login as a member.",
         debug: {
           hasMemberId: !!req.memberId,
@@ -454,9 +481,9 @@ export const getMemberProfile = async (req, res) => {
       .populate('user', 'name email phone');
 
     if (!member) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Member not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Member not found"
       });
     }
 
@@ -464,11 +491,11 @@ export const getMemberProfile = async (req, res) => {
     let creditBalance = null;
     if (member.client && member.allowedUsingCredits) {
       const ClientCreditWallet = (await import("../models/clientCreditWalletModel.js")).default;
-      const wallet = await ClientCreditWallet.findOne({ 
+      const wallet = await ClientCreditWallet.findOne({
         client: member.client._id,
         status: 'active'
       });
-      
+
       if (wallet) {
         creditBalance = {
           balance: wallet.balance,
@@ -482,7 +509,7 @@ export const getMemberProfile = async (req, res) => {
 
     // Get meeting room bookings
     const MeetingBooking = (await import("../models/meetingBookingModel.js")).default;
-    const meetingBookings = await MeetingBooking.find({ 
+    const meetingBookings = await MeetingBooking.find({
       member: memberId,
       status: { $in: ['booked', 'payment_pending', 'completed'] }
     })
@@ -493,15 +520,15 @@ export const getMemberProfile = async (req, res) => {
 
     // Get tickets created by member
     const Ticket = (await import("../models/ticketModel.js")).default;
-    const ticketFilter = { 
+    const ticketFilter = {
       createdBy: memberId
     };
     if (member.client) {
       ticketFilter.client = member.client._id;
     }
-    
+
     console.log('Ticket filter:', ticketFilter);
-    
+
     const tickets = await Ticket.find(ticketFilter)
       .populate('category.categoryId', 'name description subCategories')
       .populate('assignedTo', 'name email')
@@ -509,7 +536,7 @@ export const getMemberProfile = async (req, res) => {
       .populate('cabin', 'name')
       .sort({ createdAt: -1 })
       .limit(50);
-    
+
     console.log('Tickets found:', tickets.length);
 
     // Get events (RSVPs and attendance)
@@ -662,9 +689,9 @@ export const getMemberProfile = async (req, res) => {
     await logErrorActivity(req, 'GET_MEMBER_PROFILE', err.message, {
       memberId: req.params.id
     });
-    return res.status(500).json({ 
-      success: false, 
-      message: err.message 
+    return res.status(500).json({
+      success: false,
+      message: err.message
     });
   }
 };

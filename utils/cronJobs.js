@@ -4,6 +4,7 @@ import { createMonthlyInvoices, createMonthlyEstimates, createMonthlyEstimatesCo
 import { getValidAccessToken } from './zohoTokenManager.js';
 import AccessGrant from '../models/accessGrantModel.js';
 import { enforceAccessByInvoices } from '../services/accessService.js';
+import { processPaymentReminders } from '../controllers/invoiceController.js';
 
 const scheduleNoShowUpdates = () => {
   cron.schedule('0 1 * * *', async () => {
@@ -18,7 +19,7 @@ const scheduleNoShowUpdates = () => {
     scheduled: true,
     timezone: "Asia/Kolkata"
   });
-  
+
   console.log('No-show update cron job scheduled for 1 AM daily');
 };
 
@@ -69,7 +70,7 @@ const scheduleMonthlyInvoices = () => {
     scheduled: true,
     timezone: "Asia/Kolkata"
   });
-  
+
   console.log('Monthly billing cron job scheduled daily (IST)');
 };
 
@@ -119,4 +120,22 @@ const scheduleAccessEnforcement = () => {
   console.log('Hourly access enforcement cron job scheduled for minute 0 of every hour');
 };
 
-export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement };
+const schedulePaymentReminders = () => {
+  // Run daily at 10:00 AM IST
+  cron.schedule('0 10 * * *', async () => {
+    try {
+      console.log('Running daily payment reminder job...');
+      const result = await processPaymentReminders();
+      console.log(`Payment reminders completed: ${result.sent}/${result.processed} reminders sent.`);
+    } catch (error) {
+      console.error('Error in payment reminder job:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+
+  console.log('Payment reminder cron job scheduled for 10 AM daily (IST)');
+};
+
+export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders };

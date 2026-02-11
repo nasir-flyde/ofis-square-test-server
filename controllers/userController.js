@@ -1,9 +1,36 @@
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Building from "../models/buildingModel.js";
+import OTP from "../models/otpModel.js";
 import bcrypt from "bcryptjs";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import { SendSMS, generateOtp } from "../services/smsService.js";
 import mongoose from "mongoose";
+
+const GM_EMAIL = "nasiransari777@outlook.com";
+
+const sendOtpToGM = async (purpose) => {
+  const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
+  if (!gmUser || !gmUser.phone) {
+    throw new Error(`GM user (${GM_EMAIL}) not found or has no phone number`);
+  }
+
+  const otp = generateOtp();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await OTP.deleteMany({ phone: gmUser.phone });
+  await OTP.create({
+    email: GM_EMAIL,
+    phone: gmUser.phone,
+    otp,
+    expiresAt
+  });
+
+  const smsText = `OTP for ${purpose}: ${otp}. Valid for 10 min. Do not share.`;
+  await SendSMS({ phone: gmUser.phone, message: smsText });
+  console.log(`🔐 GM OTP for ${purpose}: ${otp}`);
+  return otp;
+};
 
 export const getUsers = async (req, res) => {
   try {
@@ -201,14 +228,36 @@ export const createUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // Create new user
-    const user = await User.create({
+    const userData = {
       name,
       email,
       phone,
       password: hashedPassword,
       role: role,
       isActive: isActive !== undefined ? isActive : true
-    });
+    };
+
+    // If role is System Admin, requires GM verification
+    if (roleDoc.roleName === "System Admin") {
+      userData.isAdminVerified = false;
+      const user = await User.create(userData);
+
+      try {
+        await sendOtpToGM(`creating System Admin ${email}`);
+      } catch (err) {
+        // Even if SMS fails, user is created but unverified
+        console.error("Failed to send OTP to GM:", err.message);
+      }
+
+      return res.status(202).json({
+        success: true,
+        message: 'System Admin creation initiated. Verification OTP sent to GM.',
+        data: { userId: user._id, email: user.email }
+      });
+    }
+
+    // Standard user creation
+    const user = await User.create(userData);
 
     // Log activity
     await logCRUDActivity(req, 'CREATE', 'User', user._id, null, {
@@ -358,6 +407,21 @@ export const updateUser = async (req, res) => {
 // DELETE /api/users/:id - Delete user
 export const deleteUser = async (req, res) => {
   try {
+    const userToDelete = await User.findById(req.params.id);
+    if (!userToDelete) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // If deleting GM, requires OTP verification
+    if (userToDelete.email && userToDelete.email.toLowerCase() === GM_EMAIL.toLowerCase()) {
+      await sendOtpToGM(`deleting GM account`);
+      return res.status(202).json({
+        success: true,
+        message: 'Deletion of GM account initiated. Verification OTP sent to GM.',
+        data: { userId: userToDelete._id }
+      });
+    }
+
     const user = await User.findByIdAndDelete(req.params.id);
 
     if (!user) {
@@ -460,6 +524,83 @@ export const getInternalUsers = async (req, res) => {
     });
   } catch (err) {
     console.error('getInternalUsers error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const verifyCreateUserOTP = async (req, res) => {
+  try {
+    const { userId, otp } = req.body;
+    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
+
+    if (!gmUser || !gmUser.phone) {
+      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
+    }
+
+    const otpRecord = await OTP.findOne({
+      phone: gmUser.phone,
+      otp,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    const user = await User.findByIdAndUpdate(userId, { isAdminVerified: true }, { new: true });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    await OTP.deleteOne({ _id: otpRecord._id });
+
+    return res.json({
+      success: true,
+      message: "User verified successfully",
+      data: user
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const verifyDeleteUserOTP = async (req, res) => {
+  try {
+    const { userId, otp } = req.body;
+    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
+
+    if (!gmUser || !gmUser.phone) {
+      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
+    }
+
+    const otpRecord = await OTP.findOne({
+      phone: gmUser.phone,
+      otp,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    await OTP.deleteOne({ _id: otpRecord._id });
+
+    await logCRUDActivity(req, 'DELETE', 'User', userId, null, {
+      userName: user.name,
+      email: user.email,
+      verifiedBy: GM_EMAIL
+    });
+
+    return res.json({
+      success: true,
+      message: "User deleted successfully after verification"
+    });
+  } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 };

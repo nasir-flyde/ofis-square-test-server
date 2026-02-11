@@ -69,7 +69,7 @@ export const createNotification = async (req, res) => {
           if (tplDoc?.defaults?.metadata) {
             mergedMetadata = { ...tplDoc.defaults.metadata, ...mergedMetadata };
           }
-        } catch (_) {}
+        } catch (_) { }
       } catch (error) {
         return res.status(400).json({
           success: false,
@@ -503,12 +503,12 @@ export const getMemberNotifications = async (req, res) => {
       dateTo,
       sort = '-createdAt'
     } = req.query;
-    
+
     // If we have a client object directly, use its ID
     if (client && client._id && !clientIdFromAuth) {
       clientIdFromAuth = client._id;
     }
-    
+
     // Determine clientId: Prefer value provided by universal auth, otherwise derive from member
     let resolvedClientId = clientIdFromAuth || null;
 
@@ -654,7 +654,7 @@ export const getMemberOnlyNotifications = async (req, res) => {
         memberObjectId: String(memberObjectId),
         query: JSON.stringify(query, null, 2)
       });
-      
+
       // Also check if there are any notifications with this memberId at all
       const allNotificationsWithMemberId = await Notification.find({ 'to.memberId': { $exists: true } })
         .select('to.memberId title')
@@ -740,7 +740,7 @@ export const getMemberOnlyNotifications = async (req, res) => {
 export const getNotificationStats = async (req, res) => {
   try {
     const { from, to } = req.query;
-    
+
     const dateFilter = {};
     if (from || to) {
       dateFilter.createdAt = {};
@@ -756,31 +756,37 @@ export const getNotificationStats = async (req, res) => {
       recentActivity
     ] = await Promise.all([
       Notification.countDocuments(dateFilter),
-      
+
       Notification.aggregate([
         { $match: { ...dateFilter, 'channels.sms': true } },
-        { $group: { 
-          _id: '$smsDelivery.status', 
-          count: { $sum: 1 } 
-        }}
+        {
+          $group: {
+            _id: '$smsDelivery.status',
+            count: { $sum: 1 }
+          }
+        }
       ]),
-      
+
       Notification.aggregate([
         { $match: { ...dateFilter, 'channels.email': true } },
-        { $group: { 
-          _id: '$emailDelivery.status', 
-          count: { $sum: 1 } 
-        }}
+        {
+          $group: {
+            _id: '$emailDelivery.status',
+            count: { $sum: 1 }
+          }
+        }
       ]),
-      
+
       Notification.aggregate([
         { $match: dateFilter },
-        { $group: { 
-          _id: '$type', 
-          count: { $sum: 1 } 
-        }}
+        {
+          $group: {
+            _id: '$type',
+            count: { $sum: 1 }
+          }
+        }
       ]),
-      
+
       Notification.find(dateFilter)
         .sort({ createdAt: -1 })
         .limit(10)
@@ -880,7 +886,7 @@ async function sendEmail(notification) {
     }
 
     notification.updateDeliveryStatus('email', 'queued', { details: 'Sending email' });
-    notification.emailDelivery.provider = 'nodemailer';
+    notification.emailDelivery.provider = emailProvider.name || 'nodemailer';
 
     const result = await emailProvider.send({
       toEmail: notification.to.email,

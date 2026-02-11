@@ -1,14 +1,17 @@
 import mongoose from "mongoose";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import CreditTransaction from "../models/creditTransactionModel.js";
+import Member from "../models/memberModel.js";
+import Client from "../models/clientModel.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 class WalletService {
-  
+
   // Get or create wallet for a client
   static async getOrCreateWallet(clientId) {
     try {
       let wallet = await ClientCreditWallet.findOne({ client: clientId });
-      
+
       if (!wallet) {
         wallet = await ClientCreditWallet.create({
           client: clientId,
@@ -18,7 +21,7 @@ class WalletService {
           status: "active"
         });
       }
-      
+
       return wallet;
     } catch (error) {
       console.error("Error in getOrCreateWallet:", error);
@@ -29,22 +32,22 @@ class WalletService {
   // Grant credits to a client wallet
   static async grantCredits({ clientId, credits, valuePerCredit, refType, refId, meta = {}, createdBy = null }) {
     const session = await mongoose.startSession();
-    
+
     try {
       await session.withTransaction(async () => {
         // Get or create wallet
         const wallet = await this.getOrCreateWallet(clientId);
-        
+
         // Use fixed credit value of 500 INR per credit
         const finalValuePerCredit = 500;
-        
+
         // Update wallet balance
         await ClientCreditWallet.findByIdAndUpdate(
           wallet._id,
           { $inc: { balance: credits } },
           { session }
         );
-        
+
         // Create transaction record with all required fields
         await CreditTransaction.create([{
           clientId: clientId,
@@ -76,7 +79,7 @@ class WalletService {
           }
         }], { session });
       });
-      
+
       return { success: true, message: "Credits granted successfully" };
     } catch (error) {
       console.error("Error in grantCredits:", error);
@@ -87,20 +90,20 @@ class WalletService {
   }
 
   // Consume credits with overdraft support
-  static async consumeCreditsWithOverdraft({ 
-    clientId, 
-    memberId, 
-    requiredCredits, 
-    idempotencyKey, 
-    refType, 
-    refId, 
-    meta = {} 
+  static async consumeCreditsWithOverdraft({
+    clientId,
+    memberId,
+    requiredCredits,
+    idempotencyKey,
+    refType,
+    refId,
+    meta = {}
   }) {
     const session = await mongoose.startSession();
-    
+
     try {
       let result = {};
-      
+
       await session.withTransaction(async () => {
         // Check for existing transaction with same idempotency key
         if (idempotencyKey) {
@@ -108,23 +111,23 @@ class WalletService {
             client: clientId,
             idempotencyKey
           }).session(session);
-          
+
           if (existingTransaction) {
             throw new Error("Transaction already processed");
           }
         }
-        
+
         // Get wallet
         const wallet = await ClientCreditWallet.findOne({ client: clientId }).session(session);
         if (!wallet) {
           throw new Error("Wallet not found");
         }
-        
+
         // Calculate split
         const coveredCredits = Math.min(wallet.balance, requiredCredits);
         const extraCredits = requiredCredits - coveredCredits;
         const overageAmount = extraCredits * wallet.creditValue;
-        
+
         // Update wallet balance (only decrease by covered credits)
         if (coveredCredits > 0) {
           await ClientCreditWallet.findByIdAndUpdate(
@@ -133,7 +136,7 @@ class WalletService {
             { session }
           );
         }
-        
+
         // Create transaction for covered credits
         if (coveredCredits > 0) {
           await CreditTransaction.create([{
@@ -153,14 +156,14 @@ class WalletService {
             amountINRDelta: -coveredCredits * 500,
             createdBy: memberId || clientId,
             idempotencyKey,
-            metadata: { 
-              ...meta, 
+            metadata: {
+              ...meta,
               overdraft: false,
               bookingId: refId
             }
           }], { session });
         }
-        
+
         // Create transaction for extra credits (overdraft)
         if (extraCredits > 0) {
           await CreditTransaction.create([{
@@ -180,14 +183,14 @@ class WalletService {
             amountINRDelta: -extraCredits * 500,
             createdBy: memberId || clientId,
             idempotencyKey: idempotencyKey ? `${idempotencyKey}_overdraft` : null,
-            metadata: { 
-              ...meta, 
+            metadata: {
+              ...meta,
               overdraft: true,
               bookingId: refId
             }
           }], { session });
         }
-        
+
         result = {
           success: true,
           coveredCredits,
@@ -196,7 +199,57 @@ class WalletService {
           valuePerCredit: 500
         };
       });
-      
+
+      // Post-transaction notifications (async, non-blocking)
+      try {
+        const wallet = await ClientCreditWallet.findOne({ client: clientId });
+        if (wallet) {
+          const balance = wallet.balance;
+          let templateKey = null;
+          if (balance === 0 && requiredCredits > 0) {
+            templateKey = 'credits_consumed_all';
+          } else if (balance > 0 && balance <= 5) {
+            templateKey = 'credits_low_balance';
+          }
+
+          if (templateKey) {
+            let to = { clientId };
+            let memberName = 'Member';
+            let email = null;
+
+            if (memberId) {
+              const m = await Member.findById(memberId).select('firstName email').lean();
+              if (m?.email) email = m.email;
+              if (m?.firstName) memberName = m.firstName;
+            } else {
+              const c = await Client.findById(clientId).select('contactPerson email').lean();
+              if (c?.email) email = c.email;
+              if (c?.contactPerson) memberName = c.contactPerson;
+            }
+
+            if (email) {
+              to.email = email;
+              await sendNotification({
+                to,
+                channels: { email: true, sms: false },
+                templateKey,
+                templateVariables: {
+                  greeting: "Ofis Square",
+                  remainingCredits: String(balance),
+                  memberName,
+                  companyName: 'Ofis Square'
+                },
+                title: templateKey === 'credits_consumed_all' ? 'Credits Exhausted' : 'Low Credit Balance',
+                source: 'system',
+                type: 'transactional'
+              });
+            }
+          }
+        }
+      } catch (notifyErr) {
+        console.warn('WalletService: failed to send credit notification:', notifyErr?.message || notifyErr);
+      }
+
       return result;
     } catch (error) {
       console.error("Error in consumeCreditsWithOverdraft:", error);
@@ -297,21 +350,21 @@ class WalletService {
   // Adjust credits (admin only)
   static async adjustCredits({ clientId, credits, reason, approvedBy }) {
     const session = await mongoose.startSession();
-    
+
     try {
       await session.withTransaction(async () => {
         const wallet = await this.getOrCreateWallet(clientId);
         if (credits < 0 && wallet.balance + credits < 0) {
           throw new Error("Adjustment would result in negative balance");
         }
-        
+
         // Update wallet
         await ClientCreditWallet.findByIdAndUpdate(
           wallet._id,
           { $inc: { balance: credits } },
           { session }
         );
-        
+
         // Create transaction
         await CreditTransaction.create([{
           client: clientId,
@@ -324,7 +377,7 @@ class WalletService {
           meta: { reason, approvedBy, adjustment: credits }
         }], { session });
       });
-      
+
       return { success: true, message: "Credits adjusted successfully" };
     } catch (error) {
       console.error("Error in adjustCredits:", error);
@@ -349,20 +402,20 @@ class WalletService {
   static async getTransactions(clientId, { type, member, page = 1, limit = 20 } = {}) {
     try {
       const query = { client: clientId };
-      
+
       if (type) query.type = type;
       if (member) query.member = member;
-      
+
       const skip = (page - 1) * limit;
-      
+
       const transactions = await CreditTransaction.find(query)
         .populate('member', 'name email')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit);
-      
+
       const total = await CreditTransaction.countDocuments(query);
-      
+
       return {
         transactions,
         pagination: {

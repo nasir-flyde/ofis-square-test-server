@@ -89,10 +89,10 @@ export const createTicket = async (req, res) => {
         }
       } catch (uploadError) {
         console.error("ImageKit upload error (files):", uploadError);
-        return res.status(500).json({ 
+        return res.status(500).json({
           success: false,
           error: "Failed to upload images",
-          details: uploadError.message 
+          details: uploadError.message
         });
       }
     }
@@ -185,15 +185,26 @@ export const createTicket = async (req, res) => {
     try {
       let to = {};
       let emailTo = null;
+      let actualName = 'Member';
+      let companyName = '';
+
       if (ticketData.createdBy) {
-        const m = await Member.findById(ticketData.createdBy).select('email client').lean();
+        const m = await Member.findById(ticketData.createdBy).select('firstName lastName email client').populate('client', 'companyName').lean();
         to.memberId = ticketData.createdBy;
-        if (m?.client) to.clientId = m.client;
+        if (m) {
+          actualName = `${m.firstName || ''} ${m.lastName || ''}`.trim() || 'Member';
+          if (m.client) {
+            to.clientId = m.client._id;
+            companyName = m.client.companyName || '';
+          }
+        }
         if (m?.email) emailTo = m.email;
       } else if (ticketData.client) {
-        const c = await Client.findById(ticketData.client).select('email').lean();
+        const c = await Client.findById(ticketData.client).select('contactPerson companyName email').lean();
         to.clientId = ticketData.client;
         if (c?.email) emailTo = c.email;
+        companyName = c?.companyName || '';
+        actualName = c?.contactPerson || companyName || 'Client';
       }
       if (emailTo) to.email = emailTo;
 
@@ -202,10 +213,13 @@ export const createTicket = async (req, res) => {
         channels: { email: Boolean(emailTo), sms: false },
         templateKey: 'ticket_created',
         templateVariables: {
+          greeting: 'Ofis Square',
+          memberName: companyName || actualName,
+          "Member Name": actualName,
           subject: ticketData.subject,
           priority: ticketData.priority || 'low',
-          ticketId: populated?.ticketId || String(populated._id),
-          category: populated?.category?.categoryId?.name || undefined,
+          id: populated?.ticketId || String(populated._id),
+          Category: populated?.category?.categoryId?.name || '',
           status: populated?.status || 'open'
         },
         title: 'Ticket Created',
@@ -221,6 +235,62 @@ export const createTicket = async (req, res) => {
       });
     } catch (notifyErr) {
       console.warn('createTicket: failed to send ticket_created notification:', notifyErr?.message || notifyErr);
+    }
+
+    // Notify community team of the same building
+    try {
+      if (ticketData.client || ticketData.createdBy) {
+        const Role = (await import("../models/roleModel.js")).default;
+        const User = (await import("../models/userModel.js")).default;
+        const Building = (await import("../models/buildingModel.js")).default;
+
+        const communityRole = await Role.findOne({ roleName: { $regex: /^community$/i } });
+
+        if (communityRole) {
+          const buildingId = ticketData.building || (populated?.building?._id || populated?.building);
+
+          if (buildingId) {
+            const communityUsers = await User.find({
+              role: communityRole._id,
+              buildingId
+            }).select('email').lean();
+
+            const building = await Building.findById(buildingId).select('name').lean();
+
+            for (const user of communityUsers) {
+              if (user.email) {
+                await sendNotification({
+                  to: { email: user.email },
+                  channels: { email: true, sms: false },
+                  templateKey: 'community_ticket_created',
+                  templateVariables: {
+                    greeting: 'Ofis Square',
+                    ticketId: populated?.ticketId || String(populated._id),
+                    buildingName: building?.name || 'Your Building',
+                    memberName: companyName || actualName || 'A Member',
+                    Category: populated?.category?.categoryId?.name || '',
+                    priority: populated?.priority || 'low',
+                    description: populated?.description || '',
+                    ctaLink: process.env.COMMUNITY_PANEL_LINK || 'https://ofis-square-community-team.vercel.app/'
+                  },
+                  title: 'New Support Ticket Raised',
+                  metadata: {
+                    category: 'ticket',
+                    tags: ['ticket_created', 'community'],
+                    route: `/tickets/${populated._id}`,
+                    deepLink: `ofis://tickets/${populated._id}`,
+                    routeParams: { id: String(populated._id) }
+                  },
+                  source: 'system',
+                  type: 'transactional'
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (communityNotifyErr) {
+      console.warn('createTicket: failed to send community_ticket_created notification:', communityNotifyErr?.message || communityNotifyErr);
     }
 
     // Log activity
@@ -313,20 +383,78 @@ export const updateTicket = async (req, res) => {
       assignmentChange: String(currentTicket.assignedTo) !== String(ticket.assignedTo)
     });
 
+    // Notify assigned user if assignment changed
+    try {
+      if (ticket.assignedTo && (!currentTicket.assignedTo || String(currentTicket.assignedTo) !== String(ticket.assignedTo._id))) {
+        // Calculate member/client name
+        let memberName = 'Member';
+        if (ticket.createdBy) {
+          const TicketMember = (await import("../models/memberModel.js")).default;
+          const m = await TicketMember.findById(ticket.createdBy._id || ticket.createdBy).select('firstName lastName companyName client').populate('client', 'companyName').lean();
+          if (m) {
+            memberName = m?.client?.companyName || m?.companyName || `${m?.firstName || ''} ${m?.lastName || ''}`.trim() || 'Member';
+          }
+        } else if (ticket.client) {
+          const TicketClient = (await import("../models/clientModel.js")).default;
+          const c = await TicketClient.findById(ticket.client).select('companyName contactPerson').lean();
+          if (c) {
+            memberName = c?.companyName || c?.contactPerson || 'Client';
+          }
+        }
+
+        if (ticket.assignedTo.email) {
+          const buildingName = ticket.building?.name || 'Ofis Square';
+          const categoryName = ticket.category?.categoryId?.name || 'General';
+
+          await sendNotification({
+            to: { email: ticket.assignedTo.email },
+            channels: { email: true, sms: false },
+            templateKey: 'ticket_assigned_to_user',
+            templateVariables: {
+              greeting: 'Ofis Square',
+              ticketId: ticket.ticketId || String(ticket._id),
+              memberName,
+              buildingName,
+              category: categoryName,
+              priority: ticket.priority || 'low',
+              description: ticket.description || '',
+              ctaLink: 'https://office-square.vercel.app/'
+            },
+            title: 'Ticket Assigned',
+            metadata: {
+              category: 'ticket',
+              tags: ['ticket_assigned'],
+              route: `/tickets/${ticket._id}`,
+              deepLink: `ofis://tickets/${ticket._id}`,
+              routeParams: { id: String(ticket._id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      }
+    } catch (assignNotifyErr) {
+      console.warn('updateTicket: failed to send ticket_assigned_to_user notification:', assignNotifyErr?.message || assignNotifyErr);
+    }
+
     // If ticket just got resolved, notify requester using template 'ticket_resolved'
     try {
       if (String(currentTicket.status) !== 'resolved' && String(ticket.status) === 'resolved') {
         let to = {};
         let emailTo = null;
+        let memberName = 'Member';
+
         if (ticket.createdBy) {
-          const m = await Member.findById(ticket.createdBy).select('email client').lean();
+          const m = await Member.findById(ticket.createdBy).select('firstName companyName email client').lean();
           to.memberId = ticket.createdBy;
           if (m?.client) to.clientId = m.client;
           if (m?.email) emailTo = m.email;
+          memberName = m?.companyName || m?.firstName || 'Member';
         } else if (ticket.client) {
-          const c = await Client.findById(ticket.client).select('email').lean();
+          const c = await Client.findById(ticket.client).select('contactPerson companyName email').lean();
           to.clientId = ticket.client;
           if (c?.email) emailTo = c.email;
+          memberName = c?.contactPerson || c?.companyName || 'Client';
         }
         if (emailTo) to.email = emailTo;
 
@@ -335,9 +463,12 @@ export const updateTicket = async (req, res) => {
           channels: { email: Boolean(emailTo), sms: false },
           templateKey: 'ticket_resolved',
           templateVariables: {
+            greeting: "Ofis Square",
+            memberName,
+            companyName: 'Ofis Square',
             subject: ticket.subject,
             priority: ticket.priority || 'low',
-            ticketId: ticket.ticketId || String(ticket._id),
+            id: ticket.ticketId || String(ticket._id),
             category: ticket?.category?.categoryId?.name || undefined,
             status: ticket.status
           },
@@ -430,14 +561,14 @@ export const getTicketsByMember = async (req, res) => {
     const memberId = req.memberId || req.member?._id || req.params.memberId;
 
     if (!memberId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Member ID is required" 
+      return res.status(400).json({
+        success: false,
+        message: "Member ID is required"
       });
     }
 
     const { status, priority, category, from, to, limit = 50, page = 1 } = req.query || {};
-    
+
     // Build filter
     const filter = { createdBy: memberId };
     if (status) filter.status = status;
@@ -544,8 +675,8 @@ export const getTicketsByMember = async (req, res) => {
       updatedAt: ticket.updatedAt
     }));
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: {
         tickets: formattedTickets,
         pagination: {
@@ -559,9 +690,9 @@ export const getTicketsByMember = async (req, res) => {
 
   } catch (error) {
     console.error('Get tickets by member error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: error.message 
+    return res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };

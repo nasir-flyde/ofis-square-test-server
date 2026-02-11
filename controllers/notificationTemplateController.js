@@ -1,4 +1,5 @@
 import NotificationTemplate from "../models/notificationTemplateModel.js";
+import TemplateDesign from "../models/templateDesignModel.js";
 import { renderDBTemplateContent, renderTemplateByKey } from "../services/notifications/templateService.js";
 
 // List templates with filters and pagination
@@ -19,7 +20,11 @@ export const listTemplates = async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [items, total] = await Promise.all([
-      NotificationTemplate.find(query).sort({ updatedAt: -1 }).skip(skip).limit(parseInt(limit)),
+      NotificationTemplate.find(query)
+        .populate("templateDesignId")
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
       NotificationTemplate.countDocuments(query),
     ]);
 
@@ -41,7 +46,7 @@ export const listTemplates = async (req, res) => {
 // Get template by id
 export const getTemplateById = async (req, res) => {
   try {
-    const item = await NotificationTemplate.findById(req.params.id);
+    const item = await NotificationTemplate.findById(req.params.id).populate("templateDesignId");
     if (!item) return res.status(404).json({ success: false, message: 'Template not found' });
     res.json({ success: true, data: item });
   } catch (error) {
@@ -52,7 +57,7 @@ export const getTemplateById = async (req, res) => {
 // Get template by key
 export const getTemplateByKeyRoute = async (req, res) => {
   try {
-    const item = await NotificationTemplate.findOne({ key: req.params.key });
+    const item = await NotificationTemplate.findOne({ key: req.params.key }).populate("templateDesignId");
     if (!item) return res.status(404).json({ success: false, message: 'Template not found' });
     res.json({ success: true, data: item });
   } catch (error) {
@@ -63,7 +68,7 @@ export const getTemplateByKeyRoute = async (req, res) => {
 // Create template
 export const createTemplate = async (req, res) => {
   try {
-    const { key, name, description, channels, content, category, tags, isActive, defaults, version } = req.body;
+    const { key, name, description, channels, content, category, tags, isActive, defaults, version, templateDesignId } = req.body;
 
     if (!key || !name) {
       return res.status(400).json({ success: false, message: 'Key and name are required' });
@@ -85,6 +90,7 @@ export const createTemplate = async (req, res) => {
       isActive: typeof isActive === 'boolean' ? isActive : true,
       defaults,
       version: version || 1,
+      templateDesignId,
       createdBy: req.user?._id,
       updatedBy: req.user?._id,
     });
@@ -95,12 +101,11 @@ export const createTemplate = async (req, res) => {
   }
 };
 
-// Update template
 export const updateTemplate = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = { ...req.body, updatedBy: req.user?._id };
-    const item = await NotificationTemplate.findByIdAndUpdate(id, updates, { new: true });
+    const item = await NotificationTemplate.findByIdAndUpdate(id, updates, { new: true }).populate("templateDesignId");
     if (!item) return res.status(404).json({ success: false, message: 'Template not found' });
     res.json({ success: true, data: item });
   } catch (error) {
@@ -108,7 +113,6 @@ export const updateTemplate = async (req, res) => {
   }
 };
 
-// Soft delete (deactivate) template
 export const deleteTemplate = async (req, res) => {
   try {
     const { id } = req.params;
@@ -120,10 +124,9 @@ export const deleteTemplate = async (req, res) => {
   }
 };
 
-// Render preview for a template key (or provided content) with variables
 export const previewTemplate = async (req, res) => {
   try {
-    const { key, content, variables = {} } = req.body || {};
+    const { key, content, variables = {}, templateDesignId } = req.body || {};
     if (!key && !content) {
       return res.status(400).json({ success: false, message: 'Provide either key or content to render' });
     }
@@ -132,9 +135,15 @@ export const previewTemplate = async (req, res) => {
       const rendered = await renderTemplateByKey(key, variables);
       return res.json({ success: true, data: rendered });
     }
-
-    // Render arbitrary content object that matches template shape
-    const rendered = renderDBTemplateContent({ content }, variables);
+    const templateDoc = { content };
+    if (templateDesignId) {
+      console.log('Fetching design for preview:', templateDesignId);
+      const design = await TemplateDesign.findById(templateDesignId);
+      if (design) {
+        templateDoc.templateDesignId = design;
+      }
+    }
+    const rendered = renderDBTemplateContent(templateDoc, variables);
     return res.json({ success: true, data: rendered });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to render preview', error: error.message });

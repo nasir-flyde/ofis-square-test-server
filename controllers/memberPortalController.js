@@ -8,6 +8,7 @@ import Cabin from "../models/cabinModel.js";
 import Contract from "../models/contractModel.js";
 import imagekit from "../utils/imageKit.js";
 import { sendNotification } from "../utils/notificationHelper.js";
+import Visitor from "../models/visitorModel.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -329,7 +330,7 @@ export const createMyTicket = async (req, res) => {
     }
 
     // Get building ID from member's client
-    const member = await Member.findById(req.memberId).populate("client", "building");
+    const member = await Member.findById(req.memberId).populate("client", "building companyName");
     if (!member || !member.client || !member.client.building) {
       return res.status(400).json({ success: false, message: "Member client or building not found. Please contact admin." });
     }
@@ -438,25 +439,26 @@ export const createMyTicket = async (req, res) => {
         memberId: req.memberId,
         clientId: req.clientId
       };
-      try {
-        // Prefer the earlier loaded member for email if available
-        if (member?.email) {
-          to.email = member.email;
-        } else {
-          const m = await Member.findById(req.memberId).select('email').lean();
-          if (m?.email) to.email = m.email;
-        }
-      } catch { }
+
+      if (member?.email) {
+        to.email = member.email;
+      } else {
+        const m = await Member.findById(req.memberId).select('email').lean();
+        if (m?.email) to.email = m.email;
+      }
 
       await sendNotification({
         to,
         channels: { email: Boolean(to.email), sms: false },
         templateKey: 'ticket_created',
         templateVariables: {
+          greeting: member?.client?.companyName || '',
+          memberName: member?.client?.companyName || 'Member',
+          "Member Name": `${member.firstName || ''} ${member.lastName || ''}`.trim() || 'Member',
           subject: ticketData.subject,
           priority: ticketData.priority || 'low',
-          ticketId: populatedTicket?.ticketId || String(populatedTicket._id),
-          category: populatedTicket?.category?.categoryId?.name || undefined,
+          id: populatedTicket?.ticketId || String(populatedTicket._id),
+          Category: populatedTicket?.category?.categoryId?.name || '',
           status: populatedTicket?.status || 'open'
         },
         title: 'Ticket Created',
@@ -472,6 +474,54 @@ export const createMyTicket = async (req, res) => {
       });
     } catch (notifyErr) {
       console.warn('createMyTicket: failed to send ticket_created notification:', notifyErr?.message || notifyErr);
+    }
+
+    // Notify community team of the same building
+    try {
+      const Role = (await import("../models/roleModel.js")).default;
+      const User = (await import("../models/userModel.js")).default;
+      const communityRole = await Role.findOne({ roleName: { $regex: /^community$/i } });
+
+      if (communityRole) {
+        const communityUsers = await User.find({
+          role: communityRole._id,
+          buildingId: member.client.building
+        }).select('email').lean();
+
+        const building = await (await import("../models/buildingModel.js")).default.findById(member.client.building).select('name').lean();
+
+        for (const user of communityUsers) {
+          if (user.email) {
+            await sendNotification({
+              to: { email: user.email },
+              channels: { email: true, sms: false },
+              templateKey: 'community_ticket_created',
+              templateVariables: {
+                greeting: member?.client?.companyName || 'Member',
+                ticketId: populatedTicket?.ticketId || String(populatedTicket._id),
+                buildingName: building?.name || 'Your Building',
+                memberName: member?.client?.companyName || 'A Member',
+                Category: populatedTicket?.category?.categoryId?.name || '',
+                priority: populatedTicket?.priority || 'low',
+                description: populatedTicket?.description || '',
+                ctaLink: process.env.COMMUNITY_PANEL_LINK || 'https://ofis-square-community-team.vercel.app/'
+              },
+              title: 'New Support Ticket Raised',
+              metadata: {
+                category: 'ticket',
+                tags: ['ticket_created', 'community'],
+                route: `/tickets/${populatedTicket._id}`,
+                deepLink: `ofis://tickets/${populatedTicket._id}`,
+                routeParams: { id: String(populatedTicket._id) }
+              },
+              source: 'system',
+              type: 'transactional'
+            });
+          }
+        }
+      }
+    } catch (communityNotifyErr) {
+      console.warn('createMyTicket: failed to send community_ticket_created notification:', communityNotifyErr?.message || communityNotifyErr);
     }
 
     res.status(201).json({ success: true, data: populatedTicket });
@@ -936,6 +986,52 @@ export const getHomePageData = async (req, res) => {
 
   } catch (err) {
     console.error("getHomePageData error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+// Get member's visitors
+export const getMyVisitors = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status } = req.query;
+
+    const filter = {
+      hostMember: req.memberId,
+      deletedAt: null
+    };
+
+    if (status) {
+      if (Array.isArray(status)) {
+        filter.status = { $in: status };
+      } else {
+        filter.status = status;
+      }
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const visitors = await Visitor.find(filter)
+      .populate('building', 'name address')
+      .sort({ expectedVisitDate: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Visitor.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: {
+        visitors,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (err) {
+    console.error("getMyVisitors error:", err);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };

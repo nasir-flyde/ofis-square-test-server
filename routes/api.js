@@ -59,6 +59,7 @@ import partnerMyhqRoutes from "./partnerMyhq.js";
 import notificationTemplatesRoutes from "./notificationTemplates.js";
 import guestsRoutes from "./guests.js";
 import commonAreasRoutes from "./commonAreas.js";
+import templateDesignRoutes from "./templateDesigns.js";
 
 const router = express.Router();
 
@@ -102,6 +103,7 @@ router.use("/notifications", notificationsRoutes);
 router.use("/notification-templates", notificationTemplatesRoutes);
 router.use("/guests", guestsRoutes);
 router.use("/common-areas", commonAreasRoutes);
+router.use("/template-designs", templateDesignRoutes);
 router.use("/announcements", announcementsRoutes);
 router.use("/pincode", pincodeRoutes);
 router.use("/access", accessRoutes);
