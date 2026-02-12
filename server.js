@@ -52,15 +52,12 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// IMPORTANT: Register Razorpay webhook BEFORE body parsers so we get the exact raw payload
 app.post(
   "/api/payments/razorpay/webhook",
   express.raw({ type: "*/*" }),
   handleRazorpayWebhook
 );
 
-// Global parsers for all other routes
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 

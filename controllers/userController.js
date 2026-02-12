@@ -293,7 +293,7 @@ export const updateUser = async (req, res) => {
     const id = req.params.id;
 
     // Check if user exists
-    const existingUser = await User.findById(id);
+    const existingUser = await User.findById(id).populate('role');
     if (!existingUser) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
@@ -320,33 +320,56 @@ export const updateUser = async (req, res) => {
     }
 
     // Validate buildingId for community users if role is being updated
+    let newRoleName = '';
     if (role) {
       const roleDoc = await Role.findById(role);
-      if (roleDoc && roleDoc.roleName === "community") {
-        if (!buildingId) {
-          return res.status(400).json({
-            success: false,
-            message: "Building ID is required for community users"
-          });
-        }
+      if (roleDoc) {
+        newRoleName = roleDoc.roleName; // Store for later check
+        if (roleDoc.roleName === "community") {
+          if (!buildingId) {
+            return res.status(400).json({
+              success: false,
+              message: "Building ID is required for community users"
+            });
+          }
 
-        if (!mongoose.Types.ObjectId.isValid(buildingId)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid building ID"
-          });
-        }
+          if (!mongoose.Types.ObjectId.isValid(buildingId)) {
+            return res.status(400).json({
+              success: false,
+              message: "Invalid building ID"
+            });
+          }
 
-        const building = await Building.findById(buildingId);
-        if (!building) {
-          return res.status(400).json({
-            success: false,
-            message: "Building not found"
-          });
+          const building = await Building.findById(buildingId);
+          if (!building) {
+            return res.status(400).json({
+              success: false,
+              message: "Building not found"
+            });
+          }
         }
       }
     }
 
+    // Check if OTP verification is required (modifying System Admin OR promoting to System Admin)
+    const isSystemAdmin = existingUser.role?.roleName === 'System Admin';
+    const becomingSystemAdmin = newRoleName === 'System Admin';
+
+    if (isSystemAdmin || becomingSystemAdmin) {
+      const targetDesc = isSystemAdmin ? 'System Admin account' : 'user to System Admin';
+
+      // Before sending OTP, let's do a dry run of validation (already mostly done above)
+      // Hash password if provided to verify it can be hashed (though we'd re-hash in verify)
+
+      await sendOtpToGM(`updating ${targetDesc}: ${existingUser.name}`);
+      return res.status(202).json({
+        success: true,
+        message: `Update of ${targetDesc} initiated. Verification OTP sent to GM.`,
+        data: { userId: existingUser._id } // Return ID to track
+      });
+    }
+
+    // Standard update flow for non-critical users
     // Prepare update data
     const updateData = {};
     if (name) updateData.name = name.trim();
@@ -362,7 +385,6 @@ export const updateUser = async (req, res) => {
     }
 
     // Update user
-    const oldUser = await User.findById(id);
     const user = await User.findByIdAndUpdate(
       id,
       updateData,
@@ -380,7 +402,7 @@ export const updateUser = async (req, res) => {
 
     // Log activity
     await logCRUDActivity(req, 'UPDATE', 'User', id, {
-      before: oldUser ? { ...oldUser.toObject(), password: '[HIDDEN]' } : null,
+      before: existingUser ? { ...existingUser.toObject(), password: '[HIDDEN]' } : null,
       after: { ...user.toObject(), password: '[HIDDEN]' },
       fields: Object.keys(updateData)
     }, {
@@ -605,6 +627,118 @@ export const verifyDeleteUserOTP = async (req, res) => {
       message: "User deleted successfully after verification"
     });
   } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const verifyUpdateUserOTP = async (req, res) => {
+  try {
+    const { userId, otp, name, email, phone, password, role, buildingId } = req.body;
+
+    // 1. Verify OTP first
+    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
+    if (!gmUser || !gmUser.phone) {
+      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
+    }
+
+    const otpRecord = await OTP.findOne({
+      phone: gmUser.phone,
+      otp,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    // 2. Perform the update logic (Duplicated validaton for safety)
+    const id = userId;
+    const existingUser = await User.findById(id);
+    if (!existingUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Check for duplicate email/phone (excluding current user)
+    if (email || phone) {
+      const duplicateQuery = {
+        _id: { $ne: id },
+        $or: []
+      };
+
+      if (email) duplicateQuery.$or.push({ email: email.toLowerCase().trim() });
+      if (phone) duplicateQuery.$or.push({ phone: phone.trim() });
+
+      if (duplicateQuery.$or.length > 0) {
+        const duplicate = await User.findOne(duplicateQuery);
+        if (duplicate) {
+          return res.status(400).json({
+            success: false,
+            message: "User with this email or phone already exists"
+          });
+        }
+      }
+    }
+
+    // Validate buildingId if role checks require it
+    // (Simplified here assuming frontend passed valid data, but could re-verify role logic if needed)
+
+    // Prepare update data
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (email) updateData.email = email.toLowerCase().trim();
+    if (phone) updateData.phone = phone.trim();
+    if (role) updateData.role = role;
+    if (buildingId) updateData.buildingId = buildingId;
+
+    // Hash password if provided
+    if (password && password.trim()) {
+      const saltRounds = 10;
+      updateData.password = await bcrypt.hash(password.trim(), saltRounds);
+    }
+
+    // Update user
+    const user = await User.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    )
+      .populate('role', 'roleName description')
+      .select('-password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found during update'
+      });
+    }
+
+    // 3. Clear OTP
+    await OTP.deleteOne({ _id: otpRecord._id });
+
+    // 4. Log activity
+    await logCRUDActivity(req, 'UPDATE', 'User', id, {
+      before: existingUser ? { ...existingUser.toObject(), password: '[HIDDEN]' } : null,
+      after: { ...user.toObject(), password: '[HIDDEN]' },
+      fields: Object.keys(updateData)
+    }, {
+      userName: user.name,
+      updatedFields: Object.keys(updateData),
+      verifiedBy: GM_EMAIL
+    });
+
+    return res.json({
+      success: true,
+      message: 'User updated successfully after verification',
+      data: user
+    });
+
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "User with this email or phone already exists"
+      });
+    }
     return res.status(500).json({ success: false, message: err.message });
   }
 };

@@ -35,8 +35,8 @@ const invoiceSchema = new mongoose.Schema(
     invoice_number: { type: String }, // Our internal invoice number (local sequence)
     reference_number: { type: String },
     source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
-    type: { 
-      type: String, 
+    type: {
+      type: String,
       enum: [
         "regular",
         "credit_monthly",
@@ -46,11 +46,11 @@ const invoiceSchema = new mongoose.Schema(
         "service",
         "adjustment",
         "late_fee"
-      ], 
-      default: "regular" 
+      ],
+      default: "regular"
     },
-    category: { 
-      type: String, 
+    category: {
+      type: String,
       enum: [
         "general",
         "day_pass",
@@ -153,6 +153,7 @@ const invoiceSchema = new mongoose.Schema(
       formula_snapshot: { type: String },
       status: { type: String, enum: ["pending_merge", "merged", "void"], default: "pending_merge" },
       merged_into_invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", index: true },
+      merged_into_estimate: { type: mongoose.Schema.Types.ObjectId, ref: "Estimate", index: true },
       merged_at: { type: Date }
     }
   },
@@ -164,9 +165,9 @@ invoiceSchema.index({ zoho_invoice_id: 1 }, { unique: true, sparse: true });
 
 // Add unique constraint for credit monthly invoices (one per client per month per category)
 invoiceSchema.index(
-  { client: 1, "billing_period.start": 1, "billing_period.end": 1, type: 1, category: 1 }, 
-  { 
-    unique: true, 
+  { client: 1, "billing_period.start": 1, "billing_period.end": 1, type: 1, category: 1 },
+  {
+    unique: true,
     partialFilterExpression: { type: "credit_monthly" },
     name: "unique_credit_monthly_invoice_by_category"
   }

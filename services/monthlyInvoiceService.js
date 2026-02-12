@@ -972,6 +972,30 @@ export const createMonthlyEstimates = async () => {
           subtotal += rentAmount;
         }
 
+        // --- Start of late fee logic ---
+        let allProvisionalIds = [];
+        try { await upsertProvisionalLateFeesForLastMonth(contract, contract.client, building); } catch (_) { }
+        try {
+          const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(contract);
+          for (const li of lineItems) {
+            items.push({
+              description: li.description,
+              quantity: li.quantity,
+              unitPrice: li.unitPrice,
+              amount: li.amount,
+              name: 'Late Fee',
+              rate: li.unitPrice,
+              unit: 'day',
+              item_total: li.amount
+            });
+            subtotal += Number(li.amount || 0);
+          }
+          allProvisionalIds.push(...provisionalIds);
+        } catch (e) {
+          console.error(`Late fee collect error for contract ${contract._id}:`, e?.message || String(e));
+        }
+        // --- End of late fee logic ---
+
         const taxRate = 18;
         const taxTotal = Math.round(subtotal * (taxRate / 100) * 100) / 100;
         const total = Math.round((subtotal + taxTotal) * 100) / 100;
@@ -1016,6 +1040,14 @@ export const createMonthlyEstimates = async () => {
           customer_id: contract.client.zohoBooksContactId,
           gst_no: contract.client.gstNo
         });
+
+        // Mark provisional late fees as merged
+        if (allProvisionalIds.length > 0) {
+          await Invoice.updateMany(
+            { _id: { $in: allProvisionalIds } },
+            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_estimate': estimateDoc._id, 'late_fee.merged_at': new Date() } }
+          );
+        }
 
         // Push to Zoho as estimate (draft)
         try {
@@ -1216,6 +1248,32 @@ export const createMonthlyEstimatesConsolidated = async () => {
           }
         }
 
+        // --- Start of late fee logic ---
+        let allProvisionalIds = [];
+        for (const c of contracts) {
+          try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
+          try {
+            const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
+            for (const li of lineItems) {
+              items.push({
+                description: li.description,
+                quantity: li.quantity,
+                unitPrice: li.unitPrice,
+                amount: li.amount,
+                name: 'Late Fee',
+                rate: li.unitPrice,
+                unit: 'day',
+                item_total: li.amount
+              });
+              subtotal += Number(li.amount || 0);
+            }
+            allProvisionalIds.push(...provisionalIds);
+          } catch (e) {
+            console.error('Late fee collect error in consolidated:', e?.message || String(e));
+          }
+        }
+        // --- End of late fee logic ---
+
         // If no items, skip creating empty estimate
         if (items.length === 0) {
           results.skipped++; results.details.push({ group: key, status: 'skipped', reason: 'No billable items' });
@@ -1266,6 +1324,14 @@ export const createMonthlyEstimatesConsolidated = async () => {
           customer_id: client.zohoBooksContactId,
           gst_no: client.gstNo
         });
+
+        // Mark provisional late fees as merged
+        if (allProvisionalIds.length > 0) {
+          await Invoice.updateMany(
+            { _id: { $in: allProvisionalIds } },
+            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_estimate': estimateDoc._id, 'late_fee.merged_at': new Date() } }
+          );
+        }
 
         // Push to Zoho (non-blocking)
 
