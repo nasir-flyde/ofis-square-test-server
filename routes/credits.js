@@ -9,7 +9,8 @@ import {
   recordCreditTransaction,
   updateContractCredits,
   generateExceededCreditsInvoice,
-  consumeCreditsForItem
+  consumeCreditsForItem,
+  deductCredits
 } from "../controllers/creditController.js";
 import {
   getCustomItems,
@@ -44,6 +45,7 @@ router.get("/transactions", authMiddleware, populateUserRole, requirePermission(
 router.post("/consolidate", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), triggerCreditConsolidation);
 router.post("/transactions", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), recordCreditTransaction);
 router.post("/grant", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), grantCredits);
+router.post("/deduct", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), deductCredits);
 router.get("/grant/preview", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), previewCreditGrant);
 router.post("/exceeded-invoice", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), generateExceededCreditsInvoice);
 router.post("/consume-item", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_UPDATE), consumeCreditsForItem);

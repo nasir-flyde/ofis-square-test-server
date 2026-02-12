@@ -407,17 +407,21 @@ export const updateUser = async (req, res) => {
 // DELETE /api/users/:id - Delete user
 export const deleteUser = async (req, res) => {
   try {
-    const userToDelete = await User.findById(req.params.id);
+    const userToDelete = await User.findById(req.params.id).populate('role');
     if (!userToDelete) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // If deleting GM, requires OTP verification
-    if (userToDelete.email && userToDelete.email.toLowerCase() === GM_EMAIL.toLowerCase()) {
-      await sendOtpToGM(`deleting GM account`);
+    // If deleting GM or System Admin, requires OTP verification
+    const isGM = userToDelete.email && userToDelete.email.toLowerCase() === GM_EMAIL.toLowerCase();
+    const isSystemAdmin = userToDelete.role?.roleName === 'System Admin';
+
+    if (isGM || isSystemAdmin) {
+      const targetDesc = isGM ? 'GM account' : 'System Admin account';
+      await sendOtpToGM(`deleting ${targetDesc}`);
       return res.status(202).json({
         success: true,
-        message: 'Deletion of GM account initiated. Verification OTP sent to GM.',
+        message: `Deletion of ${targetDesc} initiated. Verification OTP sent to GM.`,
         data: { userId: userToDelete._id }
       });
     }

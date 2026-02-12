@@ -129,6 +129,7 @@ export const getProformas = async (req, res) => {
       ];
     }
     const docs = await Estimate.find(q)
+      .populate("client", "companyName contactPerson email phone")
       .sort({ createdAt: -1 })
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit));
@@ -143,7 +144,7 @@ export const getProformas = async (req, res) => {
 export const getProformaById = async (req, res) => {
   try {
     const { id } = req.params;
-    const doc = await Estimate.findById(id);
+    const doc = await Estimate.findById(id).populate("client");
     if (!doc) return res.status(404).json({ success: false, message: "Estimate not found" });
     return res.json({ success: true, data: doc });
   } catch (error) {
@@ -373,7 +374,7 @@ export const convertProformaToInvoice = async (req, res) => {
       estimate.status = 'accepted';
       await estimate.save();
       await logCRUDActivity(req, 'UPDATE', 'Estimate', estimate._id, null, { status: 'accepted', convertedToInvoice: invoice._id });
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({ success: true, data: { invoice, estimateId: estimate._id } });
   } catch (error) {

@@ -14,12 +14,12 @@ import mongoose from "mongoose";
 export const getClientCredits = async (req, res) => {
   try {
     let { clientId } = req.params;
-    
+
     // If no clientId in params, use authenticated user's client
     if (!clientId && req.clientId) {
       clientId = req.clientId;
     }
-    
+
     if (!clientId) {
       return res.status(400).json({
         success: false,
@@ -28,12 +28,12 @@ export const getClientCredits = async (req, res) => {
     }
 
     const summary = await getClientCreditSummary(clientId);
-    
+
     return res.json({
       success: true,
       data: summary
     });
-    
+
   } catch (error) {
     console.error("Error getting client credit summary:", error);
     return res.status(500).json({
@@ -47,28 +47,28 @@ export const getClientCredits = async (req, res) => {
 export const consumeCreditsForItem = async (req, res) => {
   try {
     const { clientId, itemId, quantity, description = '', idempotencyKey = null } = req.body;
-    
+
     if (!clientId || !itemId || !quantity || quantity <= 0) {
       return res.status(400).json({
         success: false,
         message: "clientId, itemId, and positive quantity are required"
       });
     }
-    
+
     // Get contract and item
     const contract = await Contract.findOne({
       client: clientId,
       credit_enabled: true,
       status: "active"
     }).populate('client').populate('building');
-    
+
     if (!contract) {
       return res.status(404).json({
         success: false,
         message: "No active credit-enabled contract found for this client"
       });
     }
-    
+
     // Get building to fetch creditValue
     const building = contract.building || await Building.findById(contract.building);
     if (!building) {
@@ -77,7 +77,7 @@ export const consumeCreditsForItem = async (req, res) => {
         message: "Building not found for this contract"
       });
     }
-    
+
     const item = await CreditCustomItem.findById(itemId);
     if (!item || !item.active) {
       return res.status(404).json({
@@ -85,21 +85,21 @@ export const consumeCreditsForItem = async (req, res) => {
         message: "Custom item not found or inactive"
       });
     }
-    
+
     if (item.pricingMode !== 'credits') {
       return res.status(400).json({
         success: false,
         message: "Item must be credit-priced to consume credits"
       });
     }
-    
+
     const creditsToConsume = quantity * item.unitCredits;
     const creditValue = building.creditValue || 500;
-    
+
     // Get current wallet balance
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const currentBalance = wallet?.balance || 0;
-    
+
     // ENFORCE NO NEGATIVE BALANCE: Block consumption if insufficient credits
     if (currentBalance < creditsToConsume) {
       return res.status(400).json({
@@ -112,7 +112,7 @@ export const consumeCreditsForItem = async (req, res) => {
         }
       });
     }
-    
+
     // Create usage transaction
     const transaction = await CreditTransaction.create({
       clientId,
@@ -153,20 +153,20 @@ export const consumeCreditsForItem = async (req, res) => {
         }
       }
     });
-    
+
     // Update wallet balance (will not go negative due to check above)
     await ClientCreditWallet.findOneAndUpdate(
       { client: clientId },
-      { 
+      {
         $inc: { balance: -creditsToConsume },
-        $set: { 
+        $set: {
           creditValue: creditValue,
           status: "active"
         }
       },
       { upsert: true, runValidators: true }
     );
-    
+
     const newBalance = currentBalance - creditsToConsume;
 
     // If balance is now exhausted (<= 0) and was > 0 before, notify client
@@ -242,7 +242,7 @@ export const consumeCreditsForItem = async (req, res) => {
         }
       }
     });
-    
+
   } catch (error) {
     console.error("Error consuming credits for item:", error);
     return res.status(500).json({
@@ -255,7 +255,7 @@ export const consumeCreditsForItem = async (req, res) => {
 export const getCreditAlerts = async (req, res) => {
   try {
     const alerts = await getClientsWithCreditAlerts();
-    
+
     return res.json({
       success: true,
       data: {
@@ -268,7 +268,7 @@ export const getCreditAlerts = async (req, res) => {
         }
       }
     });
-    
+
   } catch (error) {
     console.error("Error getting credit alerts:", error);
     return res.status(500).json({
@@ -282,14 +282,14 @@ export const getCreditAlerts = async (req, res) => {
 export const triggerCreditConsolidation = async (req, res) => {
   try {
     const { year, month, clientId } = req.body;
-    
+
     // If clientId is provided, use the single client exceeded invoice endpoint
     if (clientId) {
       return await generateExceededCreditsInvoice(req, res);
     }
-    
+
     let results;
-    
+
     if (year && month) {
       // Consolidate specific month
       results = await generateMonthlyCreditInvoices(year, month);
@@ -297,13 +297,13 @@ export const triggerCreditConsolidation = async (req, res) => {
       // Consolidate previous month
       results = await runPreviousMonthConsolidation();
     }
-    
+
     return res.json({
       success: true,
       message: `Credit consolidation completed. Created ${results.invoices_created} invoices.`,
       data: results
     });
-    
+
   } catch (error) {
     console.error("Error triggering credit consolidation:", error);
     return res.status(500).json({
@@ -317,35 +317,35 @@ export const triggerCreditConsolidation = async (req, res) => {
 export const getClientCreditTransactions = async (req, res) => {
   try {
     let { clientId } = req.params;
-    
+
     // If no clientId in params, use authenticated user's client
     if (!clientId && req.clientId) {
       clientId = req.clientId;
     }
-    
+
     if (!clientId) {
       return res.status(400).json({
         success: false,
         message: "Client ID is required"
       });
     }
-    
+
     const { page = 1, limit = 20, type, startDate, endDate } = req.query;
-    
+
     const query = { clientId };
-    
+
     if (type && type !== 'all') {
       query.transactionType = type;
     }
-    
+
     if (startDate || endDate) {
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
-    
+
     const skip = (page - 1) * limit;
-    
+
     const [transactions, total] = await Promise.all([
       CreditTransaction.find(query)
         .sort({ createdAt: -1 })
@@ -356,7 +356,7 @@ export const getClientCreditTransactions = async (req, res) => {
         .lean(),
       CreditTransaction.countDocuments(query)
     ]);
-    
+
     return res.json({
       success: true,
       data: {
@@ -369,7 +369,7 @@ export const getClientCreditTransactions = async (req, res) => {
         }
       }
     });
-    
+
   } catch (error) {
     console.error("Error getting credit transactions:", error);
     return res.status(500).json({
@@ -383,21 +383,21 @@ export const getClientCreditTransactions = async (req, res) => {
 export const grantCredits = async (req, res) => {
   try {
     const { clientId, credits, idempotencyKey = null, reason } = req.body;
-    
+
     if (!clientId || !credits || credits <= 0) {
       return res.status(400).json({
         success: false,
         message: "Client ID and positive credit amount are required"
       });
     }
-    
+
     // Get contract and building for credit value
     const contract = await Contract.findOne({
       client: clientId,
       credit_enabled: true,
       status: "active"
     }).populate('building').sort({ createdAt: -1 });
-    
+
     if (!contract) {
       return res.status(404).json({
         success: false,
@@ -415,7 +415,7 @@ export const grantCredits = async (req, res) => {
 
     const creditValue = building.creditValue || 500;
     let transaction = null;
-    
+
     // Create credit transaction
     transaction = await CreditTransaction.create({
       clientId,
@@ -454,13 +454,13 @@ export const grantCredits = async (req, res) => {
         }
       }
     });
-    
+
     // Update client credit wallet
     await ClientCreditWallet.findOneAndUpdate(
       { client: clientId },
-      { 
+      {
         $inc: { balance: parseInt(credits) },
-        $set: { 
+        $set: {
           creditValue: creditValue,
           status: "active"
         }
@@ -484,7 +484,7 @@ export const grantCredits = async (req, res) => {
         creditValue
       }
     });
-    
+
     return res.json({
       success: true,
       message: `Successfully granted ${credits} credits (added to wallet)`,
@@ -494,9 +494,149 @@ export const grantCredits = async (req, res) => {
         credit_value: creditValue
       }
     });
-    
+
   } catch (error) {
     console.error("Error granting credits:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// GET /api/credits/grant/preview - Preview credit purchase invoice
+export const deductCredits = async (req, res) => {
+  try {
+    const { clientId, credits, idempotencyKey = null, reason } = req.body;
+
+    if (!clientId || !credits || credits <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Client ID and positive credit amount are required"
+      });
+    }
+
+    // Get contract and building for credit value
+    const contract = await Contract.findOne({
+      client: clientId,
+      credit_enabled: true,
+      status: "active"
+    }).populate('building').sort({ createdAt: -1 });
+
+    if (!contract) {
+      return res.status(404).json({
+        success: false,
+        message: "No active credit-enabled contract found for this client"
+      });
+    }
+
+    const building = contract.building || await Building.findById(contract.building);
+    if (!building) {
+      return res.status(404).json({
+        success: false,
+        message: "Building not found for this contract"
+      });
+    }
+
+    const creditValue = building.creditValue || 500;
+
+    // Check balance first
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const currentBalance = wallet?.balance || 0;
+
+    if (currentBalance < credits) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient credit balance",
+        data: {
+          required: credits,
+          available: currentBalance,
+          shortage: credits - currentBalance
+        }
+      });
+    }
+
+    // Create credit transaction
+    const transaction = await CreditTransaction.create({
+      clientId,
+      contractId: contract._id,
+      itemId: null,
+      itemSnapshot: {
+        name: 'Manual Deduction',
+        unit: 'credits',
+        pricingMode: 'credits',
+        unitCredits: 1,
+        unitPriceINR: null,
+        taxable: false,
+        gstRate: 0,
+        zohoItemId: null
+      },
+      quantity: credits,
+      transactionType: 'deduct', // Explicitly marked as manual deduction
+      pricingSnapshot: {
+        pricingMode: 'credits',
+        unitCredits: 1,
+        unitPriceINR: null,
+        creditValueINR: creditValue
+      },
+      creditsDelta: -credits,
+      amountINRDelta: 0,
+      purpose: 'Manual deduction',
+      description: reason || `Admin deducted ${credits} credits`,
+      status: 'completed',
+      createdBy: req.user?.id || req.user?._id,
+      relatedInvoiceId: null,
+      idempotencyKey,
+      metadata: {
+        customData: {
+          deductedBy: req.user?.name || req.user?.email || 'Admin',
+          autoInvoice: false
+        }
+      }
+    });
+
+    // Update client credit wallet
+    await ClientCreditWallet.findOneAndUpdate(
+      { client: clientId },
+      {
+        $inc: { balance: -credits },
+        $set: {
+          creditValue: creditValue,
+          status: "active"
+        }
+      },
+      { upsert: true }
+    );
+
+    console.log(`Deducted ${credits} credits from client ${clientId}`);
+
+    // Activity log: credits deducted
+    await logActivity({
+      req,
+      action: 'UPDATE',
+      entity: 'Credits',
+      entityId: clientId,
+      description: `Deducted ${credits} credits from client`,
+      metadata: {
+        transactionId: transaction._id,
+        clientId,
+        creditsDeducted: credits,
+        creditValue
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: `Successfully deducted ${credits} credits`,
+      data: {
+        transaction: transaction._id,
+        credits_deducted: credits,
+        new_balance: currentBalance - credits
+      }
+    });
+
+  } catch (error) {
+    console.error("Error deducting credits:", error);
     return res.status(500).json({
       success: false,
       message: error.message
@@ -508,25 +648,25 @@ export const grantCredits = async (req, res) => {
 export const previewCreditGrant = async (req, res) => {
   try {
     const { clientId, credits, taxable = true, gstRate = 18 } = req.query;
-    
+
     if (!clientId || !credits || credits <= 0) {
       return res.status(400).json({
         success: false,
         message: "Client ID and positive credit amount are required"
       });
     }
-    
+
     const preview = await previewCreditPurchaseInvoice(
-      clientId, 
-      parseInt(credits), 
+      clientId,
+      parseInt(credits),
       { taxable: taxable === 'true', gstRate: parseFloat(gstRate) }
     );
-    
+
     return res.json({
       success: true,
       data: preview
     });
-    
+
   } catch (error) {
     console.error("Error previewing credit grant:", error);
     return res.status(500).json({
@@ -540,28 +680,28 @@ export const previewCreditGrant = async (req, res) => {
 export const generateExceededCreditsInvoice = async (req, res) => {
   try {
     const { clientId, year, month, preview = false, singleInvoice = true } = req.body;
-    
+
     if (!clientId || !year || !month) {
       return res.status(400).json({
         success: false,
         message: "Client ID, year, and month are required"
       });
     }
-    
+
     // Get client and contract
     const contract = await Contract.findOne({
       client: clientId,
       credit_enabled: true,
       status: "active"
     }).populate('client').populate('building');
-    
+
     if (!contract) {
       return res.status(404).json({
         success: false,
         message: "No active credit-enabled contract found for this client"
       });
     }
-    
+
     // Get building for creditValue
     const building = contract.building || await Building.findById(contract.building);
     if (!building) {
@@ -570,13 +710,13 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         message: "Building not found for this contract"
       });
     }
-    
+
     const billingStart = new Date(year, month - 1, 1);
     const billingEnd = new Date(year, month, 0);
-    
+
     // Calculate exceeded credits by item
     const exceededData = await calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract, building);
-    
+
     if (preview) {
       return res.json({
         success: true,
@@ -597,7 +737,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         }
       });
     }
-    
+
     // If singleInvoice is requested, prevent duplicates for the period
     if (singleInvoice) {
       const existingInvoice = await Invoice.findOne({
@@ -606,7 +746,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         "billing_period.start": billingStart,
         "billing_period.end": billingEnd
       });
-      
+
       if (existingInvoice) {
         return res.status(409).json({
           success: false,
@@ -614,7 +754,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         });
       }
     }
-    
+
     if (exceededData.extra <= 0) {
       return res.json({
         success: true,
@@ -626,7 +766,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         }
       });
     }
-    
+
     // Create invoice with item breakdown
     const invoice = await createExceededCreditsInvoice({
       client: contract.client,
@@ -637,7 +777,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
       singleInvoice,
       building
     });
-    
+
     return res.json({
       success: true,
       message: `Successfully created exceeded credits invoice`,
@@ -654,7 +794,7 @@ export const generateExceededCreditsInvoice = async (req, res) => {
         items: exceededData.items
       }
     });
-    
+
   } catch (error) {
     console.error("Error generating exceeded credits invoice:", error);
     return res.status(500).json({
@@ -725,7 +865,7 @@ export const recordCreditTransaction = async (req, res) => {
           message: "Custom item not found"
         });
       }
-      
+
       finalItemSnapshot = {
         name: customItem.name,
         unit: customItem.unit,
@@ -788,9 +928,9 @@ export const recordCreditTransaction = async (req, res) => {
     if (finalItemSnapshot.pricingMode === 'credits') {
       await ClientCreditWallet.findOneAndUpdate(
         { client: clientId },
-        { 
+        {
           $inc: { balance: creditsDelta },
-          $set: { 
+          $set: {
             creditValue: creditValue,
             status: "active"
           }
@@ -876,31 +1016,31 @@ export const updateContractCredits = async (req, res) => {
   try {
     const { contractId } = req.params;
     const { credit_enabled, allocated_credits, credit_value, credit_terms_days } = req.body;
-    
+
     const updateData = {};
-    
+
     if (typeof credit_enabled === 'boolean') {
       updateData.credit_enabled = credit_enabled;
     }
-    
+
     if (allocated_credits !== undefined) {
       updateData.allocated_credits = parseInt(allocated_credits);
     }
-    
+
     if (credit_value !== undefined) {
       updateData.credit_value = parseFloat(credit_value);
     }
-    
+
     if (credit_terms_days !== undefined) {
       updateData.credit_terms_days = parseInt(credit_terms_days);
     }
-    
+
     const contract = await Contract.findByIdAndUpdate(
       contractId,
       updateData,
       { new: true, runValidators: true }
     ).populate('client');
-    
+
     if (!contract) {
       return res.status(404).json({
         success: false,
@@ -910,14 +1050,14 @@ export const updateContractCredits = async (req, res) => {
     if (credit_enabled && contract.client) {
       await ClientCreditWallet.findOneAndUpdate(
         { client: contract.client._id },
-        { 
+        {
           creditValue: contract.credit_value || 500,
           status: "active"
         },
         { upsert: true }
       );
     }
-    
+
     return res.json({
       success: true,
       message: "Contract credit settings updated successfully",
@@ -929,7 +1069,7 @@ export const updateContractCredits = async (req, res) => {
         credit_terms_days: contract.credit_terms_days
       }
     });
-    
+
   } catch (error) {
     console.error("Error updating contract credits:", error);
     return res.status(500).json({
@@ -943,7 +1083,7 @@ export const updateContractCredits = async (req, res) => {
 async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd, contract, building) {
   const allocatedCredits = contract.allocated_credits || 0;
   const creditValue = building?.creditValue || 500;
-  
+
   // Get all credit transactions for the period
   const transactions = await CreditTransaction.find({
     clientId: new mongoose.Types.ObjectId(clientId),
@@ -952,15 +1092,15 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
     createdAt: { $gte: billingStart, $lte: billingEnd },
     creditsDelta: { $lt: 0 } // Only usage transactions (negative delta)
   }).sort({ createdAt: 1 });
-  
+
   // Group by item
   const itemUsage = {};
   let totalUsedCredits = 0;
-  
+
   for (const transaction of transactions) {
     const creditsUsed = Math.abs(transaction.creditsDelta);
     totalUsedCredits += creditsUsed;
-    
+
     let itemKey, itemName;
     if (transaction.itemId) {
       itemKey = transaction.itemId.toString();
@@ -970,7 +1110,7 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
       itemKey = 'general_usage';
       itemName = transaction.purpose || 'General Usage';
     }
-    
+
     if (!itemUsage[itemKey]) {
       itemUsage[itemKey] = {
         name: itemName,
@@ -980,22 +1120,22 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
         transactions: []
       };
     }
-    
+
     itemUsage[itemKey].usedCredits += creditsUsed;
     itemUsage[itemKey].transactions.push(transaction);
   }
-  
+
   // Calculate exceeded credits per item (proportional allocation)
   const totalExtraCredits = Math.max(0, totalUsedCredits - allocatedCredits);
   const items = [];
-  
+
   if (totalExtraCredits > 0) {
     for (const [itemKey, usage] of Object.entries(itemUsage)) {
       // Proportional allocation of exceeded credits
       const proportion = usage.usedCredits / totalUsedCredits;
       const extraCredits = Math.round(totalExtraCredits * proportion);
       const amount = extraCredits * creditValue;
-      
+
       if (extraCredits > 0) {
         items.push({
           itemKey,
@@ -1008,11 +1148,11 @@ async function calculateExceededCreditsByItem(clientId, billingStart, billingEnd
       }
     }
   }
-  
+
   const subTotal = items.reduce((sum, item) => sum + item.amount, 0);
   const gst = Math.round(subTotal * 0.18 * 100) / 100;
   const total = subTotal + gst;
-  
+
   return {
     allocated: allocatedCredits,
     used: totalUsedCredits,
@@ -1034,10 +1174,10 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
     invoiceNumber = `${invoiceNumber}-${rand4}`;
   }
   const monthName = billingStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  
+
   // Create line items from exceeded credits by item
   const lineItems = [];
-  
+
   for (const item of exceededData.items) {
     lineItems.push({
       description: `Exceeded Credits - ${item.name} (${monthName})`,
@@ -1053,7 +1193,7 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
       zoho_item_id: null // Could be mapped from itemSnapshot if available
     });
   }
-  
+
   // Create invoice
   const invoice = await Invoice.create({
     invoice_number: invoiceNumber,
@@ -1064,24 +1204,24 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
     type: singleInvoice ? "credit_monthly" : "regular",
     category: "exceeded_credits",
     source: "local",
-    
+
     date: billingStart,
     due_date: new Date(billingEnd.getFullYear(), billingEnd.getMonth() + 1, 2),
     billing_period: {
       start: billingStart,
       end: billingEnd
     },
-    
+
     line_items: lineItems,
     sub_total: exceededData.subTotal,
     tax_total: exceededData.gst,
     total: exceededData.total,
     amount_paid: 0,
     balance: exceededData.total,
-    
+
     status: "draft",
     notes: `Exceeded credits invoice for ${monthName}. Allocated: ${exceededData.allocated} credits, Used: ${exceededData.used} credits, Extra: ${exceededData.extra} credits.`,
-    
+
     // Zoho Books fields
     currency_code: "INR",
     exchange_rate: 1,
@@ -1090,7 +1230,7 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
     payment_terms: contract.credit_terms_days || 30,
     payment_terms_label: `Net ${contract.credit_terms_days || 30}`,
     is_inclusive_tax: false,
-    
+
     // Client address mapping (if available)
     ...(client.billingAddress && {
       billing_address: {
@@ -1103,21 +1243,21 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
         phone: client.phone
       }
     }),
-    
+
     // Map customer for Zoho integration
     customer_id: client.zohoBooksContactId,
     gst_no: client.gstNo
   });
-  
+
   console.log(`Created exceeded credits invoice ${invoice._id} locally with number ${invoiceNumber}`);
-  
+
   // Push to Zoho Books (same pattern as createInvoiceFromContract)
   try {
     if (client.zohoBooksContactId) {
       const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
       const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject ? client.toObject() : client);
       const invoiceData = zohoResponse.invoice || zohoResponse;
-      
+
       if (invoiceData && invoiceData.invoice_id) {
         invoice.zoho_invoice_id = invoiceData.invoice_id;
         invoice.zoho_invoice_number = invoiceData.invoice_number;
@@ -1125,7 +1265,7 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
         invoice.zoho_pdf_url = invoiceData.pdf_url;
         invoice.invoice_url = invoiceData.invoice_url;
         await invoice.save();
-        
+
         console.log(`Pushed exceeded credits invoice ${invoice._id} to Zoho Books: ${invoiceData.invoice_id}`);
       } else {
         console.warn(`Zoho Books did not return invoice_id for exceeded credits invoice ${invoice._id}`);
@@ -1137,6 +1277,6 @@ async function createExceededCreditsInvoice({ client, contract, billingStart, bi
     console.error(`Failed to push exceeded credits invoice ${invoice._id} to Zoho Books:`, zohoError.message);
     // Do not fail invoice creation if Zoho push fails
   }
-  
+
   return invoice;
 };
