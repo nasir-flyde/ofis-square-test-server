@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import MeetingRoom from "../models/meetingRoomModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
-import MeetingRoomPricing from "../models/meetingRoomPricingModel.js";
 import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
@@ -72,7 +71,7 @@ function computeInvoiceTotals(baseAmount, percent) {
 }
 
 // Resolve discount cap based on flag and available configs
-async function resolveDiscountCap({ room, pricing, usingDefaultBuildingDiscount }) {
+async function resolveDiscountCap({ room, usingDefaultBuildingDiscount }) {
   const defaultCap = Number(process.env.MEETING_DISCOUNT_DEFAULT_CAP_PERCENT || 10);
   let buildingCap;
   try {
@@ -327,7 +326,6 @@ export const createBooking = async (req, res) => {
 
     // Calculate duration and pricing
     const durationHours = (endDt - startDt) / (1000 * 60 * 60);
-    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: roomId });
     // For cash/card payments we use hourly pricing
     const hourlyRate = (room.pricing?.hourlyRate ?? 500); // Default hourly rate fallback
     const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
@@ -355,7 +353,7 @@ export const createBooking = async (req, res) => {
         return res.status(400).json({ success: false, code: "DISCOUNT_NOT_ALLOWED_WITH_CREDITS", message: "Discounts are not applicable when paying with credits" });
       }
       try {
-        discountCap = await resolveDiscountCap({ room, pricing, usingDefaultBuildingDiscount });
+        discountCap = await resolveDiscountCap({ room, usingDefaultBuildingDiscount });
       } catch (e) {
         discountCap = Number(process.env.MEETING_DISCOUNT_DEFAULT_CAP_PERCENT || 10);
       }
@@ -1512,8 +1510,7 @@ export const requestDiscount = async (req, res) => {
       return res.status(400).json({ success: false, code: "DISCOUNT_NOT_ALLOWED_WITH_CREDITS", message: "Discounts are not applicable when paying with credits" });
     }
 
-    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
-    const cap = await resolveDiscountCap({ room: booking.room, pricing, usingDefaultBuildingDiscount });
+    const cap = await resolveDiscountCap({ room: booking.room, usingDefaultBuildingDiscount });
     const requestedDiscountPercent = Number(percent);
 
     // Within cap -> auto-apply
@@ -1612,7 +1609,7 @@ export const approveDiscount = async (req, res) => {
     if (booking.discountStatus !== 'pending') {
       return res.status(400).json({ success: false, message: 'No pending discount request to approve' });
     }
-    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
+
     const hourlyRate = (booking.room?.pricing?.hourlyRate ?? 500);
 
     const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);
@@ -1703,7 +1700,7 @@ export const rejectDiscount = async (req, res) => {
     booking.discountAmount = 0;
 
     // If no invoice exists yet, create base invoice so payment can proceed
-    const pricing = await MeetingRoomPricing.findOne({ meetingRoom: booking.room._id }).lean();
+
     const hourlyRate = (booking.room?.pricing?.hourlyRate ?? 500);
 
     const durationHours = (new Date(booking.end) - new Date(booking.start)) / (1000 * 60 * 60);

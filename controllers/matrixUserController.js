@@ -3,7 +3,6 @@ import RFIDCard from "../models/rfidCardModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
-import EnrollmentDetail from "../models/enrollmentDetailModel.js";
 import DayPass from "../models/dayPassModel.js";
 import MeetingBooking from "../models/meetingBookingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
@@ -191,7 +190,7 @@ export const listMatrixUsers = async (req, res) => {
       MatrixUser.countDocuments(filter),
     ]);
 
-    return res.json({ success: true, data: items, pagination: { currentPage: Number(page)||1, totalPages: Math.ceil(total/Number(limit||1)), totalRecords: total } });
+    return res.json({ success: true, data: items, pagination: { currentPage: Number(page) || 1, totalPages: Math.ceil(total / Number(limit || 1)), totalRecords: total } });
   } catch (err) {
     await logErrorActivity(req, err, 'MatrixUser:List');
     return res.status(500).json({ success: false, message: 'Failed to list matrix users' });
@@ -272,34 +271,34 @@ export const addCardRef = async (req, res) => {
   }
 };
 
-export const addEnrollment = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { deviceId, externalDeviceId, refId, status = 'ENROLLED', meta } = req.body || {};
-    if (!deviceId && !externalDeviceId) {
-      return res.status(400).json({ success: false, message: 'deviceId or externalDeviceId is required' });
-    }
+// export const addEnrollment = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { deviceId, externalDeviceId, refId, status = 'ENROLLED', meta } = req.body || {};
+//     if (!deviceId && !externalDeviceId) {
+//       return res.status(400).json({ success: false, message: 'deviceId or externalDeviceId is required' });
+//     }
 
-    if (deviceId) {
-      const dev = await MatrixDevice.findById(deviceId).select('_id');
-      if (!dev) return res.status(404).json({ success: false, message: 'Matrix device not found' });
-    }
+//     if (deviceId) {
+//       const dev = await MatrixDevice.findById(deviceId).select('_id');
+//       if (!dev) return res.status(404).json({ success: false, message: 'Matrix device not found' });
+//     }
 
-    const enrollment = { deviceId, externalDeviceId, refId, status, meta, enrolledAt: new Date() };
-    const updated = await MatrixUser.findByIdAndUpdate(
-      id,
-      { $push: { enrollments: enrollment } },
-      { new: true }
-    );
-    if (!updated) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+//     const enrollment = { deviceId, externalDeviceId, refId, status, meta, enrolledAt: new Date() };
+//     const updated = await MatrixUser.findByIdAndUpdate(
+//       id,
+//       { $push: { enrollments: enrollment } },
+//       { new: true }
+//     );
+//     if (!updated) return res.status(404).json({ success: false, message: 'Matrix user not found' });
 
-    await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { addEnrollment: enrollment });
-    return res.json({ success: true, data: updated });
-  } catch (err) {
-    await logErrorActivity(req, err, 'MatrixUser:AddEnrollment');
-    return res.status(500).json({ success: false, message: 'Failed to add enrollment' });
-  }
-};
+//     await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { addEnrollment: enrollment });
+//     return res.json({ success: true, data: updated });
+//   } catch (err) {
+//     await logErrorActivity(req, err, 'MatrixUser:AddEnrollment');
+//     return res.status(500).json({ success: false, message: 'Failed to add enrollment' });
+//   }
+// };
 
 export const setCardCredentialVerified = async (req, res) => {
   try {
@@ -382,7 +381,7 @@ export const assignToDevice = async (req, res) => {
       try {
         const dev = await MatrixDevice.findById(deviceId).select('device_id').lean();
         resolvedDeviceId = dev?.device_id;
-      } catch {}
+      } catch { }
     }
     if (!resolvedDeviceId) {
       return res.status(400).json({ success: false, message: 'device_id (or deviceId resolvable to device_id) is required' });
@@ -397,7 +396,7 @@ export const assignToDevice = async (req, res) => {
     if (ok) {
       try {
         await MatrixUser.findByIdAndUpdate(id, { $set: { isDeviceAssigned: true, isEnrolled: true } });
-      } catch {}
+      } catch { }
       await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { assignToDevice: { device_id: resolvedDeviceId } });
     }
     return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
@@ -407,99 +406,99 @@ export const assignToDevice = async (req, res) => {
   }
 };
 
-export const enrollCardToDevice = async (req, res) => {
-  try {
-    const { id } = req.params; // MatrixUser _id
-    const { policyId, enrollmentDetailId } = req.body || {};
+// export const enrollCardToDevice = async (req, res) => {
+//   try {
+//     const { id } = req.params; // MatrixUser _id
+//     const { policyId, enrollmentDetailId } = req.body || {};
 
-    if (!policyId) return res.status(400).json({ success: false, message: 'policyId is required' });
-    if (!enrollmentDetailId) return res.status(400).json({ success: false, message: 'enrollmentDetailId is required' });
+//     if (!policyId) return res.status(400).json({ success: false, message: 'policyId is required' });
+//     if (!enrollmentDetailId) return res.status(400).json({ success: false, message: 'enrollmentDetailId is required' });
 
-    // Load enrollment detail to get enrollType and enrollCount
-    const detail = await EnrollmentDetail.findById(enrollmentDetailId).lean();
-    if (!detail) return res.status(404).json({ success: false, message: 'EnrollmentDetail not found' });
-    const enrollType = detail?.enroll?.enrollType || 'card';
-    const enrollCount = Number(detail?.enroll?.enrollCount || 1);
+//     // Load enrollment detail to get enrollType and enrollCount
+//     const detail = await EnrollmentDetail.findById(enrollmentDetailId).lean();
+//     if (!detail) return res.status(404).json({ success: false, message: 'EnrollmentDetail not found' });
+//     const enrollType = detail?.enroll?.enrollType || 'card';
+//     const enrollCount = Number(detail?.enroll?.enrollCount || 1);
 
-    const user = await MatrixUser.findById(id).select('externalUserId').lean();
-    if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
-    if (!user.externalUserId) return res.status(400).json({ success: false, message: 'Matrix user externalUserId missing' });
+//     const user = await MatrixUser.findById(id).select('externalUserId').lean();
+//     if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
+//     if (!user.externalUserId) return res.status(400).json({ success: false, message: 'Matrix user externalUserId missing' });
 
-    const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
-    if (!policy || !Array.isArray(policy.accessPointIds) || policy.accessPointIds.length === 0) {
-      return res.status(404).json({ success: false, message: 'Policy not found or has no access points' });
-    }
+//     const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
+//     if (!policy || !Array.isArray(policy.accessPointIds) || policy.accessPointIds.length === 0) {
+//       return res.status(404).json({ success: false, message: 'Policy not found or has no access points' });
+//     }
 
-    const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } })
-      .select('deviceBindings')
-      .lean();
-    const matrixDeviceObjIds = [];
-    for (const ap of accessPoints) {
-      const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
-      for (const b of bindings) {
-        if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
-          matrixDeviceObjIds.push(String(b.deviceId));
-        }
-      }
-    }
-    const uniqueDeviceObjIds = Array.from(new Set(matrixDeviceObjIds));
-    if (!uniqueDeviceObjIds.length) {
-      return res.status(404).json({ success: false, message: 'No Matrix devices bound to the policy access points' });
-    }
+//     const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } })
+//       .select('deviceBindings')
+//       .lean();
+//     const matrixDeviceObjIds = [];
+//     for (const ap of accessPoints) {
+//       const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+//       for (const b of bindings) {
+//         if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
+//           matrixDeviceObjIds.push(String(b.deviceId));
+//         }
+//       }
+//     }
+//     const uniqueDeviceObjIds = Array.from(new Set(matrixDeviceObjIds));
+//     if (!uniqueDeviceObjIds.length) {
+//       return res.status(404).json({ success: false, message: 'No Matrix devices bound to the policy access points' });
+//     }
 
-    // Resolve Matrix device_id strings and fetch per-device deviceType (Number)
-    const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } })
-      .select('_id name device_id deviceType')
-      .lean();
+//     // Resolve Matrix device_id strings and fetch per-device deviceType (Number)
+//     const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } })
+//       .select('_id name device_id deviceType')
+//       .lean();
 
-    const results = [];
-    let successCount = 0;
+//     const results = [];
+//     let successCount = 0;
 
-    for (const d of devices) {
-      // Enforce using numeric `device` field for COSEC device-id
-      const deviceParam = (typeof d?.device === 'number' && Number.isFinite(d.device)) ? d.device : null;
-      if (deviceParam === null) {
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: 'Missing numeric `device` on MatrixDevice (device-id must use `device`)' });
-        continue;
-      }
-      const deviceTypeNum = Number(d?.deviceType);
-      const allowedDeviceTypes = [1, 16, 17];
-      if (!allowedDeviceTypes.includes(deviceTypeNum)) {
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: `Unsupported deviceType ${d?.deviceType}` });
-        continue;
-      }
-      try {
-        const resp = await matrixApi.enrollCardToDevice({ externalUserId: user.externalUserId, device: deviceParam, deviceType: deviceTypeNum, enrollType, enrollCount });
-        const ok = !!resp?.ok;
-        if (ok) {
-          successCount += 1;
-          // Attach enrollment entry with reference to EnrollmentDetail
-          try {
-            await MatrixUser.findByIdAndUpdate(
-              id,
-              { $push: { enrollments: { deviceId: d._id, status: 'ENROLLED', enrolledAt: new Date(), enrollmentDetailId } } }
-            );
-          } catch (e) {
-            await logErrorActivity(req, e, 'MatrixUser:EnrollEntryAttach', { id, deviceMongoId: d._id, enrollmentDetailId });
-          }
-        }
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok, status: resp?.status || 0, data: resp?.data || null, deviceType: deviceTypeNum, enrollType, enrollCount });
-      } catch (e) {
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok: false, error: e?.message });
-      }
-    }
+//     for (const d of devices) {
+//       // Enforce using numeric `device` field for COSEC device-id
+//       const deviceParam = (typeof d?.device === 'number' && Number.isFinite(d.device)) ? d.device : null;
+//       if (deviceParam === null) {
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: 'Missing numeric `device` on MatrixDevice (device-id must use `device`)' });
+//         continue;
+//       }
+//       const deviceTypeNum = Number(d?.deviceType);
+//       const allowedDeviceTypes = [1, 16, 17];
+//       if (!allowedDeviceTypes.includes(deviceTypeNum)) {
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: `Unsupported deviceType ${d?.deviceType}` });
+//         continue;
+//       }
+//       try {
+//         const resp = await matrixApi.enrollCardToDevice({ externalUserId: user.externalUserId, device: deviceParam, deviceType: deviceTypeNum, enrollType, enrollCount });
+//         const ok = !!resp?.ok;
+//         if (ok) {
+//           successCount += 1;
+//           // Attach enrollment entry with reference to EnrollmentDetail
+//           try {
+//             await MatrixUser.findByIdAndUpdate(
+//               id,
+//               { $push: { enrollments: { deviceId: d._id, status: 'ENROLLED', enrolledAt: new Date(), enrollmentDetailId } } }
+//             );
+//           } catch (e) {
+//             await logErrorActivity(req, e, 'MatrixUser:EnrollEntryAttach', { id, deviceMongoId: d._id, enrollmentDetailId });
+//           }
+//         }
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok, status: resp?.status || 0, data: resp?.data || null, deviceType: deviceTypeNum, enrollType, enrollCount });
+//       } catch (e) {
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok: false, error: e?.message });
+//       }
+//     }
 
-    if (successCount > 0) {
-      try { await MatrixUser.findByIdAndUpdate(id, { $set: { isEnrolled: true } }); } catch {}
-    }
+//     if (successCount > 0) {
+//       try { await MatrixUser.findByIdAndUpdate(id, { $set: { isEnrolled: true } }); } catch { }
+//     }
 
-    await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { enrollCardToDevice: { policyId, enrollmentDetailId, successCount, attempts: devices.length } });
-    return res.json({ success: true, successCount, attempts: devices.length, results });
-  } catch (err) {
-    await logErrorActivity(req, err, 'MatrixUser:EnrollCardToDevice');
-    return res.status(500).json({ success: false, message: 'Failed to enroll card to device' });
-  }
-};
+//     await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { enrollCardToDevice: { policyId, enrollmentDetailId, successCount, attempts: devices.length } });
+//     return res.json({ success: true, successCount, attempts: devices.length, results });
+//   } catch (err) {
+//     await logErrorActivity(req, err, 'MatrixUser:EnrollCardToDevice');
+//     return res.status(500).json({ success: false, message: 'Failed to enroll card to device' });
+//   }
+// };
 
 export const setCardCredential = async (req, res) => {
   try {
@@ -551,7 +550,7 @@ export const setCardCredential = async (req, res) => {
             }
           }
         }
-      } catch {}
+      } catch { }
 
       try {
         // Flag user verified and link the card to the user
@@ -569,7 +568,7 @@ export const setCardCredential = async (req, res) => {
             { $addToSet: { devices: { $each: resolvedDeviceMongoIds } } }
           );
         }
-      } catch {}
+      } catch { }
 
       // If dayPassId is provided, mark access control granted on that DayPass
       if (dayPassId) {
@@ -669,7 +668,7 @@ export const revokeFromDevice = async (req, res) => {
         if (rfidCardId && resolvedDeviceMongoId) {
           await RFIDCard.findByIdAndUpdate(rfidCardId, { $pull: { devices: resolvedDeviceMongoId } });
         }
-      } catch {}
+      } catch { }
       await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, { revokeFromDevice: { device_id: resolvedDeviceId, rfidCardId: rfidCardId || null } });
     }
     return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
@@ -725,12 +724,12 @@ export default {
   updateMatrixUser,
   deleteMatrixUser,
   addCardRef,
-  addEnrollment,
+  // addEnrollment,
   setCardCredentialVerified,
   setValidity,
   addAccessHistory,
   assignToDevice,
-  enrollCardToDevice,
+  // enrollCardToDevice,
   listPolicyDevices,
   revokeFromDevice,
   setCardCredential,

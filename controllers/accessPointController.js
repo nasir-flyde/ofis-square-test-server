@@ -1,21 +1,19 @@
 import mongoose from "mongoose";
 import AccessPoint from "../models/accessPointModel.js";
 import Building from "../models/buildingModel.js";
-import AccessZone from "../models/accessZoneModel.js";
 import CommonArea from "../models/commonAreaModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 // List access points with filters and pagination
 export const listAccessPoints = async (req, res) => {
   try {
-    const { buildingId, bindingType, refType, refId, zoneId, status, q, page = 1, limit = 50 } = req.query || {};
+    const { buildingId, bindingType, refType, refId, status, q, page = 1, limit = 50 } = req.query || {};
     const filter = {};
     if (buildingId) filter.buildingId = buildingId;
     if (bindingType) filter.bindingType = bindingType;
     if (status) filter.status = status;
     if (refType) filter["resource.refType"] = refType;
     if (refId) filter["resource.refId"] = refId;
-    if (zoneId) filter.zoneId = zoneId;
     if (q) {
       filter.$or = [
         { name: new RegExp(String(q), "i") },
@@ -57,7 +55,6 @@ export const createAccessPoint = async (req, res) => {
       name,
       bindingType = "custom",
       resource,
-      zoneId,
       pointType = "DOOR",
       deviceBindings = [],
       status = "active",
@@ -76,7 +73,7 @@ export const createAccessPoint = async (req, res) => {
     try {
       const building = await Building.findById(buildingId).select("_id").lean();
       if (!building) return res.status(400).json({ success: false, message: "Building not found" });
-    } catch {}
+    } catch { }
 
     // Validate CommonArea binding if provided
     let resolvedResource = resource;
@@ -105,7 +102,6 @@ export const createAccessPoint = async (req, res) => {
       name: name.trim(),
       bindingType,
       resource: resolvedResource,
-      zoneId,
       pointType: effectivePointType,
       deviceBindings,
       status,
@@ -113,22 +109,6 @@ export const createAccessPoint = async (req, res) => {
       meta,
     });
 
-    // Sync zone's matrixDevices with this AP's Matrix devices
-    if (created?.zoneId) {
-      try {
-        const devIds = (created.deviceBindings || [])
-          .filter((b) => b && b.vendor === "MATRIX_COSEC" && b.deviceId)
-          .map((b) => b.deviceId);
-        if (devIds.length) {
-          await AccessZone.updateOne(
-            { _id: created.zoneId },
-            { $addToSet: { matrixDevices: { $each: devIds } } }
-          );
-        }
-      } catch (e) {
-        await logErrorActivity(req, e, "AccessPoints:ZoneSync:Create");
-      }
-    }
 
     await logCRUDActivity(req, "CREATE", "AccessPoint", created._id, null, { buildingId, name: created.name });
     return res.status(201).json({ success: true, data: created });
@@ -159,7 +139,6 @@ export const updateAccessPoint = async (req, res) => {
       name,
       bindingType,
       resource,
-      zoneId,
       pointType,
       deviceBindings,
       status,
@@ -196,69 +175,12 @@ export const updateAccessPoint = async (req, res) => {
       }
     }
     if (validatedResource !== undefined) update.resource = validatedResource;
-    if (zoneId !== undefined) update.zoneId = zoneId;
     if (validatedPointType) update.pointType = validatedPointType;
     if (deviceBindings !== undefined) update.deviceBindings = deviceBindings;
     if (status) update.status = status;
     if (location !== undefined) update.location = location;
     if (meta !== undefined) update.meta = meta;
 
-    // Fetch previous to detect zone and device changes
-    const prev = await AccessPoint.findById(id).select("zoneId deviceBindings").lean();
-    const prevZoneId = prev?.zoneId ? String(prev.zoneId) : undefined;
-    const prevDevIdsStr = (prev?.deviceBindings || [])
-      .filter((b) => b && b.vendor === "MATRIX_COSEC" && b.deviceId)
-      .map((b) => String(b.deviceId));
-
-    const updated = await AccessPoint.findByIdAndUpdate(id, update, { new: true });
-    if (!updated) return res.status(404).json({ success: false, message: "Not found" });
-
-    // Sync zone's matrixDevices according to zone changes or deviceBinding changes
-    try {
-      const newZoneId = updated.zoneId ? String(updated.zoneId) : undefined;
-      const newDevIdsStr = (updated?.deviceBindings || [])
-        .filter((b) => b && b.vendor === "MATRIX_COSEC" && b.deviceId)
-        .map((b) => String(b.deviceId));
-
-      // Helper to convert string ids to ObjectIds
-      const toObjIds = (arr) => arr.map((s) => new mongoose.Types.ObjectId(s));
-
-      if (prevZoneId && prevZoneId !== newZoneId) {
-        // Zone changed: remove all previous deviceIds from old zone, add all new to new zone
-        if (prevDevIdsStr.length) {
-          await AccessZone.updateOne(
-            { _id: prevZoneId },
-            { $pull: { matrixDevices: { $in: toObjIds(prevDevIdsStr) } } }
-          );
-        }
-        if (newZoneId && newDevIdsStr.length) {
-          await AccessZone.updateOne(
-            { _id: newZoneId },
-            { $addToSet: { matrixDevices: { $each: toObjIds(newDevIdsStr) } } }
-          );
-        }
-      } else if (newZoneId) {
-        // Zone unchanged: sync differences
-        const prevSet = new Set(prevDevIdsStr);
-        const newSet = new Set(newDevIdsStr);
-        const toAdd = Array.from(newSet).filter((x) => !prevSet.has(x));
-        const toRemove = Array.from(prevSet).filter((x) => !newSet.has(x));
-        if (toAdd.length) {
-          await AccessZone.updateOne(
-            { _id: newZoneId },
-            { $addToSet: { matrixDevices: { $each: toObjIds(toAdd) } } }
-          );
-        }
-        if (toRemove.length) {
-          await AccessZone.updateOne(
-            { _id: newZoneId },
-            { $pull: { matrixDevices: { $in: toObjIds(toRemove) } } }
-          );
-        }
-      }
-    } catch (e) {
-      await logErrorActivity(req, e, "AccessPoints:ZoneSync:Update");
-    }
 
     await logCRUDActivity(req, "UPDATE", "AccessPoint", updated._id, null, update);
     return res.json({ success: true, data: updated });
@@ -275,24 +197,7 @@ export const deleteAccessPoint = async (req, res) => {
     const deleted = await AccessPoint.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ success: false, message: "Not found" });
 
-    // Remove this AP's Matrix devices from the zone if present
-    try {
-      if (deleted.zoneId) {
-        const devIdsStr = (deleted?.deviceBindings || [])
-          .filter((b) => b && b.vendor === "MATRIX_COSEC" && b.deviceId)
-          .map((b) => String(b.deviceId));
-        if (devIdsStr.length) {
-          const toObjIds = devIdsStr.map((s) => new mongoose.Types.ObjectId(s));
-          await AccessZone.updateOne(
-            { _id: deleted.zoneId },
-            { $pull: { matrixDevices: { $in: toObjIds } } }
-          );
-        }
-      }
-    } catch (e) {
-      await logErrorActivity(req, e, "AccessPoints:ZoneSync:Delete");
-    }
-
+    // Sync status or other simple delete side effects if any
     await logCRUDActivity(req, "DELETE", "AccessPoint", deleted._id, null, {});
     return res.json({ success: true, data: deleted });
   } catch (err) {

@@ -10,7 +10,7 @@ const enrollmentSchema = new Schema(
     status: { type: String, enum: ["ENROLLED", "PENDING", "FAILED", "REVOKED"], default: "ENROLLED" },
     enrolledAt: { type: Date, default: Date.now },
     meta: { type: Schema.Types.Mixed },
-    enrollmentDetailId: { type: Schema.Types.ObjectId, ref: "EnrollmentDetail" },
+    // enrollmentDetailId: { type: Schema.Types.ObjectId, ref: "EnrollmentDetail" },
   },
   { _id: false }
 );

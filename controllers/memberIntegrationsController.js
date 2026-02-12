@@ -4,7 +4,7 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import RFIDCard from "../models/rfidCardModel.js";
-import EnrollmentDetail from "../models/enrollmentDetailModel.js";
+// import EnrollmentDetail from "../models/enrollmentDetailModel.js";
 import BhaifiUser from "../models/bhaifiUserModel.js";
 import Contract from "../models/contractModel.js";
 import matrixApi from "../utils/matrixApi.js";
@@ -30,8 +30,8 @@ const normalizePhoneToUserName = (phone) => {
 };
 
 const pad2 = (n) => String(n).padStart(2, '0');
-const formatDateTime = (d) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-const endOfDayString = (d) => { const dd = new Date(d); dd.setHours(23,59,59,0); return formatDateTime(dd); };
+const formatDateTime = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+const endOfDayString = (d) => { const dd = new Date(d); dd.setHours(23, 59, 59, 0); return formatDateTime(dd); };
 const normalizeToDateTimeString = (input) => {
   if (!input) return null;
   if (Object.prototype.toString.call(input) === '[object Date]') return formatDateTime(input);
@@ -107,7 +107,7 @@ export const createMatrixUserForMember = async (req, res) => {
               const device_id = d?.device_id; if (!device_id) continue;
               try { await matrixApi.assignUserToDevice({ device_id, externalUserId }); } catch (e) { await logErrorActivity(req, e, 'MemberIntegrations:MatrixAssignDevice', { externalUserId, device_id }); }
             }
-            try { await MatrixUser.findByIdAndUpdate(user._id, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch {}
+            try { await MatrixUser.findByIdAndUpdate(user._id, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch { }
           }
         }
       } catch (e) {
@@ -118,7 +118,7 @@ export const createMatrixUserForMember = async (req, res) => {
     // Link on member and denormalize identifier
     try {
       await Member.findByIdAndUpdate(member._id, { $set: { matrixUser: user._id, matrixExternalUserId: user.externalUserId } });
-    } catch {}
+    } catch { }
 
     await logCRUDActivity(req, 'LINK', 'Member.MatrixUser', member._id, null, { matrixUserId: user._id, externalUserId: user.externalUserId });
     const fresh = await MatrixUser.findById(user._id).lean();
@@ -149,7 +149,7 @@ export const assignMatrixDeviceForMember = async (req, res) => {
     const resp = await matrixApi.assignUserToDevice({ device_id: resolvedDeviceId, externalUserId: user.externalUserId });
     const ok = !!resp?.ok;
     if (ok) {
-      try { await MatrixUser.findByIdAndUpdate(member.matrixUser, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch {}
+      try { await MatrixUser.findByIdAndUpdate(member.matrixUser, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch { }
       await logCRUDActivity(req, 'UPDATE', 'Member.MatrixUser', id, null, { assignToDevice: { device_id: resolvedDeviceId } });
     }
     return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
@@ -159,64 +159,64 @@ export const assignMatrixDeviceForMember = async (req, res) => {
   }
 };
 
-export const enrollCardToMatrixDevicesForMember = async (req, res) => {
-  try {
-    const { id } = req.params; // Member id
-    const { policyId, enrollmentDetailId } = req.body || {};
-    if (!policyId) return res.status(400).json({ success: false, message: 'policyId is required' });
-    if (!enrollmentDetailId) return res.status(400).json({ success: false, message: 'enrollmentDetailId is required' });
+// export const enrollCardToMatrixDevicesForMember = async (req, res) => {
+//   try {
+//     const { id } = req.params; // Member id
+//     const { policyId, enrollmentDetailId } = req.body || {};
+//     if (!policyId) return res.status(400).json({ success: false, message: 'policyId is required' });
+//     if (!enrollmentDetailId) return res.status(400).json({ success: false, message: 'enrollmentDetailId is required' });
 
-    const member = await Member.findById(id).select('matrixUser');
-    if (!member || !member.matrixUser) return res.status(404).json({ success: false, message: 'Member Matrix link not found' });
+//     const member = await Member.findById(id).select('matrixUser');
+//     if (!member || !member.matrixUser) return res.status(404).json({ success: false, message: 'Member Matrix link not found' });
 
-    const detail = await EnrollmentDetail.findById(enrollmentDetailId).lean();
-    if (!detail) return res.status(404).json({ success: false, message: 'EnrollmentDetail not found' });
-    const enrollType = detail?.enroll?.enrollType || 'card';
-    const enrollCount = Number(detail?.enroll?.enrollCount || 1);
+//     const detail = await EnrollmentDetail.findById(enrollmentDetailId).lean();
+//     if (!detail) return res.status(404).json({ success: false, message: 'EnrollmentDetail not found' });
+//     const enrollType = detail?.enroll?.enrollType || 'card';
+//     const enrollCount = Number(detail?.enroll?.enrollCount || 1);
 
-    const user = await MatrixUser.findById(member.matrixUser).select('externalUserId').lean();
-    if (!user?.externalUserId) return res.status(400).json({ success: false, message: 'Matrix externalUserId missing' });
+//     const user = await MatrixUser.findById(member.matrixUser).select('externalUserId').lean();
+//     if (!user?.externalUserId) return res.status(400).json({ success: false, message: 'Matrix externalUserId missing' });
 
-    const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
-    if (!policy || !Array.isArray(policy.accessPointIds) || !policy.accessPointIds.length) return res.status(404).json({ success: false, message: 'Policy not found or has no access points' });
+//     const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
+//     if (!policy || !Array.isArray(policy.accessPointIds) || !policy.accessPointIds.length) return res.status(404).json({ success: false, message: 'Policy not found or has no access points' });
 
-    const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } }).select('deviceBindings').lean();
-    const matrixDeviceObjIds = [];
-    for (const ap of accessPoints) {
-      const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
-      for (const b of bindings) if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) matrixDeviceObjIds.push(String(b.deviceId));
-    }
-    const uniqueDeviceObjIds = Array.from(new Set(matrixDeviceObjIds));
-    if (!uniqueDeviceObjIds.length) return res.status(404).json({ success: false, message: 'No Matrix devices bound to the policy access points' });
+//     const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } }).select('deviceBindings').lean();
+//     const matrixDeviceObjIds = [];
+//     for (const ap of accessPoints) {
+//       const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+//       for (const b of bindings) if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) matrixDeviceObjIds.push(String(b.deviceId));
+//     }
+//     const uniqueDeviceObjIds = Array.from(new Set(matrixDeviceObjIds));
+//     if (!uniqueDeviceObjIds.length) return res.status(404).json({ success: false, message: 'No Matrix devices bound to the policy access points' });
 
-    const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } }).select('_id name device device_id deviceType').lean();
-    const results = [];
-    let successCount = 0;
+//     const devices = await MatrixDevice.find({ _id: { $in: uniqueDeviceObjIds } }).select('_id name device device_id deviceType').lean();
+//     const results = [];
+//     let successCount = 0;
 
-    for (const d of devices) {
-      const deviceParam = (typeof d?.device === 'number' && Number.isFinite(d.device)) ? d.device : null;
-      if (deviceParam === null) { results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: 'Missing numeric `device` on MatrixDevice' }); continue; }
-      const deviceTypeNum = Number(d?.deviceType);
-      const allowedDeviceTypes = [1, 16, 17];
-      if (!allowedDeviceTypes.includes(deviceTypeNum)) { results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: `Unsupported deviceType ${d?.deviceType}` }); continue; }
-      try {
-        const resp = await matrixApi.enrollCardToDevice({ externalUserId: user.externalUserId, device: deviceParam, deviceType: deviceTypeNum, enrollType, enrollCount });
-        const ok = !!resp?.ok; if (ok) successCount += 1;
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok, status: resp?.status || 0, data: resp?.data || null, deviceType: deviceTypeNum, enrollType, enrollCount });
-      } catch (e) {
-        results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok: false, error: e?.message });
-      }
-    }
+//     for (const d of devices) {
+//       const deviceParam = (typeof d?.device === 'number' && Number.isFinite(d.device)) ? d.device : null;
+//       if (deviceParam === null) { results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: 'Missing numeric `device` on MatrixDevice' }); continue; }
+//       const deviceTypeNum = Number(d?.deviceType);
+//       const allowedDeviceTypes = [1, 16, 17];
+//       if (!allowedDeviceTypes.includes(deviceTypeNum)) { results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, ok: false, error: `Unsupported deviceType ${d?.deviceType}` }); continue; }
+//       try {
+//         const resp = await matrixApi.enrollCardToDevice({ externalUserId: user.externalUserId, device: deviceParam, deviceType: deviceTypeNum, enrollType, enrollCount });
+//         const ok = !!resp?.ok; if (ok) successCount += 1;
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok, status: resp?.status || 0, data: resp?.data || null, deviceType: deviceTypeNum, enrollType, enrollCount });
+//       } catch (e) {
+//         results.push({ device: d?.device ?? null, device_id: d?.device_id ?? null, usedDeviceParam: deviceParam, ok: false, error: e?.message });
+//       }
+//     }
 
-    if (successCount > 0) { try { await MatrixUser.findByIdAndUpdate(member.matrixUser, { $set: { isEnrolled: true } }); } catch {} }
+//     if (successCount > 0) { try { await MatrixUser.findByIdAndUpdate(member.matrixUser, { $set: { isEnrolled: true } }); } catch { } }
 
-    await logCRUDActivity(req, 'UPDATE', 'Member.MatrixUser', id, null, { enrollCardToDevice: { policyId, enrollmentDetailId, successCount, attempts: devices.length } });
-    return res.json({ success: true, successCount, attempts: devices.length, results });
-  } catch (err) {
-    await logErrorActivity(req, err, 'MemberIntegrations:MatrixEnrollCard');
-    return res.status(500).json({ success: false, message: 'Failed to enroll card to device' });
-  }
-};
+//     await logCRUDActivity(req, 'UPDATE', 'Member.MatrixUser', id, null, { enrollCardToDevice: { policyId, enrollType, enrollCount, successCount, attempts: devices.length } });
+//     return res.json({ success: true, successCount, attempts: devices.length, results });
+//   } catch (err) {
+//     await logErrorActivity(req, err, 'MemberIntegrations:MatrixEnrollCard');
+//     return res.status(500).json({ success: false, message: 'Failed to enroll card to device' });
+//   }
+// };
 
 export const setMatrixCardCredentialForMember = async (req, res) => {
   try {
@@ -262,14 +262,14 @@ export const setMatrixCardCredentialForMember = async (req, res) => {
             }
           }
         }
-      } catch {}
+      } catch { }
 
       try {
         await MatrixUser.findByIdAndUpdate(member.matrixUser, { $set: { isCardCredentialVerified: true }, $addToSet: { cards: refId } });
         if (resolvedDeviceMongoIds.length) {
           await RFIDCard.findByIdAndUpdate(refId, { $addToSet: { devices: { $each: resolvedDeviceMongoIds } } });
         }
-      } catch {}
+      } catch { }
 
       await logCRUDActivity(req, 'UPDATE', 'Member.MatrixUser', id, null, { setCardCredential: { rfidCardId: String(refId), devicesCount: resolvedDeviceMongoIds.length } });
     }
@@ -345,7 +345,7 @@ export const revokeMatrixFromDeviceForMember = async (req, res) => {
           resolvedDeviceMongoId = d?._id || null;
         }
         if (rfidCardId && resolvedDeviceMongoId) { await RFIDCard.findByIdAndUpdate(rfidCardId, { $pull: { devices: resolvedDeviceMongoId } }); }
-      } catch {}
+      } catch { }
       await logCRUDActivity(req, 'UPDATE', 'Member.MatrixUser', id, null, { revokeFromDevice: { device_id: resolvedDeviceId, rfidCardId: rfidCardId || null } });
     }
     return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
@@ -381,7 +381,7 @@ export const createBhaifiForMember = async (req, res) => {
     let existing = await BhaifiUser.findOne({ member: member._id, userName });
     if (existing) {
       // Link on member if missing
-      try { await Member.findByIdAndUpdate(member._id, { $set: { bhaifiUser: existing._id, bhaifiUserName: existing.userName } }); } catch {}
+      try { await Member.findByIdAndUpdate(member._id, { $set: { bhaifiUser: existing._id, bhaifiUserName: existing.userName } }); } catch { }
       return res.json({ success: true, message: 'Bhaifi user already exists', data: existing });
     }
 
@@ -420,7 +420,7 @@ export const createBhaifiForMember = async (req, res) => {
       } catch (e) { await logErrorActivity(req, e, 'MemberIntegrations:BhaifiAutoWhitelist', { contractId }); }
     }
 
-    try { await Member.findByIdAndUpdate(member._id, { $set: { bhaifiUser: doc._id, bhaifiUserName: doc.userName } }); } catch {}
+    try { await Member.findByIdAndUpdate(member._id, { $set: { bhaifiUser: doc._id, bhaifiUserName: doc.userName } }); } catch { }
     await logCRUDActivity(req, 'LINK', 'Member.BhaifiUser', member._id, null, { bhaifiUserId: doc._id, userName: doc.userName });
 
     return res.json({ success: true, message: 'Bhaifi user created', data: doc });
@@ -490,7 +490,7 @@ export const getBhaifiForMember = async (req, res) => {
 export default {
   createMatrixUserForMember,
   assignMatrixDeviceForMember,
-  enrollCardToMatrixDevicesForMember,
+  // enrollCardToMatrixDevicesForMember,
   setMatrixCardCredentialForMember,
   setMatrixCardVerifiedForMember,
   setMatrixValidityForMember,

@@ -37,18 +37,14 @@ router.post("/community/register", communitySignup);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);
-// Company Access login
 router.post("/company-access/login", companyAccessLogin);
-// Staff OTP login
 router.post("/staff/send-otp", sendStaffOtp);
 router.post("/staff/verify-otp", verifyStaffOtp);
 
-// Refresh token routes
 router.post("/refresh", refreshAccessToken);
 router.post("/logout", logout);
 router.post("/logout-all", authMiddleware, logoutAllDevices);
 
-// Backward-compatible aliases
 router.post("/register", clientSignup);
 router.post("/login", adminLogin);
 router.get("/me", authMiddleware, populateUserRole, getMe);

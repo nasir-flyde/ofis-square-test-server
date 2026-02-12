@@ -3,7 +3,6 @@ import { generateMonthlyCreditInvoices, runPreviousMonthConsolidation } from "..
 import CreditTransaction from "../models/creditTransactionModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import Contract from "../models/contractModel.js";
-import CreditCustomItem from "../models/creditCustomItemModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Building from "../models/buildingModel.js";
 import { previewCreditPurchaseInvoice } from "../services/invoiceService.js";
@@ -43,214 +42,6 @@ export const getClientCredits = async (req, res) => {
   }
 };
 
-// POST /api/credits/consume-item - Consume credits for a specific item (no invoice, just usage tracking)
-export const consumeCreditsForItem = async (req, res) => {
-  try {
-    const { clientId, itemId, quantity, description = '', idempotencyKey = null } = req.body;
-
-    if (!clientId || !itemId || !quantity || quantity <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "clientId, itemId, and positive quantity are required"
-      });
-    }
-
-    // Get contract and item
-    const contract = await Contract.findOne({
-      client: clientId,
-      credit_enabled: true,
-      status: "active"
-    }).populate('client').populate('building');
-
-    if (!contract) {
-      return res.status(404).json({
-        success: false,
-        message: "No active credit-enabled contract found for this client"
-      });
-    }
-
-    // Get building to fetch creditValue
-    const building = contract.building || await Building.findById(contract.building);
-    if (!building) {
-      return res.status(404).json({
-        success: false,
-        message: "Building not found for this contract"
-      });
-    }
-
-    const item = await CreditCustomItem.findById(itemId);
-    if (!item || !item.active) {
-      return res.status(404).json({
-        success: false,
-        message: "Custom item not found or inactive"
-      });
-    }
-
-    if (item.pricingMode !== 'credits') {
-      return res.status(400).json({
-        success: false,
-        message: "Item must be credit-priced to consume credits"
-      });
-    }
-
-    const creditsToConsume = quantity * item.unitCredits;
-    const creditValue = building.creditValue || 500;
-
-    // Get current wallet balance
-    const wallet = await ClientCreditWallet.findOne({ client: clientId });
-    const currentBalance = wallet?.balance || 0;
-
-    // ENFORCE NO NEGATIVE BALANCE: Block consumption if insufficient credits
-    if (currentBalance < creditsToConsume) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient credit balance",
-        data: {
-          required_credits: creditsToConsume,
-          available_credits: currentBalance,
-          shortage: creditsToConsume - currentBalance
-        }
-      });
-    }
-
-    // Create usage transaction
-    const transaction = await CreditTransaction.create({
-      clientId,
-      contractId: contract._id,
-      itemId,
-      itemSnapshot: {
-        name: item.name,
-        unit: item.unit,
-        pricingMode: item.pricingMode,
-        unitCredits: item.unitCredits,
-        unitPriceINR: item.unitPriceINR,
-        taxable: item.taxable,
-        gstRate: item.gstRate,
-        zohoItemId: item.zohoItemId
-      },
-      quantity,
-      transactionType: 'usage',
-      pricingSnapshot: {
-        pricingMode: 'credits',
-        unitCredits: item.unitCredits,
-        unitPriceINR: null,
-        creditValueINR: creditValue
-      },
-      creditsDelta: -creditsToConsume, // Negative for usage
-      amountINRDelta: 0, // No immediate INR billing
-      purpose: 'Item usage',
-      description: description || `Used ${quantity} ${item.unit} of ${item.name}`,
-      status: 'completed',
-      createdBy: req.user?.id || req.user?._id,
-      relatedInvoiceId: null,
-      idempotencyKey,
-      metadata: {
-        customData: {
-          consumedAt: new Date(),
-          buildingId: building._id,
-          buildingName: building.name,
-          creditValue: creditValue
-        }
-      }
-    });
-
-    // Update wallet balance (will not go negative due to check above)
-    await ClientCreditWallet.findOneAndUpdate(
-      { client: clientId },
-      {
-        $inc: { balance: -creditsToConsume },
-        $set: {
-          creditValue: creditValue,
-          status: "active"
-        }
-      },
-      { upsert: true, runValidators: true }
-    );
-
-    const newBalance = currentBalance - creditsToConsume;
-
-    // If balance is now exhausted (<= 0) and was > 0 before, notify client
-    if (currentBalance > 0 && newBalance <= 0) {
-      const to = { clientId };
-      try {
-        const clientDoc = await Client.findById(clientId).select('email name companyName').lean();
-        if (clientDoc?.email) to.email = clientDoc.email;
-        const clientName = clientDoc?.name || clientDoc?.companyName || 'Client';
-
-        await sendNotification({
-          to,
-          channels: { email: Boolean(to.email), sms: false },
-          templateKey: 'credits_exhausted',
-          templateVariables: {
-            clientName,
-            balance: 0
-          },
-          title: 'Credits Exhausted',
-          metadata: {
-            category: 'credits',
-            tags: ['credits_exhausted'],
-            route: `/credits/wallet/${clientId}`,
-            deepLink: `ofis://credits/wallet/${clientId}`,
-            routeParams: { clientId: String(clientId) }
-          },
-          source: 'system',
-          type: 'alert'
-        });
-      } catch (notifyErr) {
-        console.warn('consumeCreditsForItem: failed to send credits_exhausted notification:', notifyErr?.message || notifyErr);
-      }
-    }
-
-    // Activity log: credits consumed
-    await logActivity({
-      req,
-      action: 'UPDATE',
-      entity: 'Credits',
-      entityId: contract.client?._id || clientId,
-      description: `Consumed ${creditsToConsume} credits for ${item.name}`,
-      metadata: {
-        transactionId: transaction._id,
-        clientId,
-        itemId: item._id,
-        quantity,
-        creditsToConsume,
-        balanceBefore: currentBalance,
-        balanceAfter: newBalance,
-        buildingId: building._id,
-        creditValue: creditValue
-      }
-    });
-
-    return res.json({
-      success: true,
-      message: `Successfully consumed ${creditsToConsume} credits for ${item.name}`,
-      data: {
-        transaction: transaction._id,
-        item: {
-          id: item._id,
-          name: item.name,
-          quantity: quantity,
-          creditsPerUnit: item.unitCredits
-        },
-        credits_consumed: creditsToConsume,
-        balance_before: currentBalance,
-        balance_after: newBalance,
-        credit_value: creditValue,
-        building: {
-          id: building._id,
-          name: building.name
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error("Error consuming credits for item:", error);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
 
 export const getCreditAlerts = async (req, res) => {
   try {
@@ -352,7 +143,6 @@ export const getClientCreditTransactions = async (req, res) => {
         .skip(skip)
         .limit(parseInt(limit))
         .populate('createdBy', 'name email')
-        .populate('itemId', 'name code')
         .lean(),
       CreditTransaction.countDocuments(query)
     ]);
@@ -856,26 +646,11 @@ export const recordCreditTransaction = async (req, res) => {
     const creditValue = building.creditValue || 500;
     let finalItemSnapshot = itemSnapshot;
 
-    // If using itemId, fetch the item details
-    if (itemId) {
-      const customItem = await CreditCustomItem.findById(itemId);
-      if (!customItem) {
-        return res.status(404).json({
-          success: false,
-          message: "Custom item not found"
-        });
-      }
-
-      finalItemSnapshot = {
-        name: customItem.name,
-        unit: customItem.unit,
-        pricingMode: customItem.pricingMode,
-        unitCredits: customItem.unitCredits,
-        unitPriceINR: customItem.unitPriceINR,
-        taxable: customItem.taxable,
-        gstRate: customItem.gstRate,
-        zohoItemId: customItem.zohoItemId
-      };
+    if (!finalItemSnapshot) {
+      return res.status(400).json({
+        success: false,
+        message: "itemSnapshot is required"
+      });
     }
 
     // Calculate deltas

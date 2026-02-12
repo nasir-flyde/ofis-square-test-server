@@ -24,13 +24,13 @@ router.post(
   ctrl.assignMatrixDeviceForMember
 );
 
-router.post(
-  "/:id/matrix/enroll-card",
-  authMiddleware,
-  populateUserRole,
-  requirePermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
-  ctrl.enrollCardToMatrixDevicesForMember
-);
+// router.post(
+//   "/:id/matrix/enroll-card",
+//   authMiddleware,
+//   populateUserRole,
+//   requirePermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+//   ctrl.enrollCardToMatrixDevicesForMember
+// );
 
 router.post(
   "/:id/matrix/card/credential",

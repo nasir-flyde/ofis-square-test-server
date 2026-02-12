@@ -8,25 +8,16 @@ import { createBooking, listBookings, cancelBooking, utilizationReport, getBooki
 
 const router = express.Router();
 
-// Booking CRUD
-router.get("/",listBookings);
-router.get("/member/my-bookings", universalMiddleware, getBookingsByMember); // Get authenticated member's bookings
-router.get("/member/:memberId", universalMiddleware, getBookingsByMember); // Get specific member's bookings
-// Admin/staff listing of discount requests (optionally filtered by building)
+router.get("/", listBookings);
+router.get("/member/my-bookings", universalMiddleware, getBookingsByMember);
+router.get("/member/:memberId", universalMiddleware, getBookingsByMember);
 router.get("/discount-requests", authMiddleware, listDiscountRequests);
 router.get("/:id", getBookingById);
-router.post("/", authMiddleware,createBooking);
-// Client access to create bookings
+router.post("/", authMiddleware, createBooking);
 router.post("/client", universalMiddleware, createBooking);
 router.patch("/:id/cancel", authMiddleware, cancelBooking);
-
-// Add a visitor (existing or new) to a booking
 router.post("/:id/visitors", addVisitorToBooking);
-
-// Discount workflow
-// Community users can request discount on a booking
 router.post("/:id/discount/request", communityMiddleware, requestDiscount);
-// Admin/staff approve or reject discount requests
 router.post("/:id/discount/approve", authMiddleware, approveDiscount);
 router.post("/:id/discount/reject", authMiddleware, rejectDiscount);
 

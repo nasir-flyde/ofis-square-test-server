@@ -3,7 +3,6 @@ import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Invoice from "../models/invoiceModel.js";
-import CreditCustomItem from "../models/creditCustomItemModel.js";
 import Building from "../models/buildingModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { createZohoInvoiceFromLocal } from "../utils/zohoBooks.js";
@@ -14,7 +13,7 @@ function mapRefTypeToCategory(refType) {
   if (refType.startsWith('custom_item_')) {
     return 'custom_services';
   }
-  
+
   const mapping = {
     'day_pass': 'day_pass',
     'meeting_booking': 'meeting_room',
@@ -26,7 +25,7 @@ function mapRefTypeToCategory(refType) {
     'refund': 'general',
     'expiry': 'general'
   };
-  
+
   return mapping[refType] || 'other';
 }
 
@@ -38,7 +37,7 @@ function mapRefTypeToCategory(refType) {
  */
 export async function generateMonthlyCreditInvoices(year, month) {
   console.log(`🔄 Starting credit consolidation for ${year}-${String(month).padStart(2, '0')}`);
-  
+
   const results = {
     processed: 0,
     invoices_created: 0,
@@ -50,7 +49,7 @@ export async function generateMonthlyCreditInvoices(year, month) {
   try {
     const billingStart = new Date(year, month - 1, 1);
     const billingEnd = new Date(year, month, 0);
-    
+
     console.log(`📅 Billing period: ${billingStart.toISOString().slice(0, 10)} to ${billingEnd.toISOString().slice(0, 10)}`);
 
     const creditContracts = await Contract.find({
@@ -67,29 +66,23 @@ export async function generateMonthlyCreditInvoices(year, month) {
     for (const contract of creditContracts) {
       try {
         results.processed++;
-        
+
         const clientId = contract.client._id;
         const clientName = contract.client.name || contract.client.companyName;
-        
+
         console.log(`\n🔍 Processing client: ${clientName} (${clientId})`);
 
-        // Calculate credit consumption for this month (including custom items)
+        // Calculate credit consumption for this month
         const creditUsage = await calculateMonthlyCreditsUsed(clientId, billingStart, billingEnd);
-        const customItemUsage = await calculateCustomItemUsage(clientId, billingStart, billingEnd);
         const allocatedCredits = contract.allocated_credits || 0;
-        const totalUsedCredits = creditUsage.total_credits + customItemUsage.total_credits;
+        const totalUsedCredits = creditUsage.total_credits;
 
         console.log(`📊 Credits - Allocated: ${allocatedCredits}, Used: ${totalUsedCredits}, Total Extra: ${Math.max(0, totalUsedCredits - allocatedCredits)}`);
         const categoryInvoices = [];
         let remainingAllocatedCredits = allocatedCredits;
 
-        // Combine traditional and custom item usage
+        // Use traditional breakdown
         const combinedBreakdown = { ...creditUsage.breakdown };
-        
-        // Add custom item usage to breakdown
-        for (const [itemKey, itemData] of Object.entries(customItemUsage.breakdown)) {
-          combinedBreakdown[itemKey] = itemData;
-        }
         const building = contract.building || await Building.findById(contract.building);
         const creditValue = building?.creditValue || 500;
 
@@ -170,7 +163,7 @@ export async function generateMonthlyCreditInvoices(year, month) {
           });
 
           console.log(`✅ Created ${categoryData.category} invoice ${invoice.invoice_number} for ${clientName}: ₹${invoiceAmount}`);
-          
+
           results.invoices_created++;
           results.summary.push({
             client: clientName,
@@ -244,7 +237,7 @@ async function calculateMonthlyCreditsUsed(clientId, startDate, endDate) {
   for (const transaction of transactions) {
     summary.total_credits += transaction.credits;
     summary.total_amount += (transaction.credits * transaction.valuePerCredit);
-    
+
     // Group by refType for breakdown
     const refType = transaction.refType || 'other';
     if (!summary.breakdown[refType]) {
@@ -264,10 +257,10 @@ async function calculateMonthlyCreditsUsed(clientId, startDate, endDate) {
 async function createCreditInvoice({ client, contract, billingStart, billingEnd, category = 'general', extraCredits, creditValue, invoiceAmount, creditUsage, building = null }) {
   const invoiceNumber = await generateLocalInvoiceNumber();
   const monthName = billingStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  
+
   // Create line items from usage breakdown
   const lineItems = [];
-  
+
   // Main line item for extra credits with category
   const categoryLabel = category.replace('_', ' ').toUpperCase();
   lineItems.push({
@@ -312,7 +305,7 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
     type: "credit_monthly",
     category: category,
     source: "local",
-    
+
     date: new Date(new Date().toDateString()),
     due_date: (() => {
       const now = new Date();
@@ -322,17 +315,17 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
       start: billingStart,
       end: billingEnd
     },
-    
+
     line_items: lineItems,
     sub_total: invoiceAmount,
     tax_total: taxAmount,
     total: totalAmount,
     amount_paid: 0,
     balance: totalAmount,
-    
+
     status: "draft",
     notes: `Monthly credit invoice for ${extraCredits} extra credits consumed in ${monthName}. Allocated: ${contract.allocated_credits} credits, Used: ${creditUsage.total_credits} credits.`,
-    
+
     // Zoho Books fields
     currency_code: "INR",
     exchange_rate: 1,
@@ -346,56 +339,6 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
   return invoice;
 }
 
-/**
- * Calculate custom item usage for a client in a billing period
- * @param {string} clientId - Client ObjectId
- * @param {Date} startDate - Billing period start
- * @param {Date} endDate - Billing period end
- * @returns {object} Custom item usage breakdown
- */
-async function calculateCustomItemUsage(clientId, startDate, endDate) {
-  const transactions = await CreditTransaction.aggregate([
-    {
-      $match: {
-        clientId: new mongoose.Types.ObjectId(clientId),
-        transactionType: 'usage',
-        status: 'completed',
-        createdAt: { $gte: startDate, $lte: endDate },
-        itemId: { $ne: null } // Only custom item transactions
-      }
-    },
-    {
-      $group: {
-        _id: '$itemId',
-        itemName: { $first: '$itemSnapshot.name' },
-        totalQuantity: { $sum: '$quantity' },
-        totalCredits: { $sum: { $abs: '$creditsDelta' } },
-        totalAmount: { $sum: { $abs: '$amountINRDelta' } },
-        transactions: { $push: '$$ROOT' }
-      }
-    }
-  ]);
-
-  const breakdown = {};
-  let totalCredits = 0;
-
-  for (const item of transactions) {
-    const itemKey = `custom_item_${item._id}`;
-    breakdown[itemKey] = {
-      credits: item.totalCredits,
-      amount: item.totalAmount,
-      quantity: item.totalQuantity,
-      item_name: item.itemName,
-      transactions: item.transactions.length
-    };
-    totalCredits += item.totalCredits;
-  }
-
-  return {
-    total_credits: totalCredits,
-    breakdown
-  };
-}
 
 /**
  * Run consolidation for previous month (typically called on 1st of each month)
@@ -404,7 +347,7 @@ export async function runPreviousMonthConsolidation() {
   const now = new Date();
   const year = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
   const month = now.getMonth() === 0 ? 12 : now.getMonth();
-  
+
   return await generateMonthlyCreditInvoices(year, month);
 }
 

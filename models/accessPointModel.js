@@ -40,7 +40,6 @@ const AccessPointSchema = new Schema(
       index: true,
     },
     resource: resourceRefSchema,
-    zoneId: { type: Schema.Types.ObjectId, ref: "AccessZone", index: true },
     pointType: {
       type: String,
       enum: ["DOOR", "TURNSTILE", "BARRIER", "ELEVATOR", "MEETING_ROOM", "COMMON_AREA", "CABIN", "DESK", "CUSTOM"],

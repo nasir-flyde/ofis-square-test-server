@@ -24,9 +24,7 @@ import hostMiddleware from "../middlewares/hostMiddleware.js";
 
 const router = express.Router();
 
-// Single Day Pass Routes
-router.post("/single",createSingleDayPass);
-// Require a valid JWT so hostMiddleware can infer host (member/client/guest)
+router.post("/single", createSingleDayPass);
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
 router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
 router.post("/:dayPassId/issue", issueDayPassManual);
@@ -42,12 +40,9 @@ router.put("/bundles/:bundleId/cancel", cancelBundle);
 // Availability
 router.get("/availability", getAvailability);
 
-// Check-in/Check-out Routes (Public - for front desk)
 router.post("/checkin", checkInWithQR);
 router.post("/checkout", checkOutWithQR);
 router.post("/scan", scanQR);
-
-// Admin Routes
 router.get("/", getAllDayPasses);
 router.get("/bundles", getAllBundles);
 

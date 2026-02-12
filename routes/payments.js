@@ -57,7 +57,6 @@ router.post("/:id/refund-excess", authMiddleware, refundExcessPayment);
 router.post("/razorpay/create-order", createRazorpayOrder);
 router.post("/razorpay/create-payment-link", createRazorpayPaymentLink);
 router.post("/razorpay/success", handleRazorpaySuccess);
-// Webhook is mounted at app-level in server.js BEFORE body parsers for raw signature verification
 // router.post("/razorpay/webhook", handleRazorpayWebhook);
 
 // Credit payment routes

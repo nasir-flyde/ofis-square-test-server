@@ -9,12 +9,12 @@ import {
   updateMatrixUser,
   deleteMatrixUser,
   addCardRef,
-  addEnrollment,
+  // addEnrollment,
   setCardCredentialVerified,
   setValidity,
-  addAccessHistory,
+  // addAccessHistory,
   assignToDevice,
-  enrollCardToDevice,
+  // enrollCardToDevice,
   setCardCredential,
   listPolicyDevices,
   revokeFromDevice,
@@ -23,40 +23,17 @@ import {
 
 const router = express.Router();
 
-// Find by phone (normalized to externalUserId)
 router.get("/find-by-phone", authMiddleware, populateUserRole, findByPhone);
-
-// List users
 router.get("/", authMiddleware, populateUserRole, listMatrixUsers);
-
-// Create user (restricted)
 router.post("/", authMiddleware, populateUserRole, requireSystemAdmin, createMatrixUser);
-
-// Get by id
 router.get("/:id", authMiddleware, populateUserRole, getMatrixUserById);
-
-// Update (restricted)
 router.put("/:id", authMiddleware, populateUserRole, requireSystemAdmin, updateMatrixUser);
-
-// Delete (restricted)
 router.delete("/:id", authMiddleware, populateUserRole, requireSystemAdmin, deleteMatrixUser);
-
-// Add a card reference to user (restricted)
 router.post("/:id/cards", authMiddleware, populateUserRole, requireSystemAdmin, addCardRef);
-
-// Add enrollment to user (restricted)
-router.post("/:id/enrollments", authMiddleware, populateUserRole, requireSystemAdmin, addEnrollment);
-
-// Set card credential verified flag (restricted)
+// router.post("/:id/enrollments", authMiddleware, populateUserRole, requireSystemAdmin, addEnrollment);
 router.post("/:id/card-verified", authMiddleware, populateUserRole, requireSystemAdmin, setCardCredentialVerified);
-
-// Set valid till date (restricted)
 router.post("/:id/validity", authMiddleware, populateUserRole, requireSystemAdmin, setValidity);
-
-// Add access/revoke history entry (restricted)
-router.post("/:id/access-history", authMiddleware, populateUserRole, requireSystemAdmin, addAccessHistory);
-
-// Assign to device (restricted)
+// router.post("/:id/access-history", authMiddleware, populateUserRole, requireSystemAdmin, addAccessHistory);
 router.post(
   "/:id/assign-device",
   authMiddleware,
@@ -64,17 +41,13 @@ router.post(
   requireSystemAdmin,
   assignToDevice
 );
-
-// Enroll card via policy and selected enrollment detail (restricted)
-router.post(
-  "/:id/enroll-card",
-  authMiddleware,
-  populateUserRole,
-  requireSystemAdmin,
-  enrollCardToDevice
-);
-
-// Set card credential on Matrix (hardcoded credential-type=card; data from RFID cardUid via rfidCardId)
+// router.post(
+//   "/:id/enroll-card",
+//   authMiddleware,
+//   populateUserRole,
+//   requireSystemAdmin,
+//   enrollCardToDevice
+// );
 router.post(
   "/:id/set-card-credential",
   authMiddleware,
