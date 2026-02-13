@@ -382,3 +382,39 @@ export const convertProformaToInvoice = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const approveProforma = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const estimate = await Estimate.findById(id);
+
+    if (!estimate) {
+      return res.status(404).json({ success: false, message: "Estimate not found" });
+    }
+
+    if (estimate.status !== 'draft') {
+      return res.status(400).json({
+        success: false,
+        message: `Only draft estimates can be approved. Current status: ${estimate.status}`
+      });
+    }
+
+    estimate.status = 'approved_internal';
+    await estimate.save();
+
+    await logCRUDActivity(req, "UPDATE", "Estimate", estimate._id, null, {
+      previousStatus: "draft",
+      newStatus: "approved_internal",
+      action: "manual_approval"
+    });
+
+    return res.json({
+      success: true,
+      data: estimate,
+      message: "Pro Forma estimate approved internally. It will be sent to the client on the scheduled date."
+    });
+  } catch (error) {
+    await logErrorActivity(req, error, "Approve Proforma");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

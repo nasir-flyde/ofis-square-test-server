@@ -79,6 +79,18 @@ const BuildingSchema = new Schema(
       max: 31,
       default: 7
     },
+    estimateSendDay: {
+      type: Number,
+      min: 1,
+      max: 31,
+      default: 26
+    },
+    invoiceSendDay: {
+      type: Number,
+      min: 1,
+      max: 31,
+      default: 1
+    },
     dayPassMatrixPolicyId: { type: Schema.Types.ObjectId, ref: "AccessPolicy", default: null },
     lateFeePolicy: {
       enabled: { type: Boolean, default: false },

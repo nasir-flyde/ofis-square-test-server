@@ -988,6 +988,17 @@ export const deleteInvoice = async (req, res) => {
       });
     }
 
+    // Delete from Zoho Books if synced
+    if (invoice.zoho_invoice_id) {
+      try {
+        await deleteZohoInvoice(invoice.zoho_invoice_id);
+      } catch (zohoError) {
+        console.error("Zoho Invoice Deletion Failed:", zohoError.message);
+        // We log the error but proceed with local deletion as requested/recommended
+        await logErrorActivity(req, zohoError, "Zoho Invoice Sync Deletion");
+      }
+    }
+
     await Invoice.findByIdAndDelete(id);
 
     // Log activity

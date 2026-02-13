@@ -1,6 +1,12 @@
 import cron from 'node-cron';
 import { markNoShows } from '../controllers/visitorController.js';
-import { createMonthlyInvoices, createMonthlyEstimates, createMonthlyEstimatesConsolidated } from '../services/monthlyInvoiceService.js';
+import {
+  createMonthlyInvoices,
+  createMonthlyEstimatesConsolidated,
+  processApprovedEstimatesForSending,
+  convertSentEstimatesToInvoices
+} from '../services/monthlyInvoiceService.js';
+import { recordDailyLateFees, generateMonthlyLateFeeEstimates } from '../services/lateFeeService.js';
 import { getValidAccessToken } from './zohoTokenManager.js';
 import AccessGrant from '../models/accessGrantModel.js';
 import { enforceAccessByInvoices } from '../services/accessService.js';
@@ -23,20 +29,49 @@ const scheduleNoShowUpdates = () => {
   console.log('No-show update cron job scheduled for 1 AM daily');
 };
 
+const scheduleLateFeeJobs = () => {
+  // Run daily at 00:05 AM IST
+  cron.schedule('5 0 * * *', async () => {
+    try {
+      console.log('Running daily late fee recording job...');
+      await recordDailyLateFees();
+    } catch (error) {
+      console.error('Error in daily late fee recording job:', error);
+    }
+  }, { scheduled: true, timezone: "Asia/Kolkata" });
+
+  // Run daily at 01:00 AM IST to check if we need to generate monthly estimates
+  cron.schedule('0 1 * * *', async () => {
+    try {
+      console.log('Running monthly late fee estimate generation check...');
+      await generateMonthlyLateFeeEstimates();
+    } catch (error) {
+      console.error('Error in monthly late fee estimate generation job:', error);
+    }
+  }, { scheduled: true, timezone: "Asia/Kolkata" });
+
+  console.log('Daily Late Fee jobs scheduled (Record: 00:05, Generate: 01:00)');
+};
+
 const scheduleMonthlyInvoices = () => {
   // Run daily; per-building logic inside the service decides whether today is the generation day
-  cron.schedule('44 18 * * *', async () => {
+  cron.schedule('40 17 * * *', async () => {
     try {
       const mode = process.env.BILLING_MODE === 'estimate' ? 'estimate' : 'invoice';
-      console.log(`Running monthly ${mode} generation job...`);
-      const result = mode === 'estimate' ? await createMonthlyEstimatesConsolidated() : await createMonthlyInvoices();
+      console.log(`[Billing Pipeline] Running daily maintenance job... (Mode: ${mode})`);
+
+      // Stage 1: Draft Generation (default 22nd)
+      const genResult = mode === 'estimate'
+        ? await createMonthlyEstimatesConsolidated()
+        : await createMonthlyInvoices();
+
       if (mode === 'estimate') {
-        console.log(`Monthly estimate generation completed. Created ${result.created} estimates, skipped ${result.skipped}, ${result.errors} errors.`);
+        console.log(`[Billing Stage 1] Estimate generation completed. Created: ${genResult.created}, Skipped: ${genResult.skipped}, Errors: ${genResult.errors}`);
         // Detailed skip breakdown for estimates
-        if (result && Array.isArray(result.details) && result.details.length > 0) {
+        if (genResult && Array.isArray(genResult.details) && genResult.details.length > 0) {
           try {
             const breakdown = {};
-            for (const d of result.details) {
+            for (const d of genResult.details) {
               if (d && (d.status === 'skipped' || d.status === 'exists')) {
                 const reason = d.reason || d.status || 'unknown';
                 breakdown[reason] = (breakdown[reason] || 0) + 1;
@@ -44,7 +79,7 @@ const scheduleMonthlyInvoices = () => {
             }
             console.log('[Monthly Estimates] Skip breakdown by reason:', breakdown);
 
-            const samples = result.details
+            const samples = genResult.details
               .filter(d => d && (d.status === 'skipped' || d.status === 'exists'))
               .slice(0, 10)
               .map(d => ({
@@ -61,17 +96,26 @@ const scheduleMonthlyInvoices = () => {
           }
         }
       } else {
-        console.log(`Monthly invoice generation completed. Created ${result.created} invoices, ${result.errors} errors.`);
+        console.log(`[Billing Stage 1] Invoice generation completed. Created: ${genResult.created}, Errors: ${genResult.errors}`);
       }
+
+      // Stage 3: Auto-Send Approved Estimates (default 26th)
+      const sendResult = await processApprovedEstimatesForSending();
+      console.log(`[Billing Stage 3] Estimate sending completed. Sent: ${sendResult.sent}, Errors: ${sendResult.errors}`);
+
+      // Stage 4: Auto-Convert to Invoices (default 1st)
+      const convResult = await convertSentEstimatesToInvoices();
+      console.log(`[Billing Stage 4] Invoice conversion completed. Converted: ${convResult.converted}, Errors: ${convResult.errors}`);
+
     } catch (error) {
-      console.error('Error in monthly invoice generation job:', error);
+      console.error('Error in monthly billing generation job:', error);
     }
   }, {
     scheduled: true,
     timezone: "Asia/Kolkata"
   });
 
-  console.log('Monthly billing cron job scheduled daily (IST)');
+  console.log('Monthly billing pipeline cron job scheduled daily (IST)');
 };
 
 const scheduleZohoTokenRefresh = () => {
@@ -138,4 +182,4 @@ const schedulePaymentReminders = () => {
   console.log('Payment reminder cron job scheduled for 10 AM daily (IST)');
 };
 
-export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders };
+export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs };

@@ -99,7 +99,7 @@ const invoiceSchema = new mongoose.Schema(
     push_to_zoho: { type: Boolean, default: true },
 
     // Zoho fields
-    zoho_invoice_id: { type: String, index: true },
+    zoho_invoice_id: { type: String },
     zoho_invoice_number: { type: String },
     zoho_status: { type: String },
     zoho_pdf_url: { type: String },

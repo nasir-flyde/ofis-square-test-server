@@ -12,11 +12,11 @@ import { sendNotification } from "../utils/notificationHelper.js";
  * Create monthly invoices for all active contracts
  * Runs daily; decides per building whether today is the generation day
  */
-export const createMonthlyInvoices = async () => {
+export const createMonthlyInvoices = async (refDate = new Date()) => {
   const results = { created: 0, errors: 0, details: [] };
 
   try {
-    const now = new Date();
+    const now = refDate;
 
     // Get all active contracts
     const activeContracts = await Contract.find({
@@ -47,9 +47,23 @@ export const createMonthlyInvoices = async () => {
           continue;
         }
 
-        await createMonthlyInvoiceForContract(contract, { issueDate, dueDate });
-        results.created++;
-        results.details.push({ contractId: contract._id, status: 'success' });
+        const currentYear = now.getFullYear();
+        const currentMonth = now.getMonth();
+        const billingPeriodStart = new Date(currentYear, currentMonth + 1, 1);
+        const billingPeriodEnd = new Date(currentYear, currentMonth + 2, 0);
+
+        const inv = await createMonthlyInvoiceForContract(contract, { issueDate, dueDate, billingPeriodStart, billingPeriodEnd, refDate: now });
+        if (inv) {
+          results.created++;
+          results.details.push({
+            contractId: contract._id,
+            status: 'success',
+            clientName: contract.client.companyName || contract.client.contactPerson || 'Client',
+            buildingName: building.name,
+            invoiceNumber: inv.invoice_number,
+            amount: inv.total
+          });
+        }
       } catch (error) {
         console.error(`Error creating monthly invoice for contract ${contract._id}:`, error);
         results.errors++;
@@ -59,6 +73,10 @@ export const createMonthlyInvoices = async () => {
           error: error.message
         });
       }
+    }
+
+    if (results.created > 0) {
+      await notifyAdminsOfInvoiceBatch(results, 'generated');
     }
 
     console.log(`Monthly invoice generation completed: ${results.created} created, ${results.errors} errors`);
@@ -97,364 +115,49 @@ function getInvoiceScheduleForBuilding(building, now = new Date()) {
   return { shouldGenerateToday, issueDate, dueDate };
 }
 
-// -------- Late fee helpers --------
-function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function endOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function toDateYMD(year, month0, day) { return new Date(year, month0, day); }
-function clampDate(date, min, max) { return date < min ? min : (date > max ? max : date); }
-function diffDaysInclusive(a, b) {
-  const ms = toDateYMD(a.getFullYear(), a.getMonth(), a.getDate()) - toDateYMD(b.getFullYear(), b.getMonth(), b.getDate());
-  const abs = Math.floor(Math.abs(ms) / (24 * 60 * 60 * 1000));
-  return abs + 1;
-}
-
-function getLastMonthPeriod(refDate) {
-  const current = startOfMonth(refDate);
-  const lastMonthDate = addDays(current, -1); // last day of previous month
-  const start = startOfMonth(lastMonthDate);
-  const end = endOfMonth(lastMonthDate);
-  return { start, end, year: start.getFullYear(), month: start.getMonth() + 1 };
-}
-
-function resolveEffectiveLateFeePolicy(clientDoc, buildingDoc) {
-  const buildingPolicy = buildingDoc?.lateFeePolicy || {};
-  const clientPolicy = clientDoc?.lateFeePolicy || {};
-
-  // If client explicitly disables
-  if (clientPolicy?.enabled === false) {
-    return { enabled: false, reason: clientPolicy?.reason || 'Client override disabled' };
-  }
-
-  const enabled = clientPolicy?.enabled ?? buildingPolicy?.enabled ?? false;
-  const gracePeriodDays = clientPolicy?.gracePeriodDays ?? buildingPolicy?.gracePeriodDays ?? 0;
-  const customFormula = clientPolicy?.customFormula ?? buildingPolicy?.customFormula ?? undefined;
-  const variables = { ...(buildingPolicy?.variables || {}), ...(clientPolicy?.variables || {}) };
-
-  return { enabled, gracePeriodDays, customFormula, variables };
-}
-
-function evaluateLateFeeAmount({ formula, variables }) {
-  // Allowed variables
-  const allowedKeys = ['outstanding', 'overdueDays', 'rate', 'maxCap', 'dailyFlat'];
-  const safeVars = {};
-  for (const k of allowedKeys) safeVars[k] = Number(variables?.[k] || 0);
-
-  // If formula provided, evaluate safely
-  if (formula && typeof formula === 'string' && formula.trim()) {
-    // Validate tokens: only numbers, operators, parens, dots, spaces, and allowed identifiers
-    const identifierRegex = /[A-Za-z_][A-Za-z0-9_]*/g;
-    const tokens = formula.match(identifierRegex) || [];
-    for (const t of tokens) {
-      if (!allowedKeys.includes(t)) {
-        throw new Error(`Late fee formula contains unsupported identifier: ${t}`);
-      }
-    }
-    const transformed = formula.replace(identifierRegex, (name) => `vars.${name}`);
-    try {
-      const fn = new Function('vars', `return (${transformed});`);
-      const val = fn(safeVars);
-      return Number.isFinite(val) ? Math.max(0, val) : 0;
-    } catch (e) {
-      throw new Error(`Failed to evaluate late fee formula: ${e.message}`);
-    }
-  }
-
-  // Fallback: dailyFlat per day (default 500)
-  const perDay = Number(variables?.dailyFlat || 500);
-  const overdueDays = Number(variables?.overdueDays || 0);
-  return Math.max(0, perDay * overdueDays);
-}
-
-async function upsertProvisionalLateFeesForLastMonth(contract, clientDoc, buildingDoc) {
-  const policy = resolveEffectiveLateFeePolicy(clientDoc, buildingDoc);
-  if (!policy.enabled) return { created: 0 };
-
-  const refDate = new Date();
-  const { start: periodStart, end: periodEnd, year, month } = getLastMonthPeriod(refDate);
-
-  // Find candidate invoices for this client+contract with due_date before or within last month and outstanding > 0
-  const invoices = await Invoice.find({
-    client: contract.client._id,
-    contract: contract._id,
-    status: { $ne: 'void' },
-    due_date: { $lte: periodEnd }
-  }).select('invoice_number due_date paid_at total amount_paid balance status');
-
-  let created = 0;
-  let updated = 0;
-  let checked = 0;
-
-  for (const inv of invoices) {
-    checked++;
-    const due = inv.due_date ? new Date(inv.due_date) : null;
-    if (!due) {
-      console.log(`[LATEFEE] Skip invoice ${inv._id}: no due_date`);
-      continue;
-    }
-
-    // Apply grace: fees start after grace days from due_date
-    const feeStart = addDays(due, (Number(policy.gracePeriodDays) || 0) + 1);
-
-    // Determine effective overdue window within last month
-    const effectiveStart = feeStart > periodStart ? feeStart : periodStart;
-    let effectiveEnd = periodEnd;
-    if (inv.paid_at) {
-      const paidAt = new Date(inv.paid_at);
-      if (paidAt < effectiveStart) {
-        // Fully paid before accrual window
-        console.log(`[LATEFEE] Skip ${inv._id}: paid_at ${paidAt.toISOString()} before effectiveStart ${effectiveStart.toISOString()}`);
-        continue;
-      }
-      if (paidAt < effectiveEnd) effectiveEnd = paidAt;
-    }
-
-    if (effectiveEnd < effectiveStart) {
-      console.log(`[LATEFEE] Skip ${inv._id}: effectiveEnd ${effectiveEnd.toISOString()} < effectiveStart ${effectiveStart.toISOString()}`);
-      continue;
-    }
-
-    const overdueDays = diffDaysInclusive(effectiveEnd, effectiveStart);
-    if (overdueDays <= 0) {
-      console.log(`[LATEFEE] Skip ${inv._id}: overdueDays <= 0`);
-      continue;
-    }
-
-    // Outstanding approximation: use current balance if unpaid else 0
-    const outstanding = Number(inv.balance ?? Math.max(0, (inv.total || 0) - (inv.amount_paid || 0)));
-    if (outstanding <= 0) {
-      console.log(`[LATEFEE] Skip ${inv._id}: outstanding <= 0 (balance=${inv.balance}, total=${inv.total}, paid=${inv.amount_paid})`);
-      continue; // nothing to charge
-    }
-
-    // Compute amount using policy
-    const vars = { ...policy.variables, overdueDays, outstanding };
-    let amount = 0;
-    try {
-      amount = evaluateLateFeeAmount({ formula: policy.customFormula, variables: vars });
-    } catch (e) {
-      console.error(`Late fee formula error for invoice ${inv._id}:`, e.message);
-      // Skip this invoice in case of formula error
-      continue;
-    }
-
-    const maxCap = Number(vars.maxCap || 0);
-    if (maxCap > 0) amount = Math.min(amount, maxCap);
-
-    if (amount <= 0) {
-      console.log(`[LATEFEE] Skip ${inv._id}: computed amount <= 0 (overdueDays=${overdueDays}, outstanding=${outstanding})`);
-      continue;
-    }
-
-    const ratePerDay = Math.round((amount / overdueDays) * 100) / 100;
-
-    // Upsert provisional late fee invoice (local only, never pushed)
-    const base = {
-      client: contract.client._id,
-      contract: contract._id,
-      building: contract.building?._id || buildingDoc._id,
-      type: 'late_fee',
-      category: 'monthly',
-      date: periodEnd,
-      due_date: null,
-      line_items: [
-        {
-          description: `Late fee for ${inv.invoice_number || inv._id} (${periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}): ${overdueDays} day(s)`,
-          quantity: overdueDays,
-          unitPrice: ratePerDay,
-          amount: Math.round(amount * 100) / 100,
-          name: 'Late Fee',
-          rate: ratePerDay,
-          unit: 'day',
-          item_total: Math.round(amount * 100) / 100
-        }
-      ],
-      sub_total: Math.round(amount * 100) / 100,
-      tax_total: 0,
-      total: Math.round(amount * 100) / 100,
-      amount_paid: 0,
-      balance: Math.round(amount * 100) / 100,
-      status: 'draft',
-      push_to_zoho: false,
-      late_fee: {
-        original_invoice: inv._id,
-        period_year: year,
-        period_month: month,
-        days: overdueDays,
-        amount: Math.round(amount * 100) / 100,
-        rate_per_day: ratePerDay,
-        variables_snapshot: vars,
-        formula_snapshot: policy.customFormula || 'dailyFlat * overdueDays',
-        status: 'pending_merge'
-      }
-    };
-
-    // Idempotent upsert using unique index on (original_invoice, year, month, type)
-    const existing = await Invoice.findOne({ type: 'late_fee', 'late_fee.original_invoice': inv._id, 'late_fee.period_year': year, 'late_fee.period_month': month });
-    if (!existing) {
-      await Invoice.create(base);
-      created++;
-    } else if (existing.late_fee?.status === 'pending_merge') {
-      // Update amount/days if formula or balances changed
-      existing.line_items = base.line_items;
-      existing.sub_total = base.sub_total;
-      existing.total = base.total;
-      existing.balance = base.balance;
-      existing.late_fee.days = overdueDays;
-      existing.late_fee.amount = base.late_fee.amount;
-      existing.late_fee.rate_per_day = ratePerDay;
-      existing.late_fee.variables_snapshot = vars;
-      existing.late_fee.formula_snapshot = base.late_fee.formula_snapshot;
-      await existing.save();
-      updated++;
-    }
-  }
-
-  console.log(`[LATEFEE] Contract ${contract._id}: checked=${checked}, created=${created}, updated=${updated}`);
-  return { created, updated, checked };
-}
-
-async function collectPendingLateFeeLineItems(contract) {
-  // Collect all pending provisional late fee invoices for this client+contract (up to last month)
-  const refDate = new Date();
-  const { year, month } = getLastMonthPeriod(refDate);
-
-  const pending = await Invoice.find({
-    client: contract.client._id,
-    contract: contract._id,
-    type: 'late_fee',
-    'late_fee.status': 'pending_merge',
-    'late_fee.period_year': { $lte: year },
-    $or: [
-      { 'late_fee.period_year': { $lt: year } },
-      { 'late_fee.period_year': year, 'late_fee.period_month': { $lte: month } }
-    ]
-  });
-
-  const lineItems = [];
-  for (const p of pending) {
-    const li = p.line_items?.[0];
-    if (!li) continue;
-    lineItems.push({
-      description: li.description,
-      quantity: li.quantity,
-      unitPrice: li.unitPrice,
-      amount: li.amount,
-      name: 'Late Fee',
-      rate: li.unitPrice,
-      unit: 'day',
-      item_total: li.amount,
-      __provisionalId: p._id
-    });
-  }
-
-  return { lineItems, provisionalIds: pending.map(p => p._id) };
-}
 
 /**
  * Create a monthly invoice for a specific contract
  */
-async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } = {}) {
-  const now = new Date();
-  const currentMonth = now.getMonth();
+async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, billingPeriodStart, billingPeriodEnd, refDate } = {}) {
+  const now = refDate || new Date();
   const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
 
-  // Check if invoice already exists for this month
-  const billingPeriodStart = new Date(currentYear, currentMonth, 1);
-  const billingPeriodEnd = new Date(currentYear, currentMonth + 1, 0); // Last day of current month
+  // Determine billing period: passed args OR default to next month (aligned with shift)
+  // If not passed, we default to next month to be safe for manual calls that want "upcoming" billing
+  const periodStart = billingPeriodStart || new Date(currentYear, currentMonth + 1, 1);
+  const periodEnd = billingPeriodEnd || new Date(currentYear, currentMonth + 2, 0);
 
+  // Check if invoice already exists for this period
   const existingInvoice = await Invoice.findOne({
     contract: contract._id,
-    "billing_period.start": billingPeriodStart,
-    "billing_period.end": billingPeriodEnd
+    "billing_period.start": periodStart,
+    "billing_period.end": periodEnd
   });
 
-  // If an invoice already exists for this period, try merging any pending late fees into it (if still draft)
+  // If an invoice already exists for this period, return it
   if (existingInvoice) {
-    try {
-      const clientDoc = contract.client;
-      const buildingDoc = contract.building;
-      // Ensure provisional late fees are up-to-date for last month
-      try { await upsertProvisionalLateFeesForLastMonth(contract, clientDoc, buildingDoc); } catch (_) { }
-      const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(contract);
-
-      if (Array.isArray(lineItems) && lineItems.length > 0 && existingInvoice.status === 'draft') {
-        // Append late fee line items
-        for (const li of lineItems) {
-          existingInvoice.line_items.push({
-            description: li.description,
-            quantity: li.quantity,
-            unitPrice: li.unitPrice,
-            amount: li.amount,
-            name: 'Late Fee',
-            rate: li.unitPrice,
-            unit: 'day',
-            item_total: li.amount
-          });
-        }
-
-        // Recompute totals with 18% GST
-        const newSubTotal = existingInvoice.line_items.reduce((s, it) => s + Number(it.item_total ?? it.amount ?? 0), 0);
-        const newTaxTotal = round2(newSubTotal * 0.18);
-        const newTotal = round2(newSubTotal + newTaxTotal);
-        existingInvoice.sub_total = round2(newSubTotal);
-        existingInvoice.tax_total = newTaxTotal;
-        existingInvoice.total = newTotal;
-        const paid = Number(existingInvoice.amount_paid || 0);
-        existingInvoice.balance = Math.max(0, round2(newTotal - paid));
-
-        await existingInvoice.save();
-
-        // Mark provisional late fees as merged into this invoice
-        if (provisionalIds && provisionalIds.length > 0) {
-          await Invoice.updateMany(
-            { _id: { $in: provisionalIds } },
-            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_invoice': existingInvoice._id, 'late_fee.merged_at': new Date() } }
-          );
-        }
-
-        console.log(`Appended ${lineItems.length} late fee item(s) into existing invoice ${existingInvoice._id}`);
-      } else {
-        if (!lineItems || lineItems.length === 0) {
-          console.log(`No pending provisional late fees to merge for contract ${contract._id}`);
-        } else if (existingInvoice.status !== 'draft') {
-          console.log(`Existing invoice ${existingInvoice._id} is not draft; skipping late fee merge`);
-        }
-      }
-    } catch (mergeErr) {
-      console.error(`Error merging late fees into existing invoice ${existingInvoice._id}:`, mergeErr?.message || mergeErr);
-    }
     return existingInvoice;
   }
 
+  // Output billing period start for logging
+  // billingPeriodStart and billingPeriodEnd are available from arguments/defaults
+
   // Skip if this is the first month and contract started mid-month (already has prorated invoice)
+  // Use billing period month/year for comparison
   const contractStartDate = new Date(contract.startDate);
-  const isFirstMonth = contractStartDate.getMonth() === currentMonth &&
-    contractStartDate.getFullYear() === currentYear;
+  const bpMonth = billingPeriodStart.getMonth();
+  const bpYear = billingPeriodStart.getFullYear();
+
+  const isFirstMonth = contractStartDate.getMonth() === bpMonth &&
+    contractStartDate.getFullYear() === bpYear;
 
   if (isFirstMonth && contractStartDate.getDate() !== 1) {
-    console.log(`Skipping monthly invoice for contract ${contract._id} - first month already has prorated invoice`);
+    console.log(`Skipping monthly invoice for contract ${contract._id} - first month (target: ${billingPeriodStart.toLocaleDateString()}) already has prorated invoice`);
     return null;
   }
 
-  // Prepare late fees: upsert provisional for last month, then collect pending
-  const clientDoc = contract.client; // populated
-  const buildingDoc = contract.building; // populated (partial)
-  try {
-    await upsertProvisionalLateFeesForLastMonth(contract, clientDoc, buildingDoc);
-  } catch (lfErr) {
-    console.error(`Late fee upsert error for contract ${contract._id}:`, lfErr?.message || lfErr);
-  }
-
-  let lateFeeLineItems = [];
-  let mergedProvisionalIds = [];
-  try {
-    const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(contract);
-    lateFeeLineItems = lineItems;
-    mergedProvisionalIds = provisionalIds;
-  } catch (collectErr) {
-    console.error(`Late fee collect error for contract ${contract._id}:`, collectErr?.message || collectErr);
-  }
 
   // Create full monthly invoice
   const computedIssueDate = issueDate || new Date(currentYear, currentMonth, 25); // fallback to 25th if not provided
@@ -483,20 +186,6 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
     subtotal += rentAmount;
   }
 
-  // Append late fee line items (if any)
-  for (const li of lateFeeLineItems) {
-    items.push({
-      description: li.description,
-      quantity: li.quantity,
-      unitPrice: li.unitPrice,
-      amount: li.amount,
-      name: 'Late Fee',
-      rate: li.unitPrice,
-      unit: 'day',
-      item_total: li.amount
-    });
-    subtotal += Number(li.amount || 0);
-  }
 
   // Calculate taxes (18% GST)
   const taxRate = 18;
@@ -567,13 +256,6 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate } 
 
   console.log(`Created monthly invoice ${invoice._id} for contract ${contract._id}`);
 
-  // Mark provisional late fees as merged into this invoice
-  if (mergedProvisionalIds.length > 0) {
-    await Invoice.updateMany(
-      { _id: { $in: mergedProvisionalIds } },
-      { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_invoice': invoice._id, 'late_fee.merged_at': new Date() } }
-    );
-  }
 
   // Push to Zoho Books if client is synced
   try {
@@ -605,10 +287,10 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-export const createMonthlyInvoicesConsolidated = async () => {
+export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) => {
   const results = { created: 0, errors: 0, details: [] };
   try {
-    const now = new Date();
+    const now = refDate;
 
     const activeContracts = await Contract.find({
       status: 'active',
@@ -643,8 +325,9 @@ export const createMonthlyInvoicesConsolidated = async () => {
 
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
-    const billingPeriodStart = new Date(currentYear, currentMonth, 1);
-    const billingPeriodEnd = new Date(currentYear, currentMonth + 1, 0);
+    // Shift to next month for billing
+    const billingPeriodStart = new Date(currentYear, currentMonth + 1, 1);
+    const billingPeriodEnd = new Date(currentYear, currentMonth + 2, 0);
 
     for (const [key, group] of groups) {
       const { building, client, contracts } = group;
@@ -654,8 +337,6 @@ export const createMonthlyInvoicesConsolidated = async () => {
           results.details.push({ group: key, status: 'skipped', reason: 'Not scheduled today for this building' });
           continue;
         }
-
-        // Idempotency: check if consolidated exists for this client+building+period
         let existing = await Invoice.findOne({
           client: client._id,
           building: building._id,
@@ -665,56 +346,7 @@ export const createMonthlyInvoicesConsolidated = async () => {
           category: 'monthly'
         }).select('_id status');
         if (existing) {
-          // Try to merge pending late fees from all contracts if invoice is still draft
-          try {
-            if (existing.status === 'draft') {
-              let appended = 0;
-              let provisionalToMark = [];
-              for (const c of contracts) {
-                try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
-                const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
-                if (Array.isArray(lineItems) && lineItems.length > 0) {
-                  for (const li of lineItems) {
-                    existing.line_items.push({
-                      description: li.description,
-                      quantity: li.quantity,
-                      unitPrice: li.unitPrice,
-                      amount: li.amount,
-                      name: 'Late Fee',
-                      rate: li.unitPrice,
-                      unit: 'day',
-                      item_total: li.amount
-                    });
-                  }
-                  appended += lineItems.length;
-                  provisionalToMark.push(...provisionalIds);
-                }
-              }
-
-              if (appended > 0) {
-                const newSubTotal = existing.line_items.reduce((s, it) => s + Number(it.item_total ?? it.amount ?? 0), 0);
-                const newTaxTotal = round2(newSubTotal * 0.18);
-                const newTotal = round2(newSubTotal + newTaxTotal);
-                existing.sub_total = round2(newSubTotal);
-                existing.tax_total = newTaxTotal;
-                existing.total = newTotal;
-                const paid = Number(existing.amount_paid || 0);
-                existing.balance = Math.max(0, round2(newTotal - paid));
-                await existing.save();
-
-                if (provisionalToMark.length > 0) {
-                  await Invoice.updateMany(
-                    { _id: { $in: provisionalToMark } },
-                    { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_invoice': existing._id, 'late_fee.merged_at': new Date() } }
-                  );
-                }
-              }
-            }
-            results.details.push({ group: key, status: 'exists', invoiceId: existing._id });
-          } catch (mergeErr) {
-            results.errors++;
-            results.details.push({ group: key, status: 'error', error: mergeErr?.message || String(mergeErr) });
-          }
+          results.details.push({ group: key, status: 'exists', invoiceId: existing._id });
           continue;
         }
 
@@ -740,9 +372,11 @@ export const createMonthlyInvoicesConsolidated = async () => {
         const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
 
         for (const c of contracts) {
-          // First month rule: if started mid-month of current month, skip rent line (prorated handled elsewhere)
+          // First month rule: if started mid-month of target month, skip rent line (prorated handled elsewhere)
           const start = new Date(c.startDate);
-          const isFirstMonth = start.getMonth() === currentMonth && start.getFullYear() === currentYear;
+          const bpMonth = billingPeriodStart.getMonth();
+          const bpYear = billingPeriodStart.getFullYear();
+          const isFirstMonth = start.getMonth() === bpMonth && start.getFullYear() === bpYear;
           if (isFirstMonth && start.getDate() !== 1) {
             continue;
           }
@@ -763,30 +397,6 @@ export const createMonthlyInvoicesConsolidated = async () => {
           }
         }
 
-        // Late fee items across contracts
-        let allProvisionalIds = [];
-        for (const c of contracts) {
-          try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
-          try {
-            const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
-            for (const li of lineItems) {
-              items.push({
-                description: li.description,
-                quantity: li.quantity,
-                unitPrice: li.unitPrice,
-                amount: li.amount,
-                name: 'Late Fee',
-                rate: li.unitPrice,
-                unit: 'day',
-                item_total: li.amount
-              });
-              subtotal += Number(li.amount || 0);
-            }
-            allProvisionalIds.push(...provisionalIds);
-          } catch (e) {
-            console.error('Late fee collect error:', e?.message || String(e));
-          }
-        }
 
         const taxRate = 18;
         const taxTotal = round2(subtotal * (taxRate / 100));
@@ -847,13 +457,6 @@ export const createMonthlyInvoicesConsolidated = async () => {
 
         const invoice = await Invoice.create(invoiceData);
 
-        // Mark provisional late fees as merged
-        if (allProvisionalIds.length > 0) {
-          await Invoice.updateMany(
-            { _id: { $in: allProvisionalIds } },
-            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_invoice': invoice._id, 'late_fee.merged_at': new Date() } }
-          );
-        }
 
         // Push to Zoho
         try {
@@ -871,32 +474,44 @@ export const createMonthlyInvoicesConsolidated = async () => {
             }
           }
         } catch (zohoErr) {
-          console.error(`Failed to push consolidated invoice ${invoice._id} to Zoho Books:`, zohoErr?.message || String(zohoErr));
+          console.warn(`[Pipeline-Consolidated] Failed to push invoice ${invoice._id} to Zoho:`, zohoErr.message);
         }
 
         results.created++;
-        results.details.push({ group: key, status: 'success', invoiceId: invoice._id });
-      } catch (error) {
-        console.error('Error in consolidated monthly invoice generation:', error);
-        throw error;
+        results.details.push({
+          group: key,
+          status: 'success',
+          invoiceId: invoice._id,
+          clientName: client.companyName || client.contactPerson || 'Client',
+          buildingName: building.name,
+          invoiceNumber: invoice.invoice_number,
+          amount: invoice.total
+        });
+      } catch (err) {
+        console.error(`Error creating consolidated invoice for ${key}:`, err);
+        results.errors++;
+        results.details.push({ group: key, status: 'error', error: err.message });
       }
     }
 
-    return results;
+    if (results.created > 0) {
+      await notifyAdminsOfInvoiceBatch(results, 'generated (consolidated)');
+    }
   } catch (error) {
     console.error('Error in consolidated monthly invoice generation:', error);
     throw error;
   }
 };
 
-export const createMonthlyEstimates = async () => {
+export const createMonthlyEstimates = async (refDate = new Date()) => {
   const results = { created: 0, skipped: 0, errors: 0, details: [] };
   try {
-    const now = new Date();
+    const now = refDate;
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
-    const periodStart = new Date(currentYear, currentMonth, 1);
-    const periodEnd = new Date(currentYear, currentMonth + 1, 0);
+    // Shift to next month
+    const periodStart = new Date(currentYear, currentMonth + 1, 1);
+    const periodEnd = new Date(currentYear, currentMonth + 2, 0);
 
     const activeContracts = await Contract.find({
       status: 'active',
@@ -928,11 +543,20 @@ export const createMonthlyEstimates = async () => {
 
         // Defer until first billable month (billingStartDate || startDate)
         const firstBillDate = contract.billingStartDate ? new Date(contract.billingStartDate) : new Date(contract.startDate);
-        const fbYear = firstBillDate.getFullYear();
-        const fbMonth = firstBillDate.getMonth();
-        const isBeforeFirstBillMonth = (currentYear < fbYear) || (currentYear === fbYear && currentMonth < fbMonth);
-        if (isBeforeFirstBillMonth) {
+
+        // Compare against target billing period (periodStart)
+        // If target period < first billable month, skip
+        if (periodStart < new Date(firstBillDate.getFullYear(), firstBillDate.getMonth(), 1)) {
           results.skipped++; results.details.push({ contractId: contract._id, status: 'skipped', reason: 'Before first billable month' });
+          continue;
+        }
+
+        // First Month Mid-Start Check
+        const isFirstMonth = firstBillDate.getMonth() === periodStart.getMonth() &&
+          firstBillDate.getFullYear() === periodStart.getFullYear();
+
+        if (isFirstMonth && firstBillDate.getDate() !== 1) {
+          results.skipped++; results.details.push({ contractId: contract._id, status: 'skipped', reason: 'First month mid-start (manual proration)' });
           continue;
         }
 
@@ -972,29 +596,6 @@ export const createMonthlyEstimates = async () => {
           subtotal += rentAmount;
         }
 
-        // --- Start of late fee logic ---
-        let allProvisionalIds = [];
-        try { await upsertProvisionalLateFeesForLastMonth(contract, contract.client, building); } catch (_) { }
-        try {
-          const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(contract);
-          for (const li of lineItems) {
-            items.push({
-              description: li.description,
-              quantity: li.quantity,
-              unitPrice: li.unitPrice,
-              amount: li.amount,
-              name: 'Late Fee',
-              rate: li.unitPrice,
-              unit: 'day',
-              item_total: li.amount
-            });
-            subtotal += Number(li.amount || 0);
-          }
-          allProvisionalIds.push(...provisionalIds);
-        } catch (e) {
-          console.error(`Late fee collect error for contract ${contract._id}:`, e?.message || String(e));
-        }
-        // --- End of late fee logic ---
 
         const taxRate = 18;
         const taxTotal = Math.round(subtotal * (taxRate / 100) * 100) / 100;
@@ -1041,13 +642,6 @@ export const createMonthlyEstimates = async () => {
           gst_no: contract.client.gstNo
         });
 
-        // Mark provisional late fees as merged
-        if (allProvisionalIds.length > 0) {
-          await Invoice.updateMany(
-            { _id: { $in: allProvisionalIds } },
-            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_estimate': estimateDoc._id, 'late_fee.merged_at': new Date() } }
-          );
-        }
 
         // Push to Zoho as estimate (draft)
         try {
@@ -1139,22 +733,19 @@ export const createMonthlyEstimates = async () => {
   }
 };
 
-/**
- * Create consolidated monthly estimates per client+building
- * Groups active contracts by (building, client) and creates one estimate with a line per contract
- * Schedule and idempotency mirror consolidated invoices logic
- */
-export const createMonthlyEstimatesConsolidated = async () => {
+export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) => {
   const results = { created: 0, skipped: 0, errors: 0, details: [] };
   try {
-    const now = new Date();
+    const now = refDate;
     // Generate ONLY for next month's period
     const baseYear = now.getFullYear();
     const baseMonth = now.getMonth();
-    const currentYear = baseMonth === 11 ? baseYear + 1 : baseYear;
-    const currentMonth = (baseMonth + 1) % 12;
-    const periodStart = new Date(currentYear, currentMonth, 1);
-    const periodEnd = new Date(currentYear, currentMonth + 1, 0);
+
+    // Shift logic: if now is Jan, baseMonth=0. Target Feb (Month=1)
+    // Shift logic: if now is Jan, baseMonth=0. Target Feb (Month=1)
+    // Use UTC midnights to ensure consistency across environments
+    const periodStart = new Date(Date.UTC(baseYear, baseMonth + 1, 1));
+    const periodEnd = new Date(Date.UTC(baseYear, baseMonth + 2, 0));
 
     // Fetch active contracts with client and building schedule fields
     const activeContracts = await Contract.find({
@@ -1220,15 +811,12 @@ export const createMonthlyEstimatesConsolidated = async () => {
         const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
 
         for (const c of contracts) {
-          // Defer until first billable month (billingStartDate || startDate)
           const firstBillDate = c.billingStartDate ? new Date(c.billingStartDate) : new Date(c.startDate);
-          const fbYear = firstBillDate.getFullYear();
-          const fbMonth = firstBillDate.getMonth();
-          const isBeforeFirstBillMonth = (currentYear < fbYear) || (currentYear === fbYear && currentMonth < fbMonth);
-          if (isBeforeFirstBillMonth) continue;
+          const firstBillMonthStart = new Date(firstBillDate.getFullYear(), firstBillDate.getMonth(), 1);
+          if (periodStart < firstBillMonthStart) continue;
+          const isFirstBillMonth = firstBillDate.getFullYear() === periodStart.getFullYear() &&
+            firstBillDate.getMonth() === periodStart.getMonth();
 
-          // No proration: if first billable month starts mid-month, skip in that first month
-          const isFirstBillMonth = fbYear === currentYear && fbMonth === currentMonth;
           if (isFirstBillMonth && firstBillDate.getDate() !== 1) continue;
 
           const rentAmount = Number(c.monthlyRent || 0);
@@ -1248,31 +836,6 @@ export const createMonthlyEstimatesConsolidated = async () => {
           }
         }
 
-        // --- Start of late fee logic ---
-        let allProvisionalIds = [];
-        for (const c of contracts) {
-          try { await upsertProvisionalLateFeesForLastMonth(c, client, building); } catch (_) { }
-          try {
-            const { lineItems, provisionalIds } = await collectPendingLateFeeLineItems(c);
-            for (const li of lineItems) {
-              items.push({
-                description: li.description,
-                quantity: li.quantity,
-                unitPrice: li.unitPrice,
-                amount: li.amount,
-                name: 'Late Fee',
-                rate: li.unitPrice,
-                unit: 'day',
-                item_total: li.amount
-              });
-              subtotal += Number(li.amount || 0);
-            }
-            allProvisionalIds.push(...provisionalIds);
-          } catch (e) {
-            console.error('Late fee collect error in consolidated:', e?.message || String(e));
-          }
-        }
-        // --- End of late fee logic ---
 
         // If no items, skip creating empty estimate
         if (items.length === 0) {
@@ -1325,13 +888,6 @@ export const createMonthlyEstimatesConsolidated = async () => {
           gst_no: client.gstNo
         });
 
-        // Mark provisional late fees as merged
-        if (allProvisionalIds.length > 0) {
-          await Invoice.updateMany(
-            { _id: { $in: allProvisionalIds } },
-            { $set: { 'late_fee.status': 'merged', 'late_fee.merged_into_estimate': estimateDoc._id, 'late_fee.merged_at': new Date() } }
-          );
-        }
 
         // Push to Zoho (non-blocking)
 
@@ -1435,4 +991,254 @@ export const createMonthlyEstimatesConsolidated = async () => {
   }
 };
 
-export default { createMonthlyInvoices, createMonthlyInvoicesConsolidated, createMonthlyEstimates, createMonthlyEstimatesConsolidated };
+/**
+ * Stage 3: Automated "Send" for Approved Estimates (default 26th)
+ * Finds estimates with status 'approved_internal', emails them to clients, updates status to 'sent'
+ */
+export const processApprovedEstimatesForSending = async (refDate = new Date()) => {
+  const results = { sent: 0, errors: 0, details: [] };
+  const now = refDate;
+  const currentDay = now.getDate();
+
+  try {
+    const buildings = await Building.find({ draftInvoiceGeneration: true });
+    for (const building of buildings) {
+      const sendDay = building.estimateSendDay || 26;
+      if (currentDay !== sendDay) continue;
+
+      const approvedEstimates = await Estimate.find({
+        building: building._id,
+        status: 'approved_internal'
+      }).populate('client');
+
+      for (const estimate of approvedEstimates) {
+        try {
+          // 1. Fetch PDF from Zoho if available
+          let attachments = [];
+          if (estimate.zoho_estimate_id) {
+            try {
+              const { fetchZohoEstimatePdfBinary } = await import('../utils/zohoBooks.js');
+              const pdfBuffer = await fetchZohoEstimatePdfBinary(estimate.zoho_estimate_id);
+              if (pdfBuffer) {
+                attachments.push({
+                  filename: `${estimate.estimate_number || 'ProForma'}.pdf`,
+                  content: pdfBuffer
+                });
+              }
+            } catch (pdfErr) {
+              console.warn(`[Pipeline-Send] Failed to fetch PDF for estimate ${estimate._id}:`, pdfErr.message);
+            }
+          }
+
+          // 2. Send to Client
+          try {
+            await sendNotification({
+              to: { email: estimate.client.email, userId: estimate.client._id },
+              channels: { email: true, sms: false },
+              templateKey: 'proforma_invoice_sent',
+              templateVariables: {
+                greeting: "Ofis Square",
+                companyName: estimate.client.companyName || estimate.client.contactPerson || 'Client',
+                clientName: estimate.client.contactPerson || 'Valued Client',
+                buildingName: building.name,
+                totalAmount: estimate.total,
+                dueDate: estimate.expiry_date ? new Date(estimate.expiry_date).toLocaleDateString('en-IN') : 'N/A',
+                proformaNumber: estimate.estimate_number,
+                proformaId: estimate._id
+              },
+              title: `Pro Forma Invoice - ${building.name}`,
+              attachments,
+              source: 'system'
+            });
+          } catch (notifErr) {
+            console.error(`[Pipeline-Send] Failed to send notification for estimate ${estimate._id}:`, notifErr.message);
+            // We proceed with status update even if notification fails
+          }
+
+          // 3. Update Status
+          estimate.status = 'sent';
+          await estimate.save();
+          results.sent++;
+          results.details.push({ estimateId: estimate._id, status: 'sent' });
+        } catch (err) {
+          results.errors++;
+          results.details.push({ estimateId: estimate._id, status: 'error', error: err.message });
+        }
+      }
+    }
+    return results;
+  } catch (error) {
+    console.error('Error in processApprovedEstimatesForSending:', error);
+    throw error;
+  }
+};
+
+/**
+ * Stage 4: Automated "Invoice" from Sent Estimates (default 1st)
+ * Converts 'sent' estimates into official Invoices
+ */
+export const convertSentEstimatesToInvoices = async (refDate = new Date()) => {
+  const results = { converted: 0, errors: 0, details: [] };
+  const now = refDate;
+  const currentDay = now.getDate();
+
+  try {
+    const buildings = await Building.find({ draftInvoiceGeneration: true });
+    for (const building of buildings) {
+      const invoiceDay = building.invoiceSendDay || 1;
+      if (currentDay !== invoiceDay) continue;
+
+      const sentEstimates = await Estimate.find({
+        building: building._id,
+        status: 'sent'
+      }).populate('client');
+
+      for (const estimate of sentEstimates) {
+        try {
+          // Check for existing invoice to avoid duplicates
+          const existing = await Invoice.findOne({
+            client: estimate.client._id,
+            building: estimate.building,
+            'billing_period.start': estimate.billing_period.start,
+            'billing_period.end': estimate.billing_period.end,
+            type: 'regular',
+            category: 'monthly'
+          });
+
+          if (existing) {
+            estimate.status = 'invoiced';
+            await estimate.save();
+            results.details.push({ estimateId: estimate._id, status: 'already_invoiced' });
+            continue;
+          }
+
+          // Create Invoice
+          const invoiceNumber = await generateLocalInvoiceNumber();
+          const invoiceData = {
+            ...estimate.toObject(),
+            _id: undefined, // Let MongoDB generate new ID
+            invoice_number: invoiceNumber,
+            createdAt: undefined,
+            updatedAt: undefined,
+            status: 'issued', // Official invoice status
+            type: 'regular',
+            category: 'monthly',
+            date: new Date(),
+            due_date: estimate.expiry_date // Inherit expiry from estimate
+          };
+
+          const invoice = await Invoice.create(invoiceData);
+
+          // Update Estimate
+          estimate.status = 'invoiced';
+          await estimate.save();
+
+          // Push to Zoho (official Invoice)
+          try {
+            const { createZohoInvoiceFromLocal } = await import('../utils/zohoBooks.js');
+            await createZohoInvoiceFromLocal(invoice.toObject(), estimate.client.toObject());
+          } catch (zohoErr) {
+            console.warn(`[Pipeline-Invoice] Failed to push invoice ${invoice._id} to Zoho:`, zohoErr.message);
+          }
+
+          results.converted++;
+          results.details.push({
+            estimateId: estimate._id,
+            invoiceId: invoice._id,
+            status: 'success',
+            clientName: estimate.client.companyName || estimate.client.contactPerson || 'Client',
+            buildingName: building.name,
+            invoiceNumber: invoice.invoice_number,
+            amount: invoice.total
+          });
+        } catch (err) {
+          results.errors++;
+          results.details.push({ estimateId: estimate._id, status: 'error', error: err.message });
+        }
+      }
+    }
+
+    if (results.converted > 0) {
+      // For conversion, we treat them as 'converted' invoices
+      const formattedResults = {
+        ...results,
+        created: results.converted // Map for helper
+      };
+      await notifyAdminsOfInvoiceBatch(formattedResults, 'converted');
+    }
+    return results;
+  } catch (error) {
+    console.error('Error in convertSentEstimatesToInvoices:', error);
+    throw error;
+  }
+};
+
+export default {
+  createMonthlyInvoices,
+  createMonthlyInvoicesConsolidated,
+  createMonthlyEstimates,
+  createMonthlyEstimatesConsolidated,
+  processApprovedEstimatesForSending,
+  convertSentEstimatesToInvoices
+};
+
+/**
+ * Helper to notify System Admins of a processed batch of invoices or estimates
+ */
+async function notifyAdminsOfInvoiceBatch(batchResults, type = 'generated') {
+  try {
+    const adminRole = await Role.findOne({ roleName: 'System Admin' });
+    if (!adminRole) {
+      console.warn('[Pipeline-Notify] System Admin role not found for notification');
+      return;
+    }
+
+    const admins = await User.find({ role: adminRole._id }).select('email name');
+    if (admins.length === 0) {
+      console.warn('[Pipeline-Notify] No System Admin users found for notification');
+      return;
+    }
+
+    const successfulItems = (batchResults.details || []).filter(d =>
+      ['success', 'created', 'converted'].includes(d.status)
+    );
+
+    if (successfulItems.length === 0) return;
+
+    let table = `| Building | Client/Company | Invoice # | Amount |\n`;
+    table += `| :--- | :--- | :--- | :--- |\n`;
+
+    for (const item of successfulItems) {
+      const buildingName = item.buildingName || 'N/A';
+      const clientName = item.clientName || 'N/A';
+      const invNum = item.invoiceNumber || 'PENDING';
+      const amount = item.amount || 0;
+      table += `| ${buildingName} | ${clientName} | ${invNum} | ₹${amount.toLocaleString('en-IN')} |\n`;
+    }
+
+    const now = new Date();
+    const dateStr = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
+
+    await Promise.allSettled(admins.map(admin =>
+      sendNotification({
+        to: { email: admin.email, userId: admin._id },
+        channels: { email: true, sms: false },
+        templateKey: 'admin_invoice_batch_summary',
+        templateVariables: {
+          greeting: "Ofis Square",
+          date: dateStr,
+          type: type,
+          count: successfulItems.length,
+          errorCount: batchResults.errors || 0,
+          summaryTable: table
+        },
+        title: `Monthly Invoice Batch Summary - ${type.includes('generated') ? 'Generated' : 'Converted'}`,
+        source: 'system',
+        type: 'transactional'
+      })
+    ));
+    console.log(`[Pipeline-Notify] Admin notification sent for batch of ${successfulItems.length} invoices`);
+  } catch (err) {
+    console.error('[Pipeline-Notify] Failed to notify admins of invoice batch:', err);
+  }
+}

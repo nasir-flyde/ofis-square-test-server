@@ -68,6 +68,39 @@ class NotificationRenderer {
         `,
         text: 'Your OTP code is: {{otp}}. Valid for {{expiryMinutes}} minutes.',
         sms: 'Your OTP code is {{otp}}. Valid for {{expiryMinutes}} minutes. Do not share with anyone.'
+      },
+      proforma_invoice_approval_required: {
+        subject: 'Approval Required – Pro Forma Invoice | {{buildingName}}',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Pro Forma Approval Required</h2>
+            <p>Dear {{clientName}},</p>
+            <p>A new Pro Forma Invoice for {{companyName}} has been generated.</p>
+            <ul>
+              <li><strong>Pro Forma #:</strong> {{proformaNumber}}</li>
+              <li><strong>Amount:</strong> ₹{{totalAmount}}</li>
+              <li><strong>Due Date:</strong> {{dueDate}}</li>
+            </ul>
+            <p>Please review and approve via the portal.</p>
+          </div>
+        `,
+        text: 'Approval Required: Pro Forma {{proformaNumber}} for ₹{{totalAmount}} is ready for review.'
+      },
+      proforma_invoice_sent: {
+        subject: 'Pro Forma Invoice - {{buildingName}}',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Pro Forma Invoice</h2>
+            <p>Dear {{clientName}},</p>
+            <p>Please find attached the Pro Forma Invoice for your upcoming billing period at {{buildingName}}.</p>
+            <ul>
+              <li><strong>Amount:</strong> ₹{{totalAmount}}</li>
+              <li><strong>Due Date:</strong> {{dueDate}}</li>
+            </ul>
+            <p>Best regards,<br>Team OFIS SQUARE</p>
+          </div>
+        `,
+        text: 'Your Pro Forma Invoice for {{buildingName}} (₹{{totalAmount}}) is ready.'
       }
     };
   }

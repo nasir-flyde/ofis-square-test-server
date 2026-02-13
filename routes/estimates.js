@@ -2,7 +2,15 @@ import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
 import checkPermission from "../middlewares/checkPermission.js";
 import { PERMISSIONS } from "../constants/permissions.js";
-import { createProforma, getProformas, getProformaById, pushProformaToZoho, syncProformaFromZoho, convertProformaToInvoice } from "../controllers/estimateController.js";
+import {
+  createProforma,
+  getProformas,
+  getProformaById,
+  pushProformaToZoho,
+  syncProformaFromZoho,
+  convertProformaToInvoice,
+  approveProforma
+} from "../controllers/estimateController.js";
 
 const router = express.Router();
 
@@ -29,5 +37,7 @@ router.post(
   convertProformaToInvoice
 );
 router.post("/:id/sync", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), syncProformaFromZoho);
+router.post("/:id/approve", authMiddleware, checkPermission(PERMISSIONS.INVOICE_APPROVE), approveProforma);
+
 
 export default router;

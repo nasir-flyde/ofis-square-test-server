@@ -5,6 +5,13 @@ import apiLogger from "./apiLogger.js";
 const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID;
 const BASE_URL = "https://www.zohoapis.in/books/v3";
 
+function formatDateToISO(date) {
+  if (!date) return undefined;
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return undefined;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export async function getContacts() {
   try {
     const authToken = await getValidAccessToken();
@@ -588,21 +595,15 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     const payload = {
       customer_id,
       reference_number: invoiceDoc.invoice_number || invoiceNumber || undefined,
-      date: actualIssueDate
-        ? new Date(new Date(actualIssueDate).toDateString()).toISOString().slice(0, 10)
-        : new Date(new Date().toDateString()).toISOString().slice(0, 10),
+      date: formatDateToISO(actualIssueDate) || formatDateToISO(new Date()),
       ...(actualDueDate
-        ? { due_date: new Date(new Date(actualDueDate).toDateString()).toISOString().slice(0, 10) }
+        ? { due_date: formatDateToISO(actualDueDate) }
         : {}),
       line_items,
       notes: invoiceDoc.notes || notes || "Looking forward for your business.",
       terms:
         billingPeriod && billingPeriod.start && billingPeriod.end
-          ? `Billing Period: ${new Date(billingPeriod.start)
-            .toISOString()
-            .slice(0, 10)} to ${new Date(billingPeriod.end)
-              .toISOString()
-              .slice(0, 10)}`
+          ? `Billing Period: ${formatDateToISO(billingPeriod.start)} to ${formatDateToISO(billingPeriod.end)}`
           : "Terms & Conditions apply",
       // GST context for India: let Zoho compute IGST vs CGST/SGST based on place_of_supply and org state
       ...(gstTreatment ? { gst_treatment: gstTreatment } : {}),
@@ -1320,6 +1321,34 @@ export async function fetchZohoEstimatePdfBinary(zohoEstimateId) {
     return Buffer.from(arrayBuf);
   } catch (err) {
     console.error("❌ Error fetching Zoho Estimate PDF:", err.message);
+    throw err;
+  }
+}
+
+export async function deleteZohoInvoice(zohoInvoiceId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/invoices/${zohoInvoiceId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      // If it's 404, the invoice might already be deleted in Zoho, so we can ignore it
+      if (res.status === 404) {
+        console.warn(`⚠️ Zoho Invoice ${zohoInvoiceId} not found during deletion (likely already deleted).`);
+        return true;
+      }
+      throw new Error(data.message || `Zoho API error deleting Invoice (status ${res.status})`);
+    }
+
+    await apiLogger(null, "DELETE", url, null, data, "SUCCESS", null);
+    return true;
+  } catch (err) {
+    console.error("❌ Error deleting Zoho Invoice:", err.message);
+    await apiLogger(null, "DELETE", `${BASE_URL}/invoices/${zohoInvoiceId}`, null, { error: err.message }, "FAILURE", null);
     throw err;
   }
 }

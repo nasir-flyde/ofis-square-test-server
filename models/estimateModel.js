@@ -53,7 +53,7 @@ const estimateSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["draft", "sent", "accepted", "declined", "expired"],
+      enum: ["draft", "sent", "accepted", "declined", "expired", "approved_internal", "invoiced"],
       default: "draft",
       index: true,
     },

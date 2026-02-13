@@ -10,7 +10,7 @@ import apiRoutes from "./routes/api.js";
 import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
-import { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders } from './utils/cronJobs.js';
+import { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
 import notificationScheduler from "./services/notifications/scheduler.js";
 import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
@@ -88,6 +88,7 @@ scheduleMonthlyInvoices();
 scheduleZohoTokenRefresh();
 scheduleAccessEnforcement();
 schedulePaymentReminders();
+scheduleLateFeeJobs();
 initializeScheduler();
 notificationScheduler.start();
 
