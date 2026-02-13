@@ -880,8 +880,52 @@ async function handleInvoiceEvent(invoiceData) {
       }
     }
 
-    // Check if invoice already exists
-    let existingInvoice = await Invoice.findOne({ zoho_invoice_id: invoiceData.invoice_id });
+    // Log raw data for debugging
+    console.log(`[Webhook-Invoice] Raw invoice data keys: ${Object.keys(invoiceData).join(', ')}`);
+    console.log(`[Webhook-Invoice] reference_number: "${invoiceData.reference_number}", invoice_number: "${invoiceData.invoice_number}"`);
+
+    // Parse billing period and category early for idempotency matching
+    const terms = invoiceData.terms || "";
+    const notes = invoiceData.notes || "";
+    const billingPeriodMatch = terms.match(/Billing Period:\s*(\d{4}-\d{2}-\d{2})\s*to\s*(\d{4}-\d{2}-\d{2})/i);
+    const parsedBillingPeriod = billingPeriodMatch ? {
+      start: new Date(billingPeriodMatch[1]),
+      end: new Date(billingPeriodMatch[2])
+    } : null;
+
+    const isMonthly = (notes + terms).toLowerCase().includes('monthly') ||
+      (notes + terms).toLowerCase().includes('consolidated') ||
+      (notes + terms).toLowerCase().includes('pro forma');
+    const detectedCategory = isMonthly ? 'monthly' : (invoiceData.category || 'general');
+
+    // Check if invoice already exists - Multi-strategy find
+    let existingInvoice = null;
+
+    // 1. By Zoho ID
+    if (invoiceData.invoice_id) {
+      existingInvoice = await Invoice.findOne({ zoho_invoice_id: invoiceData.invoice_id });
+      if (existingInvoice) console.log(`[Webhook-Invoice] Found by zoho_invoice_id: ${invoiceData.invoice_id}`);
+    }
+
+    // 2. By local invoice number (Zoho's reference_number)
+    if (!existingInvoice && invoiceData.reference_number) {
+      existingInvoice = await Invoice.findOne({ invoice_number: invoiceData.reference_number });
+      if (existingInvoice) console.log(`[Webhook-Invoice] Found by reference_number (local invoice_number): ${invoiceData.reference_number}`);
+    }
+
+    // 3. Fallback for monthly invoices: Client + Building + Billing Period + Total
+    if (!existingInvoice && isMonthly && client && parsedBillingPeriod) {
+      existingInvoice = await Invoice.findOne({
+        client: client._id,
+        "billing_period.start": parsedBillingPeriod.start,
+        "billing_period.end": parsedBillingPeriod.end,
+        total: parseFloat(invoiceData.total || 0),
+        type: 'regular'
+      });
+      if (existingInvoice) {
+        console.log(`[Webhook-Invoice] Found by monthly criteria (Client/Period/Total). Linking to Zoho ID: ${invoiceData.invoice_id}`);
+      }
+    }
 
     // Check for idempotency - don't update if we have newer data
     if (existingInvoice && existingInvoice.zoho_last_modified_at) {
@@ -909,11 +953,13 @@ async function handleInvoiceEvent(invoiceData) {
       // Core invoice fields - use our local number, not Zoho's
       ...(localInvoiceNumber && { invoice_number: localInvoiceNumber }),
       date: invoiceData.date ? new Date(invoiceData.date) : new Date(),
-      // Set due date to end of current month instead of using Zoho's due_date
-      due_date: (() => {
-        const currentDate = new Date();
-        return new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Last day of current month
-      })(),
+      // Use Zoho's due date if available, otherwise fallback to end of month only if no existing due date
+      due_date: invoiceData.due_date ? new Date(invoiceData.due_date) :
+        (existingInvoice?.due_date || new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)),
+
+      billing_period: parsedBillingPeriod || existingInvoice?.billing_period,
+      category: detectedCategory || existingInvoice?.category || 'general',
+      type: (isMonthly ? 'regular' : undefined) || existingInvoice?.type || 'regular',
 
       // Financial fields
       sub_total: parseFloat(invoiceData.sub_total || 0),
