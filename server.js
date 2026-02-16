@@ -10,12 +10,13 @@ import apiRoutes from "./routes/api.js";
 import crypto from "crypto";
 import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
-import { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs } from './utils/cronJobs.js';
+import { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs, scheduleGstTokenRefresh } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
 import notificationScheduler from "./services/notifications/scheduler.js";
 import activityLogMiddleware from "./middlewares/activityLogMiddleware.js";
 import { handleRazorpayWebhook } from "./controllers/paymentController.js";
 import bankDetailsRoutes from "./routes/bankDetailsRoutes.js";
+import gstRoutes from "./routes/gstRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,6 +72,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // }));
 
 app.use("/api", apiRoutes);
+app.use("/api/gst", gstRoutes);
 app.use("/api/bank-details", bankDetailsRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
@@ -89,6 +91,7 @@ scheduleZohoTokenRefresh();
 scheduleAccessEnforcement();
 schedulePaymentReminders();
 scheduleLateFeeJobs();
+scheduleGstTokenRefresh();
 initializeScheduler();
 notificationScheduler.start();
 

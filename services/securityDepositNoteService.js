@@ -1,8 +1,10 @@
 import SecurityDeposit from "../models/securityDepositModel.js";
 import Building from "../models/buildingModel.js";
 import Payment from "../models/paymentModel.js";
+import BankDetails from "../models/bankDetailsModel.js";
 import renderHtmlToPdf from "../utils/pdf/renderHtmlToPdf.js";
 import imagekit from "../utils/imageKit.js";
+import { numberToWords } from "../utils/numberToWords.js";
 
 function formatINR(n) {
   const num = Number(n || 0);
@@ -29,97 +31,257 @@ function injectPlaceholders(template, data) {
 }
 
 function buildStructuredHtml(settings, ctx) {
-  const introWelcomeText = settings?.introWelcomeText || "Welcome to OFIS SQUARE.";
-  const depositRequirementText = settings?.depositRequirementText || "A refundable security deposit is required.";
-  const paymentInstructionText = settings?.paymentInstructionText || "Please proceed with the payment.";
-  const closingSupportText = settings?.closingSupportText || "We look forward to supporting you.";
-  const defaultPurposeText = settings?.defaultPurposeText || "To safeguard against damages or dues.";
-  const defaultRefundabilityText = settings?.defaultRefundabilityText || "The security deposit is fully refundable subject to adjustments.";
-
-  const additionalRows = (ctx.dynamicValues || []).map(({ label, value }) => {
-    if (!label && !value) return "";
-    return `<tr><td>${label || ''}</td><td>${value || ''}</td></tr>`;
-  }).join("");
-
-  const amountPaidRow = Number(ctx.amountDepositedRaw || 0) > 0
-    ? `<tr><td>Amount Paid:</td><td>${ctx.amountDepositedFormatted}</td></tr>`
-    : '';
-
+  // New simplified template based on user request
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>${settings?.headerTitle || 'Security Deposit Notification'}</title>
-  <style>
-    body { font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.6; margin: 0; padding: 0; background: #ffffff; }
-    .container { max-width: 800px; margin: 0 auto; padding: 40px 50px; }
-    .header { text-align: center; margin-bottom: 40px; }
-    .header img { max-height: 80px; margin-bottom: 10px; }
-    .content { font-size: 14px; }
-    .content p { margin: 0 0 16px 0; }
-    .section-title { font-weight: bold; margin-top: 24px; margin-bottom: 8px; }
-    .details-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; }
-    .details-table td { padding: 8px 0; vertical-align: top; }
-    .details-table td:first-child { width: 180px; font-weight: bold; }
-    .footer { margin-top: 40px; font-size: 14px; }
-    .signature { margin-top: 24px; }
-    /* Added for signature + stamp images */
-    .signature-block { margin-top: 24px; position: relative; min-height: 140px; }
-    .signature-img { position: absolute; left: 0; top: 0; height: 80px; }
-    .stamp-img { position: absolute; right: 0; bottom: 0; height: 120px; opacity: 0.9; }
-    .signer-text { position: absolute; left: 0; top: 90px; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Deposit Release Request - OfisSquare</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            background-color: white;
+            padding: 20px 30px;
+            border-bottom: 3px solid #ff6633;
+        }
+
+        .logo-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .logo-img {
+            max-width: 150px;
+            height: auto;
+        }
+
+        .content {
+            padding: 30px 40px;
+            line-height: 1.6;
+        }
+
+        .to-section {
+            margin-bottom: 20px;
+        }
+
+        .to-label {
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .company-name {
+            font-weight: bold;
+            font-size: 14px;
+            margin: 5px 0;
+        }
+
+        .address {
+            font-size: 12px;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .subject {
+            font-weight: bold;
+            font-size: 13px;
+            margin: 20px 0;
+        }
+
+        .salutation {
+            font-size: 13px;
+            margin: 15px 0;
+        }
+
+        .body-text {
+            font-size: 13px;
+            margin: 15px 0;
+            text-align: justify;
+        }
+
+        .highlight {
+            font-weight: bold;
+        }
+
+        .bank-details {
+            border: 2px solid #000;
+            margin: 20px 0;
+            font-size: 14px;
+            display: table;
+            width: auto;
+            border-collapse: collapse;
+        }
+
+        .bank-details div {
+            display: table-row;
+        }
+
+        .bank-details span {
+            display: table-cell;
+            padding: 8px 12px;
+            border: 1px solid #000;
+        }
+
+        .bank-details .label {
+            font-weight: normal;
+            background-color: white;
+        }
+
+        .bank-details .value {
+            font-weight: bold;
+            background-color: white;
+        }
+
+        .signature-section {
+            margin-top: 30px;
+        }
+
+        .signature-text {
+            font-size: 12px;
+            margin: 10px 0;
+        }
+
+        .signatory-name {
+            font-weight: bold;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+
+        .signatory-details {
+            font-size: 10px;
+            color: #333;
+            margin: 2px 0;
+        }
+
+        .auth-label {
+            font-weight: bold;
+            font-size: 12px;
+            margin-top: 15px;
+        }
+
+        .footer {
+            background-color: #f8f8f8;
+            padding: 20px 40px;
+            border-top: 3px solid #ff6633;
+            font-size: 10px;
+            color: #333;
+            text-align: center;
+        }
+
+        .footer-company {
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .footer-details {
+            line-height: 1.5;
+        }
+    </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <img src="${ctx.logoUrl}" alt="${ctx.companyName} Logo" />
-    </div>
-    <div class="content">
-      <p>Dear <strong>${ctx.memberName}</strong>,</p>
-      <p>${introWelcomeText}</p>
-      <p>${depositRequirementText}</p>
-
-      <div class="section-title">Security Deposit Details</div>
-      <table class="details-table">
-        <tr><td>Deposit Amount:</td><td>${ctx.agreedAmountFormatted}</td></tr>
-        <tr><td>Purpose:</td><td>${defaultPurposeText}</td></tr>
-        <tr><td>Refundability:</td><td>${defaultRefundabilityText}</td></tr>
-        <tr><td>Refund Timeline:</td><td>The security deposit will be refunded within ${ctx.refundTimelineDays} days from the date of membership closure and handover of the workspace, after necessary verification.</td></tr>
-        ${amountPaidRow}
-      </table>
-
-      <div class="section-title">Payment Details</div>
-      <table class="details-table">
-        <tr><td>Mode of Payment:</td><td>${ctx.paymentMode || settings?.paymentModesPlaceholder || '-'}</td></tr>
-        <tr><td>Due Date:</td><td>${ctx.dueDate || '-'}</td></tr>
-        ${ctx.paidDate ? `<tr><td>Paid On:</td><td>${ctx.paidDate}</td></tr>` : ''}
-      </table>
-
-      ${additionalRows ? `<div class="section-title">Additional Details</div>
-      <table class="details-table">${additionalRows}</table>` : ''}
-
-      <p>${paymentInstructionText}</p>
-      <p>${closingSupportText}</p>
-    </div>
-
-    <div class="footer">
-      <p>Warm regards,</p>
-      <div class="signature-block">
-        ${ctx.signatureUrl ? `<img class="signature-img" src="${ctx.signatureUrl}" alt="Signature" />` : ''}
-        ${ctx.stampUrl ? `<img class="stamp-img" src="${ctx.stampUrl}" alt="Stamp" />` : ''}
-        <div class="signer-text">
-          <p>
-            <strong>${ctx.signerName || ''}</strong><br />
-            ${ctx.signerDesignation || ''}<br />
-            <strong>${ctx.companyName}</strong><br />
-            Phone: ${ctx.signerPhone || ''}<br />
-            Email: ${ctx.signerEmail || ''}
-          </p>
+    <div class="container">
+        <div class="header">
+            <div class="logo-section">
+                <div>
+                </div>
+                <div>
+                    <img src="${ctx.logoUrl}" alt="${ctx.companyName} Logo" class="logo-img">
+                </div>
+            </div>
         </div>
-      </div>
+
+        <div class="content">
+            <div class="to-section">
+                <div class="to-label">To,</div>
+                <div class="company-name">${ctx.memberName}</div>
+                <div class="address">
+                    ${ctx.clientAddress || 'Address not available'}
+                </div>
+            </div>
+
+            <div class="subject">
+                Subject: - Request to release security deposit ${ctx.memberName}
+            </div>
+
+            <div class="salutation">Dear Sir/Mam</div>
+
+            <div class="body-text">
+                In terms of Contract, which is to be executed on <span class="highlight">${ctx.contractDateFormatted}</span> with your Entity for 
+                <span class="highlight">${ctx.cabinName}</span>, ${ctx.buildingAddress || 'Ofis Square'}.
+            </div>
+
+            <div class="body-text">
+                We would like to request you to release security deposit of <span class="highlight">${ctx.agreedAmountFormatted}/- (Rupees ${ctx.agreedAmountWords} Only)</span>
+            </div>
+
+            <div class="body-text">
+                Kindly find our bank account details as under for transferring the same: -
+            </div>
+
+            <div class="bank-details">
+                <div>
+                    <span class="label">Bank Name:</span>
+                    <span class="value">${ctx.bankDetails?.bankName || 'PUNJAB NATIONAL BANK'}</span>
+                </div>
+                <div>
+                    <span class="label">Account Holder:</span>
+                    <span class="value">${ctx.bankDetails?.accountHolderName || ctx.companyName}</span>
+                </div>
+                <div>
+                    <span class="label">Account Number:</span>
+                    <span class="value">${ctx.bankDetails?.accountNumber || '-'}</span>
+                </div>
+                <div>
+                    <span class="label">IFSC Code:</span>
+                    <span class="value">${ctx.bankDetails?.ifscCode || '-'}</span>
+                </div>
+            </div>
+
+            <div class="body-text">
+                Please send us a confirmation post transfer of security deposit.
+            </div>
+
+            <div class="signature-section">
+                <div class="signature-text">For ${ctx.companyName}</div>
+                
+                 ${ctx.signatureUrl ? `<img src="${ctx.signatureUrl}" style="height: 60px; margin-top: 10px;" alt="Signature" />` : ''}
+
+                <div class="signatory-name">${ctx.signerName}</div>
+                <div class="signatory-details">Digitally signed by ${ctx.signerName}</div>
+
+                <div class="auth-label">Authorized Signatory</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="footer-company">${ctx.companyName}</div>
+            <div class="footer-details">
+                ${ctx.companyAddress || 'Noida, Uttar Pradesh'}<br>
+                ${ctx.companyPhone || ''} | ${ctx.companyEmail || ''}
+            </div>
+        </div>
     </div>
-  </div>
 </body>
 </html>`;
 }
@@ -128,15 +290,27 @@ export async function generateSecurityDepositNote(depositId, { signer = {}, dyna
   const dep = await SecurityDeposit.findById(depositId)
     .populate('client')
     .populate('contract')
+    .populate('building')
+    .populate('cabin')
     .populate('invoice_id', 'invoice_number date due_date total amount_paid');
   if (!dep) throw new Error('SecurityDeposit not found');
   if (dep.sdNoteUrl && !force) return { url: dep.sdNoteUrl, deposit: dep };
 
-  let building = null;
-  if (dep.building) {
-    building = await Building.findById(dep.building);
+  if (dep.sdNoteUrl && !force) return { url: dep.sdNoteUrl, deposit: dep };
+
+  let building = dep.building || null;
+  if (!building && dep.building?._id) building = dep.building;
+  if (dep.contract && dep.contract.building) building = dep.contract.building;
+
+  // Ensure fully populated building if we only have ID
+  if (building && !building.name) {
+    building = await Building.findById(building._id || building);
   }
+
   const settings = building?.sdNoteSettings || {};
+
+  // Fetch Bank Details (assuming single record or specific logic, here taking first)
+  const bankDetails = await BankDetails.findOne();
 
   // Determine payment mode and dates from latest payment on this invoice
   let paymentMode = undefined;
@@ -151,40 +325,71 @@ export async function generateSecurityDepositNote(depositId, { signer = {}, dyna
         if (!latestPaidDate && latestPayment.paymentDate) latestPaidDate = new Date(latestPayment.paymentDate);
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
-  const companyName = settings.companyName || 'OFIS SQUARE';
+  const companyName = settings.companyName || 'OFIS SPACES PRIVATE LIMITED';
   const logoUrl = settings.logoUrl || 'https://ik.imagekit.io/8znjbhgdh/black%20logo.png';
 
-  const memberName = dep.client?.contactPerson || dep.client?.companyName || 'Member';
+  const memberName = dep.client?.companyName || dep.client?.contactPerson || 'Member';
+  // Construct client address
+  const clientAddrObj = dep.client?.billingAddress || {};
+  const clientAddress = [
+    clientAddrObj.street1, clientAddrObj.street2,
+    clientAddrObj.city, clientAddrObj.state,
+    clientAddrObj.zip_code, 'India'
+  ].filter(Boolean).join(', ');
+
   const agreedAmountFormatted = formatINR(dep.agreed_amount);
+  const agreedAmountWords = numberToWords(dep.agreed_amount);
   const amountDepositedFormatted = formatINR(dep.amount_paid);
+
   const refundTimelineDays = settings.refundTimelineDays || 15;
   const dueDateStr = dep.due_date ? new Date(dep.due_date).toISOString().split('T')[0] : '';
   const paidDateStr = latestPaidDate ? latestPaidDate.toISOString().split('T')[0] : '';
 
+  // Cabin Name / Building Address
+  const cabinName = dep.cabin?.number ? `Cabin No. ${dep.cabin.number}` : (dep.contract?.cabin?.number ? `Cabin No. ${dep.contract.cabin.number}` : 'Designated Space');
+  const buildingAddress = building?.address ? `${building.name}, ${building.address}` : 'Ofis Square';
+
+  const contractDateFormatted = dep.createdAt ? new Date(dep.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+
   // Defaults for signature and stamp (can be overridden via settings or function params)
   const defaultSignatureUrl = 'https://ik.imagekit.io/8znjbhgdh/Gemini_Generated_Image_nounkwnounkwnoun.png';
-  const defaultStampUrl = 'https://ik.imagekit.io/8znjbhgdh/Gemini_Generated_Image_y7ualy7ualy7ualy%20(1).png';
 
   const ctx = {
     memberName,
+    clientAddress,
     companyName,
+    companyAddress: settings.companyAddress || '212, Second Floor, Tower A-1, Ofis Square, AUDA Plot No. 3, Sector-62, Noida, Gautam Buddha Nagar, Uttar Pradesh- 201301',
+    companyPhone: settings.companyPhone || '+91-8287909488',
+    companyEmail: settings.companyEmail || 'hello@ofisspaces.com',
     logoUrl,
     refundTimelineDays,
     agreedAmountFormatted,
+    agreedAmountWords,
     amountDepositedFormatted,
     amountDepositedRaw: dep.amount_paid,
     paymentMode,
     dueDate: dueDateStr,
     paidDate: paidDateStr,
-    signerName: signer?.name || signer?.fullName || signer?.email || '',
-    signerDesignation: signer?.designation || settings?.footerDefaults?.designation || 'Team',
+    signerName: signer?.name || signer?.fullName || 'MAHENDER ADHIKARI',
+    signerDesignation: signer?.designation || settings?.footerDefaults?.designation || 'Authorized Signatory',
     signerPhone: signer?.phone || settings?.footerDefaults?.phone || '',
     signerEmail: signer?.email || settings?.footerDefaults?.email || '',
     signatureUrl: signatureUrl || settings.signatureUrl || defaultSignatureUrl,
-    stampUrl: stampUrl || settings.stampUrl || defaultStampUrl,
-    dynamicValues: [ ...(settings.dynamicDefaults || []), ...(dynamicValues || []) ]
+    stampUrl: stampUrl || settings.stampUrl,
+    dynamicValues: [...(settings.dynamicDefaults || []), ...(dynamicValues || [])],
+
+    // New context fields
+    cabinName,
+    buildingAddress,
+    contractDateFormatted,
+    bankDetails: bankDetails ? {
+      bankName: bankDetails.bankName,
+      accountHolderName: bankDetails.accountHolderName,
+      accountNumber: bankDetails.accountNumber,
+      ifscCode: bankDetails.ifscCode
+    } : null
   };
 
   let html;

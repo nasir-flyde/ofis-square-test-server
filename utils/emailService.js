@@ -1,4 +1,3 @@
-import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import { SendMailClient } from "zeptomail";
 
@@ -9,19 +8,6 @@ const zeptoClient = new SendMailClient({
   url: process.env.ZEPTOMAIL_URL || "https://api.zeptomail.in/v1.1/email",
   token: process.env.ZEPTOMAIL_TOKEN,
 });
-
-// Create transporter using Gmail SMTP from .env
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: false, // true for 465, false for other ports
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-};
 
 const getWelcomeEmailTemplate = (clientData) => {
   const { companyName, contactPerson, email } = clientData;
@@ -127,44 +113,30 @@ export const sendWelcomeEmail = async (clientData) => {
     const emailTemplate = getWelcomeEmailTemplate(clientData);
 
     // If ZeptoMail is configured, use it
-    if (process.env.ZEPTOMAIL_TOKEN) {
-      const result = await zeptoClient.sendMail({
-        "from": {
-          "address": process.env.ZEPTOMAIL_FROM_ADDRESS || "hello@ofisspaces.com",
-          "name": process.env.ZEPTOMAIL_FROM_NAME || "noreply"
-        },
-        "to": [
-          {
-            "email_address": {
-              "address": clientData.email,
-              "name": clientData.contactPerson || clientData.companyName || "Client"
-            }
+    if (!process.env.ZEPTOMAIL_TOKEN) {
+      console.warn('ZEPTOMAIL_TOKEN not found in environment variables. Email will not be sent.');
+      return { success: false, error: 'ZeptoMail token missing' };
+    }
+
+    const result = await zeptoClient.sendMail({
+      "from": {
+        "address": process.env.ZEPTOMAIL_FROM_ADDRESS || "hello@ofisspaces.com",
+        "name": process.env.ZEPTOMAIL_FROM_NAME || "noreply"
+      },
+      "to": [
+        {
+          "email_address": {
+            "address": clientData.email,
+            "name": clientData.contactPerson || clientData.companyName || "Client"
           }
-        ],
-        "subject": emailTemplate.subject,
-        "htmlbody": emailTemplate.html,
-      });
+        }
+      ],
+      "subject": emailTemplate.subject,
+      "htmlbody": emailTemplate.html,
+    });
 
-      console.log('Welcome email sent successfully via ZeptoMail to:', clientData.email);
-      return { success: true, messageId: result?.config?.messageId || 'zepto-sent' };
-    }
-
-    // Fallback to Nodemailer
-    else {
-      const transporter = createTransporter();
-
-      const mailOptions = {
-        from: process.env.MAIL_FROM || '"Ofis Square" <nasir@demomailtrap.co>',
-        to: clientData.email,
-        subject: emailTemplate.subject,
-        html: emailTemplate.html,
-        text: emailTemplate.text
-      };
-
-      const result = await transporter.sendMail(mailOptions);
-      console.log('Welcome email sent successfully to:', clientData.email, 'MessageID:', result.messageId);
-      return { success: true, messageId: result.messageId };
-    }
+    console.log('Welcome email sent successfully via ZeptoMail to:', clientData.email);
+    return { success: true, messageId: result?.config?.messageId || 'zepto-sent' };
 
   } catch (error) {
     console.error('Error sending welcome email:', error);

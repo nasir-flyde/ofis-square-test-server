@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Deposit Release Request - OfisSquare</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            background-color: white;
+            padding: 15px 40px;
+            border-top: 3px solid #ff6633;
+            border-bottom: 3px solid #ff6633;
+        }
+
+        .logo-section {
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+
+        .logo-img {
+            max-width: 450px;
+            height: auto;
+        }
+
+        .header-subtitle {
+            font-size: 13px;
+            color: #000;
+            text-align: right;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .icon {
+            color: #ff6633;
+            font-size: 18px;
+        }
+
+        .content {
+            padding: 30px 40px;
+            line-height: 1.6;
+        }
+
+        .to-section {
+            margin-bottom: 20px;
+        }
+
+        .to-label {
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .company-name {
+            font-weight: bold;
+            font-size: 14px;
+            margin: 5px 0;
+        }
+
+        .address {
+            font-size: 12px;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .subject {
+            font-weight: bold;
+            font-size: 13px;
+            margin: 20px 0;
+        }
+
+        .salutation {
+            font-size: 13px;
+            margin: 15px 0;
+        }
+
+        .body-text {
+            font-size: 13px;
+            margin: 15px 0;
+            text-align: justify;
+        }
+
+        .highlight {
+            font-weight: bold;
+        }
+
+        .bank-details {
+            border: 2px solid #000;
+            margin: 20px 0;
+            font-size: 14px;
+            display: table;
+            width: auto;
+            border-collapse: collapse;
+        }
+
+        .bank-details div {
+            display: table-row;
+        }
+
+        .bank-details span {
+            display: table-cell;
+            padding: 8px 12px;
+            border: 1px solid #000;
+        }
+
+        .bank-details .label {
+            font-weight: normal;
+            background-color: white;
+        }
+
+        .bank-details .value {
+            font-weight: bold;
+            background-color: white;
+        }
+
+        .signature-section {
+            margin-top: 30px;
+        }
+
+        .signature-text {
+            font-size: 12px;
+            margin: 10px 0;
+        }
+
+        .signatory-name {
+            font-weight: bold;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+
+        .signatory-details {
+            font-size: 10px;
+            color: #333;
+            margin: 2px 0;
+        }
+
+        .auth-label {
+            font-weight: bold;
+            font-size: 12px;
+            margin-top: 15px;
+        }
+
+        .footer {
+            background-color: white;
+            padding: 20px 40px;
+            border-top: 4px solid #ff6633;
+            font-size: 11px;
+            color: #333;
+            text-align: center;
+        }
+
+        .footer-company {
+            font-weight: bold;
+            font-size: 13px;
+            margin-bottom: 3px;
+        }
+
+        .footer-details {
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo-section">
+                <img src="https://ik.imagekit.io/8znjbhgdh/black%20logo.png?updatedAt=1766062892295" alt="OfisSquare Logo" class="logo-img">
+            </div>
+            <div class="header-subtitle">
+                Coworking & Managed Offices <span class="icon">⌂⌂⌂</span>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="to-section">
+                <div class="to-label">To,</div>
+                <div class="company-name">JELLYFISH TECHNOLOGIES LIMITED</div>
+                <div class="address">
+                    198 & 199, First Floor, Pocket-5, Sector-24, Rohini,<br>
+                    Rohini sec-11, North West Delhi, Delhi, Delhi, India, 110085.
+                </div>
+            </div>
+
+            <div class="subject">
+                Subject: - Request to release security deposit JELLYFISH TECHNOLOGIES LIMITED
+            </div>
+
+            <div class="salutation">Dear Sir/Mam</div>
+
+            <div class="body-text">
+                In terms of Contract, which is to be executed on <span class="highlight">10<sup>th</sup> October 2025</span> with your Entity for 
+                <span class="highlight">Cabin No. 304</span>, Ofis Square Tower A-1, Sector 3, Noida, Uttar Pradesh.
+            </div>
+
+            <div class="body-text">
+                We would like to request you to release security deposit of <span class="highlight">Rs. 5,60,000/- (Rupees Five Lakhs Sixty Thousand Only)</span>
+            </div>
+
+            <div class="body-text">
+                Kindly find our bank account details as under for transferring the same: -
+            </div>
+
+            <div class="bank-details">
+                <div>
+                    <span class="label">Bank Name:</span>
+                    <span class="value">PUNJAB NATIONAL BANK</span>
+                </div>
+                <div>
+                    <span class="label">Account Holder:</span>
+                    <span class="value">OFIS SPACES PRIVATE LIMITED</span>
+                </div>
+                <div>
+                    <span class="label">Account Number:</span>
+                    <span class="value">4052009000000411</span>
+                </div>
+                <div>
+                    <span class="label">IFSC Code:</span>
+                    <span class="value">PUNB0405200</span>
+                </div>
+            </div>
+
+            <div class="body-text">
+                Please send us a confirmation post transfer of security deposit.
+            </div>
+
+            <div class="signature-section">
+                <div class="signature-text">For Ofis Spaces Pvt. Ltd.</div>
+                
+                <div class="signatory-name">MAHENDE</div>
+                <div class="signatory-details">Digitally signed by</div>
+                <div class="signatory-details">R ADHIKARI MAHENDE R ADHIKARI</div>
+                <div class="signatory-details">Date: 2025.10.10</div>
+                <div class="signatory-details">15:45:35 +05'30'</div>
+
+                <div class="auth-label">Authorized Signatory</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="footer-company">OFIS SPACES PRIVATE LIMITED</div>
+            <div class="footer-details">
+                CIN NO. - U70109UP2022PTC167914<br>
+                212, Second Floor, Ofis Square, The Iconic Corenthum, Plot no. A-41, Sector-62,<br>
+                Noida, Gautam Buddha Nagar, Uttar Pradesh - 201301<br>
+                www.ofissquare.com  |  hello@ofisspaces.com  |  +91 8287991481
+            </div>
+        </div>
+    </div>
+</body>
+</html>

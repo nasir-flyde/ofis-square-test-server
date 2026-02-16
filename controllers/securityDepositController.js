@@ -9,6 +9,8 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import { generateSecurityDepositNote } from "../services/securityDepositNoteService.js";
 import imagekit from "../utils/imageKit.js";
+import { getUsersByRoles } from "../utils/contractEmailService.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 
 function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
@@ -33,7 +35,7 @@ function recomputeStatus(dep) {
 
 export const createDeposit = async (req, res) => {
   try {
-    const { clientId, contractId, buildingId, agreedAmount, currency = "INR", notes } = req.body || {};
+    const { clientId, contractId, buildingId, cabinId, agreedAmount, currency = "INR", notes } = req.body || {};
     if (!clientId || agreedAmount == null) {
       return res.status(400).json({ success: false, message: "clientId and agreedAmount are required" });
     }
@@ -44,7 +46,7 @@ export const createDeposit = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid contractId" });
     }
 
-    const client = await Client.findById(clientId).select("_id");
+    const client = await Client.findById(clientId).select("_id email companyName contactPerson");
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     let contract = null;
@@ -57,6 +59,7 @@ export const createDeposit = async (req, res) => {
       client: client._id,
       contract: contract ? contract._id : undefined,
       building: buildingId || (contract ? contract.building : undefined) || undefined,
+      cabin: cabinId || undefined,
       agreed_amount: Number(agreedAmount),
       currency,
       status: "AGREED",
@@ -68,7 +71,81 @@ export const createDeposit = async (req, res) => {
       amount_forfeited: 0,
     });
 
-    await logCRUDActivity(req, 'CREATE', 'SecurityDeposit', dep._id, null, { clientId, contractId, agreedAmount });
+    // 1. Generate SD Note immediately
+    let noteUrl = null;
+    try {
+      const noteResult = await generateSecurityDepositNote(dep._id, {
+        signer: {
+          name: req.user?.name || 'Authorized Signatory',
+          email: req.user?.email,
+          designation: req.user?.role || 'Finance Team'
+        },
+        force: true
+      });
+      noteUrl = noteResult?.url;
+    } catch (noteErr) {
+      console.error('Failed to auto-generate SD note:', noteErr);
+    }
+
+    // 2. Send Notifications (Email with Attachment)
+    if (noteUrl) {
+      const attachments = [{ filename: 'Security_Deposit_Note.pdf', path: noteUrl }];
+
+      // Notify Client
+      if (client.email) {
+        try {
+          await sendNotification({
+            to: { email: client.email, clientId: client._id },
+            channels: { email: true, sms: false },
+            title: 'Security Deposit Note - Ofis Square',
+            content: {
+              emailSubject: 'Your Security Deposit Note from Ofis Square',
+              emailHtml: `<p>Please find attached your Security Deposit Note.</p><p>Regards,<br>Ofis Square Team</p>`,
+              emailText: `Please find attached your Security Deposit Note.\n\nRegards,\nOfis Square Team`
+            },
+            templateVariables: {
+              greeting: client.contactPerson || client.companyName || 'Ofis Square'
+            },
+            attachments,
+            source: 'system',
+            type: 'transactional'
+          });
+        } catch (e) {
+          console.error('Failed to send SD note email to client:', e);
+        }
+      }
+
+      // Notify Finance Team
+      try {
+        const financeUsers = await getUsersByRoles(['finance', 'Finance', 'finance_team', 'Finance Team']);
+        for (const user of financeUsers) {
+          await sendNotification({
+            to: { email: user.email, userId: user._id },
+            channels: { email: true, sms: false },
+            title: 'New Security Deposit Note Generated',
+            content: {
+              emailSubject: `New SD Note: ${client.companyName}`,
+              emailHtml: `
+                <p>A new Security Deposit Note has been generated for <strong>${client.companyName}</strong>.</p>
+                <p>Amount: ${agreedAmount}</p>
+                <p>Please find the note attached.</p>
+              `,
+              emailText: `A new Security Deposit Note has been generated for ${client.companyName}.\nAmount: ${agreedAmount}\nPlease find the note attached.`
+            },
+            templateVariables: {
+              greeting: 'Ofis Square'
+            },
+            attachments,
+            source: 'system',
+            type: 'system'
+          });
+        }
+      } catch (e) {
+        console.error('Failed to send SD note email to finance team:', e);
+      }
+    }
+
+    await logCRUDActivity(req, 'CREATE', 'SecurityDeposit', dep._id, null, { clientId, contractId, agreedAmount, noteGenerated: !!noteUrl });
     return res.status(201).json({ success: true, data: dep });
   } catch (error) {
     await logErrorActivity(req, error, 'Create SecurityDeposit');
@@ -116,6 +193,7 @@ export const listDeposits = async (req, res) => {
 
     const docs = await SecurityDeposit.find(filter)
       .populate('invoice_id', 'invoice_number total amount_paid balance status due_date')
+      .populate('cabin', 'number floor status')
       .sort(sortObj)
       .limit(Math.max(1, Math.min(Number(limit) || 50, 200)));
 
@@ -314,9 +392,14 @@ export const closeDeposit = async (req, res) => {
 export const generateDepositNote = async (req, res) => {
   try {
     const { id } = req.params;
-    const { forceRegenerate = false, dynamicValues = [], stampUrl, signatureUrl } = req.body || {};
-    const dep = await SecurityDeposit.findById(id);
+    const { forceRegenerate = false, dynamicValues = [], stampUrl, signatureUrl, cabinId, sendNotification: shouldSend } = req.body || {};
+    const dep = await SecurityDeposit.findById(id).populate('client');
     if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
+
+    if (cabinId && mongoose.Types.ObjectId.isValid(cabinId)) {
+      dep.cabin = cabinId;
+      await dep.save();
+    }
 
     const result = await generateSecurityDepositNote(id, {
       signer: {
@@ -332,8 +415,38 @@ export const generateDepositNote = async (req, res) => {
       signatureUrl,
     });
 
-    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', id, null, { action: 'GENERATE_SD_NOTE', url: result?.url });
-    return res.json({ success: true, data: { url: result?.url } });
+    const noteUrl = result?.url;
+
+    // Send Notification if requested
+    if (shouldSend && noteUrl) {
+      const client = dep.client;
+      if (client && client.email) {
+        try {
+          const attachments = [{ filename: 'Security_Deposit_Note.pdf', path: noteUrl }];
+          await sendNotification({
+            to: { email: client.email, clientId: client._id },
+            channels: { email: true, sms: false },
+            title: 'Security Deposit Note - Ofis Square',
+            content: {
+              emailSubject: 'Your Security Deposit Note from Ofis Square',
+              emailHtml: `<p>Please find attached your Security Deposit Note.</p><p>Regards,<br>Ofis Square Team</p>`,
+              emailText: `Please find attached your Security Deposit Note.\n\nRegards,\nOfis Square Team`
+            },
+            templateVariables: {
+              greeting: client.contactPerson || client.companyName || 'Ofis Square'
+            },
+            attachments,
+            source: 'system',
+            type: 'transactional'
+          });
+        } catch (e) {
+          console.error('Failed to send SD note email to client:', e);
+        }
+      }
+    }
+
+    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', id, null, { action: 'GENERATE_SD_NOTE', url: noteUrl, sentToClient: !!shouldSend });
+    return res.json({ success: true, data: { url: noteUrl } });
   } catch (error) {
     await logErrorActivity(req, error, 'Generate SecurityDeposit Note');
     return res.status(500).json({ success: false, message: error.message });

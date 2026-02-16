@@ -886,7 +886,7 @@ async function sendEmail(notification) {
     }
 
     notification.updateDeliveryStatus('email', 'queued', { details: 'Sending email' });
-    notification.emailDelivery.provider = emailProvider.name || 'nodemailer';
+    notification.emailDelivery.provider = emailProvider.name || 'zeptomail';
 
     const result = await emailProvider.send({
       toEmail: notification.to.email,

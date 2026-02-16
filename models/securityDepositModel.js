@@ -5,6 +5,7 @@ const securityDepositSchema = new mongoose.Schema(
     client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true, index: true },
     contract: { type: mongoose.Schema.Types.ObjectId, ref: "Contract", index: true },
     building: { type: mongoose.Schema.Types.ObjectId, ref: "Building", index: true },
+    cabin: { type: mongoose.Schema.Types.ObjectId, ref: "Cabin", index: true },
 
     agreed_amount: { type: Number, required: true, min: 0 },
     currency: { type: String, default: "INR" },

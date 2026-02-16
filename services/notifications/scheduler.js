@@ -15,7 +15,7 @@ class NotificationScheduler {
       console.log('Notification scheduler is already running');
       return;
     }
-    
+
     this.cronJob = cron.schedule('* * * * *', async () => {
       await this.processPendingNotifications();
     }, {
@@ -38,7 +38,7 @@ class NotificationScheduler {
   async processPendingNotifications() {
     try {
       const pendingNotifications = await Notification.findPendingScheduled();
-      
+
       if (pendingNotifications.length === 0) {
         return;
       }
@@ -59,15 +59,15 @@ class NotificationScheduler {
       if (notification.expiresAt && new Date() > notification.expiresAt) {
         notification.canceled = true;
         notification.cancelReason = 'Expired';
-        
+
         if (notification.channels.sms && notification.smsDelivery.status === 'pending') {
           notification.updateDeliveryStatus('sms', 'canceled', { details: 'Notification expired' });
         }
-        
+
         if (notification.channels.email && notification.emailDelivery.status === 'pending') {
           notification.updateDeliveryStatus('email', 'canceled', { details: 'Notification expired' });
         }
-        
+
         // Atomic update to avoid VersionError
         await Notification.updateOne(
           { _id: notification._id },
@@ -115,7 +115,7 @@ class NotificationScheduler {
   async sendSMS(notification) {
     try {
       if (!notification.to.phone) {
-        notification.updateDeliveryStatus('sms', 'failed', { 
+        notification.updateDeliveryStatus('sms', 'failed', {
           error: 'Phone number not provided',
           errorCode: 'MISSING_PHONE'
         });
@@ -155,7 +155,7 @@ class NotificationScheduler {
   async sendEmail(notification) {
     try {
       if (!notification.to.email) {
-        notification.updateDeliveryStatus('email', 'failed', { 
+        notification.updateDeliveryStatus('email', 'failed', {
           error: 'Email address not provided',
           errorCode: 'MISSING_EMAIL'
         });
@@ -163,7 +163,7 @@ class NotificationScheduler {
       }
 
       notification.updateDeliveryStatus('email', 'queued', { details: 'Sending email via scheduler' });
-      notification.emailDelivery.provider = 'nodemailer';
+      notification.emailDelivery.provider = 'zeptomail';
 
       const result = await this.emailProvider.send({
         toEmail: notification.to.email,
@@ -198,13 +198,13 @@ class NotificationScheduler {
     try {
       const failedNotifications = await Notification.find({
         $or: [
-          { 
-            'channels.sms': true, 
+          {
+            'channels.sms': true,
             'smsDelivery.status': 'failed',
             'smsDelivery.attemptCount': { $lt: 3 }
           },
-          { 
-            'channels.email': true, 
+          {
+            'channels.email': true,
             'emailDelivery.status': 'failed',
             'emailDelivery.attemptCount': { $lt: 3 }
           }
@@ -216,16 +216,16 @@ class NotificationScheduler {
 
       for (const notification of failedNotifications) {
         // Reset failed channels to pending for retry
-        if (notification.channels.sms && 
-            notification.smsDelivery.status === 'failed' && 
-            notification.canRetry('sms')) {
+        if (notification.channels.sms &&
+          notification.smsDelivery.status === 'failed' &&
+          notification.canRetry('sms')) {
           notification.updateDeliveryStatus('sms', 'pending', { details: 'Automatic retry' });
           notification.incrementAttempt('sms');
         }
 
-        if (notification.channels.email && 
-            notification.emailDelivery.status === 'failed' && 
-            notification.canRetry('email')) {
+        if (notification.channels.email &&
+          notification.emailDelivery.status === 'failed' &&
+          notification.canRetry('email')) {
           notification.updateDeliveryStatus('email', 'pending', { details: 'Automatic retry' });
           notification.incrementAttempt('email');
         }

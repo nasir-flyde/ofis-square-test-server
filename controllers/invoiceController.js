@@ -34,7 +34,9 @@ function computeTotals(payload) {
     const quantity = Number(it.quantity || 0);
     const unitPrice = Number(it.unitPrice || it.rate || 0);
     const amount = Math.round(quantity * unitPrice * 100) / 100;
-    return { description: it.description, quantity, unitPrice, amount };
+    // Preserve tax_percentage if available
+    const tax_percentage = it.tax_percentage !== undefined ? Number(it.tax_percentage) : undefined;
+    return { description: it.description, quantity, unitPrice, amount, tax_percentage };
   });
   const subtotal = Math.round(items.reduce((sum, i) => sum + Number(i.amount || 0), 0) * 100) / 100;
 
@@ -138,6 +140,7 @@ export const createInvoice = async (req, res) => {
         rate: item.unitPrice,
         unit: "nos",
         item_total: item.amount,
+        tax_percentage: item.tax_percentage, // Pass this to the invoice document
       })),
 
       sub_total: totals.subtotal,
@@ -179,7 +182,86 @@ export const createInvoice = async (req, res) => {
     });
 
     console.log(`Manual invoice ${invoice._id} created locally with number ${localInvoiceNumber}`);
-    // Note: Invoices are now created locally only. Use "Push to Zoho" button to sync with Zoho Books.
+
+    // Handle Zoho Push if requested via zohoAction ('draft' or 'sent')
+    const zohoAction = body.zohoAction; // 'draft' | 'sent'
+    if (zohoAction && (zohoAction === 'draft' || zohoAction === 'sent')) {
+      try {
+        // Ensure client has Zoho Contact ID
+        if (!clientDoc.zohoBooksContactId) {
+          const contactId = await findOrCreateContactFromClient(clientDoc);
+          if (!contactId) throw new Error("Failed to create Zoho contact for client");
+          clientDoc.zohoBooksContactId = contactId;
+          await clientDoc.save();
+        }
+
+        // Enrich invoice document with GST context if missing (similar to pushInvoiceToZoho)
+        const invObj = invoice.toObject();
+        const hasZeroTax = typeof invObj.tax_total === 'number' && Number(invObj.tax_total) <= 0;
+        const inferredTreatment = clientDoc.gstTreatment || (clientDoc.gstNo ? 'business_gst' : 'consumer');
+        invObj.gst_treatment = invObj.gst_treatment || inferredTreatment;
+
+        const placeOfSupply = invObj.place_of_supply
+          || clientDoc.place_of_supply
+          || clientDoc?.billingAddress?.state_code
+          || clientDoc?.billingAddress?.state
+          || undefined;
+        if (placeOfSupply) invObj.place_of_supply = placeOfSupply;
+        invObj.gst_no = invObj.gst_no || clientDoc.gstNo || undefined;
+        invObj.organization_state_code = process.env.ZOHO_ORG_STATE_CODE || process.env.ZOHO_BOOKS_ORG_STATE_CODE || undefined;
+
+        if (hasZeroTax && invObj.gst_treatment === 'business_gst' && !process.env.ZOHO_TAX_EXEMPTION_ID) {
+          invObj.gst_treatment = 'consumer';
+        }
+
+        // Create in Zoho
+        const zohoResp = await createZohoInvoiceFromLocal(invObj, clientDoc.toObject());
+        const zohoId = zohoResp?.invoice?.invoice_id;
+        const zohoNumber = zohoResp?.invoice?.invoice_number;
+
+        if (!zohoId) {
+          throw new Error("Zoho did not return an invoice_id");
+        }
+
+        invoice.zoho_invoice_id = zohoId;
+        invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
+        invoice.source = "zoho";
+        invoice.zoho_status = "draft";
+
+        // If action is 'sent', try to send email
+        if (zohoAction === 'sent') {
+          if (clientDoc.email) {
+            try {
+              await sendZohoInvoiceEmail(zohoId, {
+                to_mail_ids: [clientDoc.email],
+                subject: `Invoice ${invoice.invoice_number || zohoNumber}`,
+                body: 'Please find attached your invoice.'
+              });
+              invoice.status = 'sent';
+              invoice.sent_at = new Date();
+              invoice.zoho_status = 'sent';
+            } catch (emailErr) {
+              console.error("Failed to send Zoho email:", emailErr.message);
+              // We don't rollback creation if email fails, but we warn
+              // You might want to return a warning here
+            }
+          } else {
+            console.warn("Client has no email, cannot send Zoho invoice.");
+          }
+        }
+
+        await invoice.save();
+      } catch (zohoError) {
+        console.error("Zoho Push Failed during creation:", zohoError.message);
+        // Rollback: Delete the local invoice if Zoho push fails
+        await Invoice.findByIdAndDelete(invoice._id);
+        return res.status(400).json({
+          success: false,
+          message: `Invoice creation failed: ${zohoError.message}`,
+          zohoError: true
+        });
+      }
+    }
 
     return res.status(201).json({ success: true, data: invoice });
   } catch (error) {

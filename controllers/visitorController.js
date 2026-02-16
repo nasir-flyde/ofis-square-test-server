@@ -4,7 +4,6 @@ import User from "../models/userModel.js";
 import Building from "../models/buildingModel.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
-import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
@@ -25,15 +24,6 @@ const generateQRToken = (visitorId, validOn) => {
   // For now, return a simple token format until JWT is properly configured
   return `${visitorId}-${validOn.toISOString().split('T')[0]}-${Date.now().toString(36)}`;
 };
-
-const emailTransporter = nodemailer.createTransport({
-  host: 'bulk.smtp.mailtrap.io',
-  port: 587,
-  auth: {
-    user: 'smtp@mailtrap.io',
-    pass: '7d6550b3447fc10051a947eb7d5046cb',
-  },
-});
 
 async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) {
   if (!to) return;
@@ -83,12 +73,15 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
   </body></html>`;
 
   try {
-    await emailTransporter.sendMail({
-      from: process.env.MAIL_FROM || '"Ofis Square" <nasir@demomailtrap.co>',
-      to,
-      subject,
-      text,
-      html,
+    await sendNotification({
+      to: { email: to },
+      channels: { email: true, sms: false },
+      content: {
+        emailSubject: subject,
+        emailHtml: html,
+        emailText: text
+      },
+      title: 'Visit Invitation',
       attachments: qrPngBuffer ? [
         {
           filename: 'visitor-qr.png',
@@ -98,47 +91,33 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
           contentDisposition: 'inline',
         }
       ] : [],
+      source: 'visitor_system',
+      type: 'transactional'
     });
   } catch (err) {
-    console.error('[sendInvitationEmail] Failed to send email:', err?.message || err);
+    console.error('[sendInvitationEmail] Failed to send email via notification helper:', err?.message || err);
   }
 }
 
 async function sendHostNotificationEmail({ to, visitor, hostMember }) {
   if (!to) return;
-  const vName = visitor?.name || 'Visitor';
-  const arrival = visitor?.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString() : 'now';
-  const building = visitor?.building?.name ? ` at ${visitor.building.name}` : '';
-  const subject = `Visitor waiting at reception: ${vName}`;
-  const text = `Hello ${hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : ''},\n\n` +
-    `${vName} is waiting for you in the reception${building}.\n` +
-    `Arrival time: ${arrival}\n` +
-    (visitor?.companyName ? `Company: ${visitor.companyName}\n` : '') +
-    (visitor?.phone ? `Phone: ${visitor.phone}\n` : '') +
-    (visitor?.email ? `Email: ${visitor.email}\n` : '') +
-    `\nPlease visit the reception to meet your guest.`;
-
-  const html = `<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;">`
-    + `<h3 style="margin:0 0 12px;">Visitor waiting at reception</h3>`
-    + `<p><strong>${vName}</strong> is waiting for you${building}.</p>`
-    + `<p><strong>Arrival:</strong> ${arrival}</p>`
-    + (visitor?.companyName ? `<p><strong>Company:</strong> ${visitor.companyName}</p>` : '')
-    + (visitor?.phone ? `<p><strong>Phone:</strong> ${visitor.phone}</p>` : '')
-    + (visitor?.email ? `<p><strong>Email:</strong> ${visitor.email}</p>` : '')
-    + (visitor?.profile_picture ? `<div style="margin-top:12px"><img src="${visitor.profile_picture}" alt="Visitor Photo" width="160" style="border:1px solid #eee;border-radius:6px;"/></div>` : '')
-    + `<p style="margin-top:16px;color:#555;">Please visit the reception to meet your guest.</p>`
-    + `</body></html>`;
 
   try {
-    await emailTransporter.sendMail({
-      from: process.env.MAIL_FROM || 'nasir@flyde.in',
-      to,
-      subject,
-      text,
-      html,
+    await sendNotification({
+      to: { email: to, memberId: hostMember?._id },
+      channels: { email: true, sms: false },
+      templateKey: 'guest_arrival',
+      templateVariables: {
+        guestName: visitor?.name || 'Visitor',
+        memberName: hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : 'Member',
+        companyName: visitor?.companyName || 'N/A'
+      },
+      title: 'Visitor Waiting Notification',
+      source: 'visitor_system',
+      type: 'transactional'
     });
   } catch (err) {
-    console.error('[sendHostNotificationEmail] Failed:', err?.message || err);
+    console.error('[sendHostNotificationEmail] Failed via notification helper:', err?.message || err);
   }
 }
 

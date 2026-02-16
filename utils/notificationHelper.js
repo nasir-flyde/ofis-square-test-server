@@ -55,8 +55,36 @@ export const sendNotification = async (options) => {
 
     // Render content
     let renderedContent = {};
+    let localVariables = { ...(templateVariables || {}) };
+
     if (templateKey) {
-      const templateContent = await renderTemplateByKey(templateKey, templateVariables || {});
+      // Add Template Design ID as requested
+      localVariables.templateDesignId = "700000000000000000000001";
+
+      // logic for greeting
+      if (!localVariables.greeting) {
+        let companyName = localVariables.companyName || null;
+        if (!companyName) {
+          try {
+            if (to.clientId) {
+              const Client = (await import('../models/clientModel.js')).default;
+              const clientDoc = await Client.findById(to.clientId).select('companyName');
+              if (clientDoc) companyName = clientDoc.companyName;
+            } else if (to.memberId) {
+              const Member = (await import('../models/memberModel.js')).default;
+              const memberDoc = await Member.findById(to.memberId).populate('client', 'companyName');
+              if (memberDoc?.client?.companyName) {
+                companyName = memberDoc.client.companyName;
+              }
+            }
+          } catch (err) {
+            console.error('[notificationHelper] Error fetching company name for greeting:', err);
+          }
+        }
+        localVariables.greeting = companyName || 'Ofis Square';
+      }
+
+      const templateContent = await renderTemplateByKey(templateKey, localVariables);
       renderedContent = {
         smsText: templateContent.sms,
         emailSubject: templateContent.subject,
@@ -240,6 +268,41 @@ export const sendCustomNotification = async (recipient, message, options = {}) =
 // Helper function to dispatch notification immediately
 async function dispatchNotification(notification, attachments = []) {
   console.log(`[notificationHelper:dispatchNotification] Dispatching with ${attachments?.length || 0} attachments`);
+
+  // Resolve attachments to Buffers if they are paths/URLs
+  const resolvedAttachments = [];
+  if (attachments && attachments.length > 0) {
+    try {
+      const axios = (await import('axios')).default;
+      const fs = (await import('fs')).default;
+
+      for (const att of attachments) {
+        try {
+          let content = att.content;
+          if (!content && att.path) {
+            if (att.path.startsWith('http')) {
+              const response = await axios.get(att.path, { responseType: 'arraybuffer' });
+              content = Buffer.from(response.data);
+            } else {
+              content = fs.readFileSync(att.path);
+            }
+          }
+
+          if (content) {
+            resolvedAttachments.push({
+              ...att,
+              content
+            });
+          }
+        } catch (err) {
+          console.error(`[notificationHelper] Failed to resolve attachment ${att.filename}:`, err.message);
+        }
+      }
+    } catch (importErr) {
+      console.error('[notificationHelper] Failed to import axios/fs for attachments:', importErr.message);
+    }
+  }
+
   const promises = [];
 
   // Dispatch SMS
@@ -249,7 +312,7 @@ async function dispatchNotification(notification, attachments = []) {
 
   // Dispatch Email
   if (notification.channels.email && notification.emailDelivery.status === 'pending') {
-    promises.push(sendEmail(notification, attachments));
+    promises.push(sendEmail(notification, resolvedAttachments));
   }
 
   await Promise.allSettled(promises);
@@ -302,7 +365,7 @@ async function sendEmail(notification, attachments = []) {
     }
 
     notification.updateDeliveryStatus('email', 'queued', { details: 'Sending email' });
-    notification.emailDelivery.provider = 'nodemailer';
+    notification.emailDelivery.provider = 'zeptomail';
 
     const result = await emailProvider.send({
       toEmail: notification.to.email,

@@ -545,7 +545,12 @@ const ZOHO_SIGN_BASE_URL = getZohoSignBaseUrl();
 // Get all contracts
 export const getContracts = async (req, res) => {
   try {
-    const contracts = await Contract.find()
+    const { client, status } = req.query || {};
+    const filter = {};
+    if (client && mongoose.Types.ObjectId.isValid(client)) filter.client = client;
+    if (status) filter.status = status;
+
+    const contracts = await Contract.find(filter)
       .populate("client")
       .populate("building", "name address perSeatPricing city state")
       .sort({ createdAt: -1 });

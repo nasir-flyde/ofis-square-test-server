@@ -4,10 +4,10 @@ const { Schema } = mongoose;
 
 const deliveryHistorySchema = new Schema({
   at: { type: Date, default: Date.now },
-  action: { 
-    type: String, 
+  action: {
+    type: String,
     enum: ['queued', 'sent', 'delivered', 'failed', 'retried', 'canceled'],
-    required: true 
+    required: true
   },
   details: { type: String },
   error: { type: String },
@@ -22,7 +22,7 @@ const channelDeliverySchema = new Schema({
   },
   provider: {
     type: String,
-    enum: ['smswaale', 'twilio', 'smtp', 'sendgrid', 'nodemailer', 'mock']
+    enum: ['smswaale', 'twilio', 'smtp', 'sendgrid', 'nodemailer', 'zeptomail', 'mock']
   },
   providerMessageId: { type: String },
   attemptCount: { type: Number, default: 0 },
@@ -49,7 +49,7 @@ const notificationSchema = new Schema({
   title: { type: String, required: true },
   templateKey: { type: String },
   templateVariables: { type: Schema.Types.Mixed },
-  
+
   // Content for each channel
   content: {
     smsText: { type: String },
@@ -57,10 +57,10 @@ const notificationSchema = new Schema({
     emailHtml: { type: String },
     emailText: { type: String }
   },
-  
+
   // Image attachment
   image: { type: String },
-  
+
   // Metadata
   metadata: {
     tags: [{ type: String }],
@@ -74,7 +74,7 @@ const notificationSchema = new Schema({
     route: { type: String },
     routeParams: { type: Schema.Types.Mixed }
   },
-  
+
   to: {
     phone: { type: String },
     email: { type: String },
@@ -83,11 +83,11 @@ const notificationSchema = new Schema({
     clientId: { type: Schema.Types.ObjectId, ref: 'Client' }
   },
   audienceQuery: { type: Schema.Types.Mixed },
-  
+
   // Per-channel delivery state
   smsDelivery: channelDeliverySchema,
   emailDelivery: channelDeliverySchema,
-  
+
   // Scheduling & Control
   scheduledAt: { type: Date },
   expiresAt: { type: Date },
@@ -95,11 +95,11 @@ const notificationSchema = new Schema({
   cancelReason: { type: String },
   maxRetries: { type: Number, default: 3 },
   retryBackoffSeconds: { type: Number, default: 60 },
-  
+
   // Read/Acknowledgement
   isRead: { type: Boolean, default: false },
   readAt: { type: Date },
-  
+
   // Audit
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   source: {
@@ -132,18 +132,18 @@ notificationSchema.index({ 'metadata.category': 1 });
 notificationSchema.index({ 'metadata.tags': 1 });
 
 // Static methods
-notificationSchema.statics.findByRecipient = function(recipientData) {
+notificationSchema.statics.findByRecipient = function (recipientData) {
   const query = {};
   if (recipientData.userId) query['to.userId'] = recipientData.userId;
   if (recipientData.memberId) query['to.memberId'] = recipientData.memberId;
   if (recipientData.clientId) query['to.clientId'] = recipientData.clientId;
   if (recipientData.phone) query['to.phone'] = recipientData.phone;
   if (recipientData.email) query['to.email'] = recipientData.email;
-  
+
   return this.find(query).sort({ createdAt: -1 });
 };
 
-notificationSchema.statics.findPendingScheduled = function() {
+notificationSchema.statics.findPendingScheduled = function () {
   return this.find({
     scheduledAt: { $lte: new Date() },
     canceled: false,
@@ -155,7 +155,7 @@ notificationSchema.statics.findPendingScheduled = function() {
 };
 
 // Instance methods
-notificationSchema.methods.addDeliveryHistory = function(channel, action, details = null, error = null, providerResponse = null) {
+notificationSchema.methods.addDeliveryHistory = function (channel, action, details = null, error = null, providerResponse = null) {
   const historyEntry = {
     at: new Date(),
     action,
@@ -163,7 +163,7 @@ notificationSchema.methods.addDeliveryHistory = function(channel, action, detail
     error,
     providerResponse
   };
-  
+
   if (channel === 'sms') {
     this.smsDelivery.history.push(historyEntry);
   } else if (channel === 'email') {
@@ -171,20 +171,20 @@ notificationSchema.methods.addDeliveryHistory = function(channel, action, detail
   }
 };
 
-notificationSchema.methods.updateDeliveryStatus = function(channel, status, additionalData = {}) {
+notificationSchema.methods.updateDeliveryStatus = function (channel, status, additionalData = {}) {
   const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
-  
+
   delivery.status = status;
-  
+
   if (additionalData.providerMessageId) {
     delivery.providerMessageId = additionalData.providerMessageId;
   }
-  
+
   if (additionalData.error) {
     delivery.lastError = additionalData.error;
     delivery.errorCode = additionalData.errorCode;
   }
-  
+
   // Update timestamp based on status
   const now = new Date();
   switch (status) {
@@ -201,17 +201,17 @@ notificationSchema.methods.updateDeliveryStatus = function(channel, status, addi
       delivery.canceledAt = now;
       break;
   }
-  
+
   // Add to history
   this.addDeliveryHistory(channel, status, additionalData.details, additionalData.error, additionalData.providerResponse);
 };
 
-notificationSchema.methods.canRetry = function(channel) {
+notificationSchema.methods.canRetry = function (channel) {
   const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
   return delivery.status === 'failed' && delivery.attemptCount < this.maxRetries;
 };
 
-notificationSchema.methods.incrementAttempt = function(channel) {
+notificationSchema.methods.incrementAttempt = function (channel) {
   const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
   delivery.attemptCount += 1;
 };

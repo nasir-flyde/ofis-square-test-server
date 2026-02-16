@@ -11,6 +11,7 @@ import { getValidAccessToken } from './zohoTokenManager.js';
 import AccessGrant from '../models/accessGrantModel.js';
 import { enforceAccessByInvoices } from '../services/accessService.js';
 import { processPaymentReminders } from '../controllers/invoiceController.js';
+import { refreshAccessToken } from './gstTokenManager.js';
 
 const scheduleNoShowUpdates = () => {
   cron.schedule('0 1 * * *', async () => {
@@ -182,4 +183,21 @@ const schedulePaymentReminders = () => {
   console.log('Payment reminder cron job scheduled for 10 AM daily (IST)');
 };
 
-export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs };
+const scheduleGstTokenRefresh = () => {
+  // Run daily at 00:00 AM IST
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      console.log('Running daily GST token refresh job...');
+      await refreshAccessToken();
+    } catch (error) {
+      console.error('Error in daily GST token refresh job:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+
+  console.log('GST token refresh cron job scheduled for 00:00 AM daily (IST)');
+};
+
+export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs, scheduleGstTokenRefresh };
