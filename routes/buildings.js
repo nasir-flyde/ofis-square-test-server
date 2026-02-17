@@ -1,20 +1,23 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
-import { 
-  createBuilding, 
-  getBuildings, 
-  getBuildingById, 
-  updateBuilding, 
+import {
+  createBuilding,
+  getBuildings,
+  getBuildingById,
+  updateBuilding,
   deleteBuilding,
   updateBuildingCreditValue,
   activateBuilding,
-  updateBuildingInvoiceSettings
+  updateBuildingInvoiceSettings,
+  exportBuildings
 } from "../controllers/buildingController.js";
 
 const router = express.Router();
 
 // Create Building (auth required)
 router.post("/", authMiddleware, createBuilding);
+
+router.get("/export", exportBuildings);
 
 // Get Buildings
 router.get("/", getBuildings);
@@ -35,7 +38,7 @@ router.put("/:id", authMiddleware, updateBuilding);
 router.put("/:id/daypass-pricing", authMiddleware, async (req, res) => {
   try {
     const { openSpacePricing } = req.body;
-    
+
     if (openSpacePricing === undefined) {
       return res.status(400).json({ error: "openSpacePricing is required" });
     }

@@ -9,7 +9,8 @@ import {
   getMemberById,
   updateMember,
   deleteMember,
-  getMemberProfile
+  getMemberProfile,
+  exportMembers
 } from "../controllers/memberController.js";
 
 const router = express.Router();
@@ -22,6 +23,8 @@ router.post(
   requirePermission(PERMISSIONS.MEMBER_CREATE),
   createMember
 );
+
+router.get("/export", exportMembers);
 
 // Get all members - requires member:read permission
 router.get(

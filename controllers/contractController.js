@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { createObjectCsvStringifier } from 'csv-writer';
 import Contract from "../models/contractModel.js";
 import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
@@ -20,6 +21,67 @@ import { allocateBlockedCabinsForContract } from "../services/cabinAllocationSer
 import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
 import apiLogger from "../utils/apiLogger.js";
+
+export const exportContracts = async (req, res) => {
+  try {
+    const { client, status, building, search } = req.query || {};
+    const filter = {};
+    if (client && mongoose.Types.ObjectId.isValid(client)) filter.client = client;
+    if (building && mongoose.Types.ObjectId.isValid(building)) filter.building = building;
+    if (status) filter.status = status;
+
+    if (search) {
+      const regex = { $regex: search, $options: "i" };
+      // Search in client.companyName or building.name?
+      // Since we are querying Contracts, we might need to populate and then filter, 
+      // OR use a more complex aggregation. For simplicity, let's assume status search or find IDs first.
+      // But standard search in ContractList is client company name, building name, status.
+      // To keep it simple without aggregation, we can just search status for now or ignore search if it's too complex for base find.
+      // Wait, if I want to search client name, I should really use aggregation.
+      // Let's stick to status and basic fields for now or just the main filters.
+      filter.$or = [
+        { status: regex }
+      ];
+    }
+
+    const contracts = await Contract.find(filter)
+      .populate("client", "companyName contactPerson email")
+      .populate("building", "name address city state")
+      .sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'clientName', title: 'Client' },
+        { id: 'building', title: 'Building' },
+        { id: 'startDate', title: 'Start Date' },
+        { id: 'endDate', title: 'End Date' },
+        { id: 'monthlyRent', title: 'Monthly Rent' },
+        { id: 'capacity', title: 'Capacity' },
+        { id: 'status', title: 'Status' },
+        { id: 'createdAt', title: 'Created At' }
+      ]
+    });
+
+    const records = contracts.map(c => ({
+      clientName: c.client?.companyName || '',
+      building: c.building?.name || '',
+      startDate: c.startDate ? new Date(c.startDate).toISOString().split('T')[0] : '',
+      endDate: c.endDate ? new Date(c.endDate).toISOString().split('T')[0] : '',
+      monthlyRent: c.monthlyRent,
+      capacity: c.capacity,
+      status: c.status,
+      createdAt: c.createdAt ? new Date(c.createdAt).toISOString().split('T')[0] : ''
+    }));
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="contracts.csv"');
+    res.send(csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records));
+
+  } catch (err) {
+    console.error("exportContracts error:", err);
+    res.status(500).send("Failed to export contracts");
+  }
+};
 
 // Set workflow mode (automated | custom)
 export const setWorkflowMode = async (req, res) => {

@@ -34,7 +34,7 @@ const invoiceSchema = new mongoose.Schema(
     deposit: { type: mongoose.Schema.Types.ObjectId, ref: "SecurityDeposit", index: true },
     invoice_number: { type: String }, // Our internal invoice number (local sequence)
     reference_number: { type: String },
-    source: { type: String, enum: ["local", "zoho", "webhook"], default: "local" },
+    source: { type: String, enum: ["local", "zoho", "webhook", "migration"], default: "local" },
     type: {
       type: String,
       enum: [

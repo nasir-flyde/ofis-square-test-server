@@ -58,6 +58,7 @@ import notificationTemplatesRoutes from "./notificationTemplates.js";
 import guestsRoutes from "./guests.js";
 import commonAreasRoutes from "./commonAreas.js";
 import templateDesignRoutes from "./templateDesigns.js";
+import migrationRoutes from "./migration.js";
 
 const router = express.Router();
 
@@ -121,4 +122,5 @@ router.use("/locations", locationsRoutes);
 router.use("/proforma-invoices", estimatesRoutes);
 router.use("/estimates", estimatesRoutes);
 router.use("/partner/myhq", partnerMyhqRoutes);
+router.use("/migration", migrationRoutes);
 export default router;

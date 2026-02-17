@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { createObjectCsvStringifier } from 'csv-writer';
 import Client from "../models/clientModel.js";
 import imagekit from "../utils/imageKit.js";
 import Contract from "../models/contractModel.js";
@@ -21,12 +22,183 @@ import Building from "../models/buildingModel.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import bcrypt from "bcrypt";
 import { getClientPayments } from "./paymentController.js";
-import { createContact, updateContact, getContact } from "../utils/zohoBooks.js";
+import { createContact, updateContact, getContact, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
 import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
 import DocumentEntity from "../models/documentEntityModel.js";
 import { ensureBhaifiForMember } from "./bhaifiController.js";
+import { syncMemberToUser } from "../utils/memberSync.js";
+
+export const exportClients = async (req, res) => {
+  try {
+    const { search, customerType, kycStatus } = req.query;
+
+    let query = {};
+
+    if (search) {
+      const searchRegex = { $regex: search, $options: "i" };
+      query.$or = [
+        { companyName: searchRegex },
+        { legalName: searchRegex },
+        { contactPerson: searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex }
+      ];
+    }
+
+    if (customerType) {
+      query.$or = [
+        { customerSubType: customerType },
+        { contactType: customerType }
+      ];
+    }
+
+    if (kycStatus) {
+      query.kycStatus = kycStatus;
+    }
+
+    const clients = await Client.find(query).sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'companyName', title: 'Company Name' },
+        { id: 'legalName', title: 'Legal Name' },
+        { id: 'contactPerson', title: 'Primary Contact Person' },
+        { id: 'email', title: 'Email' },
+        { id: 'phone', title: 'Phone' },
+        { id: 'website', title: 'Website' },
+        { id: 'industry', title: 'Industry' },
+
+        // Billing Address
+        { id: 'billingAttention', title: 'Billing Attention' },
+        { id: 'billingAddress', title: 'Billing Address' },
+        { id: 'billingCity', title: 'Billing City' },
+        { id: 'billingState', title: 'Billing State' },
+        { id: 'billingZip', title: 'Billing Zip' },
+        { id: 'billingCountry', title: 'Billing Country' },
+
+        // Shipping Address
+        { id: 'shippingAttention', title: 'Shipping Attention' },
+        { id: 'shippingAddress', title: 'Shipping Address' },
+        { id: 'shippingCity', title: 'Shipping City' },
+        { id: 'shippingState', title: 'Shipping State' },
+        { id: 'shippingZip', title: 'Shipping Zip' },
+        { id: 'shippingCountry', title: 'Shipping Country' },
+
+        // Tax Info
+        { id: 'gstNo', title: 'GST No' },
+        { id: 'gstTreatment', title: 'GST Treatment' },
+        { id: 'taxRegNo', title: 'Tax Reg No' },
+        { id: 'placeOfSupply', title: 'Place of Supply' },
+
+        // Commercial
+        { id: 'contactType', title: 'Contact Type' },
+        { id: 'customerSubType', title: 'Customer Sub Type' },
+        { id: 'paymentTerms', title: 'Payment Terms' },
+        { id: 'creditLimit', title: 'Credit Limit' },
+        { id: 'isPortalEnabled', title: 'Portal Enabled' },
+        { id: 'currencyId', title: 'Currency ID' },
+        { id: 'pricebookId', title: 'Pricebook ID' },
+        { id: 'notes', title: 'Notes' },
+
+        // Contact Persons
+        { id: 'contactPersons', title: 'All Contact Persons' },
+
+        // System Status
+        { id: 'status', title: 'Status' },
+        { id: 'kycStatus', title: 'KYC Status' },
+        { id: 'zohoBooksContactId', title: 'Zoho Contact ID' },
+        { id: 'createdAt', title: 'Created At' }
+      ]
+    });
+
+    const records = clients.map(client => {
+      // Format contact persons list
+      const contactsList = (client.contactPersons || []).map(cp => {
+        const name = [cp.first_name || cp.firstName, cp.last_name || cp.lastName].filter(Boolean).join(' ');
+        const details = [
+          name,
+          cp.email,
+          cp.phone || cp.mobile,
+          cp.designation ? `(${cp.designation})` : ''
+        ].filter(Boolean).join(' - ');
+        return details;
+      }).join('; ');
+
+      // Primary tax place of supply (from first tax info or fallback)
+      const placeOfSupply = client.taxInfoList?.[0]?.place_of_supply || '';
+
+      return {
+        companyName: client.companyName || '',
+        legalName: client.legalName || '',
+        contactPerson: client.contactPerson || '',
+        email: client.email || '',
+        phone: client.phone || '',
+        website: client.website || '',
+        industry: client.industry || '',
+
+        // Billing
+        billingAttention: client.billingAddress?.attention || '',
+        billingAddress: [
+          client.billingAddress?.address,
+          client.billingAddress?.street2
+        ].filter(Boolean).join(', ') || '',
+        billingCity: client.billingAddress?.city || '',
+        billingState: client.billingAddress?.state || '',
+        billingZip: client.billingAddress?.zip || '',
+        billingCountry: client.billingAddress?.country || '',
+
+        // Shipping
+        shippingAttention: client.shippingAddress?.attention || '',
+        shippingAddress: [
+          client.shippingAddress?.address,
+          client.shippingAddress?.street2
+        ].filter(Boolean).join(', ') || '',
+        shippingCity: client.shippingAddress?.city || '',
+        shippingState: client.shippingAddress?.state || '',
+        shippingZip: client.shippingAddress?.zip || '',
+        shippingCountry: client.shippingAddress?.country || '',
+
+        // Tax
+        gstNo: client.gstNo || '',
+        gstTreatment: client.gstTreatment || '',
+        taxRegNo: client.taxRegNo || '',
+        placeOfSupply: placeOfSupply,
+
+        // Commercial
+        contactType: client.contactType || '',
+        customerSubType: client.customerSubType || '',
+        paymentTerms: client.paymentTerms || '',
+        creditLimit: client.creditLimit || '',
+        isPortalEnabled: client.isPortalEnabled ? 'Yes' : 'No',
+        currencyId: client.currencyId || '',
+        pricebookId: client.pricebookId || '',
+        notes: client.notes || '',
+
+        // Contacts
+        contactPersons: contactsList,
+
+        // Status
+        status: client.status || 'active', // 'status' might not be a direct top-level field in model, using 'membershipStatus' or similar if needed, typically 'active' is default
+        kycStatus: client.kycStatus || 'none',
+        zohoBooksContactId: client.zohoBooksContactId || '',
+        createdAt: client.createdAt ? new Date(client.createdAt).toISOString().split('T')[0] : ''
+      };
+    });
+
+    const header = csvStringifier.getHeaderString();
+    const csvRecords = csvStringifier.stringifyRecords(records);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="clients_full_export.csv"');
+    res.send(header + csvRecords);
+
+  } catch (err) {
+    console.error("exportClients error:", err);
+    res.status(500).send("Failed to export clients");
+  }
+};
 
 export const createClient = async (req, res) => {
   try {
@@ -763,28 +935,23 @@ export const updateTaxDetails = async (req, res) => {
             // Optional: set is_primary explicitly for the chosen primary
             ...(is_primary ? { is_primary: true } : {}),
           }));
-          zohoTaxPayload.tax_info_list = finalList;
+          // FINAL DECISION: Do NOT push tax_info_list to Zoho as it causes validaton errors (code 15).
+          // We only push top-level gst fields.
+          // zohoTaxPayload.tax_info_list = finalList; 
 
-          // Attempt a single full update (Zoho UI does this). If it fails, fall back to base-only update.
+          // Attempt update with base fields only. 
           try {
             const zohoRes = await updateContact(client.zohoBooksContactId, zohoTaxPayload);
-            try { console.log('updateTaxDetails: pushed Zoho tax fields (full list with ids):', JSON.stringify(zohoTaxPayload)); } catch (_) { }
+            try { console.log('updateTaxDetails: pushed Zoho tax fields (base only):', JSON.stringify(zohoTaxPayload)); } catch (_) { }
             client.taxInfoList = finalList;
             await client.save();
-            return res.json({ message: "Tax details updated and synced to Zoho", client, zoho: zohoRes });
+            return res.json({ message: "Tax details updated (base synced to Zoho). Multiple GSTs stored locally.", client, zoho: zohoRes });
           } catch (e) {
-            console.warn('updateTaxDetails: full tax_info_list update failed, trying base-only. Reason:', e?.message || e);
-            const { tax_info_list: _drop, ...baseOnly } = zohoTaxPayload;
-            try {
-              const zohoRes2 = await updateContact(client.zohoBooksContactId, baseOnly);
-              try { console.log('updateTaxDetails: pushed Zoho base-only tax fields as fallback:', JSON.stringify(baseOnly)); } catch (_) { }
-              // Persist locally even if Zoho couldn't accept all list entries
-              client.taxInfoList = finalList;
-              await client.save();
-              return res.json({ message: "Tax details updated (Zoho accepted base fields). Multiple GSTs stored locally.", client, zoho: zohoRes2, zohoNote: 'Zoho API rejected tax_info_list; base fields applied.' });
-            } catch (e2) {
-              console.warn('updateTaxDetails: base-only update also failed:', e2?.message || e2);
-            }
+            console.warn('updateTaxDetails: base tax update failed:', e?.message || e);
+            // Even if Zoho update fails, we persist locally
+            client.taxInfoList = finalList;
+            await client.save();
+            return res.json({ message: "Tax details updated locally. Zoho sync failed.", client, error: e?.message });
           }
         }
       }
@@ -1053,6 +1220,160 @@ export const deleteClient = async (req, res) => {
   } catch (err) {
     console.error("deleteClient error:", err);
     return res.status(500).json({ error: "Failed to delete client" });
+  }
+};
+
+export const syncClientToZoho = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const client = await Client.findById(id);
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    let zohoId = client.zohoBooksContactId;
+
+    // If no Zoho ID, try to find or create
+    if (!zohoId) {
+      zohoId = await findOrCreateContactFromClient(client);
+      if (zohoId) {
+        client.zohoBooksContactId = zohoId;
+        await client.save();
+      }
+    }
+
+    if (!zohoId) {
+      return res.status(400).json({ error: "Could not establish a Zoho Contact ID for this client. Please ensure client has a valid email." });
+    }
+
+    // Pull latest data from Zoho to sync back to local DB
+    try {
+      const zohoContact = await getContact(zohoId);
+      if (zohoContact) {
+        console.log(`[ZohoSync] Pulling latest data from Zoho for client ${id}`);
+
+        // Update local client with Zoho data
+        if (zohoContact.gst_no) client.gstNo = zohoContact.gst_no;
+        if (zohoContact.gst_treatment) client.gstTreatment = zohoContact.gst_treatment;
+        if (zohoContact.tax_reg_no) client.taxRegNo = zohoContact.tax_reg_no;
+
+        if (Array.isArray(zohoContact.tax_info_list)) {
+          client.taxInfoList = zohoContact.tax_info_list.map(t => ({
+            tax_info_id: t.tax_info_id,
+            tax_registration_no: t.tax_registration_no,
+            place_of_supply: t.place_of_supply,
+            is_primary: t.is_primary,
+            legal_name: t.legal_name,
+            trader_name: t.trader_name
+          }));
+        }
+
+        // Update contact persons if needed (optional, but good for consistency)
+        if (Array.isArray(zohoContact.contact_persons) && zohoContact.contact_persons.length > 0) {
+          // You might want a more sophisticated merge here, but for now let's keep it simple
+          // client.contactPersons = ... 
+        }
+
+        await client.save();
+      }
+    } catch (pullErr) {
+      console.warn(`[ZohoSync] Failed to pull latest data from Zoho for client ${id}:`, pullErr.message);
+    }
+
+    // Prepare payload from local client data
+    const contactPerson = client.contactPerson || "";
+    const payload = {
+      contact_name: client.companyName || contactPerson || "Unknown",
+      company_name: client.companyName || contactPerson || "Unknown",
+      email: client.email,
+      phone: client.phone,
+      mobile: client.phone,
+      contact_type: client.contactType || "customer",
+      customer_sub_type: client.customerSubType || "business",
+      website: client.website || "",
+      notes: client.notes || "",
+      legal_name: client.legalName || "",
+      payment_terms: client.paymentTerms || 0,
+      pan_no: client.panNo || "",
+      gst_no: client.gstNo || "",
+      gst_treatment: client.gstTreatment || (client.gstNo ? "business_gst" : "consumer"),
+      credit_limit: client.creditLimit || 0,
+      is_portal_enabled: client.isPortalEnabled || false,
+      place_of_contact: client.billingAddress?.state_code || client.billingAddress?.state || "",
+      billing_address: client.billingAddress ? {
+        attention: client.billingAddress.attention || contactPerson || "",
+        address: client.billingAddress.address || "",
+        street2: client.billingAddress.street2 || "",
+        city: client.billingAddress.city || "",
+        state: client.billingAddress.state || "",
+        zip: client.billingAddress.zip || "",
+        country: client.billingAddress.country || "INDIA",
+        phone: client.phone || ""
+      } : {
+        attention: contactPerson,
+        country: "INDIA"
+      },
+      shipping_address: client.shippingAddress ? {
+        attention: client.shippingAddress.attention || contactPerson || "",
+        address: client.shippingAddress.address || "",
+        street2: client.shippingAddress.street2 || "",
+        city: client.shippingAddress.city || "",
+        state: client.shippingAddress.state || "",
+        zip: client.shippingAddress.zip || "",
+        country: client.shippingAddress.country || "INDIA",
+        phone: client.phone || ""
+      } : (client.billingAddress ? {
+        attention: client.billingAddress.attention || contactPerson || "",
+        address: client.billingAddress.address || "",
+        street2: client.billingAddress.street2 || "",
+        city: client.billingAddress.city || "",
+        state: client.billingAddress.state || "",
+        zip: client.billingAddress.zip || "",
+        country: client.billingAddress.country || "INDIA",
+        phone: client.phone || ""
+      } : {
+        attention: contactPerson,
+        country: "INDIA"
+      }),
+      contact_persons: client.contactPersons?.map(cp => ({
+        salutation: cp.salutation || "",
+        first_name: cp.first_name || cp.firstName || "",
+        last_name: cp.last_name || cp.lastName || "",
+        email: cp.email || "",
+        phone: cp.phone || "",
+        mobile: cp.phone || "",
+        designation: cp.designation || "",
+        department: cp.department || "",
+        is_primary_contact: Boolean(cp.is_primary_contact || cp.isPrimaryContact),
+        enable_portal: Boolean(cp.enable_portal || cp.isPortalEnabled)
+      })) || []
+    };
+
+    // If client has taxInfoList (multiple GSTs), include them
+    // REMOVED as per user request to avoid Zoho error code 15
+    /*
+    if (client.taxInfoList && client.taxInfoList.length > 0) {
+      payload.tax_info_list = client.taxInfoList.map(t => ({
+        tax_registration_no: t.tax_registration_no,
+        place_of_supply: t.place_of_supply,
+        is_primary: t.is_primary
+      }));
+    }
+    */
+
+    console.log(`[ZohoSync] Syncing client ${id} (${client.companyName}) to Zoho ID: ${zohoId}`);
+    // console.log("[ZohoSync] Payload:", JSON.stringify(payload, null, 2));
+
+    const result = await updateContact(zohoId, payload);
+
+    // Log activity
+    await logCRUDActivity(req, 'SYNC_ZOHO', 'Client', id, null, {
+      zohoId,
+      companyName: client.companyName
+    });
+
+    return res.json({ success: true, message: "Client synced to Zoho successfully", data: result });
+  } catch (err) {
+    console.error("syncClientToZoho error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to sync client to Zoho" });
   }
 };
 
@@ -2241,6 +2562,13 @@ export const updateClientMember = async (req, res) => {
 
     if (!member) {
       return res.status(404).json({ error: "Member not found" });
+    }
+
+    // Sync to User if exists
+    try {
+      await syncMemberToUser(id, { firstName, lastName, email, phone, role, status }, req);
+    } catch (syncErr) {
+      console.warn("Failed to sync client member update to user:", syncErr.message);
     }
 
     return res.json({ success: true, data: member });

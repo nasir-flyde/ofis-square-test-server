@@ -38,10 +38,14 @@ import {
   updateCurrentClientProfile,
   getOnboardingStatus,
   approveOnboarding,
-  sendContractToLegalTeam
+  sendContractToLegalTeam,
+  syncClientToZoho,
+  exportClients
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
 import authMiddleware from "../middlewares/authVerify.js";
+import { populateUserRole, requirePermission } from "../middlewares/rbacMiddleware.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
@@ -84,6 +88,7 @@ router.get("/desks", clientMiddleware, getClientAvailableDesks); // Desk allocat
 router.post('/desks/allocate', clientMiddleware, allocateDeskToMember);
 router.post('/desks/release', clientMiddleware, releaseDeskFromMember);
 
+router.get("/export", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_READ), exportClients);
 router.get("/", getClients);
 router.get("/:id", getClientById);
 router.put("/:id", updateClient);
@@ -91,6 +96,7 @@ router.delete("/:id", deleteClient);
 router.post("/:id/kyc", authMiddleware, kycUploads, submitKycDocuments);
 router.post("/:id/kyc/verify", authMiddleware, verifyKyc);
 router.post("/:id/kyc/reject", authMiddleware, rejectKyc);
+router.post("/:id/sync-zoho", authMiddleware, syncClientToZoho);
 
 // Onboarding status and approval
 router.get("/:id/onboarding-status", authMiddleware, getOnboardingStatus);

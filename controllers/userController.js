@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import { SendSMS, generateOtp } from "../services/smsService.js";
 import mongoose from "mongoose";
+import { syncUserToMember } from "../utils/memberSync.js";
 
 const GM_EMAIL = "nasiransari777@outlook.com";
 
@@ -410,6 +411,13 @@ export const updateUser = async (req, res) => {
       updatedFields: Object.keys(updateData)
     });
 
+    // Sync to Member if exists
+    try {
+      await syncUserToMember(id, updateData, req);
+    } catch (syncErr) {
+      console.warn("Failed to sync user update to member:", syncErr.message);
+    }
+
     return res.json({
       success: true,
       message: 'User updated successfully',
@@ -725,6 +733,13 @@ export const verifyUpdateUserOTP = async (req, res) => {
       updatedFields: Object.keys(updateData),
       verifiedBy: GM_EMAIL
     });
+
+    // Sync to Member if exists
+    try {
+      await syncUserToMember(id, updateData, req);
+    } catch (syncErr) {
+      console.warn("Failed to sync user verified update to member:", syncErr.message);
+    }
 
     return res.json({
       success: true,

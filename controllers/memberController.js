@@ -1,4 +1,5 @@
 import Member from "../models/memberModel.js";
+import { createObjectCsvStringifier } from 'csv-writer';
 import Building from "../models/buildingModel.js";
 import Cabin from "../models/cabinModel.js";
 import Client from "../models/clientModel.js";
@@ -14,6 +15,57 @@ import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
+import { syncMemberToUser } from "../utils/memberSync.js";
+
+export const exportMembers = async (req, res) => {
+  try {
+    const { client, status, search } = req.query;
+    const filter = {};
+    if (client) filter.client = client;
+    if (status) filter.status = status;
+    if (search) {
+      const regex = { $regex: search, $options: "i" };
+      filter.$or = [
+        { firstName: regex },
+        { lastName: regex },
+        { email: regex },
+        { phone: regex },
+        { companyName: regex }
+      ];
+    }
+
+    const members = await Member.find(filter)
+      .populate('client', 'companyName')
+      .sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'name', title: 'Name' },
+        { id: 'email', title: 'Email' },
+        { id: 'phone', title: 'Phone' },
+        { id: 'companyName', title: 'Company/Client' },
+        { id: 'status', title: 'Status' },
+        { id: 'createdAt', title: 'Created At' }
+      ]
+    });
+
+    const records = members.map(m => ({
+      name: `${m.firstName} ${m.lastName || ''}`.trim(),
+      email: m.email || '',
+      phone: m.phone || '',
+      companyName: m.companyName || m.client?.companyName || '',
+      status: m.status,
+      createdAt: m.createdAt ? new Date(m.createdAt).toISOString().split('T')[0] : ''
+    }));
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="members.csv"');
+    res.send(csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records));
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Failed to export members");
+  }
+};
 
 export const createMember = async (req, res) => {
   try {
@@ -385,6 +437,13 @@ export const updateMember = async (req, res) => {
       memberName: member.name,
       updatedFields: Object.keys(updateData)
     });
+
+    // Sync to User if exists
+    try {
+      await syncMemberToUser(id, updateData, req);
+    } catch (syncErr) {
+      console.warn("Failed to sync member update to user:", syncErr.message);
+    }
 
     res.json({
       success: true,

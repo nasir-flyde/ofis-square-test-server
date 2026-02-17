@@ -595,6 +595,14 @@ async function mapZohoCustomerToClient(customer) {
     zohoBooksContactId: customer.customer_id,
     currencyId: customer.currency_id || undefined,
     pricebookId: customer.pricebook_id || undefined,
+    taxInfoList: Array.isArray(customer.tax_info_list) ? customer.tax_info_list.map(t => ({
+      tax_info_id: t.tax_info_id,
+      tax_registration_no: t.tax_registration_no,
+      place_of_supply: t.place_of_supply,
+      is_primary: t.is_primary,
+      legal_name: t.legal_name,
+      trader_name: t.trader_name
+    })) : [],
 
     companyDetailsComplete: true,
     kycStatus: "verified"
@@ -675,6 +683,14 @@ async function mapZohoContactToClient(contact) {
     zohoBooksContactId: contact.contact_id,
     currencyId: contact.currency_id || undefined,
     pricebookId: contact.pricebook_id || undefined,
+    taxInfoList: Array.isArray(contact.tax_info_list) ? contact.tax_info_list.map(t => ({
+      tax_info_id: t.tax_info_id,
+      tax_registration_no: t.tax_registration_no,
+      place_of_supply: t.place_of_supply,
+      is_primary: t.is_primary,
+      legal_name: t.legal_name,
+      trader_name: t.trader_name
+    })) : [],
 
     // Status
     companyDetailsComplete: true,

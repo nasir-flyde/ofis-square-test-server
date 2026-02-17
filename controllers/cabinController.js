@@ -1,4 +1,5 @@
 import Cabin from "../models/cabinModel.js";
+import { createObjectCsvStringifier } from 'csv-writer';
 import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
@@ -8,6 +9,113 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import csv from "csv-parser";
 import { Readable } from "stream";
+
+export const exportCabins = async (req, res) => {
+  try {
+    const { building, floor, status, type } = req.query || {};
+    const filter = {};
+    if (building) filter.building = building;
+    if (floor !== undefined) filter.floor = Number(floor);
+    if (status) filter.status = status;
+    if (type) filter.type = type;
+
+    const cabins = await Cabin.find(filter)
+      .populate("building", "name")
+      .populate("allocatedTo", "companyName contactPerson phone email")
+      .populate("contract", "startDate endDate status")
+      .populate("desks", "number")
+      .populate("amenities", "name")
+      .populate("matrixDevices", "name")
+      .populate("blocks.client", "companyName")
+      .populate("blocks.contract", "startDate endDate")
+      .sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'id', title: 'Cabin ID' },
+        { id: 'buildingName', title: 'Building Name' },
+        { id: 'number', title: 'Cabin Number' },
+        { id: 'floor', title: 'Floor' },
+        { id: 'type', title: 'Type' },
+        { id: 'capacity', title: 'Capacity' },
+        { id: 'status', title: 'Status' },
+        { id: 'category', title: 'Category' },
+        { id: 'sizeSqFt', title: 'Size (sq ft)' },
+        { id: 'pricing', title: 'Pricing' },
+
+        { id: 'allocatedTo', title: 'Allocated To (Company)' },
+        { id: 'allocatedAt', title: 'Allocated At' },
+        { id: 'releasedAt', title: 'Released At' },
+
+        { id: 'contractStatus', title: 'Contract Status' },
+        { id: 'contractStartDate', title: 'Contract Start Date' },
+        { id: 'contractEndDate', title: 'Contract End Date' },
+
+        { id: 'activeBlockClient', title: 'Active Block Client' },
+        { id: 'activeBlockFrom', title: 'Active Block From' },
+        { id: 'activeBlockTo', title: 'Active Block To' },
+        { id: 'activeBlockReason', title: 'Active Block Reason' },
+
+        { id: 'desks', title: 'Desk Numbers' },
+        { id: 'amenities', title: 'Amenities' },
+        { id: 'matrixDevices', title: 'Matrix Devices' },
+        { id: 'images', title: 'Image URLs' },
+
+        { id: 'createdAt', title: 'Created At' },
+        { id: 'updatedAt', title: 'Updated At' }
+      ]
+    });
+
+    const records = cabins.map(cabin => {
+      // Find active block
+      const activeBlock = (cabin.blocks || []).find(b => b.status === "active");
+
+      return {
+        id: cabin._id,
+        buildingName: cabin.building?.name || '',
+        number: cabin.number || '',
+        floor: cabin.floor || '',
+        type: cabin.type || '',
+        capacity: cabin.capacity || '',
+        status: cabin.status || '',
+        category: cabin.category || '',
+        sizeSqFt: cabin.sizeSqFt || '',
+        pricing: cabin.pricing || '',
+
+        allocatedTo: cabin.allocatedTo?.companyName || '',
+        allocatedAt: cabin.allocatedAt ? new Date(cabin.allocatedAt).toISOString() : '',
+        releasedAt: cabin.releasedAt ? new Date(cabin.releasedAt).toISOString() : '',
+
+        contractStatus: cabin.contract?.status || '',
+        contractStartDate: cabin.contract?.startDate ? new Date(cabin.contract.startDate).toISOString().split('T')[0] : '',
+        contractEndDate: cabin.contract?.endDate ? new Date(cabin.contract.endDate).toISOString().split('T')[0] : '',
+
+        activeBlockClient: activeBlock?.client?.companyName || '',
+        activeBlockFrom: activeBlock?.fromDate ? new Date(activeBlock.fromDate).toISOString().split('T')[0] : '',
+        activeBlockTo: activeBlock?.toDate ? new Date(activeBlock.toDate).toISOString().split('T')[0] : '',
+        activeBlockReason: activeBlock?.reason || '',
+
+        desks: (cabin.desks || []).map(d => d.number).join('; '),
+        amenities: (cabin.amenities || []).map(a => a.name).join('; '),
+        matrixDevices: (cabin.matrixDevices || []).map(d => d.name).join('; '),
+        images: (cabin.images || []).map(i => i.url).join('; '),
+
+        createdAt: cabin.createdAt ? new Date(cabin.createdAt).toISOString() : '',
+        updatedAt: cabin.updatedAt ? new Date(cabin.updatedAt).toISOString() : ''
+      };
+    });
+
+    const header = csvStringifier.getHeaderString();
+    const csvRecords = csvStringifier.stringifyRecords(records);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="cabins_full_export.csv"');
+    res.send(header + csvRecords);
+  } catch (error) {
+    console.error("exportCabins error:", error);
+    res.status(500).send("Failed to export cabins");
+  }
+};
 
 export const getCabins = async (req, res) => {
   try {
@@ -34,11 +142,11 @@ export const getCabins = async (req, res) => {
 
 export const createCabin = async (req, res) => {
   try {
-    const { 
-      building, 
-      floor, 
-      number, 
-      type, 
+    const {
+      building,
+      floor,
+      number,
+      type,
       capacity,
       category,
       sizeSqFt,
@@ -118,11 +226,11 @@ export const createCabin = async (req, res) => {
       matrixDevicesToSet = ids;
     }
 
-    const cabin = await Cabin.create({ 
-      building, 
-      floor, 
-      number, 
-      type, 
+    const cabin = await Cabin.create({
+      building,
+      floor,
+      number,
+      type,
       capacity,
       category,
       sizeSqFt,
@@ -231,11 +339,11 @@ export const getCabinById = async (req, res) => {
       .populate("desks", "number status allocatedAt releasedAt")
       .populate("amenities", "name icon iconUrl description")
       .populate("matrixDevices", "name deviceType status");
-    
+
     if (!cabin) {
       return res.status(404).json({ success: false, message: "Cabin not found" });
     }
-    
+
     return res.json({ success: true, data: cabin });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -245,12 +353,12 @@ export const getCabinById = async (req, res) => {
 export const updateCabin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
-      building, 
-      floor, 
-      number, 
-      type, 
-      capacity, 
+    const {
+      building,
+      floor,
+      number,
+      type,
+      capacity,
       status,
       category,
       sizeSqFt,
@@ -276,8 +384,8 @@ export const updateCabin = async (req, res) => {
 
     if (number && number !== existingCabin.number) {
       const buildingId = building || existingCabin.building;
-      const duplicate = await Cabin.findOne({ 
-        building: buildingId, 
+      const duplicate = await Cabin.findOne({
+        building: buildingId,
         number: number,
         _id: { $ne: id }
       });
@@ -352,9 +460,9 @@ export const updateCabin = async (req, res) => {
       updateData,
       { new: true, runValidators: true }
     ).populate("building", "name address city")
-     .populate("allocatedTo", "companyName contactPerson phone email")
-     .populate("contract", "startDate endDate status")
-     .populate("amenities", "name icon iconUrl description");
+      .populate("allocatedTo", "companyName contactPerson phone email")
+      .populate("contract", "startDate endDate status")
+      .populate("amenities", "name icon iconUrl description");
 
     await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, updateData);
 
@@ -421,7 +529,7 @@ export const releaseCabin = async (req, res) => {
 export const getAvailableCabinsByBuilding = async (req, res) => {
   try {
     const { buildingId } = req.params;
-    
+
     if (!buildingId) {
       return res.status(400).json({ success: false, message: "Building ID is required" });
     }
@@ -433,15 +541,15 @@ export const getAvailableCabinsByBuilding = async (req, res) => {
     }
 
     // Get available cabins in the building
-    const cabins = await Cabin.find({ 
-      building: buildingId, 
-      status: "available" 
+    const cabins = await Cabin.find({
+      building: buildingId,
+      status: "available"
     })
       .populate("building", "name address city")
       .sort({ floor: 1, number: 1 });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: {
         building,
         cabins
@@ -592,7 +700,7 @@ export const allocateCabinFromBlock = async (req, res) => {
     if (blk.status !== 'active') {
       return res.status(409).json({ success: false, message: `Block is not active (status: ${blk.status})` });
     }
-    if (!['available','blocked'].includes(cabin.status)) {
+    if (!['available', 'blocked'].includes(cabin.status)) {
       return res.status(409).json({ success: false, message: `Cabin is not in allocatable state (status: ${cabin.status})` });
     }
 
@@ -645,11 +753,11 @@ export const exportMasterFile = async (req, res) => {
     };
 
     const sampleRows = [];
-    
+
     if (buildings.length > 0 && amenities.length > 0) {
       const buildingName = buildings[0].name;
       const amenityNames = amenities.slice(0, 3).map(a => a.name);
-      
+
       sampleRows.push({
         buildingName: buildingName,
         cabinNumber: 'C101',
@@ -1029,12 +1137,12 @@ export const importCabinsFromCSV = async (req, res) => {
 export const downloadSampleCSV = async (_req, res) => {
   try {
     const header = [
-      'buildingName','cabinNumber','floor','capacity','type','status','category','sizeSqFt','pricing','amenities','images','primaryImage','deviceId','deviceType'
+      'buildingName', 'cabinNumber', 'floor', 'capacity', 'type', 'status', 'category', 'sizeSqFt', 'pricing', 'amenities', 'images', 'primaryImage', 'deviceId', 'deviceType'
     ];
     // deviceType is optional during import and defaults to 16 if omitted. Provide 16 in sample for clarity.
     // images: semicolon-separated URLs. primaryImage can be the 1-based index or the exact URL.
-    const sample1 = ['Main Building','C101','1','4','private','available','Standard','100','5000','WiFi;Air Conditioning;Whiteboard','https://example.com/sample-cabin-1.jpg;https://example.com/sample-cabin-1b.jpg','1','d_10001','16'];
-    const sample2 = ['Main Building','C102','1','6','shared','available','Premium','150','7500','WiFi;Whiteboard','https://example.com/sample-cabin-2.jpg','1','d_10002','16'];
+    const sample1 = ['Main Building', 'C101', '1', '4', 'private', 'available', 'Standard', '100', '5000', 'WiFi;Air Conditioning;Whiteboard', 'https://example.com/sample-cabin-1.jpg;https://example.com/sample-cabin-1b.jpg', '1', 'd_10001', '16'];
+    const sample2 = ['Main Building', 'C102', '1', '6', 'shared', 'available', 'Premium', '150', '7500', 'WiFi;Whiteboard', 'https://example.com/sample-cabin-2.jpg', '1', 'd_10002', '16'];
     const csvText = [header.join(','), sample1.join(','), sample2.join(',')].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="cabins_import_sample.csv"');

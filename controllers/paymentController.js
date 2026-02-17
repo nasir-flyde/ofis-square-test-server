@@ -21,7 +21,7 @@ import loggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
-import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment } from "../utils/zohoBooks.js";
+import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment, deleteZohoPayment } from "../utils/zohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
 // Helper: update invoice aggregates after a payment change
@@ -318,6 +318,14 @@ export const deletePayment = async (req, res) => {
     if (!payment) {
       return res.status(404).json({ success: false, message: "Payment not found" });
     }
+    if (payment.zoho_payment_id) {
+      try {
+        console.log(`[Zoho:deletePayment] Deleting payment ${payment.zoho_payment_id} from Zoho Books...`);
+        await deleteZohoPayment(payment.zoho_payment_id);
+      } catch (zohoError) {
+        console.error(`[Zoho:deletePayment] Failed to delete payment ${payment.zoho_payment_id} from Zoho:`, zohoError.message);
+      }
+    }
     try {
       const invoiceExists = await Invoice.findById(payment.invoice).select('_id');
       if (invoiceExists) {
@@ -334,7 +342,8 @@ export const deletePayment = async (req, res) => {
     await logCRUDActivity(req, 'DELETE', 'Payment', id, null, {
       invoiceId: payment.invoice,
       amount: payment.amount,
-      paymentType: payment.type
+      paymentType: payment.type,
+      zohoPaymentId: payment.zoho_payment_id
     });
 
     return res.json({ success: true, message: "Payment deleted successfully", deletedPaymentId: id });

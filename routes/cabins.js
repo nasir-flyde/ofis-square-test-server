@@ -1,12 +1,12 @@
 import express from "express";
 import authMiddleware from "../middlewares/authVerify.js";
-import { 
-  getCabins, 
-  createCabin, 
+import {
+  getCabins,
+  createCabin,
   getCabinById,
   updateCabin,
   deleteCabin,
-  allocateCabin, 
+  allocateCabin,
   releaseCabin,
   getAvailableCabinsByBuilding,
   exportMasterFile,
@@ -16,6 +16,7 @@ import {
   allocateCabinFromBlock,
   importCabinsFromCSV,
   downloadSampleCSV,
+  exportCabins
 } from "../controllers/cabinController.js";
 import multer from "multer";
 
@@ -28,6 +29,8 @@ const upload = multer({
 });
 
 // Export master file (must be before /:id route)
+// Export cabins
+router.get("/export", exportCabins);
 router.get("/export/master", exportMasterFile);
 
 // CSV Import: sample download and import endpoint

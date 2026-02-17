@@ -18,7 +18,8 @@ import {
   getAvailableRoomsByTime,
   exportMasterFile,
   downloadSampleCSV,
-  importMeetingRoomsFromCSV
+  importMeetingRoomsFromCSV,
+  exportRooms
 } from "../controllers/meetingRoomController.js";
 
 const router = express.Router();
@@ -29,6 +30,7 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
+router.get("/export", exportRooms);
 router.get("/export/master", exportMasterFile);
 router.get("/import/sample", downloadSampleCSV);
 router.post("/import", authMiddleware, upload.single('file'), importMeetingRoomsFromCSV);

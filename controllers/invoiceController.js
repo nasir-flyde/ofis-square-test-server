@@ -20,6 +20,7 @@ import {
   findOrCreateContactFromClient,
   markZohoInvoiceAsSent,
   createContact as createZohoContact,
+  deleteZohoInvoice,
 } from "../utils/zohoBooks.js";
 import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";

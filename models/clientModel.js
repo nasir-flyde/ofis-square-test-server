@@ -108,9 +108,12 @@ const clientSchema = new mongoose.Schema(
       type: [
         new mongoose.Schema(
           {
+            tax_info_id: { type: String, trim: true },
             tax_registration_no: { type: String, trim: true },
             place_of_supply: { type: String, trim: true },
             is_primary: { type: Boolean, default: false },
+            legal_name: { type: String, trim: true },
+            trader_name: { type: String, trim: true },
           },
           { _id: false }
         )

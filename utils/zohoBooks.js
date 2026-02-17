@@ -29,6 +29,27 @@ export async function getContacts() {
   }
 }
 
+export async function searchContacts(searchParams) {
+  try {
+    const authToken = await getValidAccessToken();
+    const query = new URLSearchParams(searchParams).toString();
+    const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}&${query}`;
+    console.log(`🔎 Searching Zoho Contacts: ${url}`);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API search error");
+    return data.contacts || [];
+  } catch (err) {
+    console.error("❌ Error searching Zoho contacts:", err.message);
+    throw err;
+  }
+}
+
 export async function createContact(payload) {
   const authToken = await getValidAccessToken();
   const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}`;
@@ -338,18 +359,21 @@ export async function findOrCreateContactFromClient(clientDoc) {
     gst_no: clientDoc?.gstNo || "",
     credit_limit: clientDoc?.creditLimit || 0,
     is_portal_enabled: clientDoc?.isPortalEnabled || false,
-    contact_persons: clientDoc?.contactPersons?.map(cp => ({
-      salutation: cp.salutation || "",
-      first_name: cp.first_name || "",
-      last_name: cp.last_name || "",
-      email: cp.email || "",
-      phone: cp.phone || "",
-      mobile: cp.phone || "",
-      designation: cp.designation || "",
-      department: cp.department || "",
-      is_primary_contact: cp.is_primary_contact || false,
-      enable_portal: cp.enable_portal || false
-    })) || [],
+    contact_persons: clientDoc?.contactPersons?.map(cp => {
+      const out = {
+        salutation: cp.salutation || "",
+        first_name: cp.first_name || cp.firstName || "",
+        last_name: cp.last_name || cp.lastName || "",
+        email: cp.email || "",
+        phone: cp.phone || "",
+        mobile: cp.phone || "",
+        designation: cp.designation || "",
+        department: cp.department || ""
+      };
+      if (cp.is_primary_contact === true || cp.isPrimaryContact === true) out.is_primary_contact = true;
+      if (cp.enable_portal === true || cp.isPortalEnabled === true) out.enable_portal = true;
+      return out;
+    }) || [],
     billing_address: clientDoc?.billingAddress ? {
       attention: clientDoc.billingAddress.attention || contactPerson || "",
       address: clientDoc.billingAddress.address || "",
@@ -1349,6 +1373,60 @@ export async function deleteZohoInvoice(zohoInvoiceId) {
   } catch (err) {
     console.error("❌ Error deleting Zoho Invoice:", err.message);
     await apiLogger(null, "DELETE", `${BASE_URL}/invoices/${zohoInvoiceId}`, null, { error: err.message }, "FAILURE", null);
+    throw err;
+  }
+}
+
+export async function deleteZohoEstimate(zohoEstimateId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates/${zohoEstimateId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.warn(`⚠️ Zoho Estimate ${zohoEstimateId} not found during deletion.`);
+        return true;
+      }
+      throw new Error(data.message || `Zoho API error deleting Estimate (status ${res.status})`);
+    }
+
+    await apiLogger(null, "DELETE", url, null, data, "SUCCESS", null);
+    return true;
+  } catch (err) {
+    console.error("❌ Error deleting Zoho Estimate:", err.message);
+    await apiLogger(null, "DELETE", `${BASE_URL}/estimates/${zohoEstimateId}`, null, { error: err.message }, "FAILURE", null);
+    throw err;
+  }
+}
+
+export async function deleteZohoPayment(zohoPaymentId) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/customerpayments/${zohoPaymentId}?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.warn(`⚠️ Zoho Payment ${zohoPaymentId} not found during deletion (likely already deleted).`);
+        return true;
+      }
+      throw new Error(data.message || `Zoho API error deleting Customer Payment (status ${res.status})`);
+    }
+
+    await apiLogger(null, "DELETE", url, null, data, "SUCCESS", null);
+    return true;
+  } catch (err) {
+    console.error("❌ Error deleting Zoho Customer Payment:", err.message);
+    await apiLogger(null, "DELETE", `${BASE_URL}/customerpayments/${zohoPaymentId}`, null, { error: err.message }, "FAILURE", null);
     throw err;
   }
 }

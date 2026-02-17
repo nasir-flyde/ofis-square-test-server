@@ -418,3 +418,42 @@ export const approveProforma = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const rejectProforma = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+    const estimate = await Estimate.findById(id);
+
+    if (!estimate) {
+      return res.status(404).json({ success: false, message: "Estimate not found" });
+    }
+
+    if (estimate.status !== 'draft' && estimate.status !== 'approved_internal') {
+      return res.status(400).json({
+        success: false,
+        message: `Only draft or locally approved estimates can be rejected. Current status: ${estimate.status}`
+      });
+    }
+
+    estimate.status = 'declined';
+    estimate.rejection_note = notes || "";
+    await estimate.save();
+
+    await logCRUDActivity(req, "UPDATE", "Estimate", estimate._id, null, {
+      previousStatus: estimate.status,
+      newStatus: "declined",
+      rejectionNote: notes,
+      action: "manual_rejection"
+    });
+
+    return res.json({
+      success: true,
+      data: estimate,
+      message: "Pro Forma estimate rejected."
+    });
+  } catch (error) {
+    await logErrorActivity(req, error, "Reject Proforma");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

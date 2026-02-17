@@ -21,7 +21,9 @@ import {
   getSectionComments,
   getDefaultTermsAndConditions,
   setWorkflowMode,
-  allocateCabins
+
+  allocateCabins,
+  exportContracts
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -53,6 +55,11 @@ const upload = multer({
 
 // Get all contracts
 router.get("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContracts);
+
+// Get all contracts
+router.get("/", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContracts);
+
+router.get("/export", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), exportContracts);
 
 // Get default Terms & Conditions for prefilling (auth only)
 router.get("/defaults/terms-and-conditions", authMiddleware, getDefaultTermsAndConditions);
@@ -131,9 +138,6 @@ router.post(
   handleZohoSignWebhook
 );
 
-// ===== NEW WORKFLOW ROUTES =====
-
-// Get contracts by status (for dashboard filtering)
 router.get("/status/:status", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_READ), getContractsByStatus);
 router.post("/:id/submit-to-legal", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToLegal);
 router.post("/:id/submit-to-admin", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SUBMIT), submitToAdmin);

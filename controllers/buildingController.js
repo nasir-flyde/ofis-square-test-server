@@ -1,6 +1,142 @@
 import Building from "../models/buildingModel.js";
 import imagekit from "../utils/imageKit.js";
+import { createObjectCsvStringifier } from 'csv-writer';
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+
+export const exportBuildings = async (req, res) => {
+  try {
+    const { status, city } = req.query || {};
+    const filter = {};
+    if (status) filter.status = status;
+    if (city) filter.city = city;
+
+    const buildings = await Building.find(filter)
+      .populate('amenities', 'name')
+      .populate('dayPassMatrixPolicyId', 'name')
+      .populate('wifiAccess.enterpriseLevel.nasRefs', 'name ip')
+      .populate('wifiAccess.daypass.nasRefs', 'name ip')
+      .sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'id', title: 'Building ID' },
+        { id: 'name', title: 'Name' },
+        { id: 'address', title: 'Address' },
+        { id: 'city', title: 'City' },
+        { id: 'state', title: 'State' },
+        { id: 'country', title: 'Country' },
+        { id: 'pincode', title: 'Pincode' },
+        { id: 'location', title: 'Coordinates (Lat, Lng)' },
+        { id: 'googleMapLink', title: 'Google Map Link' },
+
+        { id: 'openingTime', title: 'Opening Time' },
+        { id: 'closingTime', title: 'Closing Time' },
+        { id: 'meetingCancellationGrace', title: 'Meeting Cancel Grace (min)' },
+        { id: 'meetingCancellationCutoff', title: 'Meeting Cancel Cutoff (min)' },
+
+        { id: 'totalFloors', title: 'Total Floors' },
+        { id: 'status', title: 'Status' },
+        { id: 'amenities', title: 'Amenities' },
+
+        // Pricing & Capacity
+        { id: 'perSeatPricing', title: 'Per Seat Pricing' },
+        { id: 'openSpacePricing', title: 'Open Space Pricing' },
+        { id: 'dayPassCapacity', title: 'Day Pass Daily Capacity' },
+        { id: 'creditValue', title: 'Credit Value' },
+        { id: 'communityDiscount', title: 'Community Max Discount (%)' },
+
+        // Invoice Settings
+        { id: 'draftInvGen', title: 'Draft Invoice Generation' },
+        { id: 'draftInvDay', title: 'Draft Invoice Day' },
+        { id: 'draftInvDueDay', title: 'Draft Invoice Due Day' },
+        { id: 'estSendDay', title: 'Estimate Send Day' },
+        { id: 'invSendDay', title: 'Invoice Send Day' },
+        { id: 'lateFeePolicy', title: 'Late Fee Policy' },
+
+        // Security Deposit
+        { id: 'sdThreshold', title: 'SD Threshold (%)' },
+        { id: 'sdSettings', title: 'SD Note Settings' },
+
+        // Integrations
+        { id: 'wifiAccess', title: 'WiFi Access Config' },
+        { id: 'dayPassPolicy', title: 'Day Pass Matrix Policy' },
+
+        { id: 'photos', title: 'Photos' },
+        { id: 'createdAt', title: 'Created At' },
+        { id: 'updatedAt', title: 'Updated At' }
+      ]
+    });
+
+    const records = buildings.map(b => {
+      // Coordinates
+      let coords = '';
+      if (b.coordinates?.latitude && b.coordinates?.longitude) {
+        coords = `${b.coordinates.latitude}, ${b.coordinates.longitude}`;
+      } else if (b.location?.coordinates?.length === 2) {
+        // GeoJSON is [lng, lat]
+        coords = `${b.location.coordinates[1]}, ${b.location.coordinates[0]}`;
+      }
+
+      // Photos URLs
+      const photoUrls = (b.photos || []).flatMap(p => (p.images || []).map(i => i.url)).join('; ');
+
+      return {
+        id: b._id,
+        name: b.name || '',
+        address: b.address || '',
+        city: b.city || '',
+        state: b.state || '',
+        country: b.country || '',
+        pincode: b.pincode || '',
+        location: coords,
+        googleMapLink: b.businessMapLink || '',
+
+        openingTime: b.openingTime || '',
+        closingTime: b.closingTime || '',
+        meetingCancellationGrace: b.meetingCancellationGraceMinutes || 0,
+        meetingCancellationCutoff: b.meetingCancellationCutoffMinutes || 0,
+
+        totalFloors: b.totalFloors || '',
+        status: b.status || '',
+        amenities: (b.amenities || []).map(a => a.name).join('; '),
+
+        perSeatPricing: b.perSeatPricing || '',
+        openSpacePricing: b.openSpacePricing || '',
+        dayPassCapacity: b.dayPassDailyCapacity || 0,
+        creditValue: b.creditValue || '',
+        communityDiscount: b.communityDiscountMaxPercent || '',
+
+        draftInvGen: b.draftInvoiceGeneration ? 'Yes' : 'No',
+        draftInvDay: b.draftInvoiceDay || '',
+        draftInvDueDay: b.draftInvoiceDueDay || '',
+        estSendDay: b.estimateSendDay || '',
+        invSendDay: b.invoiceSendDay || '',
+        lateFeePolicy: JSON.stringify(b.lateFeePolicy || {}),
+
+        sdThreshold: b.securityDepositThreshold || '',
+        sdSettings: JSON.stringify(b.sdNoteSettings || {}),
+
+        wifiAccess: JSON.stringify(b.wifiAccess || {}),
+        dayPassPolicy: b.dayPassMatrixPolicyId?.name || b.dayPassMatrixPolicyId || '',
+
+        photos: photoUrls,
+        createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : '',
+        updatedAt: b.updatedAt ? new Date(b.updatedAt).toISOString() : ''
+      };
+    });
+
+    const header = csvStringifier.getHeaderString();
+    const csvRecords = csvStringifier.stringifyRecords(records);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="buildings_full_export.csv"');
+    res.send(header + csvRecords);
+
+  } catch (error) {
+    console.error("exportBuildings error:", error);
+    res.status(500).send("Failed to export buildings");
+  }
+};
 
 export const createBuilding = async (req, res) => {
   try {

@@ -64,6 +64,7 @@ const estimateSchema = new mongoose.Schema(
     zoho_status: { type: String },
     zoho_pdf_url: { type: String },
     estimate_url: { type: String },
+    rejection_note: { type: String, trim: true },
 
     billing_address: {
       attention: { type: String },

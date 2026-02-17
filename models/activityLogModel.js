@@ -49,6 +49,7 @@ const activityLogSchema = new mongoose.Schema(
         "CHECK_OUT",
         "BULK_OPERATION",
         "CONTRACT_SENT_FOR_SIGNATURE",
+        "SYNC_ZOHO",
         "ERROR",
         "CUSTOM"
       ],
@@ -80,7 +81,7 @@ const activityLogSchema = new mongoose.Schema(
     endpoint: {
       type: String, // API endpoint that was called
     },
-    
+
     // Data Changes (for UPDATE operations)
     changes: {
       before: {
@@ -110,7 +111,7 @@ const activityLogSchema = new mongoose.Schema(
     metadata: {
       type: mongoose.Schema.Types.Mixed, // Additional context-specific data
     },
-    
+
     // Status and Results
     status: {
       type: String,
@@ -120,12 +121,12 @@ const activityLogSchema = new mongoose.Schema(
     errorMessage: {
       type: String, // If status is FAILED
     },
-    
+
     // Session Information
     sessionId: {
       type: String,
     },
-    
+
     // Related Records
     relatedEntities: [{
       entityType: String,
@@ -137,13 +138,13 @@ const activityLogSchema = new mongoose.Schema(
     executionTime: {
       type: Number, // Time taken in milliseconds
     },
-    
+
     // Audit Trail
     isSystemGenerated: {
       type: Boolean,
       default: false, // true for automated actions, false for user actions
     },
-    
+
     // Data Retention
     retentionDate: {
       type: Date, // When this log can be archived/deleted
@@ -176,7 +177,7 @@ activityLogSchema.virtual("formattedTimestamp").get(function () {
 });
 
 // Static method to log activity
-activityLogSchema.statics.logActivity = async function(logData) {
+activityLogSchema.statics.logActivity = async function (logData) {
   try {
     const log = new this(logData);
     await log.save();
@@ -189,7 +190,7 @@ activityLogSchema.statics.logActivity = async function(logData) {
 };
 
 // Static method for bulk logging
-activityLogSchema.statics.logBulkActivity = async function(logsArray) {
+activityLogSchema.statics.logBulkActivity = async function (logsArray) {
   try {
     const logs = await this.insertMany(logsArray, { ordered: false });
     return logs;
@@ -200,7 +201,7 @@ activityLogSchema.statics.logBulkActivity = async function(logsArray) {
 };
 
 // Instance method to add related entity
-activityLogSchema.methods.addRelatedEntity = function(entityType, entityId, description) {
+activityLogSchema.methods.addRelatedEntity = function (entityType, entityId, description) {
   this.relatedEntities.push({
     entityType,
     entityId,
