@@ -8,7 +8,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 class WalletService {
 
   // Get or create wallet for a client
-  static async getOrCreateWallet(clientId) {
+  static async getOrCreateWallet(clientId, defaultCreditValue = 500) {
     try {
       let wallet = await ClientCreditWallet.findOne({ client: clientId });
 
@@ -16,7 +16,7 @@ class WalletService {
         wallet = await ClientCreditWallet.create({
           client: clientId,
           balance: 0,
-          creditValue: 500,
+          creditValue: defaultCreditValue,
           currency: "INR",
           status: "active"
         });
@@ -35,11 +35,11 @@ class WalletService {
 
     try {
       await session.withTransaction(async () => {
-        // Get or create wallet
-        const wallet = await this.getOrCreateWallet(clientId);
+        // Get or create wallet (pass valuePerCredit for creation if provided)
+        const wallet = await this.getOrCreateWallet(clientId, valuePerCredit);
 
-        // Use fixed credit value of 500 INR per credit
-        const finalValuePerCredit = 500;
+        // Use provided value, or wallet's value, or default to 500
+        const finalValuePerCredit = valuePerCredit || wallet.creditValue || 500;
 
         // Update wallet balance
         await ClientCreditWallet.findByIdAndUpdate(

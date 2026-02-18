@@ -71,14 +71,14 @@ const paymentSchema = new mongoose.Schema(
         notes: { type: String },
       },
     ],
-    
+
     idempotency_key: { type: String, unique: true, sparse: true },
     raw_zoho_response: { type: mongoose.Schema.Types.Mixed },
-    
-    source: { 
-      type: String, 
-      enum: ["manual", "zoho_books", "webhook"], 
-      default: "manual" 
+
+    source: {
+      type: String,
+      enum: ["manual", "zoho_books", "webhook", "migration"],
+      default: "manual"
     },
     // Withholding (for single-invoice payments). For multi-invoice, use invoices[].
     tax_deducted: { type: Boolean, default: false },

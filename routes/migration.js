@@ -6,10 +6,16 @@ import {
     saveCabinStep,
     saveMembersStep,
     saveFinancialsStep,
-    getMigrationStatus
+    getMigrationStatus,
+    bulkImportMigration,
+    getBulkImportSampleCSV,
+    bulkImportInvoicesAndPayments,
+    getBulkFinancialsSampleCSV,
+    getBulkMembersSampleCSV,
+    bulkImportMembers
 } from '../controllers/migrationController.js';
 import authMiddleware from '../middlewares/authVerify.js';
-import { kycUploads } from '../middlewares/multer.js';
+import upload, { kycUploads } from '../middlewares/multer.js';
 
 const router = express.Router();
 
@@ -20,5 +26,11 @@ router.post('/step-4-cabin', authMiddleware, saveCabinStep);
 router.post('/step-5-members', authMiddleware, saveMembersStep);
 router.post('/step-6-financials', authMiddleware, saveFinancialsStep);
 router.get('/status', authMiddleware, getMigrationStatus);
+router.post('/bulk-import', authMiddleware, bulkImportMigration);
+router.get('/bulk-import/sample-csv', authMiddleware, getBulkImportSampleCSV);
+router.post('/bulk-financials', authMiddleware, bulkImportInvoicesAndPayments);
+router.get('/bulk-financials/sample-csv', getBulkFinancialsSampleCSV);
+router.post('/bulk-members', authMiddleware, upload.single('file'), bulkImportMembers);
+router.get('/bulk-members/sample-csv', getBulkMembersSampleCSV);
 
 export default router;

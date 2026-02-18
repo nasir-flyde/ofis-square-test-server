@@ -30,6 +30,28 @@ import DocumentEntity from "../models/documentEntityModel.js";
 import { ensureBhaifiForMember } from "./bhaifiController.js";
 import { syncMemberToUser } from "../utils/memberSync.js";
 
+export const searchClient = async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    const client = await Client.findOne({
+      email: { $regex: new RegExp(`^${email.trim()}$`, "i") }
+    });
+
+    if (!client) {
+      return res.json({ success: true, client: null, message: "Client not found" });
+    }
+
+    return res.json({ success: true, client });
+  } catch (err) {
+    console.error("searchClient error:", err);
+    return res.status(500).json({ success: false, message: "Failed to search client" });
+  }
+};
+
 export const exportClients = async (req, res) => {
   try {
     const { search, customerType, kycStatus } = req.query;

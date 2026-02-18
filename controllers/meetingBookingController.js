@@ -20,12 +20,10 @@ import { createZohoInvoiceFromLocal, fetchZohoInvoicePdfBinary, recordZohoPaymen
 
 // Convert date to IST time string (HH:MM)
 function toHHMM(date) {
-  return new Date(date).toLocaleTimeString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  });
+  const d = new Date(date);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 function addMinutes(dt, mins) {
@@ -33,13 +31,16 @@ function addMinutes(dt, mins) {
 }
 
 function sameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
 }
 
 // Helper: convert any date-like to IST Date object
 function toIST(date) {
   try {
-    return new Date(new Date(date).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const d = new Date(date);
+    const s = d.toLocaleString('en-ZA', { timeZone: 'Asia/Kolkata', hour12: false }).replace(',', 'T').replace(' ', '');
+    const iso = s.replace(/\//g, '-') + 'Z';
+    return new Date(iso);
   } catch (e) {
     return new Date(date);
   }
@@ -47,10 +48,10 @@ function toIST(date) {
 
 // Helper: get IST day in YYYY-MM-DD string
 function formatYMDIST(dateLike) {
-  const d = toIST(dateLike);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  const d = new Date(dateLike);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -114,7 +115,7 @@ async function checkAvailability(room, start, end) {
   } = availability;
 
   // Day of week rule
-  const dow = start.getDay();
+  const dow = start.getUTCDay();
   if (!daysOfWeek.includes(dow)) return { ok: false, reason: "Room not available on this day" };
 
   // Must be same-day booking for now (simplifies hours logic)
@@ -163,31 +164,27 @@ async function checkAvailability(room, start, end) {
   return { ok: true };
 }
 
-// Helper: parse body-provided datetime as IST if timezone is missing
+// Helper: parse body-provided datetime and return it as IST Wall Time (Date object ending in Z)
 function parseISTDateTime(input) {
   if (input instanceof Date) return toIST(input);
   if (typeof input === 'number') return toIST(new Date(input));
   if (typeof input !== 'string') return new Date(NaN);
 
   const trimmed = input.trim();
-  // If timezone is present (Z or +hh:mm), trust it
-  if (/Z|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
-    const d = new Date(trimmed);
-    return isNaN(d) ? new Date(NaN) : d;
-  }
-  // Normalize common formats to ISO-like and append IST offset
-  // Accept: "YYYY-MM-DD HH:mm" or "YYYY-MM-DDTHH:mm" (optional :ss)
+
+  // 1. If it looks like ISO (2026-02-22T09:30:00.000Z), it might already be Wall Time.
+  // But usually users send "2026-02-22 09:30" meaning IST.
+
   let iso = trimmed.replace(' ', 'T');
+  // Remove any trailing Z or offset to treat it as "local numbers"
+  iso = iso.replace(/Z|[+-]\d{2}:?\d{2}$/, '');
+
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(iso)) {
     iso = iso + ':00';
   }
-  if (!/:\d{2}$/.test(iso)) {
-    // If seconds still missing or format unexpected, let Date try to parse with IST locale fallback
-    const tentative = toIST(iso);
-    return tentative;
-  }
-  const withIST = `${iso}+05:30`;
-  const d = new Date(withIST);
+
+  // We want the resulting Date object to represent HH:mm as UTC (Z)
+  const d = new Date(iso + 'Z');
   return isNaN(d) ? new Date(NaN) : d;
 }
 
@@ -553,19 +550,19 @@ export const createBooking = async (req, res) => {
     const bookingStart = new Date(startDt);
     const bookingEnd = new Date(endDt);
 
-    // Convert booking times to 12-hour format with AM/PM
-    const startTimeStr = bookingStart.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
-    });
-    const endTimeStr = bookingEnd.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
-    });
+    // Convert booking times to 12-hour format with AM/PM for storage in reservedSlots
+    // (Note: d.toLocaleTimeString uses local OS time, but we want IST strings.
+    // Since startDt is now Wall Time Z, we can just use d.getUTCHours etc or simple conversion)
+    function format12h(d) {
+      let h = d.getUTCHours();
+      const m = String(d.getUTCMinutes()).padStart(2, '0');
+      const p = h >= 12 ? 'PM' : 'AM';
+      h = h % 12 || 12;
+      return `${String(h).padStart(2, '0')}:${m} ${p}`;
+    }
+
+    const startTimeStr = format12h(bookingStart);
+    const endTimeStr = format12h(bookingEnd);
 
     // Compute IST day string and UTC midnight for that day (visual consistency in DB tools)
     const istYmd = formatYMDIST(bookingStart);
@@ -780,7 +777,7 @@ export const createBooking = async (req, res) => {
       const reminderMinutes = Number(process.env.MEETING_BOOKING_REMINDER_MINUTES_BEFORE || 30);
       const startDtReminder = new Date(startDt);
       const scheduledAt = new Date(startDtReminder.getTime() - reminderMinutes * 60000);
-      const now = new Date();
+      const now = toIST(new Date());
       if (bookingStatus === 'booked' && scheduledAt > now) {
         // Member reminder
         if (currentMemberId && (memberDoc?.email || memberDoc?.phone)) {

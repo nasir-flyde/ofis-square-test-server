@@ -40,7 +40,8 @@ import {
   approveOnboarding,
   sendContractToLegalTeam,
   syncClientToZoho,
-  exportClients
+  exportClients,
+  searchClient
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -89,6 +90,7 @@ router.post('/desks/allocate', clientMiddleware, allocateDeskToMember);
 router.post('/desks/release', clientMiddleware, releaseDeskFromMember);
 
 router.get("/export", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CLIENT_READ), exportClients);
+router.get("/search", authMiddleware, searchClient);
 router.get("/", getClients);
 router.get("/:id", getClientById);
 router.put("/:id", updateClient);

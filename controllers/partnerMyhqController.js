@@ -26,24 +26,29 @@ function ampmToMinutes(timeStr) {
 }
 function toIST(date) {
   try {
-    return new Date(new Date(date).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const d = new Date(date);
+    // Format to IST string without timezone shifting by the parser later
+    const s = d.toLocaleString('en-ZA', { timeZone: 'Asia/Kolkata', hour12: false }).replace(',', 'T').replace(' ', '');
+    // en-ZA format is YYYY/MM/DD, HH:mm:ss
+    const iso = s.replace(/\//g, '-') + 'Z';
+    return new Date(iso);
   } catch (e) {
     return new Date(date);
   }
 }
 function startOfDayIST(date) {
   const d = toIST(date);
-  d.setHours(0, 0, 0, 0);
+  d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 function endOfDayIST(date) {
   const d = toIST(date);
-  d.setHours(23, 59, 59, 999);
+  d.setUTCHours(23, 59, 59, 999);
   return d;
 }
-function minutesSinceMidnightIST(date) {
-  const d = toIST(date);
-  return d.getHours() * 60 + d.getMinutes();
+// Helper: get minutes since midnight for a Date object that is ALREADY shifted to IST wall time (Z)
+function minutesSinceMidnightWallTime(date) {
+  return date.getUTCHours() * 60 + date.getUTCMinutes();
 }
 function mapStatusForPartner(status) {
   if (status === 'cancelled') return 'CANCELLED';
@@ -53,13 +58,13 @@ function mapStatusForPartner(status) {
 // Helper: format a Date-like into an IST ISO-like string (YYYY-MM-DD HH:mm:ss IST)
 function formatISTString(dateLike) {
   try {
-    const d = toIST(dateLike);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
+    const d = new Date(dateLike);
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mi = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} IST`;
   } catch (_) {
     return String(dateLike);
@@ -68,10 +73,10 @@ function formatISTString(dateLike) {
 
 // Helper: get IST day in YYYY-MM-DD
 function formatYMDIST(dateLike) {
-  const d = toIST(dateLike);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  const d = new Date(dateLike);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -190,7 +195,7 @@ export async function bulkAvailabilities(req, res) {
 
       for (const dateISO of dates) {
         const dayStart = startOfDayIST(dateISO);
-        const dow = dayStart.getDay();
+        const dow = dayStart.getUTCDay();
         const isBlackout = blackoutDates.some(d => startOfDayIST(d).getTime() === dayStart.getTime());
         const slots = [];
         if (!daysOfWeek.includes(dow) || isBlackout || room.status !== 'active') {
@@ -206,16 +211,20 @@ export async function bulkAvailabilities(req, res) {
         const startIdx = Math.max(0, Math.floor(buildingOpen / 30));
         const endIdx = Math.min(48, Math.ceil(buildingClose / 30));
         for (let i = startIdx; i < endIdx; i++) timeline[i] = 'AVAILABLE';
-
         // Mark SOLD_OUT for overlapping bookings
         const roomBookings = bookingsByRoom.get(String(roomId)) || [];
         for (const b of roomBookings) {
+          // b.start and b.end are ALREADY IST wall time (09:30Z)
+          const bStart = new Date(b.start);
+          const bEnd = new Date(b.end);
+
           // Intersect with this day
-          const s = Math.max(dayStart.getTime(), toIST(b.start).getTime());
-          const e = Math.min(endOfDayIST(dayStart).getTime(), toIST(b.end).getTime());
+          const s = Math.max(dayStart.getTime(), bStart.getTime());
+          const e = Math.min(endOfDayIST(dayStart).getTime(), bEnd.getTime());
           if (e <= s) continue;
-          const sMin = minutesSinceMidnightIST(s);
-          const eMin = minutesSinceMidnightIST(e);
+
+          const sMin = minutesSinceMidnightWallTime(new Date(s));
+          const eMin = minutesSinceMidnightWallTime(new Date(e));
           const sIdx = Math.max(0, Math.floor(sMin / 30));
           const eIdx = Math.min(48, Math.ceil(eMin / 30));
           for (let i = sIdx; i < eIdx; i++) if (timeline[i] !== 'CLOSED') timeline[i] = 'SOLD_OUT';
@@ -272,16 +281,23 @@ export async function bookRoom(req, res) {
     if (!room) return res.status(400).json({ status: 400, success: false, message: "Invalid value: room_id" });
     if (room.status !== 'active') return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
 
-    const start = new Date(start_time);
-    const end = new Date(end_time);
+    const start = toIST(start_time);
+    const end = toIST(end_time);
     if (isNaN(start) || isNaN(end) || end <= start) {
       return res.status(400).json({ status: 400, success: false, message: "Invalid start_time or end_time" });
     }
-    // Within building hours
+    // Within building hours and allowed days
     const openM = hhmmToMinutes(room.building?.openingTime || '09:00');
     const closeM = hhmmToMinutes(room.building?.closingTime || '19:00');
-    const sMin = minutesSinceMidnightIST(start);
-    const eMin = minutesSinceMidnightIST(end);
+    const sMin = minutesSinceMidnightWallTime(start);
+    const eMin = minutesSinceMidnightWallTime(end);
+
+    const dow = start.getUTCDay();
+    const allowedDays = room.availability?.daysOfWeek || [1, 2, 3, 4, 5];
+    if (!allowedDays.includes(dow)) {
+      return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available on this day" });
+    }
+
     if (sMin < openM || eMin > closeM) {
       return res.status(400).json({ status: 400, success: false, message: `Booking must be within operating hours ${(room.building?.openingTime || '09:00')}-${(room.building?.closingTime || '19:00')} IST` });
     }
@@ -424,7 +440,7 @@ export async function cancelBooking(req, res) {
       return res.status(409).json({ status: 409, success: false, message: "Already cancelled" });
     }
     const createdAt = new Date(booking.createdAt || booking.start);
-    const now = new Date();
+    const now = toIST(new Date());
 
     const building = booking.room?.building;
 
@@ -440,9 +456,9 @@ export async function cancelBooking(req, res) {
     // Allow immediate grace window from creation
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
 
-    // Allow cancellation until cutoff before the booking start (IST-safe via toIST)
-    const startIST = toIST(booking.start);
-    const cutoffTime = new Date(startIST.getTime() - cutoffMinutes * 60 * 1000);
+    // Allow cancellation until cutoff before the booking start (IST-safe via wall time)
+    const startWallTime = new Date(booking.start); // Already wall time Z
+    const cutoffTime = new Date(startWallTime.getTime() - cutoffMinutes * 60 * 1000);
     const beforeCutoff = now.getTime() < cutoffTime.getTime();
 
     if (!(withinGrace || beforeCutoff)) {
@@ -639,6 +655,8 @@ export async function cancelDayPassBooking(req, res) {
     const { id } = req.params;
     const pass = await DayPass.findById(id).populate('building');
     if (!pass) return res.status(404).json({ status: 404, success: false, message: 'Invalid Booking ID' });
+    const now = toIST(new Date());
+    const createdAt = toIST(pass.createdAt || pass.date);
     if (pass.externalSource !== 'myhq') {
       return res.status(400).json({ status: 400, success: false, message: 'Not a partner booking' });
     }
