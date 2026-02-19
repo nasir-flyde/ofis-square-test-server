@@ -146,6 +146,7 @@ export const saveClientStep = async (req, res) => {
             zohoBooksContactId,
             membershipStatus: 'active',
             isClientApproved: true,
+            isMigrated: true,
             // Don't overwrite kycStatus if it exists and is verified
         };
 
@@ -897,10 +898,11 @@ export const bulkImportMigration = async (req, res) => {
                 const rowResult = { ...row, errors: [], status: 'Ready' };
 
                 // 1. Building Check
+                const buildingSearch = (row.building || '').trim();
                 const building = await Building.findOne({
                     $or: [
-                        { name: { $regex: new RegExp(`^${row.building}$`, 'i') } },
-                        { _id: row.building?.length === 24 ? row.building : undefined }
+                        { name: { $regex: new RegExp(`^${buildingSearch}$`, 'i') } },
+                        { _id: buildingSearch.length === 24 ? buildingSearch : undefined }
                     ].filter(x => x._id !== undefined || x.name !== undefined)
                 });
 
@@ -990,9 +992,16 @@ export const bulkImportMigration = async (req, res) => {
                         gstTreatment: row.gsttreatment || 'business_gst',
                         placeOfContact: row.placeofsupply || row.billingstate,
                         kycStatus: 'verified', // Auto-approve for migration
+                        isMigrated: true,
                         source: 'migration',
                         extra_credits: 0 // Initialize
                     });
+                } else {
+                    // Ensure isMigrated is true for existing clients found in CSV
+                    if (!client.isMigrated) {
+                        client.isMigrated = true;
+                        await client.save();
+                    }
                 }
 
                 // 3. Contract Creation
@@ -1208,14 +1217,14 @@ export const bulkImportMigration = async (req, res) => {
                 }
 
                 // 7. Cabin Allocation
-                const cabinNumber = (row['Cabin Number'] || row['cabin_number'] || row['Cabin'] || row['cabin'])?.trim();
+                const cabinNumber = (row['Cabin Number'] || row['cabin_number'] || row.cabinnumber || row['Cabin'] || row['cabin'])?.trim();
                 let cabinAllocated = false;
 
                 if (cabinNumber && building) {
                     try {
                         const cabin = await Cabin.findOne({
                             building: building._id,
-                            number: cabinNumber
+                            number: { $regex: new RegExp(`^${cabinNumber}$`, 'i') }
                         });
 
                         if (cabin) {
@@ -1436,16 +1445,18 @@ export const bulkImportInvoicesAndPayments = async (req, res) => {
             const results = [];
             for (const row of sortedRows) {
                 const errors = [];
-                const email = (row.client_email || '').trim().toLowerCase();
+                const companyName = (row.company_name || '').trim();
                 let clientName = '';
 
                 // Validate Client
-                if (!email) {
-                    errors.push('Client Email is required');
+                if (!companyName) {
+                    errors.push('Company Name is required');
                 } else {
-                    const client = await Client.findOne({ email }).select('companyName firstName lastName');
+                    const client = await Client.findOne({
+                        companyName: { $regex: new RegExp(`^${companyName}$`, 'i') }
+                    }).select('companyName firstName lastName');
                     if (!client) {
-                        errors.push(`Client with email '${email}' not found`);
+                        errors.push(`Client with company name '${companyName}' not found`);
                     } else {
                         clientName = client.companyName || `${client.firstName} ${client.lastName}`.trim();
                     }
@@ -1483,11 +1494,13 @@ export const bulkImportInvoicesAndPayments = async (req, res) => {
         // 3. Process Rows
         for (const row of sortedRows) {
             // Validate Client
-            const email = (row.client_email || '').trim().toLowerCase();
-            if (!email) throw new Error(`Row ${row.originalIndex + 1}: Client Email is required`);
+            const companyName = (row.company_name || '').trim();
+            if (!companyName) throw new Error(`Row ${row.originalIndex + 1}: Company Name is required`);
 
-            const client = await Client.findOne({ email });
-            if (!client) throw new Error(`Row ${row.originalIndex + 1}: Client with email '${email}' not found`);
+            const client = await Client.findOne({
+                companyName: { $regex: new RegExp(`^${companyName}$`, 'i') }
+            });
+            if (!client) throw new Error(`Row ${row.originalIndex + 1}: Client with company name '${companyName}' not found`);
 
             // Validate Building (Optional but good for data integrity)
             let buildingId = client.building;
@@ -1678,14 +1691,14 @@ export const bulkImportInvoicesAndPayments = async (req, res) => {
 export const getBulkFinancialsSampleCSV = async (req, res) => {
     try {
         const headers = [
-            'client_email', 'building_name', 'invoice_number', 'issue_date', 'due_date',
+            'company_name', 'building_name', 'invoice_number', 'issue_date', 'due_date',
             'description', 'unit_price', 'tax_percentage',
             'amount_paid', 'payment_date', 'payment_mode', 'payment_ref',
             'billing_start', 'billing_end', 'notes'
         ];
 
         const sampleRow = [
-            'client@example.com', 'Building A', '', '2025-01-01', '2025-01-15',
+            'Example Corp', 'Building A', '', '2025-01-01', '2025-01-15',
             'Office Rent for Jan', '50000', '18',
             '59000', '2025-01-02', 'Bank Transfer', 'REF123456',
             '2025-01-01', '2025-01-31', 'Migrated Invoice'
@@ -2010,3 +2023,46 @@ export const bulkImportMembers = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+export const listPendingMigrations = async (req, res) => {
+    try {
+        const clients = await Client.find({ isMigrated: true }).sort({ updatedAt: -1 });
+
+        const results = await Promise.all(clients.map(async (client) => {
+            const [contract, membersCount, invoices] = await Promise.all([
+                Contract.findOne({ client: client._id }).sort({ createdAt: -1 }),
+                Member.countDocuments({ client: client._id }),
+                Invoice.find({ client: client._id })
+            ]);
+
+            const cabin = contract ? await Cabin.findOne({ contract: contract._id }) : null;
+
+            // Determine current step based on data presence
+            let currentStep = 2; // Step 1 is done
+            if (client.kycStatus === 'verified' || client.kycDocumentItems?.length > 0) currentStep = 3;
+            if (contract) currentStep = 4;
+            if (cabin) currentStep = 5;
+            if (invoices.length > 0) currentStep = 6;
+            if (membersCount > 1) currentStep = 7;
+
+            return {
+                _id: client._id,
+                companyName: client.companyName,
+                email: client.email,
+                firstName: client.primaryFirstName,
+                lastName: client.primaryLastName,
+                currentStep,
+                updatedAt: client.updatedAt
+            };
+        }));
+
+        // Filter out those who are at the last step (Review) if you want only "Pending"
+        const pending = results.filter(r => r.currentStep < 7);
+
+        return res.json({ success: true, count: pending.length, clients: pending });
+    } catch (error) {
+        console.error('listPendingMigrations error:', error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+

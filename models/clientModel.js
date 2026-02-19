@@ -165,6 +165,7 @@ const clientSchema = new mongoose.Schema(
       customFormula: { type: String, default: undefined },
       variables: { type: mongoose.Schema.Types.Mixed, default: undefined },
     },
+    isMigrated: { type: Boolean, default: false, index: true },
   },
   {
     timestamps: true,
