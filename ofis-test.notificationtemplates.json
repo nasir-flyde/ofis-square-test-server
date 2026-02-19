@@ -837,246 +837,431 @@
       }
     }
   },
-},
-{
-  "_id": {
-    "$oid": "6964d7681bba6d089f54d8da"
+  {
+    "_id": {
+      "$oid": "6964d7681bba6d089f54d8da"
+    },
+    "key": "draft_payment_submitted",
+    "name": "Draft Payment Submitted",
+    "description": "Draft payment under review.",
+    "channels": {
+      "sms": true,
+      "email": true
+    },
+    "content": {
+      "sms": "Draft payment (₹{{amount}}) submitted.",
+      "emailSubject": "Subject: Payment Acknowledgment: Your Transaction is Being Processed",
+      "emailText": "Dear {{memberName}},\\n\\nWe have successfully received the payment details/draft submitted for your OFIS SQUARE account.\\n\\nPlease be advised that your payment is currently in the verification stage. Our finance team is reviewing the transaction to ensure all details are reconciled correctly.\\n\\nReference ID: {{draftPaymentId}}\\nStatus: Pending Verification\\n\\nThank you for your patience."
+    },
+    "category": "payments",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://payments/drafts/{{draftPaymentId}}",
+        "route": "/payments/drafts/:id",
+        "priority": "normal",
+        "category": "payments",
+        "tags": [
+          "draft",
+          "payment"
+        ],
+        "routeParams": {
+          "id": "{{draftPaymentId}}"
+        }
+      }
+    },
+    "tags": [
+      "draft",
+      "payment"
+    ],
+    "templateDesignId": {
+      "$oid": "700000000000000000000001"
+    }
   },
-  "key": "draft_payment_submitted",
-  "name": "Draft Payment Submitted",
-  "description": "Draft payment under review.",
-  "channels": {
-    "sms": true,
-    "email": true
+  {
+    "_id": {
+      "$oid": "6964d7681bba6d089f54d8ea"
+    },
+    "key": "senior_management_contract_approval",
+    "name": "Senior Management Approval",
+    "description": "Executive review required.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Subject: Executive Approval Required: Final Contract for {{companyName}}",
+      "emailText": "Dear {{managerName}},\\n\\nThe legal contract for {{companyName}} has been finalized and uploaded following the approval of the commercial terms. The file is now pending your executive review.\\n\\nClient Name: {{companyName}}\\nStatus: Legal Review Complete – Awaiting Senior Sign-off\\n\\nPlease access the Management Portal to authorize the contract.\\n\\nBest regards,\\nOperations Control OFIS SQUARE"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://contracts/custom/{{contractId}}",
+        "route": "/contracts/custom/:id",
+        "priority": "normal",
+        "category": "contracts",
+        "tags": [
+          "senior-management",
+          "approval"
+        ],
+        "routeParams": {
+          "id": "{{contractId}}"
+        }
+      }
+    },
+    "tags": [
+      "senior-management",
+      "approval",
+      "contract"
+    ],
+    "templateDesignId": {
+      "$oid": "700000000000000000000001"
+    }
   },
-  "content": {
-    "sms": "Draft payment (₹{{amount}}) submitted.",
-    "emailSubject": "Subject: Payment Acknowledgment: Your Transaction is Being Processed",
-    "emailText": "Dear {{memberName}},\\n\\nWe have successfully received the payment details/draft submitted for your OFIS SQUARE account.\\n\\nPlease be advised that your payment is currently in the verification stage. Our finance team is reviewing the transaction to ensure all details are reconciled correctly.\\n\\nReference ID: {{draftPaymentId}}\\nStatus: Pending Verification\\n\\nThank you for your patience."
+  {
+    "_id": {
+      "$oid": "6964f08c1bba6d089f54d8f0"
+    },
+    "key": "rsvp_success",
+    "name": "RSVP Confirmation",
+    "description": "Event RSVP confirmation.",
+    "channels": {
+      "sms": true,
+      "email": true
+    },
+    "content": {
+      "sms": "RSVP for {{eventName}} confirmed.",
+      "emailSubject": "Subject: Confirmation: You’re on the Guest List for {{eventName}}!",
+      "emailText": "Dear {{memberName}},\\n\\nThank you for your RSVP! We are pleased to confirm your registration for our upcoming event, {{eventName}}.\\n\\nEvent: {{eventName}}\\nDate: {{eventDate}}\\nLocation: {{building}}\\n\\nPlease have your App ready upon arrival to check in. See you soon!\\n\\nBest regards,\\nCommunity Team OFIS SQUARE"
+    },
+    "category": "events",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://events/{{eventId}}",
+        "route": "/events/:id",
+        "priority": "normal",
+        "category": "events",
+        "tags": [
+          "rsvp",
+          "confirmation"
+        ],
+        "routeParams": {
+          "id": "{{eventId}}"
+        }
+      }
+    },
+    "tags": [
+      "rsvp",
+      "confirmation",
+      "event"
+    ],
+    "templateDesignId": {
+      "$oid": "700000000000000000000001"
+    }
   },
-  "category": "payments",
-  "isActive": true,
-  "defaults": {
-    "metadata": {
-      "deepLink": "ofis://payments/drafts/{{draftPaymentId}}",
-      "route": "/payments/drafts/:id",
-      "priority": "normal",
-      "category": "payments",
-      "tags": [
-        "draft",
-        "payment"
-      ],
-      "routeParams": {
-        "id": "{{draftPaymentId}}"
+  {
+    "key": "community_ticket_created",
+    "name": "Community Ticket Created",
+    "description": "Notify community team of new ticket.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "New Support Ticket Raised - {{buildingName}}",
+      "emailText": "{{greeting}}\\nDear Community Team,\\n\\nA new support ticket has been raised by {{memberName}} from {{buildingName}}.\\n\\nTicket Details:\\nID: {{ticketId}}\\nCategory: {{Category}}\\nPriority: {{priority}}\\nDescription: {{description}}\\n\\nYou can view and manage this ticket here: {{ctaLink}}\\n\\nBest regards,\\nOFIS SQUARE System"
+    },
+    "category": "tickets",
+    "isActive": true,
+    "templateDesignId": {
+      "": "700000000000000000000001"
+    }
+  },
+  {
+    "key": "ticket_assigned_to_user",
+    "name": "Ticket Assigned to User",
+    "description": "Notify user when a ticket is assigned to them.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Ticket Assigned to You: {{ticketId}}",
+      "emailText": "{{greeting}}\\nDear Team Member,\\n\\nA support ticket has been assigned/reassigned to you.\\n\\nTicket Details:\\nID: {{ticketId}}\\nBuilding: {{buildingName}}\\nCategory: {{category}}\\nPriority: {{priority}}\\nMember/Client: {{memberName}}\\n\\nDescription:\\n{{description}}\\n\\nPlease take the necessary action. View details here: {{ctaLink}}\\n\\nBest regards,\\nOFIS SQUARE Support"
+    },
+    "category": "tickets",
+    "isActive": true,
+    "templateDesignId": {
+      "": "700000000000000000000001"
+    }
+  },
+  {
+    "_id": {
+      "": "698c4fc5a927f74925aaef25"
+    },
+    "key": "visitor_scheduled_notify_host",
+    "name": "Visitor Scheduled – Notify Host",
+    "description": "Notification sent to host member informing them about scheduled visitor details.",
+    "channels": {
+      "sms": true,
+      "email": true
+    },
+    "content": {
+      "sms": "Visitor {{visitorName}} is scheduled to meet you on {{visitDate}} at {{visitTime}} at {{buildingName}}.",
+      "emailSubject": "Visitor Scheduled to Meet You – {{visitorName}} | {{visitDate}}",
+      "emailText": "Dear {{memberName}},\\n\\nA visitor has been scheduled to meet you at OFIS SQUARE.\\n\\nVisitor Details:\\nName: {{visitorName}}\\nCompany: {{visitorCompany}}\\nPurpose: {{purpose}}\\n\\nVisit Details:\\nBuilding: {{buildingName}}\\nDate: {{visitDate}}\\nTime: {{visitTime}}\\n\\nPlease ensure you are available at the scheduled time.\\n\\nYou will be notified again once the visitor arrives at reception.\\n\\nRegards,\\nTeam OFIS SQUARE"
+    },
+    "category": "visitors",
+    "tags": [
+      "visitor",
+      "scheduled",
+      "host"
+    ],
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://visits",
+        "route": "/visits",
+        "routeParams": {},
+        "priority": "high",
+        "category": "visitors",
+        "tags": [
+          "visitor",
+          "scheduled"
+        ]
+      }
+    },
+    "templateDesignId": {
+      "": "700000000000000000000001"
+    }
+  },
+  {
+    "_id": {
+      "": "698c5c4da927f74925aaef38"
+    },
+    "key": "finance_draft_payment_review_required",
+    "name": "Finance – Draft Payment Review Required",
+    "description": "Notify finance role users when a client submits a draft payment for review and approval.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Action Required – Draft Payment Submitted by {{companyName}}",
+      "emailText": "A draft payment has been submitted and requires finance verification.\\n\\nClient Details:\\nCompany Name: {{companyName}}\\nClient Name: {{clientName}}\\nBuilding: {{buildingName}}\\n\\nPayment Details:\\nInvoice Number: {{invoiceNumber}}\\nAmount: ₹{{amount}}\\nPayment Mode: {{paymentMode}}\\nTransaction Reference: {{transactionReference}}\\nSubmission Date: {{submittedDate}}\\n\\nPlease review the submitted payment proof and approve or reject it from the OFIS SQUARE platform.\\n\\nRegards,\\nOFIS SQUARE System"
+    },
+    "category": "payments",
+    "tags": [
+      "finance",
+      "draft-payment",
+      "approval-required"
+    ],
+    "templateDesignId": {
+      "": "700000000000000000000001"
+    },
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://payments/drafts/{{draftPaymentId}}",
+        "route": "/payments/drafts/:id",
+        "routeParams": {
+          "id": "{{draftPaymentId}}"
+        },
+        "priority": "high",
+        "category": "payments",
+        "tags": [
+          "finance",
+          "review"
+        ]
       }
     }
   },
-  "tags": [
-    "draft",
-    "payment"
-  ],
-  "templateDesignId": {
-    "$oid": "700000000000000000000001"
-  }
-},
-{
-  "_id": {
-    "$oid": "6964d7681bba6d089f54d8ea"
-  },
-  "key": "senior_management_contract_approval",
-  "name": "Senior Management Approval",
-  "description": "Executive review required.",
-  "channels": {
-    "sms": false,
-    "email": true
-  },
-  "content": {
-    "emailSubject": "Subject: Executive Approval Required: Final Contract for {{companyName}}",
-    "emailText": "Dear {{managerName}},\\n\\nThe legal contract for {{companyName}} has been finalized and uploaded following the approval of the commercial terms. The file is now pending your executive review.\\n\\nClient Name: {{companyName}}\\nStatus: Legal Review Complete – Awaiting Senior Sign-off\\n\\nPlease access the Management Portal to authorize the contract.\\n\\nBest regards,\\nOperations Control OFIS SQUARE"
-  },
-  "category": "contracts",
-  "isActive": true,
-  "defaults": {
-    "metadata": {
-      "deepLink": "ofis://contracts/custom/{{contractId}}",
-      "route": "/contracts/custom/:id",
-      "priority": "normal",
-      "category": "contracts",
-      "tags": [
-        "senior-management",
-        "approval"
-      ],
-      "routeParams": {
-        "id": "{{contractId}}"
+  {
+    "key": "proforma_invoice_approval_required",
+    "name": "Pro Forma Invoice Approval Required",
+    "description": "Notification sent to finance team when a new pro forma invoice needs approval.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Approval Required – Pro Forma Invoice | {{buildingName}}",
+      "emailText": "Dear {{clientName}},\\n\\nA new Pro Forma Invoice for {{companyName}} at {{buildingName}} has been generated for the billing period {{billingPeriod}}.\\n\\nDetails:\\nPro Forma Number: {{proformaNumber}}\\nTotal Amount: ₹{{totalAmount}}\\nDue Date: {{dueDate}}\\nGenerated Date: {{generatedDate}}\\n\\nPlease review and approve the same via the OFIS SQUARE platform.\\n\\nBest regards,\\nSystem OFIS SQUARE"
+    },
+    "category": "billing",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://invoices/proforma/{{proformaId}}",
+        "route": "/invoices/proforma/:id",
+        "priority": "high",
+        "category": "billing",
+        "tags": [
+          "invoice",
+          "approval",
+          "proforma"
+        ],
+        "routeParams": {
+          "id": "{{proformaId}}"
+        }
       }
     }
   },
-  "tags": [
-    "senior-management",
-    "approval",
-    "contract"
-  ],
-  "templateDesignId": {
-    "$oid": "700000000000000000000001"
-  }
-},
-{
-  "_id": {
-    "$oid": "6964f08c1bba6d089f54d8f0"
-  },
-  "key": "rsvp_success",
-  "name": "RSVP Confirmation",
-  "description": "Event RSVP confirmation.",
-  "channels": {
-    "sms": true,
-    "email": true
-  },
-  "content": {
-    "sms": "RSVP for {{eventName}} confirmed.",
-    "emailSubject": "Subject: Confirmation: You’re on the Guest List for {{eventName}}!",
-    "emailText": "Dear {{memberName}},\\n\\nThank you for your RSVP! We are pleased to confirm your registration for our upcoming event, {{eventName}}.\\n\\nEvent: {{eventName}}\\nDate: {{eventDate}}\\nLocation: {{building}}\\n\\nPlease have your App ready upon arrival to check in. See you soon!\\n\\nBest regards,\\nCommunity Team OFIS SQUARE"
-  },
-  "category": "events",
-  "isActive": true,
-  "defaults": {
-    "metadata": {
-      "deepLink": "ofis://events/{{eventId}}",
-      "route": "/events/:id",
-      "priority": "normal",
-      "category": "events",
-      "tags": [
-        "rsvp",
-        "confirmation"
-      ],
-      "routeParams": {
-        "id": "{{eventId}}"
+  {
+    "key": "proforma_invoice_sent",
+    "name": "Pro Forma Invoice Sent to Client",
+    "description": "Notification sent to the client when a pro forma invoice is officially sent.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Pro Forma Invoice - {{buildingName}}",
+      "emailText": "Dear {{clientName}},\\n\\nPlease find attached the Pro Forma Invoice for your upcoming billing period at {{buildingName}}.\\n\\nSummary:\\nCompany: {{companyName}}\\nAmount: ₹{{totalAmount}}\\nDue Date: {{dueDate}}\\n\\nYou can also view and pay this online via the OFIS SQUARE app or portal.\\n\\nBest regards,\\nTeam OFIS SQUARE"
+    },
+    "category": "billing",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "deepLink": "ofis://invoices/proforma/{{proformaId}}",
+        "route": "/invoices/proforma/:id",
+        "priority": "normal",
+        "category": "billing",
+        "tags": [
+          "invoice",
+          "proforma",
+          "sent"
+        ]
       }
     }
   },
-  "tags": [
-    "rsvp",
-    "confirmation",
-    "event"
-  ],
-  "templateDesignId": {
-    "$oid": "700000000000000000000001"
-  }
-},
-{
-  "key": "community_ticket_created",
-  "name": "Community Ticket Created",
-  "description": "Notify community team of new ticket.",
-  "channels": {
-    "sms": false,
-    "email": true
-  },
-  "content": {
-    "emailSubject": "New Support Ticket Raised - {{buildingName}}",
-    "emailText": "{{greeting}}\\nDear Community Team,\\n\\nA new support ticket has been raised by {{memberName}} from {{buildingName}}.\\n\\nTicket Details:\\nID: {{ticketId}}\\nCategory: {{Category}}\\nPriority: {{priority}}\\nDescription: {{description}}\\n\\nYou can view and manage this ticket here: {{ctaLink}}\\n\\nBest regards,\\nOFIS SQUARE System"
-  },
-  "category": "tickets",
-  "isActive": true,
-  "templateDesignId": {
-    "": "700000000000000000000001"
-  }
-},
-{
-  "key": "ticket_assigned_to_user",
-  "name": "Ticket Assigned to User",
-  "description": "Notify user when a ticket is assigned to them.",
-  "channels": {
-    "sms": false,
-    "email": true
-  },
-  "content": {
-    "emailSubject": "Ticket Assigned to You: {{ticketId}}",
-    "emailText": "{{greeting}}\\nDear Team Member,\\n\\nA support ticket has been assigned/reassigned to you.\\n\\nTicket Details:\\nID: {{ticketId}}\\nBuilding: {{buildingName}}\\nCategory: {{category}}\\nPriority: {{priority}}\\nMember/Client: {{memberName}}\\n\\nDescription:\\n{{description}}\\n\\nPlease take the necessary action. View details here: {{ctaLink}}\\n\\nBest regards,\\nOFIS SQUARE Support"
-  },
-  "category": "tickets",
-  "isActive": true,
-  "templateDesignId": {
-    "": "700000000000000000000001"
-  }
-},
-{
-  "_id": {
-    "": "698c4fc5a927f74925aaef25"
-  },
-  "key": "visitor_scheduled_notify_host",
-  "name": "Visitor Scheduled – Notify Host",
-  "description": "Notification sent to host member informing them about scheduled visitor details.",
-  "channels": {
-    "sms": true,
-    "email": true
-  },
-  "content": {
-    "sms": "Visitor {{visitorName}} is scheduled to meet you on {{visitDate}} at {{visitTime}} at {{buildingName}}.",
-    "emailSubject": "Visitor Scheduled to Meet You – {{visitorName}} | {{visitDate}}",
-    "emailText": "Dear {{memberName}},\\n\\nA visitor has been scheduled to meet you at OFIS SQUARE.\\n\\nVisitor Details:\\nName: {{visitorName}}\\nCompany: {{visitorCompany}}\\nPurpose: {{purpose}}\\n\\nVisit Details:\\nBuilding: {{buildingName}}\\nDate: {{visitDate}}\\nTime: {{visitTime}}\\n\\nPlease ensure you are available at the scheduled time.\\n\\nYou will be notified again once the visitor arrives at reception.\\n\\nRegards,\\nTeam OFIS SQUARE"
-  },
-  "category": "visitors",
-  "tags": [
-    "visitor",
-    "scheduled",
-    "host"
-  ],
-  "isActive": true,
-  "defaults": {
-    "metadata": {
-      "deepLink": "ofis://visits",
-      "route": "/visits",
-      "routeParams": {},
-      "priority": "high",
-      "category": "visitors",
-      "tags": [
-        "visitor",
-        "scheduled"
-      ]
+  {
+    "key": "admin_invoice_batch_summary",
+    "name": "Admin Invoice Batch Summary",
+    "description": "Consolidated notification for System Admins summarizing a processed batch of invoices/estimates.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "[Admin] Monthly Invoice Pipeline Summary - {{date}}",
+      "emailText": "Dear Admin,\\n\\nThe monthly invoice pipeline has completed a batch operation.\\n\\nOperation Type: {{type}}\\nTotal Successful: {{count}}\\nTotal Errors: {{errorCount}}\\n\\nSummary Table:\\n{{summaryTable}}\\n\\nBest regards,\\nOFIS SQUARE System"
+    },
+    "category": "system",
+    "isActive": true,
+    "defaults": {
+      "metadata": {
+        "priority": "normal",
+        "category": "billing",
+        "tags": [
+          "admin",
+          "invoice-summary"
+        ]
+      }
     }
   },
-  "templateDesignId": {
-    "": "700000000000000000000001"
+  {
+    "key": "contract_comment_added",
+    "name": "Contract Comment Added",
+    "description": "Notification sent to stakeholders when a comment is added to a contract.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "New Comment on Contract #{{contractIdShort}}",
+      "emailText": "{{greeting}}\n\nNew Comment on Contract #{{contractIdShort}}\n\nClient: {{companyName}}\nStatus: {{status}}\nAdded by: {{addedBy}}\n\nComment: {{comment}}\n\nView the full contract details in your dashboard.",
+      "emailHtml": "<p><strong>Contract ID:</strong> #{{contractIdShort}}</p><p><strong>Client:</strong> {{companyName}}</p><p><strong>Status:</strong> {{status}}</p><p><strong>Added by:</strong> {{addedBy}}</p><div style=\"background: #f9f9f9; padding: 15px; border-left: 4px solid #FF8C00; margin: 15px 0;\"><p><strong>Comment:</strong></p><p>{{comment}}</p></div><p>View the full contract details in your dashboard.</p>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
+  },
+  {
+    "key": "contract_admin_approved",
+    "name": "Contract Admin Approved",
+    "description": "Notification sent to stakeholders when a contract is approved by an admin.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "✅ Contract Approved - #{{contractIdShort}}",
+      "emailText": "{{greeting}}\n\nGreat news! The contract #{{contractIdShort}} for {{companyName}} has been approved by admin.\n\nStatus: {{status}}\nApproved At: {{approvedAt}}\n\nNext Steps:\n- Send contract to client for review\n- Await client approval\n- Generate stamp paper after client approval",
+      "emailHtml": "<p>Great news! The contract has been approved by admin.</p><div style=\"background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 15px 0;\"><p><strong>Contract ID:</strong> #{{contractIdShort}}</p><p><strong>Client:</strong> {{companyName}}</p><p><strong>Status:</strong> {{status}}</p><p><strong>Approved At:</strong> {{approvedAt}}</p></div><p><strong>Next Steps:</strong></p><ul><li>Send contract to client for review</li><li>Await client approval</li><li>Generate stamp paper after client approval</li></ul>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
+  },
+  {
+    "key": "contract_client_review_request",
+    "name": "Contract Client Review Request",
+    "description": "Notification sent to the client when the contract is ready for their review.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Contract Ready for Your Review - Ofis Square",
+      "emailText": "{{greeting}}\n\nYour workspace contract is ready for your review and approval.\n\nContract Details:\nBuilding: {{building}}\nCapacity: {{peopleCount}} people\nMonthly Rent: ₹{{monthlyRent}}\nContract Period: {{startDate}} - {{endDate}}\n\nTo review and approve:\n1. Login to {{portalLink}}\n2. Navigate to the Contracts section\n3. Review and approve or provide feedback\n\nThank you,\nOfis Square Team",
+      "emailHtml": "<p>Your workspace contract is ready for your review and approval.</p><div style=\"background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 15px 0;\"><p><strong>Contract Details:</strong></p><p><strong>Building:</strong> {{building}}</p><p><strong>Capacity:</strong> {{peopleCount}} people</p><p><strong>Monthly Rent:</strong> ₹{{monthlyRent}}</p><p><strong>Contract Period:</strong> {{startDate}} - {{endDate}}</p></div><p><strong>To review and approve your contract:</strong></p><ol><li>Login to your client portal</li><li>Navigate to the Contracts section</li><li>Review the contract details</li><li>Approve or provide feedback</li></ol><div style=\"text-align: center; margin: 20px 0;\"><a href=\"{{portalLink}}\" style=\"background: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px;\">Login to Portal</a></div>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
+  },
+  {
+    "key": "contract_client_feedback_alert",
+    "name": "Contract Client Feedback Alert",
+    "description": "Notification sent to stakeholders when a client provides feedback on a contract.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "Client Feedback Received - Contract #{{contractIdShort}}",
+      "emailText": "{{greeting}}\n\nThe client has provided feedback on the contract #{{contractIdShort}}.\n\nClient Feedback:\n{{feedback}}\n\nAction Required:\n- Review the client's feedback\n- Make necessary changes to the contract\n- Re-send the contract to the client for approval",
+      "emailHtml": "<p>The client has provided feedback on the contract.</p><p><strong>Contract ID:</strong> #{{contractIdShort}}</p><p><strong>Client:</strong> {{companyName}}</p><div style=\"background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 15px 0;\"><p><strong>Client Feedback:</strong></p><p>{{feedback}}</p></div><p><strong>Action Required:</strong></p><ul><li>Review the client's feedback</li><li>Make necessary changes to the contract</li><li>Re-send the contract to the client for approval</li></ul>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
+  },
+  {
+    "key": "contract_sent_for_signature",
+    "name": "Contract Sent for Signature",
+    "description": "Notification sent to stakeholders when a contract is sent for e-signature.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "✍️ Contract Sent for E-Signature - #{{contractIdShort}}",
+      "emailText": "{{greeting}}\n\nThe contract for {{companyName}} has been sent for digital signature via Zoho Sign.\n\nContract Details:\nContract ID: #{{contractIdShort}}\nBuilding: {{building}}\nStatus: Awaiting Client Signature\nSent At: {{sentAt}}\n\nNext Steps:\n- Client will receive an email from Zoho Sign\n- Client will review and sign the document digitally\n- You will be notified once the contract is signed",
+      "emailHtml": "<p>The contract has been sent to the client for digital signature via Zoho Sign.</p><div style=\"background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 15px 0;\"><p><strong>Contract ID:</strong> #{{contractIdShort}}</p><p><strong>Client:</strong> {{companyName}}</p><p><strong>Building:</strong> {{building}}</p><p><strong>Status:</strong> Awaiting Client Signature</p><p><strong>Sent At:</strong> {{sentAt}}</p></div><p><strong>Next Steps:</strong></p><ul><li>Client will receive an email from Zoho Sign</li><li>Client will review and sign the document digitally</li><li>You will be notified once the contract is signed</li></ul>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
+  },
+  {
+    "key": "contract_signed_confirmation",
+    "name": "Contract Signed Confirmation",
+    "description": "Notification sent to stakeholders when a contract is signed by the client.",
+    "channels": {
+      "sms": false,
+      "email": true
+    },
+    "content": {
+      "emailSubject": "🎉 Contract Signed Successfully - #{{contractIdShort}}",
+      "emailText": "{{greeting}}\n\nCongratulations! The contract for {{companyName}} has been digitally signed and is now active.\n\nContract Details:\nContract ID: #{{contractIdShort}}\nBuilding: {{building}}\nStatus: Signed & Active\nSigned At: {{signedAt}}\n\nNext Steps:\n- Client onboarding can proceed\n- Workspace allocation can be finalized\n- Invoicing can be initiated",
+      "emailHtml": "<div style=\"background: #d4edda; color: #155724; padding: 10px; border-radius: 5px; text-align: center; margin: 15px 0; font-weight: bold;\">✅ Contract has been digitally signed by the client</div><div style=\"background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 15px 0;\"><p><strong>Contract ID:</strong> #{{contractIdShort}}</p><p><strong>Client:</strong> {{companyName}}</p><p><strong>Building:</strong> {{building}}</p><p><strong>Status:</strong> Signed & Active</p><p><strong>Signed At:</strong> {{signedAt}}</p></div><p><strong>Next Steps:</strong></p><ul><li>Contract is now legally binding and active</li><li>Client onboarding can proceed</li><li>Workspace allocation can be finalized</li><li>Invoicing can be initiated</li></ul><p>Congratulations on successfully closing this contract! 🎊</p>"
+    },
+    "category": "contracts",
+    "isActive": true,
+    "templateDesignId": "700000000000000000000001"
   }
-},
-{
-  "_id": {
-    "": "698c5c4da927f74925aaef38"
-  },
-  "key": "finance_draft_payment_review_required",
-  "name": "Finance – Draft Payment Review Required",
-  "description": "Notify finance role users when a client submits a draft payment for review and approval.",
-  "channels": {
-    "sms": false,
-    "email": true
-  },
-  "content": {
-    "emailSubject": "Action Required – Draft Payment Submitted by {{companyName}}",
-    "emailText": "A draft payment has been submitted and requires finance verification.\\n\\nClient Details:\\nCompany Name: {{companyName}}\\nClient Name: {{clientName}}\\nBuilding: {{buildingName}}\\n\\nPayment Details:\\nInvoice Number: {{invoiceNumber}}\\nAmount: ₹{{amount}}\\nPayment Mode: {{paymentMode}}\\nTransaction Reference: {{transactionReference}}\\nSubmission Date: {{submittedDate}}\\n\\nPlease review the submitted payment proof and approve or reject it from the OFIS SQUARE platform.\\n\\nRegards,\\nOFIS SQUARE System"
-  },
-  "category": "payments",
-  "tags": [
-    "finance",
-    "draft-payment",
-    "approval-required"
-  ],
-  "templateDesignId": {
-    "": "700000000000000000000001"
-  },
-  "isActive": true,
-  "defaults": {
-    "metadata": {
-      "deepLink": "ofis://payments/drafts/{{draftPaymentId}}",
-      "route": "/payments/drafts/:id",
-      "routeParams": {
-        "id": "{{draftPaymentId}}"
-      },
-      "priority": "high",
-      "category": "payments",
-      "tags": [
-        "finance",
-        "review"
-      ]
-    }
-  }
-}
 ]
