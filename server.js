@@ -22,6 +22,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, ".env") });
 
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -95,7 +102,7 @@ scheduleGstTokenRefresh();
 initializeScheduler();
 notificationScheduler.start();
 
-const PORT = process.env.PORT || 5001;
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Ofis Square Server running on http://localhost:${PORT}`);
+const port = process.env.PORT || 5001;
+httpServer.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 Ofis Square Server running on port ${port}`);
 });

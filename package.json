@@ -9,6 +9,9 @@
     "dev": "nodemon server.js",
     "setup": "node test-setup.js",
     "postinstall": "puppeteer browsers install chrome || true",
+    "engines": {
+      "node": "24.x"
+    },
     "check-db": "node check-roles.js",
     "define:project": "node scripts/project-definer.mjs"
   },
