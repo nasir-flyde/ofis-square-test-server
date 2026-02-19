@@ -8,7 +8,7 @@
     "start": "nodemon server.js",
     "dev": "nodemon server.js",
     "setup": "node test-setup.js",
-    "postinstall": "puppeteer browsers install chrome",
+    "postinstall": "puppeteer browsers install chrome || true",
     "check-db": "node check-roles.js",
     "define:project": "node scripts/project-definer.mjs"
   },
