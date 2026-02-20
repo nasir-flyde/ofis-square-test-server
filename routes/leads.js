@@ -21,7 +21,7 @@ import { PERMISSIONS } from "../constants/permissions.js";
 const router = express.Router();
 
 router.post("/signup", uploadKYCDocuments, handleUploadError, createLead);
-//ok
+
 router.get("/", authMiddleware, getLeads);
 router.get("/stats", authMiddleware, getLeadStats);
 router.get("/kyc/pending", authMiddleware, getPendingKYCLeads);
