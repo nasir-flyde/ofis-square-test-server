@@ -7,3 +7,4 @@ router.get('/states', getStates);
 router.get('/cities', getCities);
 
 export default router;
+//ok
