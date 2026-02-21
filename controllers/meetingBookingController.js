@@ -228,6 +228,10 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid start or end datetime. Provide as IST (e.g., YYYY-MM-DD HH:mm) or include timezone.' });
     }
 
+    const durationMinutes = (endDt - startDt) / 60000;
+    if (durationMinutes !== 60) {
+      return res.status(400).json({ success: false, message: "Booking time slot must be strictly 1 hour." });
+    }
     // Determine member/client/guest context (admin flow may not have a member)
     const currentMemberId = req.memberId || memberId || null;
     let clientId = null;

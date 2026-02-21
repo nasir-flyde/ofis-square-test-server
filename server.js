@@ -47,6 +47,7 @@ const corsOptions = {
     'http://localhost:5175',
     'https://ofis-square-admin.vercel.app',
     'https://ofis-square-frontend.vercel.app',
+    'https://ofissquare.generaltechworks.com',
     'https://ospl.generaltechworks.com',
     'https://ospl-admin.generaltechworks.com',
     'https://ospl-community.generaltechworks.com',

@@ -19,7 +19,7 @@ const meetingBookingSchema = new Schema(
     guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", index: true },
     invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
     payment: {
-      method: { type: String, enum: ["cash", "card", "credits","razorpay"], default: "cash" },
+      method: { type: String, enum: ["cash", "card", "credits", "razorpay"], default: "cash" },
       coveredCredits: { type: Number },
       extraCredits: { type: Number },
       overageAmount: { type: Number },
@@ -53,7 +53,7 @@ const meetingBookingSchema = new Schema(
   { timestamps: true, collection: "meeting_bookings" }
 );
 
-meetingBookingSchema.index({ room: 1, start: 1, end: 1 });
+meetingBookingSchema.index({ start: 1, end: 1, status: 1, room: 1 });
 // Ensure idempotency per external partner
 meetingBookingSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
 

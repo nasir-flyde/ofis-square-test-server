@@ -624,16 +624,27 @@ export const getAvailableRoomsByTime = async (req, res) => {
       }
     })();
 
+    const targetDateISTTime = targetDateIST.getTime();
+
     // Helper to decide if a slot.date belongs to the requested date
+    const memoizedDateSame = new Map();
     const isSameRequestedDate = (slotDate) => {
+      const strSlotDate = String(slotDate);
+      if (memoizedDateSame.has(strSlotDate)) return memoizedDateSame.get(strSlotDate);
+
       try {
         const isoYMD = new Date(slotDate).toISOString().slice(0, 10);
-        if (requestedYMD && isoYMD === requestedYMD) return true;
+        if (requestedYMD && isoYMD === requestedYMD) {
+          memoizedDateSame.set(strSlotDate, true);
+          return true;
+        }
       } catch (e) { }
       // Fallback to IST day match
       const slotDateIST = new Date(new Date(slotDate).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
       slotDateIST.setHours(0, 0, 0, 0);
-      return slotDateIST.getTime() === targetDateIST.getTime();
+      const isSame = slotDateIST.getTime() === targetDateISTTime;
+      memoizedDateSame.set(strSlotDate, isSame);
+      return isSame;
     };
 
     // If times provided, build Date objects in IST
@@ -658,43 +669,64 @@ export const getAvailableRoomsByTime = async (req, res) => {
       }
     }
 
-    // Build filter for meeting rooms
-    const roomFilter = { status: 'active' };
-    if (building) roomFilter.building = building;
-    if (minCapacity) roomFilter.capacity = { $gte: Number(minCapacity) };
-
-    // Get all active meeting rooms matching the filter
-    const allRooms = await MeetingRoom.find(roomFilter)
-      .populate('building', 'name address city')
-      .populate('amenities', 'name iconUrl')
-      .sort({ name: 1 });
+    // Build base filter for meeting rooms
+    const baseRoomFilter = { status: 'active' };
+    if (building) baseRoomFilter.building = building;
+    if (minCapacity) baseRoomFilter.capacity = { $gte: Number(minCapacity) };
 
     // Helper: check if time ranges overlap
     const timeRangesOverlap = (start1, end1, start2, end2) => start1 < end2 && end1 > start2;
 
-    // Helper: convert 12h time strings to 24h (kept from existing impl below)
+    // Helper: convert 12h time strings to 24h (memoized)
+    const timeConversionCache = new Map();
     const convertTo24Hour = (timeStr) => {
       if (!timeStr) return timeStr;
+      if (timeConversionCache.has(timeStr)) return timeConversionCache.get(timeStr);
+
       const isPM = timeStr.includes('PM');
       const isAM = timeStr.includes('AM');
-      if (!isPM && !isAM) return timeStr;
+      if (!isPM && !isAM) {
+        timeConversionCache.set(timeStr, timeStr);
+        return timeStr;
+      }
       const cleanTime = timeStr.replace(/\s*(AM|PM)\s*/i, '').trim();
       const [hourStr, minuteStr] = cleanTime.split(':');
       let hour = parseInt(hourStr);
       const minute = minuteStr || '00';
       if (isPM && hour !== 12) hour += 12;
       if (isAM && hour === 12) hour = 0;
-      return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      const result = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      timeConversionCache.set(timeStr, result);
+      return result;
+    };
+
+    // Helper: memoized blackout date check
+    const memoizedBlackoutCheck = new Map();
+    const isBlackoutDate = (blackoutDate) => {
+      const bStr = String(blackoutDate);
+      if (memoizedBlackoutCheck.has(bStr)) return memoizedBlackoutCheck.get(bStr);
+      const blackout = new Date(blackoutDate);
+      const blackoutIST = new Date(blackout.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      blackoutIST.setHours(0, 0, 0, 0);
+      const isBlackout = blackoutIST.getTime() === targetDateISTTime;
+      memoizedBlackoutCheck.set(bStr, isBlackout);
+      return isBlackout;
     };
 
     // Branch 1: Daily slots mode (only date provided)
     if (!timesProvided) {
+      const allRooms = await MeetingRoom.find(baseRoomFilter)
+        .populate('building', 'name address city')
+        .populate('amenities', 'name iconUrl')
+        .sort({ name: 1 })
+        .lean();
+
       // Fetch all bookings that overlap this date
       const bookingsForDay = await MeetingBooking.find({
         start: { $lt: dayEnd },
         end: { $gt: dayStart },
         status: { $in: ['booked', 'payment_pending'] }
-      }).select('room start end');
+      }).select('room start end').lean();
 
       // Group bookings by room
       const bookingsByRoom = new Map();
@@ -705,16 +737,11 @@ export const getAvailableRoomsByTime = async (req, res) => {
       }
 
       const roomsWithSlots = allRooms.map(room => {
-        const roomObj = room.toObject();
+        const roomObj = { ...room };
         roomObj.floor = formatFloorLabel(roomObj.floor);
 
         // Blackout or closed => no available slots
-        const isBlackout = room.blackoutDates?.some(blackoutDate => {
-          const blackout = new Date(blackoutDate);
-          const blackoutIST = new Date(blackout.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-          blackoutIST.setHours(0, 0, 0, 0);
-          return blackoutIST.getTime() === targetDateIST.getTime();
-        });
+        const isBlackout = room.blackoutDates?.some(isBlackoutDate) || false;
         const isClosed = !!room.isBookingClosed;
 
         // Filter reserved slots for this date only
@@ -794,34 +821,37 @@ export const getAvailableRoomsByTime = async (req, res) => {
     }
 
     // Branch 2: Original time-range availability mode
+    const totalRoomsCount = await MeetingRoom.countDocuments(baseRoomFilter);
+    const closedRoomsCount = await MeetingRoom.countDocuments({ ...baseRoomFilter, isBookingClosed: true });
+
     // Find all bookings that overlap with the requested time range
     const overlappingBookings = await MeetingBooking.find({
       start: { $lt: requestedEnd },
       end: { $gt: requestedStart },
       status: { $in: ['booked', 'payment_pending'] }
-    }).select('room start end');
+    }).select('room start end').lean();
 
-    // Create a set of booked room IDs
-    const bookedRoomIds = new Set(
-      overlappingBookings.map(booking => booking.room.toString())
-    );
+    // Create array of booked room IDs
+    const bookedRoomIdsArr = [...new Set(overlappingBookings.map(b => b.room.toString()))];
 
-    // Filter available rooms
-    const availableRooms = allRooms.filter(room => {
-      // Check if room is booking closed
-      if (room.isBookingClosed) return false;
+    // Push filtering to MongoDB (never load booked or closed rooms into Node.js memory)
+    const availableRoomsQueryFilter = {
+      ...baseRoomFilter,
+      isBookingClosed: { $ne: true },
+      _id: { $nin: bookedRoomIdsArr }
+    };
 
+    const availableRoomsRaw = await MeetingRoom.find(availableRoomsQueryFilter)
+      .populate('building', 'name address city')
+      .populate('amenities', 'name iconUrl')
+      .sort({ name: 1 })
+      .lean();
+
+    // Filter available rooms in JS for blackout dates & reserved slots
+    const availableRooms = availableRoomsRaw.filter(room => {
       // Check if date is in blackout dates
-      const isBlackout = room.blackoutDates?.some(blackoutDate => {
-        const blackout = new Date(blackoutDate);
-        const blackoutIST = new Date(blackout.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        blackoutIST.setHours(0, 0, 0, 0);
-        return blackoutIST.getTime() === targetDateIST.getTime();
-      });
+      const isBlackout = room.blackoutDates?.some(isBlackoutDate);
       if (isBlackout) return false;
-
-      // Check if room is already booked during this time
-      if (bookedRoomIds.has(room._id.toString())) return false;
 
       // Check if the requested time overlaps with any reserved slots for this date
       const hasReservedSlotConflict = room.reservedSlots?.some(slot => {
@@ -830,15 +860,9 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
         // Parse slot times in IST (handle both 12-hour and 24-hour formats)
         const parseTime = (timeStr) => {
-          const isPM = timeStr.includes('PM');
-          const isAM = timeStr.includes('AM');
-          const cleanTime = timeStr.replace(/\s*(AM|PM)\s*/i, '').trim();
-          const [hourStr, minuteStr] = cleanTime.split(':');
-          let hour = parseInt(hourStr);
-          const minute = parseInt(minuteStr);
-          if (isPM && hour !== 12) hour += 12;
-          if (isAM && hour === 12) hour = 0;
-          return { hour, minute };
+          const t24 = convertTo24Hour(timeStr);
+          const [hourStr, minuteStr] = t24.split(':');
+          return { hour: parseInt(hourStr), minute: parseInt(minuteStr) };
         };
 
         const slotStartTime = parseTime(slot.startTime);
@@ -859,29 +883,39 @@ export const getAvailableRoomsByTime = async (req, res) => {
       return true;
     });
 
-    // Get booked rooms with booking details
-    const bookedRooms = allRooms
-      .filter(room => bookedRoomIds.has(room._id.toString()))
-      .map(room => {
-        const bookings = overlappingBookings
-          .filter(b => b.room.toString() === room._id.toString())
-          .map(b => ({
-            start: b.start,
-            end: b.end,
-            bookingId: b._id
-          }));
+    // Separately fetch booked rooms without holding them in memory during availability JS calculations
+    const bookedRoomsQueryFilter = {
+      ...baseRoomFilter,
+      _id: { $in: bookedRoomIdsArr }
+    };
 
-        const roomObj = room.toObject();
-        roomObj.floor = formatFloorLabel(roomObj.floor);
-        return {
-          ...roomObj,
-          conflictingBookings: bookings
-        };
-      });
+    const bookedRoomsRaw = await MeetingRoom.find(bookedRoomsQueryFilter)
+      .populate('building', 'name address city')
+      .populate('amenities', 'name iconUrl')
+      .sort({ name: 1 })
+      .lean();
+
+    // Get booked rooms with booking details
+    const bookedRooms = bookedRoomsRaw.map(room => {
+      const bookings = overlappingBookings
+        .filter(b => b.room.toString() === room._id.toString())
+        .map(b => ({
+          start: b.start,
+          end: b.end,
+          bookingId: b._id
+        }));
+
+      const roomObj = { ...room };
+      roomObj.floor = formatFloorLabel(roomObj.floor);
+      return {
+        ...roomObj,
+        conflictingBookings: bookings
+      };
+    });
 
     // Convert reserved and available slot times to 24-hour format for available rooms
     const availableRoomsFormatted = availableRooms.map(room => {
-      const roomObj = room.toObject();
+      const roomObj = { ...room };
       roomObj.floor = formatFloorLabel(roomObj.floor);
       if (roomObj.reservedSlots && roomObj.reservedSlots.length > 0) {
         roomObj.reservedSlots = roomObj.reservedSlots
@@ -946,10 +980,10 @@ export const getAvailableRoomsByTime = async (req, res) => {
       },
       booked: bookedRoomsFormatted,
       summary: {
-        totalRooms: allRooms.length,
+        totalRooms: totalRoomsCount,
         availableCount: availableRooms.length,
         bookedCount: bookedRooms.length,
-        closedCount: allRooms.filter(r => r.isBookingClosed).length
+        closedCount: closedRoomsCount
       }
     });
   } catch (error) {

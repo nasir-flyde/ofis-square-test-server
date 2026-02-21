@@ -82,4 +82,6 @@ const meetingRoomSchema = new Schema(
   { timestamps: true, collection: "meeting_rooms" }
 );
 
+meetingRoomSchema.index({ building: 1, status: 1, capacity: 1 });
+
 export default mongoose.model("MeetingRoom", meetingRoomSchema);

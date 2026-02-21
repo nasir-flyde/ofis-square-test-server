@@ -1,0 +1,15 @@
+  -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+  -F "firstName=John" \
+  -F "lastName=Doe" \
+  -F "gender=male" \
+  -F "weight=75" \
+  -F "nationality=Indian" \
+  -F "medicalDeclaration=true" \
+  -F "docType=aadhaar" \
+  -F "docNumber=123456789012" \
+  -F "age=30" \
+  -F "kycFiles=@/path/to/your/document_front.jpg" \
+  -F "kycFiles=@/path/to/your/document_back
+
+.jpg"
+"A Monthly Pro Forma Invoice has been generated and requires approval before it can be shared with the client.\n\nClient Details:\nCompany Name: {{companyName}}\nClient Name: {{clientName}}\nBuilding: {{buildingName}}\nBilling Period: {{billingPeriod}}\n\nInvoice Details:\nPro Forma Invoice No: {{proformaNumber}}\nTotal Amount: ₹{{totalAmount}}\nDue Date: {{dueDate}}\nGenerated On: {{generatedDate}}\n\nPlease review the invoice line items, taxes, credits, and adjustments from the Admin Panel.\n\nOnce verified, approve and send the invoice to the client.\n\nRegards,\nOFIS SQUARE System",
