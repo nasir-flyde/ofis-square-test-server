@@ -617,14 +617,12 @@ export const getAvailableRoomsByTime = async (req, res) => {
         const [, yyyy, mm, dd] = String(date).match(yyyymmdd);
         return `${yyyy}-${mm}-${dd}`;
       }
-      try {
-        return new Date(String(date)).toISOString().slice(0, 10);
-      } catch (e) {
-        return undefined;
-      }
+      return undefined;
     })();
 
     const targetDateISTTime = targetDateIST.getTime();
+    const dayStartTime = dayStart.getTime();
+    const dayEndTime = dayEnd.getTime();
 
     // Helper to decide if a slot.date belongs to the requested date
     const memoizedDateSame = new Map();
@@ -650,6 +648,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // If times provided, build Date objects in IST
     let requestedStart = null;
     let requestedEnd = null;
+    let requestedStartTime = null;
+    let requestedEndTime = null;
     if (timesProvided) {
       const [startHour, startMinute] = startTime.split(':').map(Number);
       const [endHour, endMinute] = endTime.split(':').map(Number);
@@ -660,8 +660,11 @@ export const getAvailableRoomsByTime = async (req, res) => {
       requestedEnd = new Date(targetDateIST);
       requestedEnd.setHours(endHour, endMinute, 0, 0);
 
+      requestedStartTime = requestedStart.getTime();
+      requestedEndTime = requestedEnd.getTime();
+
       // Validate time range
-      if (requestedStart >= requestedEnd) {
+      if (requestedStartTime >= requestedEndTime) {
         return res.status(400).json({
           success: false,
           message: "End time must be after start time"
@@ -673,6 +676,13 @@ export const getAvailableRoomsByTime = async (req, res) => {
     const baseRoomFilter = { status: 'active' };
     if (building) baseRoomFilter.building = building;
     if (minCapacity) baseRoomFilter.capacity = { $gte: Number(minCapacity) };
+
+    // Scoped Room IDs if building is provided (to narrow index scans)
+    let buildingRoomIds = null;
+    if (building) {
+      const roomsInBuilding = await MeetingRoom.find({ building, status: 'active' }).select('_id').lean();
+      buildingRoomIds = roomsInBuilding.map(r => r._id);
+    }
 
     // Helper: check if time ranges overlap
     const timeRangesOverlap = (start1, end1, start2, end2) => start1 < end2 && end1 > start2;
@@ -716,17 +726,20 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // Branch 1: Daily slots mode (only date provided)
     if (!timesProvided) {
       const allRooms = await MeetingRoom.find(baseRoomFilter)
-        .populate('building', 'name address city')
+        .populate('building', 'name city') // Light population
         .populate('amenities', 'name iconUrl')
         .sort({ name: 1 })
         .lean();
 
       // Fetch all bookings that overlap this date
-      const bookingsForDay = await MeetingBooking.find({
+      const bookingQuery = {
         start: { $lt: dayEnd },
         end: { $gt: dayStart },
         status: { $in: ['booked', 'payment_pending'] }
-      }).select('room start end').lean();
+      };
+      if (buildingRoomIds) bookingQuery.room = { $in: buildingRoomIds };
+
+      const bookingsForDay = await MeetingBooking.find(bookingQuery).select('room start end').lean();
 
       // Group bookings by room
       const bookingsByRoom = new Map();
@@ -761,8 +774,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
         const parseSlotRange = (slot) => {
           const [sh, sm] = slot.startTime.split(':').map(Number);
           const [eh, em] = slot.endTime.split(':').map(Number);
-          const s = new Date(targetDateIST); s.setHours(sh, sm, 0, 0);
-          const e = new Date(targetDateIST); e.setHours(eh, em, 0, 0);
+          const s = targetDateISTTime + (sh * 3600000) + (sm * 60000); // Faster timestamp math
+          const e = targetDateISTTime + (eh * 3600000) + (em * 60000);
           return { s, e };
         };
 
@@ -770,12 +783,13 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
         availableSlots = availableSlots.filter(slot => {
           const { s, e } = parseSlotRange(slot);
-          // Remove if overlaps any reserved slot
-          if (reservedDateRanges.some(r => timeRangesOverlap(s, e, r.s, r.e))) return false;
+
+          // Numeric comparison is much faster than Date objects
+          if (reservedDateRanges.some(r => s < r.e && e > r.s)) return false;
 
           // Remove if overlaps any booking for this room on this date
           const roomBookings = bookingsByRoom.get(String(room._id)) || [];
-          if (roomBookings.some(b => timeRangesOverlap(s, e, b.start, b.end))) return false;
+          if (roomBookings.some(b => s < b.end.getTime() && e > b.start.getTime())) return false;
 
           return true;
         });
@@ -825,11 +839,14 @@ export const getAvailableRoomsByTime = async (req, res) => {
     const closedRoomsCount = await MeetingRoom.countDocuments({ ...baseRoomFilter, isBookingClosed: true });
 
     // Find all bookings that overlap with the requested time range
-    const overlappingBookings = await MeetingBooking.find({
+    const overlappingBookingQuery = {
       start: { $lt: requestedEnd },
       end: { $gt: requestedStart },
       status: { $in: ['booked', 'payment_pending'] }
-    }).select('room start end').lean();
+    };
+    if (buildingRoomIds) overlappingBookingQuery.room = { $in: buildingRoomIds };
+
+    const overlappingBookings = await MeetingBooking.find(overlappingBookingQuery).select('room start end').lean();
 
     // Create array of booked room IDs
     const bookedRoomIdsArr = [...new Set(overlappingBookings.map(b => b.room.toString()))];
@@ -842,7 +859,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     };
 
     const availableRoomsRaw = await MeetingRoom.find(availableRoomsQueryFilter)
-      .populate('building', 'name address city')
+      .populate('building', 'name city') // Light population
       .populate('amenities', 'name iconUrl')
       .sort({ name: 1 })
       .lean();
@@ -868,14 +885,12 @@ export const getAvailableRoomsByTime = async (req, res) => {
         const slotStartTime = parseTime(slot.startTime);
         const slotEndTime = parseTime(slot.endTime);
 
-        const slotStart = new Date(targetDateIST);
-        slotStart.setHours(slotStartTime.hour, slotStartTime.minute, 0, 0);
-
-        const slotEnd = new Date(targetDateIST);
-        slotEnd.setHours(slotEndTime.hour, slotEndTime.minute, 0, 0);
+        // Numeric comparison vs building new Date() objects in a loop
+        const s = targetDateISTTime + (slotStartTime.hour * 3600000) + (slotStartTime.minute * 60000);
+        const e = targetDateISTTime + (slotEndTime.hour * 3600000) + (slotEndTime.minute * 60000);
 
         // Check if requested time overlaps with this reserved slot
-        return timeRangesOverlap(requestedStart, requestedEnd, slotStart, slotEnd);
+        return requestedStartTime < e && requestedEndTime > s;
       });
 
       if (hasReservedSlotConflict) return false;
@@ -890,7 +905,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     };
 
     const bookedRoomsRaw = await MeetingRoom.find(bookedRoomsQueryFilter)
-      .populate('building', 'name address city')
+      .populate('building', 'name city') // Light population
       .populate('amenities', 'name iconUrl')
       .sort({ name: 1 })
       .lean();
