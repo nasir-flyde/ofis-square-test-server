@@ -36,7 +36,7 @@ const visitorSchema = new Schema(
     // Status tracking
     status: {
       type: String,
-      enum: ["invited", "pending_checkin", "approved", "checked_in", "checked_out", "cancelled", "no_show"],
+      enum: ["invited", "pending_checkin", "approved", "pending_host_approval", "checked_in", "checked_out", "cancelled", "no_show"],
       default: "invited",
       index: true
     },
@@ -134,9 +134,10 @@ visitorSchema.statics.findTodaysVisitors = function (date = new Date()) {
 // Static method to check valid transitions
 visitorSchema.statics.isValidTransition = function (currentStatus, newStatus) {
   const validTransitions = {
-    invited: ["pending_checkin", "checked_in", "cancelled", "no_show"],
+    invited: ["pending_checkin", "pending_host_approval", "checked_in", "cancelled", "no_show"],
     pending_checkin: ["approved", "cancelled"],
-    approved: ["checked_in", "cancelled"],
+    approved: ["pending_host_approval", "checked_in", "cancelled"],
+    pending_host_approval: ["checked_in", "cancelled"],
     checked_in: ["checked_out"],
     checked_out: [],
     cancelled: [],

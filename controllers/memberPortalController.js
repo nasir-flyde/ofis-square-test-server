@@ -9,6 +9,13 @@ import Contract from "../models/contractModel.js";
 import imagekit from "../utils/imageKit.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import Visitor from "../models/visitorModel.js";
+import User from "../models/userModel.js";
+import Client from "../models/clientModel.js";
+import BhaifiUser from "../models/bhaifiUserModel.js";
+import Building from "../models/buildingModel.js";
+import BhaifiNas from "../models/bhaifiNasModel.js";
+import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
+import { normalizePhoneToUserName, formatDateTime, endOfDayString } from "../controllers/bhaifiController.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -925,17 +932,28 @@ export const getHomePageData = async (req, res) => {
       .limit(5)
       .select('title content type isRead createdAt metadata');
 
-    // --- 4. Today's Meeting Room Bookings (for member) ---
+    // --- 4. Today's Meeting Room Bookings ---
     let bookingsToday = [];
     try {
-      if (!isClient && req.memberId) {
-        const rawBookings = await MeetingBooking.find({
+      let bookingQuery = null;
+      if (isClient && req.clientId) {
+        bookingQuery = {
+          client: req.clientId,
+          start: { $gte: today, $lte: endOfToday },
+          status: { $ne: 'cancelled' }
+        };
+      } else if (!isClient && req.memberId) {
+        bookingQuery = {
           member: req.memberId,
           start: { $gte: today, $lte: endOfToday },
           status: { $ne: 'cancelled' }
-        })
+        };
+      }
+
+      if (bookingQuery) {
+        const rawBookings = await MeetingBooking.find(bookingQuery)
           .populate('room', 'name images')
-          .select('room start end status');
+          .select('room start end status member client');
 
         const fmt = (d) => {
           try {
@@ -951,7 +969,9 @@ export const getHomePageData = async (req, res) => {
           start: b.start,
           end: b.end,
           slot: `${fmt(b.start)} - ${fmt(b.end)}`,
-          status: b.status
+          status: b.status,
+          bookedByMember: b.member,
+          bookedByClient: b.client
         }));
       }
     } catch (e) {
@@ -1032,6 +1052,170 @@ export const getMyVisitors = async (req, res) => {
     });
   } catch (err) {
     console.error("getMyVisitors error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+// Edit member profile with phone sync and Bhaifi integration
+export const editMember = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body || {};
+
+    // Handle fullName splitting if provided
+    if (updateData.fullName) {
+      const parts = String(updateData.fullName).trim().split(/\s+/);
+      if (parts.length > 0) {
+        updateData.firstName = parts[0];
+        updateData.lastName = parts.slice(1).join(" ") || "";
+      }
+    }
+
+    // Ensure gender is lowercase if provided
+    if (updateData.gender) {
+      updateData.gender = updateData.gender.toLowerCase();
+    }
+
+    const oldMember = await Member.findById(id).populate({
+      path: 'client',
+      select: 'building'
+    });
+    if (!oldMember) {
+      return res.status(404).json({ success: false, message: "Member not found" });
+    }
+
+    // Update the member record
+    const updatedMember = await Member.findByIdAndUpdate(id, updateData, { new: true, runValidators: true });
+
+    // Handle phone or email change and syncing
+    const phoneChanged = updateData.phone && updateData.phone !== oldMember.phone;
+    const emailChanged = updateData.email && updateData.email !== oldMember.email;
+
+    if (phoneChanged || emailChanged) {
+      const syncPayload = {};
+      if (phoneChanged) syncPayload.phone = updateData.phone;
+      if (emailChanged) syncPayload.email = updateData.email;
+
+      // 1. Sync to User record if linked
+      if (updatedMember.user) {
+        await User.findByIdAndUpdate(updatedMember.user, syncPayload);
+      }
+
+      // 2. Sync to Client record if member is a client role
+      const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+      const isClientRole = roleName === 'client' || roleName === 'clients';
+
+      if (isClientRole && updatedMember.client) {
+        await Client.findByIdAndUpdate(updatedMember.client, syncPayload);
+      }
+
+      // 3. Bhaifi integration (only if phone changed)
+      if (phoneChanged) {
+        try {
+          const oldUserName = normalizePhoneToUserName(oldMember.phone);
+          const newUserName = normalizePhoneToUserName(updateData.phone);
+
+          if (oldUserName && newUserName && oldUserName !== newUserName) {
+            // Resolve NAS IDs (Enterprise level)
+            let nasIds = [];
+            try {
+              const buildingId = updatedMember.client?.building || oldMember.client?.building;
+              if (buildingId) {
+                const bld = await Building.findById(buildingId).select('wifiAccess').lean();
+                const enterprise = bld?.wifiAccess?.enterpriseLevel || {};
+                const nasRefIds = Array.isArray(enterprise?.nasRefs) ? enterprise.nasRefs : [];
+                if (enterprise?.enabled && nasRefIds.length > 0) {
+                  const nasDocs = await BhaifiNas.find({ _id: { $in: nasRefIds }, isActive: true }).select('nasId').lean();
+                  const discoveredNasIds = nasDocs.map(d => d.nasId).filter(Boolean);
+                  if (discoveredNasIds.length > 0) nasIds = discoveredNasIds;
+                }
+              }
+            } catch (nasErr) {
+              console.warn("[BHAIFI] NAS discovery failed during editMember", nasErr.message);
+            }
+
+            for (const nasId of nasIds) {
+              // De-whitelist old phone
+              try {
+                await bhaifiDewhitelist({ nasId, userName: oldUserName });
+                await BhaifiUser.updateMany({ member: id, userName: oldUserName, nasId }, { $set: { status: "dewhitelisted" } });
+              } catch (deErr) {
+                // Ignore if not whitelisted
+              }
+
+              // Whitelist new phone
+              let bhaifiNew = await BhaifiUser.findOne({ member: id, userName: newUserName, nasId });
+
+              if (!bhaifiNew) {
+                try {
+                  const name = [updatedMember.firstName, updatedMember.lastName].filter(Boolean).join(" ") || updatedMember.companyName || "Member";
+                  const email = updatedMember.email;
+
+                  if (email) {
+                    const apiRes = await bhaifiCreateUser({ email, idType: 1, name, nasId, userName: newUserName });
+                    bhaifiNew = await BhaifiUser.create({
+                      member: id,
+                      client: updatedMember.client || null,
+                      email,
+                      name,
+                      userName: newUserName,
+                      nasId,
+                      bhaifiUserId: apiRes?.data?.id || apiRes?.data?.userId || null,
+                      status: "active",
+                      lastSyncAt: new Date(),
+                    });
+                  }
+                } catch (createErr) {
+                  const status = createErr?.response?.status;
+                  const msg = (createErr?.response?.data?.message || createErr?.message || '').toLowerCase();
+                  const isAlreadyExists = status === 409 || status === 400 || msg.includes('already exists') || msg.includes('duplicate');
+
+                  if (isAlreadyExists) {
+                    bhaifiNew = await BhaifiUser.create({
+                      member: id,
+                      client: updatedMember.client || null,
+                      email: updatedMember.email,
+                      name: [updatedMember.firstName, updatedMember.lastName].filter(Boolean).join(" "),
+                      userName: newUserName,
+                      nasId,
+                      status: "active",
+                      lastSyncAt: new Date(),
+                    });
+                  }
+                }
+              }
+
+              // Apply whitelisting
+              if (bhaifiNew) {
+                try {
+                  const contract = await Contract.findOne({ client: updatedMember.client, status: 'active' }).select('endDate');
+                  const startDate = formatDateTime(new Date());
+                  const endDate = contract?.endDate ? endOfDayString(new Date(contract.endDate)) : endOfDayString(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+
+                  await bhaifiWhitelist({ nasId, startDate, endDate, userName: newUserName });
+                  bhaifiNew.lastWhitelistedAt = new Date();
+                  bhaifiNew.status = "active";
+                  await bhaifiNew.save();
+                } catch (whiErr) {
+                  const msg = (whiErr?.response?.data?.message || whiErr?.message || '').toLowerCase();
+                  if (msg.includes('already whitelisted') || msg.includes('already exists')) {
+                    bhaifiNew.lastWhitelistedAt = new Date();
+                    bhaifiNew.status = "active";
+                    await bhaifiNew.save();
+                  }
+                }
+              }
+            }
+          }
+        } catch (bhaifiErr) {
+          console.warn("[BHAIFI] Integration error during editMember", bhaifiErr.message);
+        }
+      }
+    }
+
+    res.json({ success: true, message: "Member updated successfully", data: updatedMember });
+  } catch (err) {
+    console.error("editMember error:", err);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };

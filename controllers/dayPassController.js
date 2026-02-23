@@ -65,7 +65,21 @@ const reserveDailyCapacity = async (buildingDoc, date, session) => {
 // Create single day pass (not from bundle)
 export const createSingleDayPass = async (req, res) => {
   try {
-    const { customerId, memberId, buildingId, notes, bookingFor, visitDate, inventoryId } = req.body;
+    let { customerId, memberId, buildingId, notes, bookingFor, visitDate, inventoryId } = req.body;
+
+    // Automate customerId from token if not provided
+    if (!customerId && req.user) {
+      if (req.user.guestId) {
+        customerId = req.user.guestId;
+      } else if (req.user.memberId) {
+        customerId = req.user.memberId;
+      }
+    }
+
+    // Automate memberId from token if not provided
+    if (!memberId && req.user && req.user.memberId) {
+      memberId = req.user.memberId;
+    }
 
     if (!customerId || !buildingId) {
       return res.status(400).json({

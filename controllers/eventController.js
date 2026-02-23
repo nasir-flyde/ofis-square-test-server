@@ -16,7 +16,8 @@ const createEvent = async (req, res) => {
       startDate,
       endDate,
       location,
-      capacity
+      capacity,
+      speakers
     } = req.body;
 
     // Validate required fields
@@ -114,9 +115,11 @@ const createEvent = async (req, res) => {
       location: {
         building: location?.building && location.building.trim() !== '' ? location.building : undefined,
         room: location?.room && location.room.trim() !== '' ? location.room : undefined,
-        address: location?.address || undefined
+        address: location?.address || undefined,
+        googleMapLink: location?.googleMapLink || undefined
       },
       capacity: capacity || 0,
+      speakers: speakers || [],
       thumbnail: thumbnailUrl,
       mainImage: mainImageUrl,
       createdBy: req.user.id,
@@ -787,11 +790,12 @@ const updateEvent = async (req, res) => {
       cleanedUpdates.location = {
         building: cleanedUpdates.location.building && cleanedUpdates.location.building.trim() !== '' ? cleanedUpdates.location.building : undefined,
         room: cleanedUpdates.location.room && cleanedUpdates.location.room.trim() !== '' ? cleanedUpdates.location.room : undefined,
-        address: cleanedUpdates.location.address || undefined
+        address: cleanedUpdates.location.address || undefined,
+        googleMapLink: cleanedUpdates.location.googleMapLink || undefined
       };
     }
 
-    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'thumbnail', 'mainImage'];
+    const allowedUpdates = ['title', 'description', 'category', 'startDate', 'endDate', 'location', 'capacity', 'thumbnail', 'mainImage', 'speakers'];
     allowedUpdates.forEach(field => {
       if (cleanedUpdates[field] !== undefined) {
         event[field] = cleanedUpdates[field];
@@ -800,8 +804,8 @@ const updateEvent = async (req, res) => {
 
     await event.save();
 
-    // Log activity with proper before/after comparison
-    await logCRUDActivity(req, 'UPDATE', 'Event', event._id, {
+    // Log activity
+    await logCRUDActivity(req.user.id, 'UPDATE', 'Event', event._id, {
       before: {
         title: oldData.title,
         description: oldData.description,

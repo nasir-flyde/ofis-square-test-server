@@ -15,7 +15,7 @@ import loggedRazorpay from "../utils/loggedRazorpay.js";
 // Create a new day pass bundle
 export const createDayPassBundle = async (req, res) => {
   try {
-    const {
+    let {
       customerId,
       memberId,
       buildingId,
@@ -27,6 +27,20 @@ export const createDayPassBundle = async (req, res) => {
       datesSelf = [],
       datesOther = []
     } = req.body;
+
+    // Automate customerId from token if not provided
+    if (!customerId && req.user) {
+      if (req.user.guestId) {
+        customerId = req.user.guestId;
+      } else if (req.user.memberId) {
+        customerId = req.user.memberId;
+      }
+    }
+
+    // Automate memberId from token if not provided
+    if (!memberId && req.user && req.user.memberId) {
+      memberId = req.user.memberId;
+    }
 
     if (!customerId || !buildingId || !no_of_dayPasses) {
       return res.status(400).json({

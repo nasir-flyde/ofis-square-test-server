@@ -15,7 +15,9 @@ import {
   requestCheckin,
   requestCheckinNew,
   approveCheckin,
-  getPendingCheckinRequests
+  getPendingCheckinRequests,
+  acceptVisitor,
+  declineVisitor
 } from "../controllers/visitorController.js";
 
 
@@ -41,5 +43,7 @@ router.patch("/:id/checkout", checkoutVisitor);
 router.patch("/:id/cancel", cancelVisitor);
 router.post("/:id/request-checkin", requestCheckin);
 router.post("/:id/approve-checkin", approveCheckin);
+router.patch("/:id/accept", acceptVisitor);
+router.patch("/:id/decline", declineVisitor);
 
 export default router;

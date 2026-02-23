@@ -1570,7 +1570,8 @@ export const handleRazorpaySuccess = async (req, res) => {
       const booking = await MeetingBooking.findById(meetingBookingId)
         .populate('invoice')
         .populate({ path: 'member', select: 'client' })
-        .populate({ path: 'client', select: 'companyName zohoBooksContactId' });
+        .populate({ path: 'client', select: 'companyName zohoBooksContactId' })
+        .populate({ path: 'room', populate: { path: 'building' } });
 
       if (!booking) {
         return res.status(404).json({ error: "Meeting booking not found" });
@@ -2006,6 +2007,20 @@ export const handleRazorpaySuccess = async (req, res) => {
         status: "completed"
       }
     };
+
+    if (meetingBookingId && item?.room) {
+      const startStr = new Date(item.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+      const endStr = new Date(item.end).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+
+      response.meetingDetails = {
+        buildingName: item.room.building?.name || "N/A",
+        buildingAddress: item.room.building?.address || "N/A",
+        bookingDate: item.start ? new Date(item.start).toISOString().slice(0, 10) : "N/A",
+        bookingTime: `${startStr} - ${endStr}`,
+        capacity: item.room.capacity || "N/A",
+        amount: payment.amount
+      };
+    }
 
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
     res.json(response);

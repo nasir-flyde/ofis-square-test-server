@@ -11,6 +11,8 @@ import {
   getPendingKYCLeads,
   uploadKYCByAdmin,
   searchGuests,
+  updateLeadPurpose,
+  updateLeadDetails,
 } from "../controllers/leadController.js";
 import { uploadKYCDocuments, handleUploadError } from "../middlewares/uploadMiddleware.js";
 import authMiddleware from "../middlewares/authVerify.js";
@@ -20,13 +22,15 @@ import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
-router.post("/signup", uploadKYCDocuments, handleUploadError, createLead);
+router.post("/signup", authMiddleware, createLead);
 
 router.get("/", authMiddleware, getLeads);
 router.get("/stats", authMiddleware, getLeadStats);
 router.get("/kyc/pending", authMiddleware, getPendingKYCLeads);
 router.get("/guests/search", authMiddleware, searchGuests);
 router.get("/:id", authMiddleware, getLeadById);
+router.put("/purpose", authMiddleware, updateLeadPurpose);
+router.put("/details", authMiddleware, updateLeadDetails);
 router.put("/:id", authMiddleware, updateLead);
 router.delete("/:id", authMiddleware, deleteLead);
 router.put("/:id/kyc/upload", authMiddleware, uploadKYCDocuments, handleUploadError, uploadKYCByAdmin);

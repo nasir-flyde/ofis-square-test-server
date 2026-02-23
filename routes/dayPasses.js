@@ -24,7 +24,7 @@ import hostMiddleware from "../middlewares/hostMiddleware.js";
 
 const router = express.Router();
 
-router.post("/single", createSingleDayPass);
+router.post("/single", authMiddleware, createSingleDayPass);
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
 router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
 router.post("/:dayPassId/issue", issueDayPassManual);
@@ -32,7 +32,7 @@ router.get("/user/:customerId", getUserDayPasses);
 router.get("/:dayPassId", getDayPassDetails);
 
 // Bundle Routes
-router.post("/bundles", createDayPassBundle);
+router.post("/bundles", authMiddleware, createDayPassBundle);
 router.get("/bundles/user/:customerId", getUserBundles);
 router.get("/bundles/:bundleId", getBundleDetails);
 router.put("/bundles/:bundleId/cancel", cancelBundle);

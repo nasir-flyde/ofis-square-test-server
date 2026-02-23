@@ -26,6 +26,7 @@ import memberRoutes from "./members.js";
 import memberPortalRoutes from "./memberPortal.js";
 import userRoutes from "./users.js";
 import communityRoutes from "./community.js";
+import tourRoutes from "./tourRoutes.js";
 import webhookRoutes from "./webhooks.js";
 import creditRoutes from "./credits.js";
 import activityLogsRoutes from "./activityLogs.js";
@@ -59,6 +60,8 @@ import guestsRoutes from "./guests.js";
 import commonAreasRoutes from "./commonAreas.js";
 import templateDesignRoutes from "./templateDesigns.js";
 import migrationRoutes from "./migration.js";
+import cityRoutes from "./cityRoutes.js";
+import appNotificationsRoutes from "./appNotifications.js";
 
 const router = express.Router();
 
@@ -123,4 +126,7 @@ router.use("/proforma-invoices", estimatesRoutes);
 router.use("/estimates", estimatesRoutes);
 router.use("/partner/myhq", partnerMyhqRoutes);
 router.use("/migration", migrationRoutes);
+router.use("/cities", cityRoutes);
+router.use("/tours", tourRoutes);
+router.use("/appnotifications", appNotificationsRoutes);
 export default router;

@@ -8,7 +8,7 @@ import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../service
 
 const getEnvNasId = () => process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1";
 
-const normalizePhoneToUserName = (phone) => {
+export const normalizePhoneToUserName = (phone) => {
   if (!phone) return null;
   let p = String(phone).replace(/\D/g, "");
   // Remove leading zeros
@@ -25,7 +25,7 @@ const normalizePhoneToUserName = (phone) => {
   return `91${p}`;
 };
 
-const formatDateTime = (d) => {
+export const formatDateTime = (d) => {
   const pad = (n) => String(n).padStart(2, '0');
   const year = d.getFullYear();
   const month = pad(d.getMonth() + 1);
@@ -36,13 +36,13 @@ const formatDateTime = (d) => {
   return `${year}-${month}-${day} ${hour}:${min}:${sec}`;
 };
 
-const endOfDayString = (d) => {
+export const endOfDayString = (d) => {
   const dd = new Date(d);
   dd.setHours(23, 59, 59, 0);
   return formatDateTime(dd);
 };
 
-const normalizeToDateTimeString = (input) => {
+export const normalizeToDateTimeString = (input) => {
   if (!input) return null;
   if (Object.prototype.toString.call(input) === '[object Date]') {
     return formatDateTime(input);

@@ -1,4 +1,5 @@
 import Notification from "../models/notificationModel.js";
+import AppNotification from "../models/appNotificationModel.js";
 import mongoose from "mongoose";
 
 import { getSMSProvider } from "../services/notifications/smsProvider.js";
@@ -239,26 +240,70 @@ export const getNotifications = async (req, res) => {
 
     // Execute query with pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const [notifications, total] = await Promise.all([
+
+    // Fetch from both models
+    const [standardNotifications, appNotifications] = await Promise.all([
       Notification.find(query)
         .populate('to.userId', 'name email')
         .populate('to.memberId', 'name email')
         .populate('to.clientId', 'companyName email')
         .populate('createdBy', 'name email')
         .sort(sort)
-        .skip(skip)
-        .limit(parseInt(limit)),
-      Notification.countDocuments(query)
+        .skip(0) // Fetch all potential candidates for in-memory merging if limit is small
+        .limit(parseInt(limit) + skip),
+      AppNotification.find({
+        $or: [
+          { title: query.title || { $exists: true } },
+          { message: q ? { $regex: q, $options: 'i' } : { $exists: true } }
+        ],
+        ...(type ? { type } : {}),
+        ...(memberId ? { targetMemberIds: memberId } : {}),
+        ...(createdFrom || createdTo ? {
+          createdAt: {
+            ...(createdFrom ? { $gte: new Date(createdFrom) } : {}),
+            ...(createdTo ? { $lte: new Date(createdTo) } : {})
+          }
+        } : {})
+      })
+        .populate('createdBy', 'name email')
+        .sort(sort)
+        .limit(parseInt(limit) + skip)
     ]);
+
+    // Format app notifications to match standard notification structure
+    const formattedAppNotifications = appNotifications.map(app => ({
+      ...app.toObject(),
+      isAppNotification: true,
+      content: {
+        smsText: app.message,
+        emailSubject: app.title,
+        emailHtml: `<p>${app.message}</p>`
+      }
+    }));
+
+    // Combine and sort
+    const allNotifications = [...standardNotifications, ...formattedAppNotifications]
+      .sort((a, b) => {
+        const dateA = new Date(a.createdAt);
+        const dateB = new Date(b.createdAt);
+        return sort.startsWith('-') ? dateB - dateA : dateA - dateB;
+      });
+
+    // Paginate manually
+    const paginatedNotifications = allNotifications.slice(skip, skip + parseInt(limit));
+    const total = await Notification.countDocuments(query) + await AppNotification.countDocuments({
+      ...(type ? { type } : {}),
+      ...(memberId ? { targetMemberIds: memberId } : {})
+    });
 
     const baseResponse = {
       success: true,
-      data: notifications,
+      data: paginatedNotifications,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / parseInt(limit)),
         totalRecords: total,
-        hasMore: skip + notifications.length < total
+        hasMore: skip + paginatedNotifications.length < total
       }
     };
 

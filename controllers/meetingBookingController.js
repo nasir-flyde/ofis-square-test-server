@@ -229,8 +229,8 @@ export const createBooking = async (req, res) => {
     }
 
     const durationMinutes = (endDt - startDt) / 60000;
-    if (durationMinutes !== 60) {
-      return res.status(400).json({ success: false, message: "Booking time slot must be strictly 1 hour." });
+    if (durationMinutes < 30) {
+      return res.status(400).json({ success: false, message: "Booking time slot must be at least 30 minutes." });
     }
     // Determine member/client/guest context (admin flow may not have a member)
     const currentMemberId = req.memberId || memberId || null;

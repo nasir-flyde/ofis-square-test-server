@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const { Schema } = mongoose;
 
 const EventSchema = new Schema({
-  title: { type: String, required: true }, 
+  title: { type: String, required: true },
   description: { type: String },
   category: { type: Schema.Types.ObjectId, ref: "EventCategory" },
 
@@ -14,20 +14,27 @@ const EventSchema = new Schema({
   location: {
     building: { type: Schema.Types.ObjectId, ref: "Building" },   // optional
     room: { type: Schema.Types.ObjectId, ref: "MeetingRoom" },    // optional
-    address: { type: String }                                     // for external venue
+    address: { type: String },                                     // for external venue
+    googleMapLink: { type: String }
   },
+
+  speakers: [{
+    name: { type: String },
+    image: { type: String },
+    attendees: { type: String }
+  }],
 
   capacity: { type: Number, default: 0 }, // 0 = unlimited
   rsvps: [{ type: Schema.Types.ObjectId, ref: "Member" }],
   attendance: [{ type: Schema.Types.ObjectId, ref: "Member" }],
- 
+
   status: { type: String, enum: ["draft", "published", "completed", "cancelled"], default: "draft" },
 
   // Image fields
   thumbnail: { type: String }, // ImageKit URL for thumbnail image
   mainImage: { type: String }, // ImageKit URL for main/banner image
 
-  createdBy: { type: Schema.Types.ObjectId, ref: "User" }, 
+  createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -41,23 +48,23 @@ EventSchema.path('endDate').validate(function (value) {
 }, 'endDate must be after startDate');
 
 // Update timestamp on save
-EventSchema.pre('save', function(next) {
+EventSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
 
 // Virtual for RSVP count
-EventSchema.virtual('rsvpCount').get(function() {
+EventSchema.virtual('rsvpCount').get(function () {
   return this.rsvps ? this.rsvps.length : 0;
 });
 
 // Virtual for attendance count
-EventSchema.virtual('attendanceCount').get(function() {
+EventSchema.virtual('attendanceCount').get(function () {
   return this.attendance ? this.attendance.length : 0;
 });
 
 // Virtual for availability check
-EventSchema.virtual('isAvailable').get(function() {
+EventSchema.virtual('isAvailable').get(function () {
   if (this.capacity === 0) return true; // unlimited capacity
   return this.rsvpCount < this.capacity;
 });

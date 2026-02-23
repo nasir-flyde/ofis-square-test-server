@@ -6,7 +6,7 @@ const BuildingSchema = new Schema(
   {
     name: { type: String, required: true },
     address: { type: String, required: true },
-    city: { type: String, required: true },
+    city: { type: Schema.Types.ObjectId, ref: "City", required: true },
     state: { type: String },
     country: { type: String, default: "India" },
     pincode: { type: String },

@@ -7,63 +7,141 @@ import { logActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import { createContact } from "../utils/zohoBooks.js";
 import mongoose from "mongoose";
+import { createAccessToken } from "../middlewares/createJwtRefresh.js";
 
-// Helper to safely extract Zoho contact_id from different response shapes
-const extractZohoContactId = (resp) => {
+// Helper for on-demand onboarding
+const onboardOnDemandUser = async (lead) => {
   try {
-    return (
-      resp?.contact?.contact_id ||
-      resp?.data?.contact?.contact_id ||
-      resp?.data?.contact_id ||
-      resp?.contact_id ||
-      null
-    );
-  } catch {
-    return null;
-  }
-};
+    const ondemandRole = await Role.findOne({ roleName: 'ondemanduser' });
+    let userDoc = await User.findOne({ email: lead.email });
+    let defaultPassword = '123456';
 
-// Create a new lead from signup form
-export const createLead = async (req, res) => {
-  try {
-    const { firstName, lastName, companyName, address, pincode, email, phone, numberOfEmployees, purpose } = req.body;
-    let guestIdLocal = null;
+    const leadName = lead.fullName || `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "New Lead";
 
-    // Check if lead already exists with same email or phone
-    const existingLead = await Lead.findOne({
-      $or: [
-        { email: email.toLowerCase() },
-        { phone: phone.replace(/\D/g, '') }
-      ]
-    });
-
-    if (existingLead) {
-      return res.status(400).json({
-        message: "A lead with this email or phone number already exists",
-        leadId: existingLead._id
+    if (!userDoc && ondemandRole) {
+      userDoc = await User.create({
+        name: leadName,
+        email: lead.email,
+        phone: lead.phone,
+        password: defaultPassword,
+        role: ondemandRole._id,
       });
     }
 
-    // Create new lead
+    let guestDoc = await Guest.findOne({ email: lead.email });
+    if (!guestDoc) {
+      guestDoc = await Guest.create({
+        name: leadName,
+        email: lead.email,
+        phone: lead.phone,
+        companyName: lead.companyName,
+        cityId: lead.city,
+        user: userDoc?._id,
+        purpose: lead.purpose,
+        notes: `Auto-created from website signup (purpose: ${lead.purpose})`,
+        ...(lead.kycDocuments ? { kycDocuments: lead.kycDocuments } : {}),
+        ...(lead.kycStatus ? { kycStatus: lead.kycStatus } : {}),
+      });
+    } else {
+      // Update existing guest record with new data
+      guestDoc.cityId = lead.city;
+      guestDoc.user = userDoc?._id;
+      guestDoc.purpose = lead.purpose;
+      if (lead.companyName) guestDoc.companyName = lead.companyName;
+      if (lead.kycDocuments) guestDoc.kycDocuments = lead.kycDocuments;
+      if (lead.kycStatus) guestDoc.kycStatus = lead.kycStatus;
+      await guestDoc.save();
+    }
+
+    if (!guestDoc.zohoBooksContactId) {
+      try {
+        const zohoPayload = {
+          contact_name: leadName,
+          company_name: lead.companyName,
+          contact_type: 'customer',
+          customer_sub_type: 'individual',
+          notes: `${lead.purpose} user - Auto-created from website signup`,
+          billing_address: {
+            address: lead.address,
+            zip: lead.pincode,
+          },
+          contact_persons: [
+            {
+              contact_name: leadName,
+              email: lead.email,
+              phone: lead.phone,
+              mobile: lead.phone,
+              is_primary_contact: true,
+            },
+          ],
+        };
+        const zohoResp = await createContact(zohoPayload);
+        const contactId = zohoResp?.contact?.contact_id;
+        if (contactId) {
+          guestDoc.zohoBooksContactId = contactId;
+          await guestDoc.save();
+          lead.zohoBooksContactId = contactId;
+        }
+      } catch (zErr) {
+        console.warn('Zoho contact creation failed:', zErr?.message);
+      }
+    } else {
+      lead.zohoBooksContactId = guestDoc.zohoBooksContactId;
+    }
+
+    lead.userCreated = true;
+    lead.createdUserId = userDoc?._id;
+    lead.guestId = guestDoc?._id;
+    await lead.save();
+
+    return { userDoc, guestDoc };
+  } catch (err) {
+    console.warn('On-demand onboarding failed:', err.message);
+    throw err;
+  }
+};
+
+// Create a new lead from signup form (Step 1)
+export const createLead = async (req, res) => {
+  try {
+    const {
+      fullName, companyName, email, city, purpose
+    } = req.body;
+    let leadId = req.user._id;
+
+    if (!leadId) {
+      return res.status(401).json({ message: "Unauthorized mapping to lead" });
+    }
+
+    // Update existing lead (auto-created by OTP)
     const leadData = {
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      companyName: companyName.trim(),
-      address: address.trim(),
-      pincode: pincode.trim(),
-      email: email.toLowerCase().trim(),
-      phone: phone.replace(/\D/g, ''),
-      numberOfEmployees: parseInt(numberOfEmployees),
-      purpose: purpose.trim(),
+      fullName: fullName?.trim(),
+      companyName: companyName?.trim(),
+      email: email ? email.toLowerCase().trim() : undefined,
+      city: city || undefined,
+      purpose: purpose?.trim(),
       status: 'new',
       source: 'website_signup'
     };
+
+    // Remove undefined fields
+    Object.keys(leadData).forEach(key => leadData[key] === undefined && delete leadData[key]);
+
+    const lead = await Lead.findByIdAndUpdate(
+      leadId,
+      { $set: leadData },
+      { new: true, runValidators: true }
+    );
+
+    if (!lead) {
+      return res.status(404).json({ message: "Lead record not found" });
+    }
 
     // Handle KYC documents for day pass users (upload to ImageKit)
     if (purpose === 'day_pass' && req.files && req.files.length > 0) {
       try {
         const uploadedUrls = [];
-        
+
         for (const file of req.files) {
           const uploadResult = await imagekit.upload({
             file: file.buffer.toString('base64'),
@@ -72,11 +150,12 @@ export const createLead = async (req, res) => {
           });
           uploadedUrls.push(uploadResult.url);
         }
-        
-        leadData.kycDocuments = {
+
+        lead.kycDocuments = {
           files: uploadedUrls
         };
-        leadData.kycStatus = 'pending';
+        lead.kycStatus = 'pending';
+        await lead.save();
       } catch (uploadError) {
         console.error('KYC document upload error:', uploadError);
         return res.status(500).json({
@@ -86,99 +165,21 @@ export const createLead = async (req, res) => {
       }
     }
 
-    // Auto-onboard (create ondemand user, Guest, and Zoho contact) at signup for day_pass leads
-    if (purpose === 'day_pass') {
+    // Trigger onboarding after save if needed
+    if ((lead.purpose === 'day_pass' || lead.purpose === 'ondemand') && !lead.userCreated) {
       try {
-        // Ensure ondemand user exists
-        const ondemandRole = await Role.findOne({ roleName: 'ondemanduser' });
-        let userDoc = await User.findOne({ email: leadData.email });
-        let defaultPassword = '123456';
-        if (!userDoc && ondemandRole) {
-          userDoc = await User.create({
-            name: `${leadData.firstName} ${leadData.lastName}`.trim(),
-            email: leadData.email,
-            phone: leadData.phone,
-            password: defaultPassword,
-            role: ondemandRole._id,
-          });
-        }
-
-        // Ensure Guest exists
-        let guestDoc = await Guest.findOne({ email: leadData.email });
-        if (!guestDoc) {
-          guestDoc = await Guest.create({
-            name: `${leadData.firstName} ${leadData.lastName}`.trim(),
-            email: leadData.email,
-            phone: leadData.phone,
-            companyName: leadData.companyName,
-            notes: 'Auto-created from website signup (day_pass)',
-            ...(leadData.kycDocuments ? { kycDocuments: leadData.kycDocuments } : {}),
-            ...(leadData.kycStatus ? { kycStatus: leadData.kycStatus } : {}),
-          });
-        }
-        guestIdLocal = guestDoc?._id;
-
-        // Ensure Zoho contact exists and persist on guest + lead
-        if (!guestDoc.zohoBooksContactId) {
-          try {
-            const zohoPayload = {
-              contact_name: `${leadData.firstName} ${leadData.lastName}`.trim(),
-              company_name: leadData.companyName,
-              contact_type: 'customer',
-              customer_sub_type: 'individual',
-              notes: 'Day pass user - Auto-created from website signup',
-              billing_address: {
-                address: leadData.address,
-                zip: leadData.pincode,
-              },
-              contact_persons: [
-                {
-                  first_name: leadData.firstName,
-                  last_name: leadData.lastName,
-                  email: leadData.email,
-                  phone: leadData.phone,
-                  mobile: leadData.phone,
-                  is_primary_contact: true,
-                },
-              ],
-            };
-            const zohoResp = await createContact(zohoPayload);
-            const contactId = extractZohoContactId(zohoResp);
-            if (contactId) {
-              guestDoc.zohoBooksContactId = contactId;
-              await guestDoc.save();
-              leadData.zohoBooksContactId = contactId;
-            }
-          } catch (zErr) {
-            // Non-blocking
-            console.warn('Zoho contact creation at signup failed:', zErr?.message || zErr);
-          }
-        } else {
-          leadData.zohoBooksContactId = guestDoc.zohoBooksContactId;
-        }
-
-        if (userDoc) {
-          leadData.userCreated = true;
-          leadData.createdUserId = userDoc._id;
-        }
-
-        if (guestIdLocal) {
-          leadData.guestId = guestIdLocal;
-        }
+        await onboardOnDemandUser(lead);
       } catch (onboardErr) {
-        console.warn('On-demand auto-onboarding failed at signup:', onboardErr?.message || onboardErr);
+        console.warn('Post-save onboarding failed:', onboardErr.message);
       }
     }
 
-    const lead = new Lead(leadData);
-    await lead.save();
-
     // Log activity
     await logActivity({
-      action: 'CREATE',
+      action: 'UPDATE',
       entity: 'lead',
       entityId: lead._id,
-      description: `New lead created from website signup: ${lead.fullName} (${lead.email})`,
+      description: `Lead updated from website signup: ${lead.fullName} (${lead.email || 'no email'})`,
       source: 'website_signup',
       metadata: {
         leadData: {
@@ -189,19 +190,11 @@ export const createLead = async (req, res) => {
       }
     });
 
-    res.status(201).json({
-      message: purpose === 'day_pass' 
-        ? "Lead created successfully. KYC documents submitted for review."
-        : "Lead created successfully",
-      lead: {
-        id: lead._id,
-        fullName: lead.fullName,
-        email: lead.email,
-        companyName: lead.companyName,
-        status: lead.status,
-        kycStatus: lead.kycStatus
-      },
-      ...(guestIdLocal ? { guestId: guestIdLocal } : {})
+    res.status(200).json({
+      message: purpose === 'day_pass'
+        ? "Lead updated successfully. KYC documents submitted for review."
+        : "Lead updated successfully",
+      lead
     });
   } catch (error) {
     console.error("Error creating lead:", error);
@@ -225,15 +218,14 @@ export const getLeads = async (req, res) => {
     } = req.query;
 
     const filter = {};
-    
+
     if (status) {
       filter.status = status;
     }
 
     if (search) {
       filter.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } },
         { companyName: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } }
@@ -251,6 +243,7 @@ export const getLeads = async (req, res) => {
         .populate('convertedToClient', 'companyName email')
         .populate('kycApprovedBy', 'name email')
         .populate('createdUserId', 'name email role')
+        .populate('city', 'name state')
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
@@ -284,7 +277,8 @@ export const getLeadById = async (req, res) => {
     }
     const lead = await Lead.findById(id)
       .populate('assignedTo', 'name email')
-      .populate('convertedToClient', 'companyName email');
+      .populate('convertedToClient', 'companyName email')
+      .populate('city', 'name state');
 
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
@@ -319,7 +313,8 @@ export const updateLead = async (req, res) => {
       { ...updates, lastContactedAt: new Date() },
       { new: true, runValidators: true }
     ).populate('assignedTo', 'name email')
-     .populate('convertedToClient', 'companyName email');
+      .populate('convertedToClient', 'companyName email')
+      .populate('city', 'name state');
 
     if (!lead) {
       return res.status(404).json({ message: "Lead not found" });
@@ -700,7 +695,7 @@ export const uploadKYCByAdmin = async (req, res) => {
 
     try {
       const uploadedUrls = [];
-      
+
       for (const file of req.files) {
         const uploadResult = await imagekit.upload({
           file: file.buffer.toString('base64'),
@@ -709,20 +704,20 @@ export const uploadKYCByAdmin = async (req, res) => {
         });
         uploadedUrls.push(uploadResult.url);
       }
-      
+
       // Update or create kycDocuments
       if (!lead.kycDocuments) {
         lead.kycDocuments = { files: [] };
       }
-      
+
       // Append new files to existing ones
       lead.kycDocuments.files = [...(lead.kycDocuments.files || []), ...uploadedUrls];
-      
+
       // Auto-approve when admin uploads
       lead.kycStatus = 'approved';
       lead.kycApprovedBy = userId;
       lead.kycApprovedAt = new Date();
-      
+
       await lead.save();
 
       // Sync uploaded KYC documents and approval to Guest as well
@@ -823,13 +818,13 @@ export const uploadKYCByAdmin = async (req, res) => {
                 newGuest.zohoBooksContactId = contactId;
                 await newGuest.save();
               }
-            } catch (_) {}
+            } catch (_) { }
           }
         } catch (zohoError) {
           console.error('Error creating Zoho contact:', zohoError);
           // Don't fail the upload if Zoho sync fails
         }
-        
+
         lead.userCreated = true;
         lead.createdUserId = newUser._id;
         await lead.save();
@@ -891,12 +886,12 @@ export const searchGuests = async (req, res) => {
     const q = String(search || '').trim();
     const where = q
       ? {
-          $or: [
-            { name: { $regex: q, $options: 'i' } },
-            { email: { $regex: q, $options: 'i' } },
-            { phone: { $regex: q, $options: 'i' } },
-          ],
-        }
+        $or: [
+          { name: { $regex: q, $options: 'i' } },
+          { email: { $regex: q, $options: 'i' } },
+          { phone: { $regex: q, $options: 'i' } },
+        ],
+      }
       : {};
     const guests = await Guest.find(where)
       .select('name email phone zohoBooksContactId')
@@ -905,5 +900,166 @@ export const searchGuests = async (req, res) => {
   } catch (error) {
     console.error('searchGuests error:', error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Update lead purpose (Step 2 of signup)
+export const updateLeadPurpose = async (req, res) => {
+  try {
+    const { purpose } = req.body;
+    let leadId = null;
+
+    if (req.user.roleName === 'lead') {
+      leadId = req.user._id;
+    } else {
+      // Find lead by email or phone if it's a user logged in
+      const lead = await Lead.findOne({
+        $or: [
+          ...(req.user.email ? [{ email: req.user.email }] : []),
+          { phone: req.user.phone }
+        ]
+      });
+      if (lead) leadId = lead._id;
+    }
+
+    if (!leadId) {
+      return res.status(404).json({ message: "Lead record not found" });
+    }
+
+    const lead = await Lead.findByIdAndUpdate(
+      leadId,
+      { $set: { purpose } },
+      { new: true, runValidators: true }
+    );
+
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    let onboardingResult = null;
+    // Check for onboarding if purpose is newly set to day_pass or ondemand
+    if ((lead.purpose === 'day_pass' || lead.purpose === 'ondemand') && !lead.userCreated) {
+      try {
+        onboardingResult = await onboardOnDemandUser(lead);
+      } catch (onboardErr) {
+        console.warn('Update onboarding failed:', onboardErr.message);
+      }
+    }
+
+    // Log activity
+    await logActivity({
+      action: 'UPDATE',
+      entity: 'lead',
+      entityId: lead._id,
+      description: `Lead purpose updated (Step 2): ${lead.fullName} -> ${purpose}`,
+      metadata: { purpose }
+    });
+
+    const response = {
+      message: "Lead purpose updated successfully",
+      lead
+    };
+
+    // If a user was created, generate a new token
+    if (onboardingResult && onboardingResult.userDoc) {
+      const { userDoc, guestDoc } = onboardingResult;
+      const accessToken = createAccessToken(
+        userDoc._id.toString(),
+        userDoc.email,
+        userDoc.role.toString(),
+        'ondemanduser',
+        userDoc.phone,
+        null, // clientId
+        null, // memberId
+        null, // buildingId
+        null, // allowedUsingCredits
+        guestDoc?._id?.toString()
+      );
+      response.accessToken = accessToken;
+      response.token = accessToken;
+      response.user = userDoc;
+      response.roleName = 'ondemanduser';
+    }
+
+    res.json(response);
+  } catch (error) {
+    console.error("Error updating lead purpose:", error);
+    res.status(500).json({
+      message: "Failed to update lead purpose",
+      error: error.message
+    });
+  }
+};
+
+// Update lead detailed requirements (Step 3 of signup)
+export const updateLeadDetails = async (req, res) => {
+  try {
+    const {
+      whatAreYouLookingFor,
+      workingAs,
+      kindOfWork,
+      budget,
+      industry,
+      numberOfEmployees
+    } = req.body;
+    let leadId = null;
+
+    if (req.user.roleName === 'lead') {
+      leadId = req.user._id;
+    } else {
+      // Find lead by email or phone if it's a user logged in
+      const lead = await Lead.findOne({
+        $or: [
+          ...(req.user.email ? [{ email: req.user.email }] : []),
+          { phone: req.user.phone }
+        ]
+      });
+      if (lead) leadId = lead._id;
+    }
+
+    if (!leadId) {
+      return res.status(404).json({ message: "Lead record not found" });
+    }
+
+    const updateData = {
+      whatAreYouLookingFor,
+      workingAs,
+      kindOfWork,
+      budget,
+      industry,
+      numberOfEmployees: numberOfEmployees ? parseInt(numberOfEmployees) : undefined
+    };
+
+    // Remove undefined fields
+    Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
+
+    const lead = await Lead.findByIdAndUpdate(
+      leadId,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
+
+    if (!lead) {
+      return res.status(404).json({ message: "Lead not found" });
+    }
+
+    // Log activity
+    await logActivity({
+      action: 'UPDATE',
+      entity: 'lead',
+      entityId: lead._id,
+      description: `Lead requirements updated (Step 3): ${lead.fullName}`,
+      metadata: { updateData }
+    });
+
+    res.json({
+      message: "Lead requirements updated successfully",
+      lead
+    });
+  } catch (error) {
+    console.error("Error updating lead requirements:", error);
+    res.status(500).json({
+      message: "Failed to update lead requirements",
+      error: error.message
+    });
   }
 };

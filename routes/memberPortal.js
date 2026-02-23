@@ -12,7 +12,8 @@ import {
   getMyNotifications,
   markNotificationRead,
   markAllNotificationsRead,
-  getMyVisitors
+  getMyVisitors,
+  editMember
 } from "../controllers/memberPortalController.js";
 
 const router = express.Router();
@@ -28,6 +29,7 @@ router.get("/me/home", universalMiddleware, getHomePageData);
 router.get("/me", universalMiddleware, getMyProfile);
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
+router.put("/me/edit/:id", universalMiddleware, editMember);
 
 
 

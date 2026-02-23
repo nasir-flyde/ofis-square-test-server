@@ -8,6 +8,8 @@ import QRCode from "qrcode";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
 import { sendNotification } from "../utils/notificationHelper.js";
+import AppNotification from "../models/appNotificationModel.js";
+import { sendPushNotification } from "./appNotificationsController.js";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
@@ -741,9 +743,10 @@ export const checkinVisitor = async (req, res) => {
 
     const oldStatus = visitor.status;
     const checkInTimestamp = checkInTime ? new Date(checkInTime) : new Date();
-    visitor.status = 'checked_in';
-    visitor.checkInTime = checkInTimestamp;
-    visitor.checkInMethod = 'manual';
+
+    // Change: Transition to pending_host_approval instead of checked_in
+    visitor.status = 'pending_host_approval';
+    visitor.checkinRequestedAt = checkInTimestamp;
     visitor.processedByCheckin = req.user?.id;
 
     if (badgeId?.trim()) {
@@ -755,12 +758,34 @@ export const checkinVisitor = async (req, res) => {
     }
 
     await visitor.save();
-    await createAuditLog(visitor._id, "CHECKIN", oldStatus, "checked_in", req.user?.id, notes);
+    await createAuditLog(visitor._id, "CHECKIN_REQUEST_START", oldStatus, "pending_host_approval", req.user?.id, notes);
 
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Send App Notification to Host
+    try {
+      const hostMemberId = visitor.hostMember?._id;
+      if (hostMemberId) {
+        const appNote = new AppNotification({
+          title: "Visitor Alert",
+          message: `${visitor.name} is waiting for you at the desk`,
+          type: "auto",
+          targetMemberIds: [hostMemberId],
+          triggerEvent: "visitor_arrival"
+        });
+        await appNote.save();
+        await sendPushNotification({ memberId: hostMemberId }, {
+          _id: appNote._id,
+          title: appNote.title,
+          message: appNote.message
+        });
+      }
+    } catch (noteErr) {
+      console.warn('checkinVisitor: failed to send app notification:', noteErr?.message || noteErr);
+    }
 
     // Notify host about guest arrival
     try {
@@ -795,7 +820,7 @@ export const checkinVisitor = async (req, res) => {
     res.json({
       success: true,
       data: visitor,
-      message: "Visitor checked in successfully"
+      message: "Check-in request sent to host"
     });
 
   } catch (error) {
@@ -914,18 +939,41 @@ export const scanQRCode = async (req, res) => {
     }
 
     const oldStatus = visitor.status;
-    visitor.status = 'checked_in';
-    visitor.checkInTime = new Date();
+    // Change: Transition to pending_host_approval instead of checked_in
+    visitor.status = 'pending_host_approval';
+    visitor.checkinRequestedAt = new Date();
     visitor.checkInMethod = 'qr';
     visitor.processedByCheckin = req.user?.id;
 
     await visitor.save();
-    await createAuditLog(visitor._id, "QR_CHECKIN", oldStatus, "checked_in", req.user?.id, "Checked in via QR scan");
+    await createAuditLog(visitor._id, "QR_CHECKIN_REQUEST", oldStatus, "pending_host_approval", req.user?.id, "Checked in via QR scan, waiting for host approval");
 
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
       { path: 'building', select: 'name address' }
     ]);
+
+    // Send App Notification to Host
+    try {
+      const hostMemberId = visitor.hostMember?._id;
+      if (hostMemberId) {
+        const appNote = new AppNotification({
+          title: "Visitor Alert",
+          message: `${visitor.name} is waiting for you at the desk`,
+          type: "auto",
+          targetMemberIds: [hostMemberId],
+          triggerEvent: "visitor_arrival"
+        });
+        await appNote.save();
+        await sendPushNotification({ memberId: hostMemberId }, {
+          _id: appNote._id,
+          title: appNote.title,
+          message: appNote.message
+        });
+      }
+    } catch (noteErr) {
+      console.warn('scanQRCode: failed to send app notification:', noteErr?.message || noteErr);
+    }
 
     // Notify host about guest arrival
     try {
@@ -960,7 +1008,7 @@ export const scanQRCode = async (req, res) => {
     res.json({
       success: true,
       data: visitor,
-      message: "Visitor checked in successfully via QR code"
+      message: "Check-in request sent to host via QR"
     });
 
   } catch (error) {
@@ -1125,17 +1173,66 @@ export const markNoShows = async () => {
   }
 };
 
-export const getallpendings = async () => {
+export const acceptVisitor = async (req, res) => {
   try {
-    const visitors = Visitor.find({
-      status: "pending_checkin"
-    })
-    res.json({
-      success: true,
-      data: visitors,
-    });
+    const { id } = req.params;
+    const memberId = req.user?.memberId;
+
+    if (!memberId) {
+      return res.status(401).json({ success: false, message: "Member authentication required" });
+    }
+
+    const visitor = await Visitor.findOne({ _id: id, hostMember: memberId, deletedAt: null });
+    if (!visitor) {
+      return res.status(404).json({ success: false, message: "Visitor not found or you are not the host" });
+    }
+
+    if (visitor.status !== 'pending_host_approval') {
+      return res.status(400).json({ success: false, message: `Cannot accept visitor with status: ${visitor.status}` });
+    }
+
+    const oldStatus = visitor.status;
+    visitor.status = 'checked_in';
+    visitor.checkInTime = new Date();
+    await visitor.save();
+
+    await createAuditLog(visitor._id, "HOST_ACCEPTED", oldStatus, "checked_in", memberId, "Host accepted visitor");
+
+    res.json({ success: true, message: "Visitor accepted and checked in", data: visitor });
+  } catch (error) {
+    console.error("Accept visitor error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
-  catch (error) {
-    res.status(404).json({ success: false, message: "no vistors found" })
+};
+
+export const declineVisitor = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const memberId = req.user?.memberId;
+
+    if (!memberId) {
+      return res.status(401).json({ success: false, message: "Member authentication required" });
+    }
+
+    const visitor = await Visitor.findOne({ _id: id, hostMember: memberId, deletedAt: null });
+    if (!visitor) {
+      return res.status(404).json({ success: false, message: "Visitor not found or you are not the host" });
+    }
+
+    if (visitor.status !== 'pending_host_approval') {
+      return res.status(400).json({ success: false, message: `Cannot decline visitor with status: ${visitor.status}` });
+    }
+
+    const oldStatus = visitor.status;
+    visitor.status = 'cancelled';
+    visitor.cancelReason = "Declined by host";
+    await visitor.save();
+
+    await createAuditLog(visitor._id, "HOST_DECLINED", oldStatus, "cancelled", memberId, "Host declined visitor");
+
+    res.json({ success: true, message: "Visitor declined", data: visitor });
+  } catch (error) {
+    console.error("Decline visitor error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
-}
+};

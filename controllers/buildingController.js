@@ -11,6 +11,7 @@ export const exportBuildings = async (req, res) => {
     if (city) filter.city = city;
 
     const buildings = await Building.find(filter)
+      .populate('city', 'name')
       .populate('amenities', 'name')
       .populate('dayPassMatrixPolicyId', 'name')
       .populate('wifiAccess.enterpriseLevel.nasRefs', 'name ip')
@@ -326,6 +327,7 @@ export const getBuildings = async (req, res) => {
     if (city) filter.city = city;
 
     const buildings = await Building.find(filter)
+      .populate('city', 'name')
       .populate('amenities', 'name icon iconUrl description')
       .sort({ createdAt: -1 });
 
@@ -339,6 +341,7 @@ export const getBuildingById = async (req, res) => {
   try {
     const { id } = req.params;
     const building = await Building.findById(id)
+      .populate('city', 'name')
       .populate('amenities', 'name icon iconUrl description');
 
     if (!building) {

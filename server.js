@@ -92,9 +92,14 @@ app.use("/api/gst", gstRoutes);
 app.use("/api/bank-details", bankDetailsRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+import { initCache } from "./utils/cache.js";
+
 mongoose
   .connect(process.env.MONGODB_URI || "mongodb+srv://nasir-flyde:Nsa%4019786@ofis-square-db.xaajgtt.mongodb.net/ofis-test")
-  .then(() => console.log("✅ MongoDB Connected DB"))
+  .then(async () => {
+    console.log("✅ MongoDB Connected DB");
+    await initCache();
+  })
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
 app.get("/", (req, res) => {

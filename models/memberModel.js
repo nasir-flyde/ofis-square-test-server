@@ -20,6 +20,10 @@ const memberSchema = new Schema(
     matrixExternalUserId: { type: String, trim: true },
     bhaifiUser: { type: Schema.Types.ObjectId, ref: "BhaifiUser", default: null, index: true },
     bhaifiUserName: { type: String, trim: true },
+    fcmTokens: [{
+      type: String,
+      trim: true
+    }],
   },
   { timestamps: true, collection: "members" }
 );

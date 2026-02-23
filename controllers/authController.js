@@ -6,9 +6,11 @@ import { createAccessToken, createRefreshToken, generateTokenFamily } from "../m
 import { storeRefreshToken, validateRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllUserTokens, getDeviceInfo } from "../utils/refreshTokenService.js";
 import { generateAuthTokens } from "../utils/authHelpers.js";
 import mongoose from "mongoose";
+import ActivityLog from "../models/activityLogModel.js";
 import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
 import Guest from "../models/guestModel.js";
+import Lead from "../models/leadModel.js";
 import Building from "../models/buildingModel.js";
 import { logAuthActivity, logCRUDActivity } from "../utils/activityLogger.js";
 
@@ -679,25 +681,45 @@ export const sendMemberClientOtp = async (req, res) => {
     }
 
     // Find user by phone
-    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
-    if (!user) {
-      return res.status(404).json({ error: "User not found for this phone number" });
+    let user = await Users.findOne({ phone: normalizedPhone }).populate('role');
+    let lead = await Lead.findOne({ phone: normalizedPhone });
+
+    if (!user && !lead) {
+      // Auto-create lead if neither user nor lead found
+      try {
+        lead = await Lead.create({
+          phone: normalizedPhone,
+          fullName: "",
+          isPhoneVerified: false,
+          source: 'otp_login_auto_create',
+          status: 'new'
+        });
+      } catch (createErr) {
+        console.error('Failed to auto-create lead in OTP flow:', createErr.message);
+        return res.status(500).json({ error: "Failed to create lead record" });
+      }
     }
 
-    const role = user.role;
-    if (!role) {
-      return res.status(404).json({ error: "User role not found" });
-    }
+    let roleName = null;
+    let role = null;
+    if (user) {
+      role = user.role;
+      if (!role) {
+        return res.status(404).json({ error: "User role not found" });
+      }
+      roleName = (role.roleName || "").toLowerCase();
 
-    const roleName = (role.roleName || "").toLowerCase();
+      // Check if role is member, client, or ondemanduser
+      if (roleName !== "member" && roleName !== "client" && roleName !== "ondemanduser") {
+        return res.status(403).json({ error: "Access denied. Only member, client, and on-demand accounts are allowed." });
+      }
 
-    // Check if role is member or client
-    if (roleName !== "member" && roleName !== "client") {
-      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
-    }
-
-    if (role.canLogin === false) {
-      return res.status(403).json({ error: "Role is not allowed to login" });
+      if (role.canLogin === false) {
+        return res.status(403).json({ error: "Role is not allowed to login" });
+      }
+    } else {
+      // It's a lead only
+      roleName = 'lead';
     }
 
     // Import OTP model and SMS service dynamically
@@ -712,11 +734,35 @@ export const sendMemberClientOtp = async (req, res) => {
     // Clear existing OTPs for this phone
     await OTP.deleteMany({ phone: normalizedPhone });
     await OTP.create({
-      email: user.email,
+      email: user?.email || lead?.email,
       phone: normalizedPhone,
       otp,
       expiresAt
     });
+
+    // Only manage lead record if no user exists or if they are not a full member/client
+    if (roleName !== 'member' && roleName !== 'client') {
+      try {
+        const fullName = user?.name || lead?.fullName || "";
+
+        lead = await Lead.findOneAndUpdate(
+          { phone: normalizedPhone },
+          {
+            $set: {
+              phone: normalizedPhone,
+              isPhoneVerified: false,
+              email: user?.email || lead?.email,
+              fullName,
+              source: 'otp_login_auto_create'
+            }
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+      } catch (leadErr) {
+        console.warn('Failed to create/update lead record in OTP flow:', leadErr.message);
+        // Non-blocking
+      }
+    }
 
     // Send SMS
     const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
@@ -740,8 +786,9 @@ export const sendMemberClientOtp = async (req, res) => {
     return res.status(200).json({
       message: "OTP sent successfully",
       phone: normalizedPhone,
-      userId: user._id,
-      roleName: role.roleName
+      userId: user?._id || null,
+      leadId: lead?._id || null,
+      roleName: roleName || 'lead'
     });
 
   } catch (error) {
@@ -792,34 +839,78 @@ export const verifyMemberClientOtp = async (req, res) => {
       return res.status(400).json({ error: "Invalid OTP" });
     }
 
-    // Find user and populate role
+    // Find user and lead
     const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+    let lead = await Lead.findOne({ phone: normalizedPhone });
+
+    if (!user && !lead) {
+      return res.status(404).json({ error: "Neither user nor lead found" });
     }
 
-    const role = user.role;
-    if (!role) {
-      return res.status(404).json({ error: "User role not found" });
+    let role = null;
+    let roleName = "";
+
+    if (user) {
+      role = user.role;
+      if (!role) {
+        return res.status(404).json({ error: "User role not found" });
+      }
+
+      roleName = (role.roleName || "").toLowerCase();
+
+      // Check if role is member, client, or ondemanduser
+      if (roleName !== "member" && roleName !== "client" && roleName !== "ondemanduser") {
+        return res.status(403).json({ error: "Access denied. Only member, client, and on-demand accounts are allowed." });
+      }
+
+      // Mark phone as verified in User model
+      await Users.updateOne({ _id: user._id }, { isPhoneVerified: true });
     }
 
-    const roleName = (role.roleName || "").toLowerCase();
-
-    // Check if role is member or client
-    if (roleName !== "member" && roleName !== "client") {
-      return res.status(403).json({ error: "Access denied. Only member and client accounts are allowed." });
+    // Mark phone as verified in Lead model
+    if (lead) {
+      try {
+        await Lead.updateOne({ _id: lead._id }, { isPhoneVerified: true });
+        // Refresh lead object
+        lead = await Lead.findById(lead._id);
+      } catch (leadUpdateErr) {
+        console.warn('Failed to update lead verification status:', leadUpdateErr.message);
+      }
     }
-
-    // Mark phone as verified
-    await Users.updateOne({ _id: user._id }, { isPhoneVerified: true });
 
     // Delete used OTP
     await OTP.deleteOne({ _id: otpRecord._id });
+
+    if (!user) {
+      // Create a token for the lead
+      const accessToken = jwt.sign(
+        {
+          id: lead._id,
+          phone: normalizedPhone,
+          roleName: 'lead',
+          isNewUser: true
+        },
+        process.env.JWT_SECRET || "ofis-square-secret-key",
+        { expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "1d" }
+      );
+
+      return res.status(200).json({
+        message: "Phone verified successfully (Lead)",
+        phone: normalizedPhone,
+        leadId: lead._id,
+        accessToken,
+        token: accessToken,
+        isNewUser: true,
+        isPhoneVerified: true,
+        roleName: 'lead'
+      });
+    }
 
     let clientId = null;
     let memberId = null;
     let allowedUsingCredits = undefined;
 
+    let guestId = null;
     if (roleName === "client") {
       // Handle client login
       const client = await Client.findOne({
@@ -874,6 +965,17 @@ export const verifyMemberClientOtp = async (req, res) => {
       memberId = member._id.toString();
       clientId = member.client._id.toString();
       allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+    } else if (roleName === "ondemanduser") {
+      // Handle ondemanduser login
+      const guest = await Guest.findOne({
+        $or: [
+          { email: user.email },
+          { phone: user.phone }
+        ]
+      });
+      if (guest) {
+        guestId = guest._id.toString();
+      }
     }
 
     // Generate both access and refresh tokens
@@ -881,7 +983,7 @@ export const verifyMemberClientOtp = async (req, res) => {
       user,
       role,
       req,
-      { clientId, memberId, buildingId: undefined, allowedUsingCredits }
+      { clientId, memberId, buildingId: undefined, allowedUsingCredits, guestId }
     );
 
     const safeUser = {
@@ -1142,6 +1244,7 @@ export const refreshAccessToken = async (req, res) => {
     let buildingId = null;
     let allowedUsingCredits = undefined;
 
+    let guestId = null;
     if (roleName === "client") {
       const client = await Client.findOne({
         $or: [
@@ -1180,7 +1283,7 @@ export const refreshAccessToken = async (req, res) => {
         ],
       });
       if (guest) {
-        clientId = guest._id.toString();
+        guestId = guest._id.toString();
       }
     }
 
@@ -1193,7 +1296,8 @@ export const refreshAccessToken = async (req, res) => {
       clientId,
       memberId,
       buildingId,
-      allowedUsingCredits
+      allowedUsingCredits,
+      guestId
     );
 
     const deviceInfo = getDeviceInfo(req);

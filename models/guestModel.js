@@ -21,6 +21,9 @@ const guestSchema = new mongoose.Schema(
     },
     // Zoho Books mapping for ondemand users
     zohoBooksContactId: { type: String, trim: true, index: true, default: null },
+    cityId: { type: mongoose.Schema.Types.ObjectId, ref: "City", index: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
+    purpose: { type: String, trim: true },
   },
   {
     timestamps: true,
