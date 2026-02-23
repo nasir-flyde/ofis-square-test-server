@@ -1238,3 +1238,95 @@ export const deleteRoom = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+export const exportRooms = async (req, res) => {
+  try {
+    const { building, status, minCapacity, amenity, q } = req.query || {};
+    const filter = {};
+    if (building) filter.building = building;
+    if (status) filter.status = status;
+    if (minCapacity) filter.capacity = { $gte: Number(minCapacity) };
+    if (amenity) filter.amenities = { $in: [amenity] };
+    if (q) filter.name = { $regex: q, $options: "i" };
+
+    const meetingRooms = await MeetingRoom.find(filter)
+      .populate('building', 'name address city')
+      .populate('amenities', 'name')
+      .populate('matrixDevices', 'name')
+      .sort({ createdAt: -1 });
+
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'id', title: 'Room ID' },
+        { id: 'buildingName', title: 'Building Name' },
+        { id: 'name', title: 'Room Name' },
+        { id: 'floor', title: 'Floor' },
+        { id: 'capacity', title: 'Capacity' },
+        { id: 'status', title: 'Status' },
+        { id: 'isBookingClosed', title: 'Booking Closed' },
+
+        { id: 'hourlyRate', title: 'Hourly Rate' },
+        // If pricing schema has more fields, add them. Assuming simple pricing schema for now or JSON
+        { id: 'pricingDetails', title: 'Pricing Details (JSON)' },
+
+        { id: 'availOpenTime', title: 'Open Time' },
+        { id: 'availCloseTime', title: 'Close Time' },
+        { id: 'availDays', title: 'Available Days' },
+        { id: 'minBooking', title: 'Min Booking (min)' },
+        { id: 'maxBooking', title: 'Max Booking (min)' },
+
+        { id: 'amenities', title: 'Amenities' },
+        { id: 'matrixDevices', title: 'Matrix Devices' },
+        { id: 'images', title: 'Image URLs' },
+        { id: 'blackoutDates', title: 'Blackout Dates' },
+        { id: 'communityDiscount', title: 'Community Max Discount (%)' },
+
+        { id: 'createdAt', title: 'Created At' },
+        { id: 'updatedAt', title: 'Updated At' }
+      ]
+    });
+
+    const records = meetingRooms.map(room => {
+      const avail = room.availability || {};
+      const daysMap = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const days = (avail.daysOfWeek || []).map(d => daysMap[d]).join(', ');
+
+      return {
+        id: room._id,
+        buildingName: room.building?.name || '',
+        name: room.name || '',
+        floor: formatFloorLabel(room.floor) || '',
+        capacity: room.capacity || '',
+        status: room.status || '',
+        isBookingClosed: room.isBookingClosed ? 'Yes' : 'No',
+
+        hourlyRate: room.pricing?.hourlyRate || '',
+        pricingDetails: JSON.stringify(room.pricing || {}),
+
+        availOpenTime: avail.openTime || '',
+        availCloseTime: avail.closeTime || '',
+        availDays: days,
+        minBooking: avail.minBookingMinutes || '',
+        maxBooking: avail.maxBookingMinutes || '',
+
+        amenities: (room.amenities || []).map(a => a.name).join('; '),
+        matrixDevices: (room.matrixDevices || []).map(d => d.name).join('; '),
+        images: (room.images || []).join('; '),
+        blackoutDates: (room.blackoutDates || []).map(d => new Date(d).toISOString().split('T')[0]).join('; '),
+        communityDiscount: room.communityMaxDiscountPercent || '',
+
+        createdAt: room.createdAt ? new Date(room.createdAt).toISOString() : '',
+        updatedAt: room.updatedAt ? new Date(room.updatedAt).toISOString() : ''
+      };
+    });
+
+    const header = csvStringifier.getHeaderString();
+    const csvRecords = csvStringifier.stringifyRecords(records);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="meeting_rooms_full_export.csv"');
+    res.send(header + csvRecords);
+  } catch (error) {
+    console.error("exportRooms error:", error);
+    res.status(500).send("Failed to export meeting rooms");
+  }
+};
