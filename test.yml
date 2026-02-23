@@ -1,0 +1,10 @@
+config:
+  target: "http://localhost:5001"
+  phases:
+    - duration: 30
+      arrivalRate: 50
+
+scenarios:
+  - flow:
+      - get:
+          url: "/api/meeting-rooms/available-by-time?date=2026-02-25&startTime=10:00&endTime=12:00"
