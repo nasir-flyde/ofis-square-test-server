@@ -11,7 +11,7 @@ import {
 const router = express.Router();
 
 // GET all categories
-router.get("/", authMiddleware, getAllCategories);
+router.get("/", getAllCategories);
 
 // GET category by ID
 router.get("/:id", authMiddleware, getCategoryById);
