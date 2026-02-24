@@ -1292,7 +1292,10 @@ export const getMyVisitors = async (req, res) => {
 // Edit member profile with phone sync and Bhaifi integration
 export const editMember = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = req.memberId;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Member ID not found in token" });
+    }
     const updateData = req.body || {};
 
     // Handle fullName splitting if provided

@@ -31,7 +31,7 @@ router.get("/me/app-home", universalMiddleware, getAppHomePageData);
 router.get("/me", universalMiddleware, getMyProfile);
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
-router.put("/me/edit/:id", universalMiddleware, editMember);
+router.put("/me/edit", universalMiddleware, editMember);
 
 
 
