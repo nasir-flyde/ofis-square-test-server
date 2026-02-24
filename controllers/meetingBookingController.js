@@ -868,11 +868,16 @@ export const createBooking = async (req, res) => {
     }
 
     const responseData = {
-      booking,
+      bookingId: booking._id,
+      buildingName: room.building?.name || "Ofis Square",
+      buildingAddress: room.building?.address || "",
+      meetingRoomName: room.name,
+      floor: room.floor ? `${room.floor}${!isNaN(room.floor) ? 'th' : ''} floor` : "N/A",
+      dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
+      capacity: room.capacity,
+      totalPricing: invoice?.total || paymentDetails?.amount || 0
     };
-    if (invoice) {
-      responseData.invoice = invoice;
-    }
+
     if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay') && discountStatus !== 'pending') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",

@@ -1996,6 +1996,28 @@ export const handleRazorpaySuccess = async (req, res) => {
       ? "Payment successful, day pass issued"
       : (bundleId ? "Payment successful, bundle and day passes issued" : "Payment successful, meeting room booked");
 
+    if (meetingBookingId && item?.room) {
+      const room = item.room;
+      const startTimeStr = new Date(item.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+      const endTimeStr = new Date(item.end).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+      const istYmd = new Date(item.start).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+      const responseData = {
+        bookingId: item._id,
+        buildingName: room.building?.name || "Ofis Square",
+        buildingAddress: room.building?.address || "",
+        meetingRoomName: room.name,
+        floor: room.floor ? `${room.floor}${!isNaN(room.floor) ? 'th' : ''} floor` : "N/A",
+        dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
+        capacity: room.capacity,
+        totalPricing: payment.amount || 0
+      };
+
+      const finalResponse = { success: true, data: responseData };
+      await apiLogger.logWebhookResponse(requestId, 200, finalResponse, true);
+      return res.json(finalResponse);
+    }
+
     const response = {
       success: true,
       message: responseMessage,
@@ -2007,20 +2029,6 @@ export const handleRazorpaySuccess = async (req, res) => {
         status: "completed"
       }
     };
-
-    if (meetingBookingId && item?.room) {
-      const startStr = new Date(item.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
-      const endStr = new Date(item.end).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
-
-      response.meetingDetails = {
-        buildingName: item.room.building?.name || "N/A",
-        buildingAddress: item.room.building?.address || "N/A",
-        bookingDate: item.start ? new Date(item.start).toISOString().slice(0, 10) : "N/A",
-        bookingTime: `${startStr} - ${endStr}`,
-        capacity: item.room.capacity || "N/A",
-        amount: payment.amount
-      };
-    }
 
     await apiLogger.logWebhookResponse(requestId, 200, response, true);
     res.json(response);

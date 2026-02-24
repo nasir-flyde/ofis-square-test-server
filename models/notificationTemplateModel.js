@@ -12,6 +12,8 @@ const notificationTemplateSchema = new Schema(
     channels: {
       sms: { type: Boolean, default: false },
       email: { type: Boolean, default: false },
+      push: { type: Boolean, default: false },
+      inApp: { type: Boolean, default: false },
     },
 
     // Template content
@@ -20,6 +22,8 @@ const notificationTemplateSchema = new Schema(
       emailSubject: { type: String },
       emailHtml: { type: String },
       emailText: { type: String },
+      inAppTitle: { type: String },
+      inAppBody: { type: String },
       buttonText: { type: String },
       buttonLink: { type: String },
     },

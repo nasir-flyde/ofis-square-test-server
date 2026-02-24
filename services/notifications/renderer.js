@@ -114,7 +114,9 @@ class NotificationRenderer {
     const rendered = {
       subject: this.interpolate(template.subject, variables),
       html: this.interpolate(template.html, variables),
-      text: this.interpolate(template.text, variables)
+      text: this.interpolate(template.text, variables),
+      inAppTitle: template.inAppTitle ? this.interpolate(template.inAppTitle, variables) : this.interpolate(template.subject || '', variables),
+      inAppBody: template.inAppBody ? this.interpolate(template.inAppBody, variables) : this.interpolate(template.sms || template.text || '', variables)
     };
 
     // Use SMS-specific template if available, otherwise use text
@@ -144,6 +146,14 @@ class NotificationRenderer {
 
     if (content.emailText) {
       rendered.emailText = this.interpolate(content.emailText, variables);
+    }
+
+    if (content.inAppTitle) {
+      rendered.inAppTitle = this.interpolate(content.inAppTitle, variables);
+    }
+
+    if (content.inAppBody) {
+      rendered.inAppBody = this.interpolate(content.inAppBody, variables);
     }
 
     return rendered;

@@ -48,7 +48,17 @@ export function renderDBTemplateContent(templateDoc, variables = {}) {
     html: emailHtml,
     text: content.emailText ? interpolate(content.emailText, variables) : undefined,
     sms: content.sms ? interpolate(content.sms, variables) : undefined,
+    inAppTitle: content.inAppTitle ? interpolate(content.inAppTitle, variables) : undefined,
+    inAppBody: content.inAppBody ? interpolate(content.inAppBody, variables) : undefined,
   };
+
+  if (!rendered.inAppTitle && templateDoc.name) {
+    rendered.inAppTitle = interpolate(templateDoc.name, variables);
+  }
+
+  if (!rendered.inAppBody && rendered.sms) {
+    rendered.inAppBody = rendered.sms;
+  }
 
   if (!rendered.text && rendered.html) {
     rendered.text = rendered.html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();

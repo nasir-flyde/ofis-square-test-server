@@ -8,8 +8,6 @@ import QRCode from "qrcode";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
 import { sendNotification } from "../utils/notificationHelper.js";
-import AppNotification from "../models/appNotificationModel.js";
-import { sendPushNotification } from "./appNotificationsController.js";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
@@ -765,26 +763,34 @@ export const checkinVisitor = async (req, res) => {
       { path: 'building', select: 'name address' }
     ]);
 
-    // Send App Notification to Host
+    // Send Notification to Host (Standardized)
     try {
       const hostMemberId = visitor.hostMember?._id;
       if (hostMemberId) {
-        const appNote = new AppNotification({
-          title: "Visitor Alert",
-          message: `${visitor.name} is waiting for you at the desk`,
-          type: "auto",
-          targetMemberIds: [hostMemberId],
-          triggerEvent: "visitor_arrival"
-        });
-        await appNote.save();
-        await sendPushNotification({ memberId: hostMemberId }, {
-          _id: appNote._id,
-          title: appNote.title,
-          message: appNote.message
+        await sendNotification({
+          to: { memberId: hostMemberId },
+          channels: { push: true, inApp: true, sms: false, email: true },
+          templateKey: 'visitor_checkin_request',
+          templateVariables: {
+            visitorName: visitor.name,
+            memberName: visitor.hostMember?.firstName || 'Member',
+            buildingName: visitor.building?.name || 'Ofis Square',
+            companyName: visitor.companyName || 'N/A'
+          },
+          title: 'Visitor Alert',
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_checkin_request'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
         });
       }
     } catch (noteErr) {
-      console.warn('checkinVisitor: failed to send app notification:', noteErr?.message || noteErr);
+      console.warn('checkinVisitor: failed to send visitor_checkin_request notification:', noteErr?.message || noteErr);
     }
 
     // Notify host about guest arrival
@@ -953,26 +959,34 @@ export const scanQRCode = async (req, res) => {
       { path: 'building', select: 'name address' }
     ]);
 
-    // Send App Notification to Host
+    // Send Notification to Host (Standardized)
     try {
       const hostMemberId = visitor.hostMember?._id;
       if (hostMemberId) {
-        const appNote = new AppNotification({
-          title: "Visitor Alert",
-          message: `${visitor.name} is waiting for you at the desk`,
-          type: "auto",
-          targetMemberIds: [hostMemberId],
-          triggerEvent: "visitor_arrival"
-        });
-        await appNote.save();
-        await sendPushNotification({ memberId: hostMemberId }, {
-          _id: appNote._id,
-          title: appNote.title,
-          message: appNote.message
+        await sendNotification({
+          to: { memberId: hostMemberId },
+          channels: { push: true, inApp: true, sms: false, email: true },
+          templateKey: 'visitor_checkin_request',
+          templateVariables: {
+            visitorName: visitor.name,
+            memberName: visitor.hostMember?.firstName || 'Member',
+            buildingName: visitor.building?.name || 'Ofis Square',
+            companyName: visitor.companyName || 'N/A'
+          },
+          title: 'Visitor Alert',
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_checkin_request'],
+            route: `/visitors/${visitor._id}`,
+            deepLink: `ofis://visitors/${visitor._id}`,
+            routeParams: { id: String(visitor._id) }
+          },
+          source: 'system',
+          type: 'transactional'
         });
       }
     } catch (noteErr) {
-      console.warn('scanQRCode: failed to send app notification:', noteErr?.message || noteErr);
+      console.warn('scanQRCode: failed to send visitor_checkin_request notification:', noteErr?.message || noteErr);
     }
 
     // Notify host about guest arrival
@@ -1198,6 +1212,31 @@ export const acceptVisitor = async (req, res) => {
 
     await createAuditLog(visitor._id, "HOST_ACCEPTED", oldStatus, "checked_in", memberId, "Host accepted visitor");
 
+    // Send Notification to Visitor
+    try {
+      if (visitor.phone || visitor.email) {
+        await visitor.populate([
+          { path: 'hostMember', select: 'firstName lastName' },
+          { path: 'building', select: 'name' }
+        ]);
+        await sendNotification({
+          to: { phone: visitor.phone, email: visitor.email },
+          channels: { sms: !!visitor.phone, email: true },
+          templateKey: 'visitor_accepted',
+          templateVariables: {
+            visitorName: visitor.name,
+            hostName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Host',
+            buildingName: visitor.building?.name || 'Ofis Square'
+          },
+          title: 'Visit Approved',
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('acceptVisitor: failed to send visitor_accepted notification:', notifyErr?.message || notifyErr);
+    }
+
     res.json({ success: true, message: "Visitor accepted and checked in", data: visitor });
   } catch (error) {
     console.error("Accept visitor error:", error);
@@ -1229,6 +1268,30 @@ export const declineVisitor = async (req, res) => {
     await visitor.save();
 
     await createAuditLog(visitor._id, "HOST_DECLINED", oldStatus, "cancelled", memberId, "Host declined visitor");
+
+    // Send Notification to Visitor
+    try {
+      if (visitor.phone || visitor.email) {
+        await visitor.populate([
+          { path: 'building', select: 'name' }
+        ]);
+        await sendNotification({
+          to: { phone: visitor.phone, email: visitor.email },
+          channels: { sms: !!visitor.phone, email: false },
+          templateKey: 'visitor_declined',
+          templateVariables: {
+            visitorName: visitor.name,
+            buildingName: visitor.building?.name || 'Ofis Square',
+            reason: visitor.cancelReason || 'Declined by host'
+          },
+          title: 'Visit Declined',
+          source: 'system',
+          type: 'transactional'
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('declineVisitor: failed to send visitor_declined notification:', notifyErr?.message || notifyErr);
+    }
 
     res.json({ success: true, message: "Visitor declined", data: visitor });
   } catch (error) {

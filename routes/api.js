@@ -61,8 +61,8 @@ import commonAreasRoutes from "./commonAreas.js";
 import templateDesignRoutes from "./templateDesigns.js";
 import migrationRoutes from "./migration.js";
 import cityRoutes from "./cityRoutes.js";
-import appNotificationsRoutes from "./appNotifications.js";
 import privacyPolicyRoutes from "./privacyPolicyRoutes.js";
+import notificationCategoriesRoutes from "./notificationCategories.js";
 
 const router = express.Router();
 
@@ -103,6 +103,7 @@ router.use("/events", eventsRoutes);
 router.use("/event-categories", eventCategoriesRoutes);
 router.use("/leads", leadsRoutes);
 router.use("/notifications", notificationsRoutes);
+router.use("/notification-categories", notificationCategoriesRoutes);
 router.use("/notification-templates", notificationTemplatesRoutes);
 router.use("/guests", guestsRoutes);
 router.use("/common-areas", commonAreasRoutes);
@@ -129,6 +130,5 @@ router.use("/partner/myhq", partnerMyhqRoutes);
 router.use("/migration", migrationRoutes);
 router.use("/cities", cityRoutes);
 router.use("/tours", tourRoutes);
-router.use("/appnotifications", appNotificationsRoutes);
 router.use("/privacy-policies", privacyPolicyRoutes);
 export default router;

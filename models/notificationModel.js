@@ -6,7 +6,7 @@ const deliveryHistorySchema = new Schema({
   at: { type: Date, default: Date.now },
   action: {
     type: String,
-    enum: ['queued', 'sent', 'delivered', 'failed', 'retried', 'canceled'],
+    enum: ['queued', 'sent', 'delivered', 'failed', 'retried', 'canceled', 'skipped'],
     required: true
   },
   details: { type: String },
@@ -44,9 +44,12 @@ const notificationSchema = new Schema({
   },
   channels: {
     sms: { type: Boolean, default: false },
-    email: { type: Boolean, default: false }
+    email: { type: Boolean, default: false },
+    push: { type: Boolean, default: false },
+    inApp: { type: Boolean, default: false }
   },
   title: { type: String, required: true },
+  categoryId: { type: Schema.Types.ObjectId, ref: 'NotificationCategory' },
   templateKey: { type: String },
   templateVariables: { type: Schema.Types.Mixed },
 
@@ -55,7 +58,9 @@ const notificationSchema = new Schema({
     smsText: { type: String },
     emailSubject: { type: String },
     emailHtml: { type: String },
-    emailText: { type: String }
+    emailText: { type: String },
+    inAppTitle: { type: String },
+    inAppBody: { type: String }
   },
 
   // Image attachment
@@ -78,15 +83,19 @@ const notificationSchema = new Schema({
   to: {
     phone: { type: String },
     email: { type: String },
+    pushToken: { type: String },
     userId: { type: Schema.Types.ObjectId, ref: 'User' },
     memberId: { type: Schema.Types.ObjectId, ref: 'Member' },
-    clientId: { type: Schema.Types.ObjectId, ref: 'Client' }
+    clientId: { type: Schema.Types.ObjectId, ref: 'Client' },
+    roleNames: [{ type: String }]
   },
   audienceQuery: { type: Schema.Types.Mixed },
 
   // Per-channel delivery state
   smsDelivery: channelDeliverySchema,
   emailDelivery: channelDeliverySchema,
+  pushDelivery: channelDeliverySchema,
+  inAppDelivery: channelDeliverySchema,
 
   // Scheduling & Control
   scheduledAt: { type: Date },
@@ -121,6 +130,8 @@ notificationSchema.index({ 'channels.sms': 1 });
 notificationSchema.index({ 'channels.email': 1 });
 notificationSchema.index({ 'smsDelivery.status': 1 });
 notificationSchema.index({ 'emailDelivery.status': 1 });
+notificationSchema.index({ 'pushDelivery.status': 1 });
+notificationSchema.index({ 'inAppDelivery.status': 1 });
 notificationSchema.index({ 'to.userId': 1 });
 notificationSchema.index({ 'to.memberId': 1 });
 notificationSchema.index({ 'to.clientId': 1 });
@@ -154,6 +165,35 @@ notificationSchema.statics.findPendingScheduled = function () {
   });
 };
 
+notificationSchema.statics.resolveMembersByFilters = async function (filters) {
+  const query = {};
+
+  if (filters.assignedMemberIds?.length) {
+    return filters.assignedMemberIds.map(id =>
+      typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id
+    );
+  }
+
+  if (filters.buildingIds?.length) {
+    const Desk = mongoose.model('Desk');
+    const desks = await Desk.find({ building: { $in: filters.buildingIds } }).select('_id');
+    const deskIds = desks.map(d => d._id);
+    query.desk = { $in: deskIds };
+  }
+
+  if (filters.gender) {
+    query.gender = filters.gender;
+  }
+
+  if (filters.city) {
+    query.city = filters.city;
+  }
+
+  const Member = mongoose.model('Member');
+  const members = await Member.find(query);
+  return members.map(m => m._id);
+};
+
 // Instance methods
 notificationSchema.methods.addDeliveryHistory = function (channel, action, details = null, error = null, providerResponse = null) {
   const historyEntry = {
@@ -168,52 +208,75 @@ notificationSchema.methods.addDeliveryHistory = function (channel, action, detai
     this.smsDelivery.history.push(historyEntry);
   } else if (channel === 'email') {
     this.emailDelivery.history.push(historyEntry);
+  } else if (channel === 'push') {
+    this.pushDelivery.history.push(historyEntry);
+  } else if (channel === 'inApp') {
+    this.inAppDelivery.history.push(historyEntry);
   }
 };
 
 notificationSchema.methods.updateDeliveryStatus = function (channel, status, additionalData = {}) {
-  const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
+  const deliveryPath = `${channel}Delivery`;
+  const delivery = this[deliveryPath];
 
-  delivery.status = status;
+  if (!delivery) return;
+
+  // Use this.set for reliable change detection in nested objects
+  this.set(`${deliveryPath}.status`, status);
 
   if (additionalData.providerMessageId) {
-    delivery.providerMessageId = additionalData.providerMessageId;
+    this.set(`${deliveryPath}.providerMessageId`, additionalData.providerMessageId);
   }
 
   if (additionalData.error) {
-    delivery.lastError = additionalData.error;
-    delivery.errorCode = additionalData.errorCode;
+    this.set(`${deliveryPath}.lastError`, additionalData.error);
+    this.set(`${deliveryPath}.errorCode`, additionalData.errorCode);
   }
 
   // Update timestamp based on status
   const now = new Date();
   switch (status) {
     case 'sent':
-      delivery.sentAt = now;
+      this.set(`${deliveryPath}.sentAt`, now);
       break;
     case 'delivered':
-      delivery.deliveredAt = now;
+      this.set(`${deliveryPath}.deliveredAt`, now);
       break;
     case 'failed':
-      delivery.failedAt = now;
+      this.set(`${deliveryPath}.failedAt`, now);
       break;
     case 'canceled':
-      delivery.canceledAt = now;
+      this.set(`${deliveryPath}.canceledAt`, now);
       break;
   }
+
+  // Ensure Mongoose tracks the changes to the nested object
+  this.markModified(deliveryPath);
 
   // Add to history
   this.addDeliveryHistory(channel, status, additionalData.details, additionalData.error, additionalData.providerResponse);
 };
 
 notificationSchema.methods.canRetry = function (channel) {
-  const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
-  return delivery.status === 'failed' && delivery.attemptCount < this.maxRetries;
+  let delivery;
+  if (channel === 'sms') delivery = this.smsDelivery;
+  else if (channel === 'email') delivery = this.emailDelivery;
+  else if (channel === 'push') delivery = this.pushDelivery;
+  else if (channel === 'inApp') delivery = this.inAppDelivery;
+
+  return delivery && delivery.status === 'failed' && delivery.attemptCount < this.maxRetries;
 };
 
 notificationSchema.methods.incrementAttempt = function (channel) {
-  const delivery = channel === 'sms' ? this.smsDelivery : this.emailDelivery;
-  delivery.attemptCount += 1;
+  let delivery;
+  if (channel === 'sms') delivery = this.smsDelivery;
+  else if (channel === 'email') delivery = this.emailDelivery;
+  else if (channel === 'push') delivery = this.pushDelivery;
+  else if (channel === 'inApp') delivery = this.inAppDelivery;
+
+  if (delivery) {
+    delivery.attemptCount += 1;
+  }
 };
 
 const Notification = mongoose.model("Notification", notificationSchema);

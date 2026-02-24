@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const appNotificationCategorySchema = new mongoose.Schema({
+const NotificationCategorySchema = new mongoose.Schema({
     name: {
         type: String,
         required: true,
@@ -16,4 +16,4 @@ const appNotificationCategorySchema = new mongoose.Schema({
     timestamps: true
 });
 
-export default mongoose.model('AppNotificationCategory', appNotificationCategorySchema);
+export default mongoose.model('NotificationCategory', NotificationCategorySchema);

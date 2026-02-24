@@ -592,6 +592,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
         const b = buildingMap.get(room.building.toString());
         room.building = b ? { name: b.name } : { name: null };
         room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
+        const fLabel = formatFloorLabel(room.floor);
+        if (fLabel) room.floor = `${fLabel} floor`;
 
         availableRooms.push(room);
       } else {
@@ -617,6 +619,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           const b = buildingMap.get(room.building.toString());
           room.building = b ? { name: b.name } : { name: null };
           room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
+          const fLabel = formatFloorLabel(room.floor);
+          if (fLabel) room.floor = `${fLabel} floor`;
 
           availableRooms.push(room);
         }

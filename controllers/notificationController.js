@@ -1,7 +1,11 @@
 import Notification from "../models/notificationModel.js";
-import AppNotification from "../models/appNotificationModel.js";
+import Member from "../models/memberModel.js";
+import User from "../models/userModel.js";
+import Role from "../models/roleModel.js";
+import NotificationCategory from "../models/NotificationCategoryModel.js";
 import mongoose from "mongoose";
 
+import admin from "../utils/firebase.js";
 import { getSMSProvider } from "../services/notifications/smsProvider.js";
 import { getEmailProvider } from "../services/notifications/emailProvider.js";
 import { renderTemplateByKey, renderArbitraryContent, getTemplateByKey } from "../services/notifications/templateService.js";
@@ -11,11 +15,37 @@ import { logCRUDActivity } from "../utils/activityLogger.js";
 const smsProvider = getSMSProvider();
 const emailProvider = getEmailProvider();
 
+const resolveCategoryId = async (metadata = {}, title = '', content = {}) => {
+  try {
+    const categories = await NotificationCategory.find({}).select('name _id');
+    const categoryMap = {};
+    categories.forEach(cat => {
+      categoryMap[cat.name] = cat._id.toString();
+    });
+
+    // 1. Explicit mapping from metadata name
+    const metaCat = metadata.category?.[0]?.toUpperCase() + metadata.category?.slice(1).toLowerCase();
+    if (categoryMap[metaCat]) return categoryMap[metaCat];
+
+    // 2. Keyword based resolution
+    const searchStr = `${title} ${content.smsText || ''} ${metadata.tags?.join(' ') || ''}`.toLowerCase();
+
+    if (searchStr.includes('event')) return categoryMap['Events'];
+    if (searchStr.includes('ticket')) return categoryMap['Tickets'];
+    if (searchStr.includes('bill') || searchStr.includes('invoice') || searchStr.includes('payment')) return categoryMap['Billing'];
+    if (searchStr.includes('booking') || searchStr.includes('room') || searchStr.includes('pass')) return categoryMap['Bookings'];
+
+    return null;
+  } catch (error) {
+    console.error('[resolveCategoryId] Error resolving category ID:', error);
+    return null;
+  }
+};
+
 // Create and send notification
 export const createNotification = async (req, res) => {
   try {
     const {
-      channels,
       to,
       templateKey,
       templateVariables,
@@ -27,21 +57,32 @@ export const createNotification = async (req, res) => {
       expiresAt,
       maxRetries,
       source,
-      image
+      image,
+      pushToken
     } = req.body;
 
+    let { channels } = req.body;
+
+    // Default channels to push and inApp if not provided
+    if (!channels) {
+      channels = { push: true, inApp: true };
+    } else {
+      if (channels.push === undefined) channels.push = true;
+      if (channels.inApp === undefined) channels.inApp = true;
+    }
+
     // Validation
-    if (!channels || (!channels.sms && !channels.email)) {
+    if (!channels || (!channels.sms && !channels.email && !channels.push && !channels.inApp)) {
       return res.status(400).json({
         success: false,
-        message: "At least one channel (sms or email) must be enabled"
+        message: "At least one channel (sms, email, push or inApp) must be enabled"
       });
     }
 
-    if (!to || (!to.phone && !to.email && !to.userId && !to.memberId && !to.clientId)) {
+    if (!to || (!to.phone && !to.email && !to.userId && !to.memberId && !to.clientId && !to.roleNames)) {
       return res.status(400).json({
         success: false,
-        message: "At least one recipient identifier must be provided"
+        message: "At least one recipient identifier (phone, email, userId, memberId, clientId or roleNames) must be provided"
       });
     }
 
@@ -62,7 +103,9 @@ export const createNotification = async (req, res) => {
           smsText: templateContent.sms,
           emailSubject: templateContent.subject,
           emailHtml: templateContent.html,
-          emailText: templateContent.text
+          emailText: templateContent.text,
+          inAppTitle: templateContent.inAppTitle,
+          inAppBody: templateContent.inAppBody
         };
         // Merge template default metadata if present
         try {
@@ -86,6 +129,12 @@ export const createNotification = async (req, res) => {
       });
     }
 
+    // Auto-resolve category if not provided
+    let category = req.body.categoryId || req.body.category;
+    if (!category) {
+      category = await resolveCategoryId(mergedMetadata, title, renderedContent);
+    }
+
     // Validate channel-specific content
     if (channels.sms && !renderedContent.smsText) {
       return res.status(400).json({
@@ -106,11 +155,108 @@ export const createNotification = async (req, res) => {
     const cleanTo = {};
     if (toPayload.email && String(toPayload.email).trim()) cleanTo.email = String(toPayload.email).trim();
     if (toPayload.phone && String(toPayload.phone).trim()) cleanTo.phone = String(toPayload.phone).trim();
+    if (toPayload.pushToken && String(toPayload.pushToken).trim()) cleanTo.pushToken = String(toPayload.pushToken).trim();
     if (toPayload.userId && mongoose.Types.ObjectId.isValid(toPayload.userId)) cleanTo.userId = toPayload.userId;
     if (toPayload.memberId && mongoose.Types.ObjectId.isValid(toPayload.memberId)) cleanTo.memberId = toPayload.memberId;
     if (toPayload.clientId && mongoose.Types.ObjectId.isValid(toPayload.clientId)) cleanTo.clientId = toPayload.clientId;
+    if (toPayload.roleNames && Array.isArray(toPayload.roleNames)) cleanTo.roleNames = toPayload.roleNames;
+    if (pushToken && String(pushToken).trim()) cleanTo.pushToken = String(pushToken).trim();
 
-    // Create notification
+    // Resolve userId if not provided but other identifiers exist
+    if (!cleanTo.userId) {
+      if (cleanTo.memberId) {
+        try {
+          const MemberModel = (await import('../models/memberModel.js')).default;
+          const member = await MemberModel.findById(cleanTo.memberId).select('user');
+          if (member?.user) cleanTo.userId = member.user;
+        } catch (err) { }
+      } else if (cleanTo.phone || cleanTo.email) {
+        try {
+          const userDoc = await User.findOne({
+            $or: [
+              cleanTo.email ? { email: cleanTo.email } : null,
+              cleanTo.phone ? { phone: cleanTo.phone } : null
+            ].filter(Boolean)
+          }).select('_id');
+          if (userDoc) cleanTo.userId = userDoc._id;
+        } catch (err) { }
+      }
+    }
+
+    // Check for role-based targeting
+    if (cleanTo.roleNames && cleanTo.roleNames.length > 0) {
+      // Resolve roles to member/user IDs
+      const roles = await Role.find({ roleName: { $in: cleanTo.roleNames } }).select('_id');
+      const roleIds = roles.map(r => r._id);
+
+      const [members, users] = await Promise.all([
+        Member.find({ role: { $in: cleanTo.roleNames } }).select('_id fcmTokens phone email user'),
+        User.find({ role: { $in: roleIds } }).select('_id phone email')
+      ]);
+
+      const recipients = [
+        ...members.map(m => ({
+          memberId: m._id,
+          userId: m.user,
+          phone: m.phone,
+          email: m.email,
+          pushToken: m.fcmTokens?.[0]
+        })),
+        ...users.map(u => ({
+          userId: u._id,
+          phone: u.phone,
+          email: u.email
+        }))
+      ];
+
+      const notifications = recipients.map(recipient => {
+        const payload = {
+          ...cleanTo,
+          ...recipient
+        };
+        return new Notification({
+          type: type || 'system',
+          channels,
+          title,
+          templateKey,
+          templateVariables,
+          content: renderedContent,
+          image: image || undefined,
+          metadata: mergedMetadata,
+          categoryId: category || undefined,
+          to: payload,
+          scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
+          expiresAt: expiresAt ? new Date(expiresAt) : null,
+          maxRetries: maxRetries || 3,
+          createdBy: req.user?.id,
+          source: source || 'api',
+          smsDelivery: channels.sms ? { status: 'pending' } : undefined,
+          emailDelivery: channels.email ? { status: 'pending' } : undefined,
+          pushDelivery: channels.push ? { status: 'pending' } : undefined,
+          inAppDelivery: channels.inApp ? { status: 'pending' } : undefined
+        });
+      });
+
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+        console.log(`[notificationController] Inserted ${notifications.length} role-based notifications with userIds`);
+
+        // Dispatch all (if scheduled for now)
+        if (!scheduledAt || new Date(scheduledAt) <= new Date()) {
+          for (const n of notifications) {
+            dispatchNotification(n); // Background dispatch
+          }
+        }
+
+        return res.status(201).json({
+          success: true,
+          count: notifications.length,
+          message: `${notifications.length} notifications created for roles: ${cleanTo.roleNames.join(', ')}`
+        });
+      }
+    }
+
+    // Single recipient flow (fallback or explicit)
     const notification = new Notification({
       type: type || 'system',
       channels,
@@ -120,6 +266,7 @@ export const createNotification = async (req, res) => {
       content: renderedContent,
       image: image || undefined,
       metadata: mergedMetadata,
+      categoryId: category || undefined,
       to: cleanTo,
       scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
       expiresAt: expiresAt ? new Date(expiresAt) : null,
@@ -127,7 +274,9 @@ export const createNotification = async (req, res) => {
       createdBy: req.user?.id,
       source: source || 'api',
       smsDelivery: channels.sms ? { status: 'pending' } : undefined,
-      emailDelivery: channels.email ? { status: 'pending' } : undefined
+      emailDelivery: channels.email ? { status: 'pending' } : undefined,
+      pushDelivery: channels.push ? { status: 'pending' } : undefined,
+      inAppDelivery: channels.inApp ? { status: 'pending' } : undefined
     });
 
     await notification.save();
@@ -241,69 +390,27 @@ export const getNotifications = async (req, res) => {
     // Execute query with pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Fetch from both models
-    const [standardNotifications, appNotifications] = await Promise.all([
+    const [notifications, total] = await Promise.all([
       Notification.find(query)
-        .populate('to.userId', 'name email')
-        .populate('to.memberId', 'name email')
-        .populate('to.clientId', 'companyName email')
+        .populate('to.userId', 'name email phone')
+        .populate('to.memberId', 'firstName lastName email phone')
+        .populate('to.clientId', 'companyName email phone')
         .populate('createdBy', 'name email')
+        .populate('category', 'name description')
         .sort(sort)
-        .skip(0) // Fetch all potential candidates for in-memory merging if limit is small
-        .limit(parseInt(limit) + skip),
-      AppNotification.find({
-        $or: [
-          { title: query.title || { $exists: true } },
-          { message: q ? { $regex: q, $options: 'i' } : { $exists: true } }
-        ],
-        ...(type ? { type } : {}),
-        ...(memberId ? { targetMemberIds: memberId } : {}),
-        ...(createdFrom || createdTo ? {
-          createdAt: {
-            ...(createdFrom ? { $gte: new Date(createdFrom) } : {}),
-            ...(createdTo ? { $lte: new Date(createdTo) } : {})
-          }
-        } : {})
-      })
-        .populate('createdBy', 'name email')
-        .sort(sort)
-        .limit(parseInt(limit) + skip)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments(query)
     ]);
-
-    // Format app notifications to match standard notification structure
-    const formattedAppNotifications = appNotifications.map(app => ({
-      ...app.toObject(),
-      isAppNotification: true,
-      content: {
-        smsText: app.message,
-        emailSubject: app.title,
-        emailHtml: `<p>${app.message}</p>`
-      }
-    }));
-
-    // Combine and sort
-    const allNotifications = [...standardNotifications, ...formattedAppNotifications]
-      .sort((a, b) => {
-        const dateA = new Date(a.createdAt);
-        const dateB = new Date(b.createdAt);
-        return sort.startsWith('-') ? dateB - dateA : dateA - dateB;
-      });
-
-    // Paginate manually
-    const paginatedNotifications = allNotifications.slice(skip, skip + parseInt(limit));
-    const total = await Notification.countDocuments(query) + await AppNotification.countDocuments({
-      ...(type ? { type } : {}),
-      ...(memberId ? { targetMemberIds: memberId } : {})
-    });
 
     const baseResponse = {
       success: true,
-      data: paginatedNotifications,
+      data: notifications,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(total / parseInt(limit)),
         totalRecords: total,
-        hasMore: skip + paginatedNotifications.length < total
+        hasMore: skip + notifications.length < total
       }
     };
 
@@ -342,10 +449,7 @@ export const getNotificationById = async (req, res) => {
       .populate('createdBy', 'name email');
 
     if (!notification) {
-      return res.status(404).json({
-        success: false,
-        message: "Notification not found"
-      });
+      return res.status(404).json({ success: false, message: "Notification not found" });
     }
 
     res.json({
@@ -360,6 +464,78 @@ export const getNotificationById = async (req, res) => {
       message: "Failed to fetch notification",
       error: error.message
     });
+  }
+};
+
+// Get notifications by category
+export const getNotificationsByCategory = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { page = 1, limit = 20, sort = '-createdAt' } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find({ category: categoryId, deletedAt: null })
+        .populate('createdBy', 'name email')
+        .populate('category', 'name description')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments({ category: categoryId, deletedAt: null })
+    ]);
+
+    res.json({
+      success: true,
+      data: notifications,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + notifications.length < total
+      }
+    });
+  } catch (error) {
+    console.error("Get notifications by category error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch notifications by category", error: error.message });
+  }
+};
+
+// Get notifications by member ID
+export const getNotificationsByMemberId = async (req, res) => {
+  try {
+    const { memberId } = req.params;
+    const { page = 1, limit = 20, sort = '-createdAt' } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(memberId)) {
+      return res.status(400).json({ success: false, message: 'Invalid member ID' });
+    }
+
+    const filter = { 'to.memberId': memberId, deletedAt: null };
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [notifications, total] = await Promise.all([
+      Notification.find(filter)
+        .populate('createdBy', 'name email')
+        .populate('category', 'name description')
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Notification.countDocuments(filter)
+    ]);
+
+    res.json({
+      success: true,
+      data: notifications,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + notifications.length < total
+      }
+    });
+  } catch (error) {
+    console.error("Get notifications by member error:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch notifications by member", error: error.message });
   }
 };
 
@@ -531,6 +707,47 @@ export const cancelNotification = async (req, res) => {
   }
 };
 
+// Update notification status (isActive)
+export const updateNotificationStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isActive } = req.body;
+
+    const notification = await Notification.findByIdAndUpdate(
+      id,
+      { isActive },
+      { new: true }
+    );
+
+    if (!notification) {
+      return res.status(404).json({ success: false, message: "Notification not found" });
+    }
+
+    res.json({ success: true, data: notification });
+  } catch (error) {
+    console.error("Update notification status error:", error);
+    res.status(500).json({ success: false, message: "Failed to update notification status", error: error.message });
+  }
+};
+
+// Delete notification
+export const deleteNotification = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const notification = await Notification.findByIdAndUpdate(id, { deletedAt: new Date() }, { new: true });
+
+    if (!notification) {
+      return res.status(404).json({ success: false, message: "Notification not found" });
+    }
+
+    res.json({ success: true, message: "Notification deleted successfully" });
+  } catch (error) {
+    console.error("Delete notification error:", error);
+    res.status(500).json({ success: false, message: "Failed to delete notification", error: error.message });
+  }
+};
+
 // Get notifications for a specific member
 export const getMemberNotifications = async (req, res) => {
   try {
@@ -673,6 +890,8 @@ export const getMemberOnlyNotifications = async (req, res) => {
       q,
       type,
       status,
+      channel,
+      categoryId,
       dateFrom,
       dateTo,
       sort = '-createdAt',
@@ -692,6 +911,17 @@ export const getMemberOnlyNotifications = async (req, res) => {
     } catch (_) {
     }
     const query = { 'to.memberId': memberObjectId };
+    if (categoryId) {
+      query.categoryId = categoryId;
+    }
+
+    // Channel filter
+    if (channel) {
+      if (channel === 'sms') query['channels.sms'] = true;
+      if (channel === 'email') query['channels.email'] = true;
+      if (channel === 'push') query['channels.push'] = true;
+      if (channel === 'inApp') query['channels.inApp'] = true;
+    }
     if (debug === '1') {
       console.log('getMemberOnlyNotifications Debug:', {
         memberId: String(memberId),
@@ -882,8 +1112,20 @@ async function dispatchNotification(notification) {
     promises.push(sendEmail(notification));
   }
 
+  // Dispatch Push
+  if (notification.channels.push && notification.pushDelivery.status === 'pending') {
+    promises.push(sendPush(notification));
+  }
+
+  // Dispatch In-App
+  if (notification.channels.inApp && notification.inAppDelivery.status === 'pending') {
+    promises.push(sendInApp(notification));
+  }
+
+  console.log(`[notificationController:dispatchNotification] Awaiting ${promises.length} delivery promises for ID: ${notification._id}`);
   await Promise.allSettled(promises);
   await notification.save();
+  console.log(`[notificationController:dispatchNotification] Saved notification ID: ${notification._id} with statuses: SMS=${notification.smsDelivery?.status}, Email=${notification.emailDelivery?.status}`);
 }
 
 // Helper function to send SMS
@@ -941,12 +1183,14 @@ async function sendEmail(notification) {
     });
 
     if (result.success) {
+      console.log(`[notificationController:sendEmail] Email sent successfully to ${notification.to.email}`);
       notification.updateDeliveryStatus('email', 'sent', {
         details: 'Email sent successfully',
         providerMessageId: result.providerMessageId,
         providerResponse: result.providerResponse
       });
     } else {
+      console.error(`[notificationController:sendEmail] Email failed for ${notification.to.email}:`, result.error);
       notification.updateDeliveryStatus('email', 'failed', {
         error: result.error,
         errorCode: result.errorCode,
@@ -958,6 +1202,70 @@ async function sendEmail(notification) {
     notification.updateDeliveryStatus('email', 'failed', {
       error: error.message,
       errorCode: 'DISPATCH_ERROR'
+    });
+  }
+}
+
+// Helper function to send Push Notification
+async function sendPush(notification) {
+  try {
+    let token = notification.to.pushToken;
+
+    // Resolve token if not present but memberId is
+    if (!token && notification.to.memberId) {
+      const member = await Member.findById(notification.to.memberId).select('fcmTokens');
+      if (member?.fcmTokens?.length) {
+        token = member.fcmTokens[0]; // Just take first token for simple dispatch
+      }
+    }
+
+    if (!token) {
+      notification.updateDeliveryStatus('push', 'skipped', { details: 'No FCM token found' });
+      return;
+    }
+
+    notification.updateDeliveryStatus('push', 'queued', { details: 'Sending Push' });
+
+    const message = {
+      notification: {
+        title: notification.title,
+        body: notification.content.smsText || notification.title,
+      },
+      data: {
+        notificationId: notification._id.toString(),
+        ...(notification.metadata || {})
+      },
+      token
+    };
+
+    if (admin.apps.length > 0) {
+      const response = await admin.messaging().send(message);
+      notification.updateDeliveryStatus('push', 'sent', {
+        details: 'Push sent successfully',
+        providerMessageId: response,
+        providerResponse: { response }
+      });
+    } else {
+      throw new Error('Firebase Admin not initialized');
+    }
+
+  } catch (error) {
+    notification.updateDeliveryStatus('push', 'failed', {
+      error: error.message,
+      errorCode: 'PUSH_ERROR'
+    });
+  }
+}
+
+// Helper function to handle In-App Delivery
+async function sendInApp(notification) {
+  try {
+    // In-app is "delivered" as soon as it's saved in DB and ready for portal retrieval
+    notification.updateDeliveryStatus('inApp', 'delivered', { details: 'Ready in portal' });
+  } catch (error) {
+    notification.updateDeliveryStatus('inApp', 'failed', {
+      error: error.message,
+      errorCode: 'INAPP_ERROR'
     });
   }
 }
