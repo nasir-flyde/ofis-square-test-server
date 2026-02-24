@@ -430,8 +430,10 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
     } catch (e) {
       // If error is "already exists", we proceed to create local record anyway
       const status = e?.response?.status;
-      const msg = e?.response?.data?.message || e?.message || '';
-      const isAlreadyExists = status === 409 || status === 400 || msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('duplicate');
+      const data = e?.response?.data || {};
+      const msg = (data?.message || e?.message || '').toLowerCase();
+      const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
+      const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate');
 
       if (isAlreadyExists) {
         console.warn("[BHAIFI] ensureBhaifiForMember: User already exists on Bhaifi, creating local record only.", { memberId: String(member._id), userName });

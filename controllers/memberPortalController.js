@@ -1414,8 +1414,12 @@ export const editMember = async (req, res) => {
                   }
                 } catch (createErr) {
                   const status = createErr?.response?.status;
-                  const msg = (createErr?.response?.data?.message || createErr?.message || '').toLowerCase();
-                  const isAlreadyExists = status === 409 || status === 400 || msg.includes('already exists') || msg.includes('duplicate');
+                  const data = createErr?.response?.data || {};
+                  const msg = (data?.message || createErr?.message || '').toLowerCase();
+
+                  // Bhaifi uses 422 with code 102 or message "User already exists"
+                  const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
+                  const isAlreadyExists = status === 409 || status === 400 || status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists')) || msg.includes('duplicate');
 
                   if (isAlreadyExists) {
                     // Try searching one last time purely by userName before giving up and creating a duplicate-error record
@@ -1455,14 +1459,20 @@ export const editMember = async (req, res) => {
                   await bhaifiNew.save();
                 }
               } catch (whiErr) {
-                const msg = (whiErr?.response?.data?.message || whiErr?.message || '').toLowerCase();
-                const isAlreadyWhitelisted = msg.includes('already whitelisted') || msg.includes('already exists');
+                const status = whiErr?.response?.status;
+                const data = whiErr?.response?.data || {};
+                const msg = (data?.message || whiErr?.message || '').toLowerCase();
+                const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
+
+                // Bhaifi might return 422 or 409/400 for already whitelisted
+                const isAlreadyWhitelisted = status === 409 || status === 400 || status === 422 && (String(firstErrorCode) === '102' || msg.includes('already whitelisted') || msg.includes('already exists'));
+
                 if (isAlreadyWhitelisted && bhaifiNew) {
                   bhaifiNew.lastWhitelistedAt = new Date();
                   bhaifiNew.status = "active";
                   await bhaifiNew.save();
                 } else {
-                  console.warn(`[BHAIFI] Whitelist attempt failed for ${newUserName} on nasId ${nasId}:`, msg);
+                  console.warn(`[BHAIFI] Whitelist attempt failed for ${newUserName} on nasId ${nasId}: status=${status}, code=${firstErrorCode}, msg=${msg}`);
                 }
               }
             }
@@ -1476,6 +1486,14 @@ export const editMember = async (req, res) => {
     res.json({ success: true, message: "Member updated successfully", data: updatedMember });
   } catch (err) {
     console.error("editMember error:", err);
+    // Handle Mongo duplicate key error (E11000)
+    if (err.code === 11000 || err.name === "MongoServerError" && err.message.includes("E11000")) {
+      const field = Object.keys(err.keyPattern || {})[0] || "field";
+      return res.status(409).json({
+        success: false,
+        message: `This ${field} is already in use by another member.`
+      });
+    }
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
