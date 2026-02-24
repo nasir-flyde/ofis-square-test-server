@@ -233,10 +233,23 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({ success: false, message: "Booking time slot must be at least 30 minutes." });
     }
     // Determine member/client/guest context (admin flow may not have a member)
+    const roleName = String(req.user?.roleName || req.authType || '').toLowerCase();
     const currentMemberId = req.memberId || memberId || null;
     let clientId = null;
     let guestId = req.guestId || bodyGuestId || null;
     let memberDoc = null;
+
+    // Payment method validation for on-demand users
+    if (roleName === 'ondemanduser') {
+      const allowedMethods = ['razorpay', 'online', 'cash'];
+      if (!allowedMethods.includes((paymentMethod || '').toLowerCase())) {
+        return res.status(400).json({
+          success: false,
+          message: `Payment method '${paymentMethod}' is not allowed for on-demand users. Allowed: ${allowedMethods.join(', ')}`
+        });
+      }
+    }
+
     if (currentMemberId) {
       // Validate member and derive client from member
       memberDoc = await Member.findById(currentMemberId).populate('client');
@@ -474,7 +487,7 @@ export const createBooking = async (req, res) => {
         // Note: WalletService transaction creation happened above, might need update if we want strict linking
       }
 
-    } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay") {
+    } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay" || paymentMethod === "online") {
       // Cash/Card payment - create invoice and set payment_pending status for Razorpay create-order flow
       bookingStatus = "payment_pending";
 
@@ -695,8 +708,8 @@ export const createBooking = async (req, res) => {
           channels: { email: Boolean(emailTo), sms: false },
           templateKey: 'meeting_booking_confirmed',
           templateVariables: {
-            greeting: memberDoc?.companyName || 'Ofis Square',
-            memberName: memberDoc?.firstName || 'Member',
+            greeting: memberDoc?.companyName || to.name || 'Ofis Square',
+            memberName: memberDoc?.firstName || to.name || 'Member',
             companyName: memberDoc?.companyName || 'Ofis Square',
             meetingRoom: room?.name,
             building: room?.building?.name || 'Ofis Square',
@@ -751,7 +764,7 @@ export const createBooking = async (req, res) => {
           channels: { email: Boolean(emailTo), sms: false },
           templateKey: 'service_credits_used',
           templateVariables: {
-            greeting: memberDoc?.companyName || 'Ofis Square',
+            greeting: memberDoc?.companyName || to.name || 'Ofis Square',
             serviceType: 'Meeting Room',
             serviceName: room?.name || 'Meeting Room',
             buildingName: room?.building?.name || 'Ofis Square',
@@ -795,8 +808,8 @@ export const createBooking = async (req, res) => {
             channels: { email: Boolean(to.email), sms: false },
             templateKey: 'meeting_booking_reminder',
             templateVariables: {
-              greeting: memberDoc?.companyName || 'Ofis Square',
-              memberName: memberDoc?.firstName || 'Member',
+              greeting: memberDoc?.companyName || to.name || 'Ofis Square',
+              memberName: memberDoc?.firstName || to.name || 'Member',
               companyName: memberDoc?.companyName || 'Ofis Square',
               meetingRoom: room?.name,
               building: room?.building?.name || 'Ofis Square',
@@ -875,10 +888,11 @@ export const createBooking = async (req, res) => {
       floor: room.floor ? `${room.floor}${!isNaN(room.floor) ? 'th' : ''} floor` : "N/A",
       dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
       capacity: room.capacity,
+      images: room.images || [],
       totalPricing: invoice?.total || paymentDetails?.amount || 0
     };
 
-    if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay') && discountStatus !== 'pending') {
+    if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay' || paymentMethod === 'online') && discountStatus !== 'pending') {
       responseData.razorpayConfig = {
         key: process.env.RAZORPAY_KEY_ID || "rzp_test_02U4mUmreLeYrU",
         amount: Math.round((paymentDetails.amount || baseAmount) * 100), // Convert to paise (GST-inclusive)
@@ -1296,12 +1310,6 @@ export const addVisitorToBooking = async (req, res) => {
       await booking.save();
     }
 
-    const updated = await MeetingBooking.findById(id)
-      .populate("room", "name capacity amenities")
-      .populate("member", "firstName lastName email phone companyName")
-      .populate("visitors", "name email phone company status expectedVisitDate")
-      .populate({ path: "invoice", select: "invoice_number status total" });
-
     // Best-effort: provision access for visitors now that one is added
     try {
       await provisionAccessForMeetingBooking({ bookingId: id });
@@ -1309,6 +1317,12 @@ export const addVisitorToBooking = async (req, res) => {
     } catch (e) {
       console.warn('[MeetingAccess] Provision failed after addVisitorToBooking', e?.message || e);
     }
+
+    const updated = await MeetingBooking.findById(id)
+      .populate("room", "name capacity amenities")
+      .populate("member", "firstName lastName email phone companyName")
+      .populate("visitors", "name email phone company status expectedVisitDate buildingAccess")
+      .populate({ path: "invoice", select: "invoice_number status total" });
 
     return res.json({ success: true, data: updated });
   } catch (error) {

@@ -16,6 +16,9 @@ import Building from "../models/buildingModel.js";
 import BhaifiNas from "../models/bhaifiNasModel.js";
 import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
 import { normalizePhoneToUserName, formatDateTime, endOfDayString } from "../controllers/bhaifiController.js";
+import Guest from "../models/guestModel.js";
+import DayPass from "../models/dayPassModel.js";
+import CommonArea from "../models/commonAreaModel.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -331,15 +334,38 @@ export const getMyTickets = async (req, res) => {
 export const createMyTicket = async (req, res) => {
   try {
     const { subject, description, priority = "low" } = req.body;
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const isOnDemand = roleName === 'ondemanduser';
 
     if (!subject || !description) {
       return res.status(400).json({ success: false, message: "Subject and description are required" });
     }
 
-    // Get building ID from member's client
-    const member = await Member.findById(req.memberId).populate("client", "building companyName");
-    if (!member || !member.client || !member.client.building) {
-      return res.status(400).json({ success: false, message: "Member client or building not found. Please contact admin." });
+    let buildingId = null;
+    let companyName = "";
+    let creatorName = "";
+    let creatorEmail = "";
+
+    if (isOnDemand) {
+      if (!req.guestId) return res.status(400).json({ success: false, message: "Guest context not found" });
+      const guest = await Guest.findById(req.guestId);
+      if (!guest || !guest.buildingId) {
+        return res.status(400).json({ success: false, message: "Guest or building not found. Please contact admin." });
+      }
+      buildingId = guest.buildingId;
+      companyName = guest.companyName || "On-demand";
+      creatorName = guest.name;
+      creatorEmail = guest.email;
+    } else {
+      // Get building ID from member's client
+      const member = await Member.findById(req.memberId).populate("client", "building companyName");
+      if (!member || !member.client || !member.client.building) {
+        return res.status(400).json({ success: false, message: "Member client or building not found. Please contact admin." });
+      }
+      buildingId = member.client.building;
+      companyName = member.client.companyName;
+      creatorName = `${member.firstName || ''} ${member.lastName || ''}`.trim() || 'Member';
+      creatorEmail = member.email;
     }
 
     // Collect image URLs from uploaded files (if any)
@@ -420,9 +446,10 @@ export const createMyTicket = async (req, res) => {
       description: description.trim(),
       priority,
       images: imageUrls,
-      createdBy: req.memberId,
+      createdBy: isOnDemand ? undefined : req.memberId,
+      guest: isOnDemand ? req.guestId : undefined,
       client: req.clientId,
-      building: member.client.building,
+      building: buildingId,
       status: "open",
       latestUpdate: "Ticket created"
     };
@@ -443,15 +470,13 @@ export const createMyTicket = async (req, res) => {
     // Notify the creating member using template 'ticket_created'
     try {
       const to = {
-        memberId: req.memberId,
+        memberId: isOnDemand ? undefined : req.memberId,
+        guestId: isOnDemand ? req.guestId : undefined,
         clientId: req.clientId
       };
 
-      if (member?.email) {
-        to.email = member.email;
-      } else {
-        const m = await Member.findById(req.memberId).select('email').lean();
-        if (m?.email) to.email = m.email;
+      if (creatorEmail) {
+        to.email = creatorEmail;
       }
 
       await sendNotification({
@@ -459,9 +484,9 @@ export const createMyTicket = async (req, res) => {
         channels: { email: Boolean(to.email), sms: false },
         templateKey: 'ticket_created',
         templateVariables: {
-          greeting: member?.client?.companyName || '',
-          memberName: member?.client?.companyName || 'Member',
-          "Member Name": `${member.firstName || ''} ${member.lastName || ''}`.trim() || 'Member',
+          greeting: companyName || '',
+          memberName: companyName || 'Member',
+          "Member Name": creatorName,
           subject: ticketData.subject,
           priority: ticketData.priority || 'low',
           id: populatedTicket?.ticketId || String(populatedTicket._id),
@@ -492,10 +517,10 @@ export const createMyTicket = async (req, res) => {
       if (communityRole) {
         const communityUsers = await User.find({
           role: communityRole._id,
-          buildingId: member.client.building
+          buildingId: buildingId
         }).select('email').lean();
 
-        const building = await (await import("../models/buildingModel.js")).default.findById(member.client.building).select('name').lean();
+        const building = await (await import("../models/buildingModel.js")).default.findById(buildingId).select('name').lean();
 
         for (const user of communityUsers) {
           if (user.email) {
@@ -504,10 +529,10 @@ export const createMyTicket = async (req, res) => {
               channels: { email: true, sms: false },
               templateKey: 'community_ticket_created',
               templateVariables: {
-                greeting: member?.client?.companyName || 'Member',
+                greeting: companyName || 'Member',
                 ticketId: populatedTicket?.ticketId || String(populatedTicket._id),
                 buildingName: building?.name || 'Your Building',
-                memberName: member?.client?.companyName || 'A Member',
+                memberName: companyName || 'A Member',
                 Category: populatedTicket?.category?.categoryId?.name || '',
                 priority: populatedTicket?.priority || 'low',
                 description: populatedTicket?.description || '',
@@ -1027,6 +1052,8 @@ export const getAppHomePageData = async (req, res) => {
     const isClient = roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients';
 
     let name = "";
+    let email = null;
+    let phone = null;
     let cabinNumber = null;
     let buildingName = null;
     let membershipStatus = null;
@@ -1035,9 +1062,59 @@ export const getAppHomePageData = async (req, res) => {
     let cabinType = null;
     let buildingOpeningTime = null;
     let buildingClosingTime = null;
+    let guestProfile = null;
+
+    // --- 0. Time setup ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(today);
+    endOfToday.setHours(23, 59, 59, 999);
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + 7);
 
     // --- 1. Identify User & Basic Info ---
-    if (isClient) {
+    if (roleName === 'ondemanduser') {
+      let guest = null;
+      if (req.guestId) {
+        guest = await Guest.findById(req.guestId).populate('buildingId', 'name openingTime closingTime');
+      }
+
+      // Fallback lookup by user email/phone if guest not found or guestId missing
+      if (!guest && req.user) {
+        guest = await Guest.findOne({
+          $or: [
+            ...(req.user.email ? [{ email: req.user.email }] : []),
+            ...(req.user.phone ? [{ phone: req.user.phone }] : [])
+          ]
+        }).populate('buildingId', 'name openingTime closingTime');
+
+        if (guest) req.guestId = guest._id; // Restore for subsequent logic
+      }
+
+      if (guest) {
+        guestProfile = guest;
+        name = guest.name;
+        email = guest.email || null;
+        phone = guest.phone || null;
+        companyName = guest.companyName;
+        buildingName = guest.buildingId?.name;
+        buildingOpeningTime = guest.buildingId?.openingTime || null;
+        buildingClosingTime = guest.buildingId?.closingTime || null;
+
+        // "Where cabin details are showing show no of day pass booked for that user"
+        // Refined: count "available" day passes booked for others (issued or invited) for today
+        const dayPassCount = await DayPass.countDocuments({
+          customer: guest._id,
+          visitDate: { $gte: today, $lte: endOfToday },
+          bookingFor: 'other',
+          status: { $in: ['issued', 'invited'] }
+        });
+
+        cabinNumber = dayPassCount || 0;
+        cabinType = "On demand";
+        membershipStatus = guest.kycStatus || "active";
+      }
+    } else if (isClient) {
       if (req.client) {
         name = req.client.primaryFirstName || req.client.companyName || "Client";
         membershipStatus = req.client.membershipStatus || "active";
@@ -1072,6 +1149,8 @@ export const getAppHomePageData = async (req, res) => {
 
       if (member) {
         name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
+        email = member.email || null;
+        phone = member.phone || null;
         membershipStatus = member.client?.membershipStatus || "active";
         companyName = member.client?.companyName || companyName;
 
@@ -1090,7 +1169,7 @@ export const getAppHomePageData = async (req, res) => {
     }
 
     // --- Fetch Active Contract ---
-    if (req.clientId) {
+    if (req.clientId && roleName !== 'ondemanduser') {
       try {
         const contract = await Contract.findOne({
           client: req.clientId,
@@ -1102,9 +1181,9 @@ export const getAppHomePageData = async (req, res) => {
           if (contract.escalation && contract.escalation.frequencyMonths && contract.startDate) {
             const startDate = new Date(contract.startDate);
             const frequencyMonths = contract.escalation.frequencyMonths;
-            const today = new Date();
-            const monthsSinceStart = (today.getFullYear() - startDate.getFullYear()) * 12 +
-              (today.getMonth() - startDate.getMonth());
+            const todayDate = new Date();
+            const monthsSinceStart = (todayDate.getFullYear() - startDate.getFullYear()) * 12 +
+              (todayDate.getMonth() - startDate.getMonth());
             const nextEscalationMonths = Math.ceil((monthsSinceStart + 1) / frequencyMonths) * frequencyMonths;
             escalationDueInMonths = nextEscalationMonths - monthsSinceStart;
           }
@@ -1121,13 +1200,6 @@ export const getAppHomePageData = async (req, res) => {
     }
 
     // --- 2. Upcoming Events ---
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const endOfToday = new Date(today);
-    endOfToday.setHours(23, 59, 59, 999);
-    const endOfWeek = new Date(today);
-    endOfWeek.setDate(today.getDate() + 7);
-
     const baseEventQuery = {
       status: 'published',
       endDate: { $gte: today }
@@ -1157,35 +1229,52 @@ export const getAppHomePageData = async (req, res) => {
         .limit(50)
     ]);
 
-    // --- 3. Today's Meeting Room Bookings ---
+    // --- 3. Today's Bookings ---
     let bookingsToday = [];
     try {
-      let bookingQuery = null;
-      if (isClient && req.clientId) {
-        bookingQuery = {
-          client: req.clientId,
-          start: { $gte: today, $lte: endOfToday },
-          status: { $ne: 'cancelled' }
-        };
-      } else if (!isClient && req.memberId) {
-        bookingQuery = {
-          member: req.memberId,
-          start: { $gte: today, $lte: endOfToday },
-          status: { $ne: 'cancelled' }
-        };
-      }
+      if (roleName === 'ondemanduser' && req.guestId) {
+        // "in bookingstoday instead of meeting bookings show day pass bookings detail"
+        // Also: "if mmeting bookings are there for ondemand user show that too"
+        const [dayPasses, rawMeetings] = await Promise.all([
+          DayPass.find({
+            customer: req.guestId,
+            visitDate: { $gte: today, $lte: endOfToday },
+            status: { $ne: 'cancelled' }
+          }).populate('building', 'name address businessMapLink'),
 
-      if (bookingQuery) {
-        const rawBookings = await MeetingBooking.find(bookingQuery)
-          .populate({
+          MeetingBooking.find({
+            guest: req.guestId,
+            start: { $gte: today, $lte: endOfToday },
+            status: { $ne: 'cancelled' }
+          }).populate({
             path: 'room',
             select: 'name images building',
             populate: {
               path: 'building',
-              select: 'name address'
+              select: 'name address businessMapLink'
             }
-          })
-          .select('room start end status member client');
+          }).select('room start end status member client')
+        ]);
+
+        // Fetch building common area images for "Day Pass Area"
+        const buildingIdsForPasses = [...new Set(dayPasses.filter(dp => dp.building).map(dp => dp.building._id.toString()))];
+        const commonAreas = await CommonArea.find({
+          buildingId: { $in: buildingIdsForPasses },
+          areaType: "Day Pass Area",
+          status: "active"
+        }).lean();
+
+        // Map buildingId to the first available common area image
+        const buildingImageMap = {};
+        commonAreas.forEach(ca => {
+          const bId = ca.buildingId.toString();
+          if (!buildingImageMap[bId]) {
+            const primaryImg = (ca.images || []).find(img => img.isPrimary) || (ca.images || [])[0];
+            if (primaryImg?.url) {
+              buildingImageMap[bId] = primaryImg.url;
+            }
+          }
+        });
 
         const fmt = (d) => {
           try {
@@ -1193,20 +1282,92 @@ export const getAppHomePageData = async (req, res) => {
           } catch { return null; }
         };
 
-        bookingsToday = rawBookings.map(b => ({
+        const mappedPasses = dayPasses.map(dp => ({
+          _id: dp._id,
+          roomId: dp.building?._id,
+          roomName: dp.visitorName || "Day Pass",
+          roomBuildingName: dp.building?.name,
+          roomBuildingAddress: dp.building?.address,
+          roomBuildingMapLink: dp.building?.businessMapLink || null,
+          image: dp.building ? (buildingImageMap[dp.building._id.toString()] || null) : null,
+          start: dp.visitDate,
+          end: dp.visitDate,
+          slot: "Full Day",
+          status: dp.status,
+          type: "daypass"
+        }));
+
+        const mappedMeetings = rawMeetings.map(b => ({
           _id: b._id,
           roomId: b.room?._id,
           roomName: b.room?.name,
           roomBuildingName: b.room?.building?.name,
           roomBuildingAddress: b.room?.building?.address,
+          roomBuildingMapLink: b.room?.building?.businessMapLink || null,
           image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+          images: b.room?.images || [],
           start: b.start,
           end: b.end,
           slot: `${fmt(b.start)} - ${fmt(b.end)}`,
           status: b.status,
           bookedByMember: b.member,
-          bookedByClient: b.client
+          bookedByClient: b.client,
+          type: "meeting"
         }));
+
+        bookingsToday = [...mappedPasses, ...mappedMeetings];
+      } else {
+        let bookingQuery = null;
+        if (isClient && req.clientId) {
+          bookingQuery = {
+            client: req.clientId,
+            start: { $gte: today, $lte: endOfToday },
+            status: { $ne: 'cancelled' }
+          };
+        } else if (!isClient && req.memberId) {
+          bookingQuery = {
+            member: req.memberId,
+            start: { $gte: today, $lte: endOfToday },
+            status: { $ne: 'cancelled' }
+          };
+        }
+
+        if (bookingQuery) {
+          const rawBookings = await MeetingBooking.find(bookingQuery)
+            .populate({
+              path: 'room',
+              select: 'name images building',
+              populate: {
+                path: 'building',
+                select: 'name address businessMapLink'
+              }
+            })
+            .select('room start end status member client');
+
+          const fmt = (d) => {
+            try {
+              return new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+            } catch { return null; }
+          };
+
+          bookingsToday = rawBookings.map(b => ({
+            _id: b._id,
+            roomId: b.room?._id,
+            roomName: b.room?.name,
+            roomBuildingName: b.room?.building?.name,
+            roomBuildingAddress: b.room?.building?.address,
+            roomBuildingMapLink: b.room?.building?.businessMapLink || null,
+            image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+            images: b.room?.images || [],
+            start: b.start,
+            end: b.end,
+            slot: `${fmt(b.start)} - ${fmt(b.end)}`,
+            status: b.status,
+            bookedByMember: b.member,
+            bookedByClient: b.client,
+            type: "meeting"
+          }));
+        }
       }
     } catch (e) {
       console.warn('getAppHomePageData: failed to fetch todays bookings', e?.message || e);
@@ -1217,12 +1378,16 @@ export const getAppHomePageData = async (req, res) => {
       data: {
         profile: {
           name,
+          email,
+          phone,
           memberId: req.memberId || null,
+          guestId: req.guestId || null,
+          guest: guestProfile,
           companyName,
           cabinNumber,
           buildingName,
           membershipStatus,
-          role: isClient ? 'client' : 'member',
+          role: roleName,
           contract: contractData,
           cabinType,
           buildingOpeningTime,
@@ -1292,6 +1457,57 @@ export const getMyVisitors = async (req, res) => {
 // Edit member profile with phone sync and Bhaifi integration
 export const editMember = async (req, res) => {
   try {
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const isOnDemand = roleName === 'ondemanduser';
+
+    // 1. Handle On-demand user (Guest + User update)
+    if (isOnDemand) {
+      if (!req.guestId) {
+        return res.status(400).json({ success: false, message: "Guest ID not found in token" });
+      }
+
+      const updateData = req.body || {};
+
+      // Handle fullName splitting if provided
+      if (updateData.fullName) {
+        const parts = String(updateData.fullName).trim().split(/\s+/);
+        if (parts.length > 0) {
+          updateData.firstName = parts[0];
+          updateData.lastName = parts.slice(1).join(" ") || "";
+        }
+      }
+
+      // Ensure gender is lowercase if provided (User Rule)
+      if (updateData.gender) {
+        updateData.gender = updateData.gender.toLowerCase();
+      }
+
+      // Map to Guest fields
+      const guestUpdate = { ...updateData };
+      if (updateData.firstName || updateData.lastName) {
+        // Guest model uses 'name' field
+        guestUpdate.name = [updateData.firstName || "", updateData.lastName || ""].filter(Boolean).join(" ");
+      }
+
+      const updatedGuest = await Guest.findByIdAndUpdate(req.guestId, guestUpdate, { new: true, runValidators: true });
+
+      // Sync to User record
+      if (req.user?._id) {
+        const userUpdate = {};
+        if (updateData.phone) userUpdate.phone = updateData.phone;
+        if (updateData.email) userUpdate.email = updateData.email;
+        if (guestUpdate.name) userUpdate.name = guestUpdate.name;
+        if (updateData.gender) userUpdate.gender = updateData.gender;
+
+        if (Object.keys(userUpdate).length > 0) {
+          await User.findByIdAndUpdate(req.user._id, userUpdate);
+        }
+      }
+
+      return res.json({ success: true, message: "Profile updated successfully", data: updatedGuest });
+    }
+
+    // 2. Handle Regular Member (Original logic)
     const id = req.memberId;
     if (!id) {
       return res.status(400).json({ success: false, message: "Member ID not found in token" });

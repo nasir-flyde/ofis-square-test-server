@@ -883,7 +883,12 @@ export const getMemberNotifications = async (req, res) => {
 // Get notifications strictly for the authenticated memberId (no client association)
 export const getMemberOnlyNotifications = async (req, res) => {
   try {
-    const memberId = req.memberId; // Injected by universalAuthMiddleware for roleName === 'member'
+    const memberId = req.memberId;
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const isOnDemand = roleName === 'ondemanduser';
+    const guestId = req.guestId;
+    const userId = req.user?._id;
+
     const {
       page = 1,
       limit = 20,
@@ -898,19 +903,38 @@ export const getMemberOnlyNotifications = async (req, res) => {
       debug = '0'
     } = req.query;
 
-    if (!memberId) {
+    if (!memberId && !isOnDemand) {
       return res.status(403).json({
         success: false,
         message: 'No member context found on the token',
       });
     }
 
-    let memberObjectId = memberId;
-    try {
-      memberObjectId = new mongoose.Types.ObjectId(String(memberId));
-    } catch (_) {
+    if (isOnDemand && !guestId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Guest context not found',
+      });
     }
-    const query = { 'to.memberId': memberObjectId };
+
+    let query = {};
+    if (isOnDemand) {
+      if (userId) {
+        query = { 'to.userId': userId };
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: 'User ID not found for guest',
+        });
+      }
+    } else {
+      let memberObjectId = memberId;
+      try {
+        memberObjectId = new mongoose.Types.ObjectId(String(memberId));
+      } catch (_) {
+      }
+      query = { 'to.memberId': memberObjectId };
+    }
     if (categoryId) {
       query.categoryId = categoryId;
     }
@@ -971,6 +995,7 @@ export const getMemberOnlyNotifications = async (req, res) => {
     const [notifications, total] = await Promise.all([
       Notification.find(query)
         .populate('to.memberId', 'firstName lastName email')
+        .populate('to.userId', 'name email phone')
         .populate('createdBy', 'name email')
         .sort(sort)
         .skip(skip)

@@ -14,7 +14,7 @@ const universalAuthMiddleware = async (req, res, next) => {
     if (!token) return res.status(401).json({ message: "Unauthorized" });
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "ofis-square-secret-key");
-    
+
     // Check if it's a user token (admin/staff/member/community/ondemanduser)
     const user = await Users.findById(decoded.id);
     if (user) {
@@ -80,7 +80,7 @@ const universalAuthMiddleware = async (req, res, next) => {
             const building = await Building.findById(decoded.buildingId);
             if (building) req.building = building;
             req.buildingId = decoded.buildingId;
-          } catch (e) {}
+          } catch (e) { }
         }
         req.authType = 'community';
         return next();
@@ -88,8 +88,8 @@ const universalAuthMiddleware = async (req, res, next) => {
 
       // On-demand user: attach guest context
       if (roleName === 'ondemanduser') {
-        // Note: ondemand uses guestId passed via createJWT's clientId param
-        const guestId = decoded.clientId;
+        // Note: ondemand uses guestId (OTP) or clientId (createJWT param)
+        const guestId = decoded.guestId || decoded.clientId;
         if (guestId) {
           const guest = await Guest.findById(guestId);
           if (guest) {

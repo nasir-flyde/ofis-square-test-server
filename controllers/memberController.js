@@ -573,7 +573,7 @@ export const getMemberProfile = async (req, res) => {
       status: { $in: ['booked', 'payment_pending', 'completed'] }
     })
       .populate('room', 'name capacity amenities images')
-      .populate('visitors', 'name email phone company')
+      .populate('visitors', 'name email phone company buildingAccess')
       .sort({ start: -1 })
       .limit(20);
 

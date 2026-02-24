@@ -999,7 +999,11 @@ export const updateLeadDetails = async (req, res) => {
       kindOfWork,
       budget,
       industry,
-      numberOfEmployees
+      numberOfEmployees,
+      moveInTimeline,
+      monthlyBudget,
+      bookATour,
+      gender
     } = req.body;
     let leadId = null;
 
@@ -1026,7 +1030,11 @@ export const updateLeadDetails = async (req, res) => {
       kindOfWork,
       budget,
       industry,
-      numberOfEmployees: numberOfEmployees ? parseInt(numberOfEmployees) : undefined
+      numberOfEmployees: numberOfEmployees ? parseInt(numberOfEmployees) : undefined,
+      moveInTimeline,
+      monthlyBudget,
+      bookATour,
+      gender: gender ? gender.toLowerCase() : undefined
     };
 
     // Remove undefined fields

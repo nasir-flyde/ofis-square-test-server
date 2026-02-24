@@ -116,6 +116,16 @@ export const createDayPassBundle = async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
 
+    // Attach buildingId to guest table for ondemanduser role
+    if (req.user?.roleName?.toLowerCase() === 'ondemanduser' && customerType === 'guest') {
+      try {
+        await Guest.findByIdAndUpdate(customerId, { buildingId: buildingId });
+      } catch (updateErr) {
+        console.warn("Failed to attach buildingId to guest record:", updateErr.message);
+        // Non-blocking: proceed with bundle creation even if guest update fails
+      }
+    }
+
     // Verify building exists and get pricing
     const building = await Building.findById(buildingId);
     if (!building) {

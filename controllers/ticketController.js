@@ -2,6 +2,8 @@ import Ticket from "../models/ticketModel.js";
 import TicketCategory from "../models/ticketCategoryModel.js";
 import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
+import Role from "../models/roleModel.js";
+import Guest from "../models/guestModel.js";
 import mongoose from "mongoose";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
@@ -557,20 +559,24 @@ export const getStaffTickets = async (req, res) => {
 // Get tickets by member ID with detailed information
 export const getTicketsByMember = async (req, res) => {
   try {
-    // Get memberId from middleware or params
-    const memberId = req.memberId || req.member?._id || req.params.memberId;
+    // Get memberId/guestId from middleware or params
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const isOnDemand = roleName === 'ondemanduser';
 
-    if (!memberId) {
+    const memberId = !isOnDemand ? (req.memberId || req.member?._id || req.params.memberId) : null;
+    const guestId = isOnDemand ? (req.guestId || req.guest?._id) : null;
+
+    if (!memberId && !guestId) {
       return res.status(400).json({
         success: false,
-        message: "Member ID is required"
+        message: isOnDemand ? "Guest ID is required" : "Member ID is required"
       });
     }
 
     const { status, priority, category, from, to, limit = 50, page = 1 } = req.query || {};
 
     // Build filter
-    const filter = { createdBy: memberId };
+    const filter = isOnDemand ? { guest: guestId } : { createdBy: memberId };
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
     if (category) filter["category.categoryId"] = category;
@@ -607,6 +613,10 @@ export const getTicketsByMember = async (req, res) => {
           path: 'user',
           select: 'name email phone'
         }
+      })
+      .populate({
+        path: 'guest',
+        select: 'name email phone companyName'
       })
       .populate({
         path: 'client',
@@ -653,7 +663,7 @@ export const getTicketsByMember = async (req, res) => {
         number: ticket.cabin.number,
         floor: ticket.cabin.floor
       } : null,
-      createdBy: {
+      createdBy: ticket.createdBy ? {
         id: ticket.createdBy?._id,
         firstName: ticket.createdBy?.firstName,
         lastName: ticket.createdBy?.lastName,
@@ -661,7 +671,15 @@ export const getTicketsByMember = async (req, res) => {
         email: ticket.createdBy?.email,
         phone: ticket.createdBy?.phone,
         companyName: ticket.createdBy?.companyName
-      },
+      } : (ticket.guest ? {
+        id: ticket.guest._id,
+        firstName: ticket.guest.name?.split(' ')[0],
+        lastName: ticket.guest.name?.split(' ').slice(1).join(' '),
+        name: ticket.guest.name,
+        email: ticket.guest.email,
+        phone: ticket.guest.phone,
+        companyName: ticket.guest.companyName
+      } : null),
       client: ticket.client ? {
         id: ticket.client._id,
         companyName: ticket.client.companyName,

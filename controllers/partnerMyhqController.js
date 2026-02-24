@@ -402,7 +402,7 @@ export async function getBookingDetails(req, res) {
   try {
     const booking = await MeetingBooking.findById(req.params.id)
       .populate('room', 'name')
-      .populate('visitors', 'name email phone bookingRole')
+      .populate('visitors', 'name email phone bookingRole buildingAccess')
       .lean();
     if (!booking) return res.status(404).json({ status: 404, success: false, message: "Invalid Booking ID" });
 

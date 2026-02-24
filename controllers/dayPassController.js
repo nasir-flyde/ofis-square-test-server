@@ -16,6 +16,25 @@ import mongoose from "mongoose";
 import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
+import { recordCancellation } from "./cancelledBookingController.js";
+
+// Helper: convert any date-like to IST Date object (ending in Z for wall-time)
+function toIST(date) {
+  try {
+    const d = new Date(date);
+    const s = d.toLocaleString('en-ZA', { timeZone: 'Asia/Kolkata', hour12: false }).replace(',', 'T').replace(' ', '');
+    const iso = s.replace(/\//g, '-') + 'Z';
+    return new Date(iso);
+  } catch (e) {
+    return new Date(date);
+  }
+}
+
+function startOfDayIST(date) {
+  const d = toIST(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
 
 
 // Helpers: normalize date and check capacity for building/inventory/date
@@ -140,6 +159,16 @@ export const createSingleDayPass = async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
 
+    // Attach buildingId to guest table for ondemanduser role
+    if (req.user?.roleName?.toLowerCase() === 'ondemanduser' && customerType === 'guest') {
+      try {
+        await Guest.findByIdAndUpdate(customerId, { buildingId: buildingId });
+      } catch (updateErr) {
+        console.warn("Failed to attach buildingId to guest record:", updateErr.message);
+        // Non-blocking: proceed with pass creation even if guest update fails
+      }
+    }
+
     // If attempting credit payment, enforce member credit usage permission
     const requestedPaymentMethod = (req.body?.paymentMethod || '').toLowerCase();
     if (requestedPaymentMethod === 'credits') {
@@ -197,9 +226,9 @@ export const createSingleDayPass = async (req, res) => {
 
     // Set booking date (today) and expiry at end of day
     const bookingDate = new Date();
-    const expiresAt = new Date();
-    // Normalize bookingDate to start of day for consistency
-    bookingDate.setHours(0, 0, 0, 0);
+    // If visitDate is provided, set expiresAt to end of that day; otherwise end of current day
+    const expiresAt = parsedVisitDate ? new Date(parsedVisitDate) : new Date();
+    bookingDate.setHours(0, 0, 0, 0); // Normalize bookingDate to start of day for consistency
     expiresAt.setHours(23, 59, 59, 999);
 
     const session = await mongoose.startSession();
@@ -1196,6 +1225,78 @@ export const issueDayPassManual = async (req, res) => {
   } catch (error) {
     console.error('issueDayPassManual error:', error);
     return res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// Cancel day pass booking
+export const cancelDayPass = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pass = await DayPass.findById(id).populate('building');
+
+    if (!pass) return res.status(404).json({ success: false, message: 'Invalid Booking ID' });
+    if (pass.status === 'cancelled') {
+      return res.status(409).json({ success: false, message: 'Booking Already Cancelled' });
+    }
+
+    const now = toIST(new Date());
+    const createdAt = toIST(pass.createdAt || pass.date);
+    const building = pass.building;
+
+    // Cancellation window logic (grace period and cutoff)
+    const graceMinutes = typeof building?.meetingCancellationGraceMinutes === 'number'
+      ? building.meetingCancellationGraceMinutes
+      : parseInt(process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
+
+    const cutoffMinutes = typeof building?.meetingCancellationCutoffMinutes === 'number'
+      ? building.meetingCancellationCutoffMinutes
+      : parseInt(process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
+
+    const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
+
+    // Determine the effective start time on the pass date using building openingTime
+    const baseDate = startOfDayIST(pass.date || now);
+    const [hh, mm] = String(building?.openingTime || '09:00').split(':').map(Number);
+    const startTime = new Date(baseDate);
+    startTime.setHours(hh || 9, mm || 0, 0, 0);
+    const cutoffTime = new Date(startTime.getTime() - cutoffMinutes * 60 * 1000);
+    const beforeCutoff = now.getTime() < cutoffTime.getTime();
+
+    if (!(withinGrace || beforeCutoff)) {
+      return res.status(403).json({ success: false, message: 'Outside Booking Cancellation Window' });
+    }
+
+    pass.status = 'cancelled';
+    await pass.save();
+
+    // Record cancellation snapshot
+    try {
+      const reason = req.body?.reason || req.query?.reason;
+      await recordCancellation(pass, {
+        cancelledBy: req.user?.roleName || 'user',
+        cancellationReason: reason
+      });
+    } catch (e) {
+      console.error('Failed to record cancelled daypass snapshot:', e?.message);
+    }
+
+    // Rollback building-level capacity
+    try {
+      const d = startOfDayIST(pass.date);
+      await DayPassDailyUsage.updateOne(
+        { building: pass.building?._id || pass.building, date: d },
+        { $inc: { bookedCount: -1 } }
+      );
+    } catch (_) { }
+
+    return res.json({
+      success: true,
+      message: 'Booking Cancelled Successfully',
+      data: { booking_id: String(pass._id), status: 'cancelled' }
+    });
+  } catch (e) {
+    console.error('cancelDayPass error:', e);
+    return res.status(500).json({ success: false, message: e.message });
   }
 };
 
