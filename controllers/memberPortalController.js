@@ -1379,6 +1379,17 @@ export const editMember = async (req, res) => {
               // Whitelist new phone
               let bhaifiNew = await BhaifiUser.findOne({ member: id, userName: newUserName, nasId });
 
+              // Fallback: search by userName and nasId to see if they already exist generally (logic from finalApprove/ensuredBhaifi)
+              if (!bhaifiNew) {
+                bhaifiNew = await BhaifiUser.findOne({ userName: newUserName, nasId });
+                if (bhaifiNew) {
+                  // Re-link existing Bhaifi record to this member (re-claim logic)
+                  bhaifiNew.member = id;
+                  bhaifiNew.client = updatedMember.client || null;
+                  await bhaifiNew.save();
+                }
+              }
+
               if (!bhaifiNew) {
                 try {
                   const name = [updatedMember.firstName, updatedMember.lastName].filter(Boolean).join(" ") || updatedMember.companyName || "Member";
@@ -1404,38 +1415,51 @@ export const editMember = async (req, res) => {
                   const isAlreadyExists = status === 409 || status === 400 || msg.includes('already exists') || msg.includes('duplicate');
 
                   if (isAlreadyExists) {
-                    bhaifiNew = await BhaifiUser.create({
-                      member: id,
-                      client: updatedMember.client || null,
-                      email: updatedMember.email,
-                      name: [updatedMember.firstName, updatedMember.lastName].filter(Boolean).join(" "),
-                      userName: newUserName,
-                      nasId,
-                      status: "active",
-                      lastSyncAt: new Date(),
-                    });
+                    // Try searching one last time purely by userName before giving up and creating a duplicate-error record
+                    bhaifiNew = await BhaifiUser.findOne({ userName: newUserName, nasId });
+                    if (bhaifiNew) {
+                      bhaifiNew.member = id;
+                      bhaifiNew.client = updatedMember.client || null;
+                      await bhaifiNew.save();
+                    } else {
+                      bhaifiNew = await BhaifiUser.create({
+                        member: id,
+                        client: updatedMember.client || null,
+                        email: updatedMember.email,
+                        name: [updatedMember.firstName, updatedMember.lastName].filter(Boolean).join(" "),
+                        userName: newUserName,
+                        nasId,
+                        status: "active",
+                        lastSyncAt: new Date(),
+                      });
+                    }
                   }
                 }
               }
 
               // Apply whitelisting
-              if (bhaifiNew) {
-                try {
-                  const contract = await Contract.findOne({ client: updatedMember.client, status: 'active' }).select('endDate');
-                  const startDate = formatDateTime(new Date());
-                  const endDate = contract?.endDate ? endOfDayString(new Date(contract.endDate)) : endOfDayString(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+              // We try whitelisting even if bhaifiNew is null (emergency fallback) as long as we have userName and nasId
+              try {
+                const contract = await Contract.findOne({ client: updatedMember.client, status: 'active' }).select('endDate');
+                const startDateStr = formatDateTime(new Date());
+                const endDateStr = contract?.endDate ? endOfDayString(new Date(contract.endDate)) : endOfDayString(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
 
-                  await bhaifiWhitelist({ nasId, startDate, endDate, userName: newUserName });
+                await bhaifiWhitelist({ nasId, startDate: startDateStr, endDate: endDateStr, userName: newUserName });
+
+                if (bhaifiNew) {
                   bhaifiNew.lastWhitelistedAt = new Date();
                   bhaifiNew.status = "active";
                   await bhaifiNew.save();
-                } catch (whiErr) {
-                  const msg = (whiErr?.response?.data?.message || whiErr?.message || '').toLowerCase();
-                  if (msg.includes('already whitelisted') || msg.includes('already exists')) {
-                    bhaifiNew.lastWhitelistedAt = new Date();
-                    bhaifiNew.status = "active";
-                    await bhaifiNew.save();
-                  }
+                }
+              } catch (whiErr) {
+                const msg = (whiErr?.response?.data?.message || whiErr?.message || '').toLowerCase();
+                const isAlreadyWhitelisted = msg.includes('already whitelisted') || msg.includes('already exists');
+                if (isAlreadyWhitelisted && bhaifiNew) {
+                  bhaifiNew.lastWhitelistedAt = new Date();
+                  bhaifiNew.status = "active";
+                  await bhaifiNew.save();
+                } else {
+                  console.warn(`[BHAIFI] Whitelist attempt failed for ${newUserName} on nasId ${nasId}:`, msg);
                 }
               }
             }
