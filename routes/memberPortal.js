@@ -6,6 +6,7 @@ import {
   getMemberDashboard,
   getMyProfile,
   getHomePageData,
+  getAppHomePageData,
   getMyTickets,
   createMyTicket,
   getMyBookings,
@@ -26,6 +27,7 @@ router.post("/me/notifications/:id/read", universalMiddleware, markNotificationR
 router.post("/me/notifications/read-all", universalMiddleware, markAllNotificationsRead);
 router.get("/me/bookings", universalMiddleware, getMyBookings);
 router.get("/me/home", universalMiddleware, getHomePageData);
+router.get("/me/app-home", universalMiddleware, getAppHomePageData);
 router.get("/me", universalMiddleware, getMyProfile);
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);

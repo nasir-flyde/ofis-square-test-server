@@ -6,14 +6,14 @@ import {
     updatePrivacyPolicy,
     deletePrivacyPolicy
 } from "../controllers/privacyPolicyController.js";
-import { authVerify } from "../middlewares/authVerify.js";
+import authMiddleware from "../middlewares/authVerify.js";
 
 const router = express.Router();
 
-router.post("/", authVerify, createPrivacyPolicy);
+router.post("/", authMiddleware, createPrivacyPolicy);
 router.get("/", getPrivacyPolicies);
 router.get("/:id", getPrivacyPolicyById);
-router.put("/:id", authVerify, updatePrivacyPolicy);
-router.delete("/:id", authVerify, deletePrivacyPolicy);
+router.put("/:id", authMiddleware, updatePrivacyPolicy);
+router.delete("/:id", authMiddleware, deletePrivacyPolicy);
 
 export default router;

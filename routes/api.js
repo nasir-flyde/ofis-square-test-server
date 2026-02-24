@@ -62,6 +62,7 @@ import templateDesignRoutes from "./templateDesigns.js";
 import migrationRoutes from "./migration.js";
 import cityRoutes from "./cityRoutes.js";
 import appNotificationsRoutes from "./appNotifications.js";
+import privacyPolicyRoutes from "./privacyPolicyRoutes.js";
 
 const router = express.Router();
 
@@ -129,4 +130,5 @@ router.use("/migration", migrationRoutes);
 router.use("/cities", cityRoutes);
 router.use("/tours", tourRoutes);
 router.use("/appnotifications", appNotificationsRoutes);
+router.use("/privacy-policies", privacyPolicyRoutes);
 export default router;

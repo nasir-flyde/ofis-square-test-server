@@ -952,7 +952,14 @@ export const getHomePageData = async (req, res) => {
 
       if (bookingQuery) {
         const rawBookings = await MeetingBooking.find(bookingQuery)
-          .populate('room', 'name images')
+          .populate({
+            path: 'room',
+            select: 'name images building',
+            populate: {
+              path: 'building',
+              select: 'name address'
+            }
+          })
           .select('room start end status member client');
 
         const fmt = (d) => {
@@ -965,6 +972,8 @@ export const getHomePageData = async (req, res) => {
           _id: b._id,
           roomId: b.room?._id,
           roomName: b.room?.name,
+          roomBuildingName: b.room?.building?.name,
+          roomBuildingAddress: b.room?.building?.address,
           image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
           start: b.start,
           end: b.end,
@@ -1006,6 +1015,230 @@ export const getHomePageData = async (req, res) => {
 
   } catch (err) {
     console.error("getHomePageData error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+// Get App Homepage Data (No Notifications)
+export const getAppHomePageData = async (req, res) => {
+  try {
+    const roleName = String((req.userRole?.roleName || req.user?.roleName || '')).toLowerCase();
+    const authType = String(req.authType || '').toLowerCase();
+    const isClient = roleName === 'client' || roleName === 'clients' || authType === 'client' || authType === 'clients';
+
+    let name = "";
+    let cabinNumber = null;
+    let buildingName = null;
+    let membershipStatus = null;
+    let companyName = null;
+    let contractData = null;
+    let cabinType = null;
+    let buildingOpeningTime = null;
+    let buildingClosingTime = null;
+
+    // --- 1. Identify User & Basic Info ---
+    if (isClient) {
+      if (req.client) {
+        name = req.client.primaryFirstName || req.client.companyName || "Client";
+        membershipStatus = req.client.membershipStatus || "active";
+        companyName = req.client.companyName
+
+        // Find cabin allocated to this client
+        const cabin = await Cabin.findOne({
+          allocatedTo: req.client._id,
+          status: { $ne: 'released' }
+        }).populate('building', 'name openingTime closingTime');
+
+        if (cabin) {
+          cabinNumber = cabin.number;
+          buildingName = cabin.building?.name;
+          cabinType = cabin.type || null;
+          buildingOpeningTime = cabin.building?.openingTime || null;
+          buildingClosingTime = cabin.building?.closingTime || null;
+        }
+      }
+    } else {
+      // Member
+      const member = await Member.findById(req.memberId)
+        .populate({
+          path: 'desk',
+          populate: { path: 'cabin', select: 'number type category' }
+        })
+        .populate({
+          path: 'client',
+          select: 'membershipStatus building companyName',
+          populate: { path: 'building', select: 'name openingTime closingTime' }
+        });
+
+      if (member) {
+        name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
+        membershipStatus = member.client?.membershipStatus || "active";
+        companyName = member.client?.companyName || companyName;
+
+        if (member.desk) {
+          cabinNumber = member.desk.cabin?.number;
+          buildingName = member.client?.building?.name;
+          cabinType = member.desk.cabin?.type || null;
+          buildingOpeningTime = member.client?.building?.openingTime || null;
+          buildingClosingTime = member.client?.building?.closingTime || null;
+        } else if (member.client && member.client.building) {
+          buildingName = member.client.building.name;
+          buildingOpeningTime = member.client.building.openingTime || null;
+          buildingClosingTime = member.client.building.closingTime || null;
+        }
+      }
+    }
+
+    // --- Fetch Active Contract ---
+    if (req.clientId) {
+      try {
+        const contract = await Contract.findOne({
+          client: req.clientId,
+          status: 'active'
+        }).select('monthlyRent capacity escalation startDate').lean();
+
+        if (contract) {
+          let escalationDueInMonths = null;
+          if (contract.escalation && contract.escalation.frequencyMonths && contract.startDate) {
+            const startDate = new Date(contract.startDate);
+            const frequencyMonths = contract.escalation.frequencyMonths;
+            const today = new Date();
+            const monthsSinceStart = (today.getFullYear() - startDate.getFullYear()) * 12 +
+              (today.getMonth() - startDate.getMonth());
+            const nextEscalationMonths = Math.ceil((monthsSinceStart + 1) / frequencyMonths) * frequencyMonths;
+            escalationDueInMonths = nextEscalationMonths - monthsSinceStart;
+          }
+
+          contractData = {
+            monthlyRent: contract.monthlyRent || null,
+            capacity: contract.capacity || null,
+            escalationDueInMonths
+          };
+        }
+      } catch (contractErr) {
+        console.warn('Failed to fetch contract data:', contractErr);
+      }
+    }
+
+    // --- 2. Upcoming Events ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(today);
+    endOfToday.setHours(23, 59, 59, 999);
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + 7);
+
+    const baseEventQuery = {
+      status: 'published',
+      endDate: { $gte: today }
+    };
+
+    const [todaysEvents, weeksEvents, allEvents] = await Promise.all([
+      Event.find({
+        ...baseEventQuery,
+        startDate: { $gte: today, $lte: endOfToday }
+      })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: 1 }),
+
+      Event.find({
+        ...baseEventQuery,
+        startDate: { $gte: today, $lte: endOfWeek }
+      })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: 1 }),
+
+      Event.find({ status: 'published' })
+        .select('title description startDate endDate location thumbnail mainImage category')
+        .populate('location.building', 'name')
+        .sort({ startDate: -1 })
+        .limit(50)
+    ]);
+
+    // --- 3. Today's Meeting Room Bookings ---
+    let bookingsToday = [];
+    try {
+      let bookingQuery = null;
+      if (isClient && req.clientId) {
+        bookingQuery = {
+          client: req.clientId,
+          start: { $gte: today, $lte: endOfToday },
+          status: { $ne: 'cancelled' }
+        };
+      } else if (!isClient && req.memberId) {
+        bookingQuery = {
+          member: req.memberId,
+          start: { $gte: today, $lte: endOfToday },
+          status: { $ne: 'cancelled' }
+        };
+      }
+
+      if (bookingQuery) {
+        const rawBookings = await MeetingBooking.find(bookingQuery)
+          .populate({
+            path: 'room',
+            select: 'name images building',
+            populate: {
+              path: 'building',
+              select: 'name address'
+            }
+          })
+          .select('room start end status member client');
+
+        const fmt = (d) => {
+          try {
+            return new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+          } catch { return null; }
+        };
+
+        bookingsToday = rawBookings.map(b => ({
+          _id: b._id,
+          roomId: b.room?._id,
+          roomName: b.room?.name,
+          roomBuildingName: b.room?.building?.name,
+          roomBuildingAddress: b.room?.building?.address,
+          image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+          start: b.start,
+          end: b.end,
+          slot: `${fmt(b.start)} - ${fmt(b.end)}`,
+          status: b.status,
+          bookedByMember: b.member,
+          bookedByClient: b.client
+        }));
+      }
+    } catch (e) {
+      console.warn('getAppHomePageData: failed to fetch todays bookings', e?.message || e);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        profile: {
+          name,
+          memberId: req.memberId || null,
+          companyName,
+          cabinNumber,
+          buildingName,
+          membershipStatus,
+          role: isClient ? 'client' : 'member',
+          contract: contractData,
+          cabinType,
+          buildingOpeningTime,
+          buildingClosingTime
+        },
+        events: {
+          today: todaysEvents,
+          thisWeek: weeksEvents,
+          all: allEvents
+        },
+        bookingsToday
+      }
+    });
+
+  } catch (err) {
+    console.error("getAppHomePageData error:", err);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
