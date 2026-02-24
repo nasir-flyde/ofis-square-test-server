@@ -589,7 +589,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
         if (hasReservedConflict) continue;
 
         // Inject from cache
-        room.building = buildingMap.get(room.building.toString());
+        const b = buildingMap.get(room.building.toString());
+        room.building = b ? { name: b.name } : { name: null };
         room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
 
         availableRooms.push(room);
@@ -613,7 +614,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           room.availableTimeSlots = availableSlots;
 
           // Inject from cache
-          room.building = buildingMap.get(room.building.toString());
+          const b = buildingMap.get(room.building.toString());
+          room.building = b ? { name: b.name } : { name: null };
           room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
 
           availableRooms.push(room);
