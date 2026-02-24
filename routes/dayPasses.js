@@ -11,6 +11,7 @@ import {
   updateVisitorDraft,
   issueDayPassManual,
   getAvailability,
+  cancelDayPass,
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -30,6 +31,7 @@ router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
 router.post("/:dayPassId/issue", issueDayPassManual);
 router.get("/user/:customerId", getUserDayPasses);
 router.get("/:dayPassId", getDayPassDetails);
+router.put("/:id/cancel", authMiddleware, cancelDayPass);
 
 // Bundle Routes
 router.post("/bundles", authMiddleware, createDayPassBundle);

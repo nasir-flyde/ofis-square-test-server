@@ -69,6 +69,12 @@ const visitorSchema = new Schema(
     // profile picture
     profile_picture: { type: String, trim: true },
 
+    // Building access flags
+    buildingAccess: {
+      wifiAccess: { type: Boolean, default: false },
+      matrixAccess: { type: Boolean, default: false }
+    },
+
     // Soft delete
     deletedAt: { type: Date, index: true },
     deletedBy: { type: Schema.Types.ObjectId, ref: "User" },

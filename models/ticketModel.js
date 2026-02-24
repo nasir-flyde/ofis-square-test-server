@@ -17,6 +17,7 @@ const ticketSchema = new mongoose.Schema(
     latestUpdate: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "Member" },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
+    guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", index: true },
     images: { type: [String], default: [] },
   },
   { timestamps: true, collection: "tickets" }

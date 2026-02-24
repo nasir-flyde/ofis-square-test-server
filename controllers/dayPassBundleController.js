@@ -10,6 +10,7 @@ import crypto from "crypto";
 import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
+import DiscountBundle from "../models/discountBundleModel.js";
 
 
 // Create a new day pass bundle
@@ -25,7 +26,8 @@ export const createDayPassBundle = async (req, res) => {
       splitSelf = 0,
       splitOther = 0,
       datesSelf = [],
-      datesOther = []
+      datesOther = [],
+      discountBundleId
     } = req.body;
 
     // Automate customerId from token if not provided
@@ -137,7 +139,35 @@ export const createDayPassBundle = async (req, res) => {
     if (!pricePerPass) {
       return res.status(400).json({ error: 'Day pass price not configured for this building' });
     }
-    const baseAmount = pricePerPass * no_of_dayPasses;
+
+    let baseAmount = pricePerPass * no_of_dayPasses;
+    let appliedDiscount = 0;
+    let discountBundle = null;
+
+    if (discountBundleId) {
+      discountBundle = await DiscountBundle.findById(discountBundleId);
+      if (!discountBundle) {
+        return res.status(404).json({ error: "Discount bundle not found" });
+      }
+      if (!discountBundle.isActive) {
+        return res.status(400).json({ error: "Discount bundle is not active" });
+      }
+      // Verify building (allow global or building-specific)
+      if (discountBundle.building && String(discountBundle.building) !== String(buildingId)) {
+        return res.status(400).json({ error: "Discount bundle is not valid for this building" });
+      }
+
+      // Find applicable discount for the number of day passes
+      const bundleConfig = discountBundle.bundles.find(b => b.no_of_day_passes === no_of_dayPasses);
+      if (bundleConfig) {
+        appliedDiscount = bundleConfig.discount_percentage;
+        const discountAmount = (baseAmount * appliedDiscount) / 100;
+        baseAmount -= discountAmount;
+      } else {
+        return res.status(400).json({ error: `Selected discount bundle does not have a config for ${no_of_dayPasses} day passes` });
+      }
+    }
+
     const gstRate = 18; // Apply 18% GST
     const taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
     const finalAmount = Math.round(((baseAmount + taxAmount)) * 100) / 100;
@@ -216,6 +246,7 @@ export const createDayPassBundle = async (req, res) => {
         totalAmount: finalAmount,
         validFrom,
         validUntil,
+        discountBundle: discountBundleId || null,
         notes
       });
 
@@ -237,6 +268,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           status: "payment_pending",
+          discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
         dayPasses.push(dayPass);
@@ -255,6 +287,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           status: "payment_pending",
+          discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
         dayPasses.push(dayPass);

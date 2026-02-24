@@ -9,13 +9,14 @@ const dayPassSchema = new Schema(
     member: { type: Schema.Types.ObjectId, ref: "Member", default: null },
     building: { type: Schema.Types.ObjectId, ref: "Building", required: true },
     bundle: { type: Schema.Types.ObjectId, ref: "DayPassBundle", default: null }, // null for single passes
+    discountBundle: { type: Schema.Types.ObjectId, ref: "DiscountBundle", default: null },
     // Inventory reference (subdocument _id from Building.dayPassInventories)
     inventoryId: { type: String, index: true },
-    
+
     // Pass details
     date: { type: Date, default: null },
-    visitDate: { type: Date, default: null }, 
-    bookingFor: { type: String, enum: ["self", "other"], default: "self" }, 
+    visitDate: { type: Date, default: null },
+    bookingFor: { type: String, enum: ["self", "other"], default: "self" },
     expiresAt: { type: Date, required: true },
     price: { type: Number, required: true },
     currency: { type: String },
@@ -35,7 +36,7 @@ const dayPassSchema = new Schema(
     visitorEmail: { type: String },
     visitorCompany: { type: String },
     purpose: { type: String },
-    
+
     // Draft visitor details for "other" bookings before issuance
     visitorDetailsDraft: {
       name: { type: String },
@@ -49,30 +50,30 @@ const dayPassSchema = new Schema(
     expectedArrivalTime: { type: Date },
     expectedDepartureTime: { type: Date },
     qrExpiresAt: { type: Date },
-    
+
     // Check-in/out tracking
     checkInTime: { type: Date },
     checkOutTime: { type: Date },
-    
+
     // Financial
     invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
     payment: { type: Schema.Types.ObjectId, ref: "Payment" },
-    
+
     // Building access flags
     buildingAccess: {
       wifiAccess: { type: Boolean, default: false },
       accessControl: { type: Boolean, default: false }
     },
-    
+
     // Additional info
     notes: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     externalSource: { type: String, index: true },
     referenceNumber: { type: String, index: true },
   },
-  { 
-    timestamps: true, 
-    collection: "daypasses" 
+  {
+    timestamps: true,
+    collection: "daypasses"
   }
 );
 

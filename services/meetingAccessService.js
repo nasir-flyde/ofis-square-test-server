@@ -26,7 +26,7 @@ const normalizePhoneToUserName = (phone) => {
 };
 
 const pad2 = (n) => String(n).padStart(2, '0');
-const fmt = (d) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+const fmt = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 
 export async function provisionAccessForMeetingBooking({ bookingId }) {
   // Load booking with relations
@@ -84,7 +84,10 @@ export async function provisionAccessForMeetingBooking({ bookingId }) {
           });
         }
         await bhaifiWhitelist({ nasId: bhaifi.nasId || nasId, startDate: startDateString, endDate: endDateString, userName: vUserName });
-        try { await MeetingBooking.findByIdAndUpdate(booking._id, { $set: { 'buildingAccess.wifiAccess': true } }); } catch {}
+        try {
+          await MeetingBooking.findByIdAndUpdate(booking._id, { $set: { 'buildingAccess.wifiAccess': true } });
+          await Visitor.findByIdAndUpdate(v._id, { $set: { 'buildingAccess.wifiAccess': true } });
+        } catch { }
       }
     } catch (e) {
       console.warn('[MeetingAccess][Bhaifi][Visitor] Failed', { bookingId: String(booking._id), visitorId: String(v?._id || ''), message: e?.message });
@@ -131,8 +134,11 @@ export async function provisionAccessForMeetingBooking({ bookingId }) {
           }
         }
         if (assigned > 0) {
-          try { await MatrixUser.findByIdAndUpdate(mu._id, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch {}
-          try { await MeetingBooking.findByIdAndUpdate(booking._id, { $set: { 'buildingAccess.matrixAccess': true } }); } catch {}
+          try {
+            await MatrixUser.findByIdAndUpdate(mu._id, { $set: { isDeviceAssigned: true, isEnrolled: true } });
+            await MeetingBooking.findByIdAndUpdate(booking._id, { $set: { 'buildingAccess.matrixAccess': true } });
+            await Visitor.findByIdAndUpdate(v._id, { $set: { 'buildingAccess.matrixAccess': true } });
+          } catch { }
         }
       }
     } catch (e) {
@@ -183,7 +189,7 @@ export async function revokeAccessForMeetingBooking({ bookingId }) {
   }
 
   // Mark booking buildingAccess flags to false (best-effort)
-  try { await MeetingBooking.findByIdAndUpdate(bookingId, { $set: { 'buildingAccess.wifiAccess': false, 'buildingAccess.matrixAccess': false } }); } catch (_) {}
+  try { await MeetingBooking.findByIdAndUpdate(bookingId, { $set: { 'buildingAccess.wifiAccess': false, 'buildingAccess.matrixAccess': false } }); } catch (_) { }
 
   // Bhaifi dewhitelist for each visitor (best-effort)
   try {
