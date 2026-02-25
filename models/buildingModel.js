@@ -16,6 +16,8 @@ const BuildingSchema = new Schema(
     meetingCancellationGraceMinutes: { type: Number, min: 0, default: 5 },
     // Building-level cutoff (minutes before start) after which cancellations are not allowed
     meetingCancellationCutoffMinutes: { type: Number, min: 0, default: 60 },
+    // Timeout (in minutes) for payment_pending bookings before auto-cancellation
+    meetingPaymentPendingTimeoutMinutes: { type: Number, min: 0, default: 10 },
     location: {
       type: {
         type: String,

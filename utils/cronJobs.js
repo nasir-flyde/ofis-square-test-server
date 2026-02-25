@@ -200,4 +200,60 @@ const scheduleGstTokenRefresh = () => {
   console.log('GST token refresh cron job scheduled for 00:00 AM daily (IST)');
 };
 
-export { scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs, scheduleGstTokenRefresh };
+const scheduleMeetingBookingCleanup = () => {
+  cron.schedule('*/2 * * * *', async () => {
+    try {
+      // Lazy load to avoid circular dependencies if any
+      const MeetingBooking = (await import('../models/meetingBookingModel.js')).default;
+      const MeetingRoom = (await import('../models/meetingRoomModel.js')).default;
+      const { buildingMap } = await import('./cache.js');
+
+      const pendingBookings = await MeetingBooking.find({ status: 'payment_pending' })
+        .populate({ path: 'room', select: 'building' })
+        .lean();
+
+      if (!pendingBookings.length) return;
+
+      const now = new Date();
+      const expiredIds = [];
+
+      for (const b of pendingBookings) {
+        if (!b.room || !b.room.building) continue;
+        const bldgId = b.room.building.toString();
+        const bldg = buildingMap.get(bldgId);
+        const timeout = bldg?.meetingPaymentPendingTimeoutMinutes ?? 10;
+        const expiryTime = new Date(new Date(b.createdAt).getTime() + timeout * 60000);
+
+        if (now > expiryTime) {
+          expiredIds.push(b._id);
+        }
+      }
+
+      if (expiredIds.length > 0) {
+        await MeetingBooking.updateMany(
+          { _id: { $in: expiredIds } },
+          { $set: { status: 'cancelled' } }
+        );
+        console.log(`[cronJobs] Auto-cancelled ${expiredIds.length} expired payment-pending bookings`);
+      }
+    } catch (error) {
+      console.error('Error in meeting booking cleanup cron job:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+
+  console.log('Meeting booking cleanup cron job scheduled for every 2 minutes');
+};
+
+export {
+  scheduleNoShowUpdates,
+  scheduleMonthlyInvoices,
+  scheduleZohoTokenRefresh,
+  scheduleAccessEnforcement,
+  schedulePaymentReminders,
+  scheduleLateFeeJobs,
+  scheduleGstTokenRefresh,
+  scheduleMeetingBookingCleanup
+};

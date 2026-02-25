@@ -464,6 +464,8 @@ export const toggleBookingStatus = async (req, res) => {
 };
 
 // Get available meeting rooms by date and time range
+const TZ_OFFSET_MINUTES = 330; // IST = UTC + 5:30
+
 export const getAvailableRoomsByTime = async (req, res) => {
   try {
     const {
@@ -474,22 +476,37 @@ export const getAvailableRoomsByTime = async (req, res) => {
       minCapacity,
       capacity,
       floor,
-      amenities
+      amenities,
+      limit
     } = req.query;
 
     if (!date) {
       return res.status(400).json({ success: false, message: "Date is required" });
     }
 
+    // Dynamic Limit Calculation
+    const MAX_LIMIT = 200;
+    const DEFAULT_LIMIT = 20;
+    let finalLimit = parseInt(limit) || DEFAULT_LIMIT;
+    if (finalLimit > MAX_LIMIT) finalLimit = MAX_LIMIT;
+    if (finalLimit <= 0) finalLimit = DEFAULT_LIMIT;
+
     const timesProvided = Boolean(startTime && endTime);
 
-    // ---- FAST DATE PARSE (NO toLocaleString COST) ----
+    // ---- ROBUST DATE PARSE ----
     const targetDate = new Date(date);
-    targetDate.setHours(0, 0, 0, 0);
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date format" });
+    }
 
-    const dayStart = new Date(targetDate);
-    const dayEnd = new Date(targetDate);
-    dayEnd.setDate(dayEnd.getDate() + 1);
+    // BASE IST DAY CALCULATION
+    // Input date "YYYY-MM-DD" is parsed as UTC midnight.
+    // IST midnight of that day = UTC - 5:30 (previous day 18:30)
+    const dayStart = new Date(targetDate.getTime());
+    dayStart.setUTCMinutes(dayStart.getUTCMinutes() - TZ_OFFSET_MINUTES);
+
+    const dayEnd = new Date(dayStart.getTime());
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
 
     let requestedStart, requestedEnd;
 
@@ -497,11 +514,13 @@ export const getAvailableRoomsByTime = async (req, res) => {
       const [sh, sm] = startTime.split(":").map(Number);
       const [eh, em] = endTime.split(":").map(Number);
 
-      requestedStart = new Date(targetDate);
-      requestedStart.setHours(sh, sm, 0, 0);
+      requestedStart = new Date(targetDate.getTime());
+      requestedStart.setUTCHours(sh, sm, 0, 0);
+      requestedStart.setUTCMinutes(requestedStart.getUTCMinutes() - TZ_OFFSET_MINUTES);
 
-      requestedEnd = new Date(targetDate);
-      requestedEnd.setHours(eh, em, 0, 0);
+      requestedEnd = new Date(targetDate.getTime());
+      requestedEnd.setUTCHours(eh, em, 0, 0);
+      requestedEnd.setUTCMinutes(requestedEnd.getUTCMinutes() - TZ_OFFSET_MINUTES);
 
       if (requestedStart >= requestedEnd) {
         return res.status(400).json({
@@ -511,41 +530,55 @@ export const getAvailableRoomsByTime = async (req, res) => {
       }
     }
 
-    // ---- ROOM FILTER ----
+    // ---- ROOM FILTER & SANITIZATION ----
     const roomFilter = { status: "active" };
 
-    if (building) roomFilter.building = building;
+    // Prevent NoSQL injection by ensuring inputs are strings
+    if (typeof building === 'string') roomFilter.building = building;
+    else if (building) return res.status(400).json({ success: false, message: "Invalid building format" });
 
     const cap = capacity || minCapacity;
-    if (cap) roomFilter.capacity = { $gte: Number(cap) };
+    if (cap) {
+      const capNum = Number(cap);
+      if (Number.isFinite(capNum)) roomFilter.capacity = { $gte: capNum };
+      else return res.status(400).json({ success: false, message: "Invalid capacity" });
+    }
 
-    if (floor) roomFilter.floor = floor;
+    if (typeof floor === 'string') roomFilter.floor = floor;
+    else if (floor) return res.status(400).json({ success: false, message: "Invalid floor format" });
 
     if (amenities) {
       const amenityIds = Array.isArray(amenities)
         ? amenities
-        : amenities.split(",");
-      roomFilter.amenities = { $all: amenityIds };
+        : typeof amenities === 'string' ? amenities.split(",") : [];
+      if (amenityIds.length) roomFilter.amenities = { $all: amenityIds };
     }
 
-    // ---- FETCH ROOMS (LEAN + PROJECTION) ----
+    // ---- FETCH ROOMS (LEAN + PROJECTION + LIMIT) ----
     const rooms = await MeetingRoom.find(roomFilter)
       .select(
         "name capacity floor building amenities blackoutDates reservedSlots availableTimeSlots isBookingClosed"
       )
+      .limit(finalLimit)
       .lean();
+
+    const truncated = rooms.length === finalLimit;
 
     if (!rooms.length) {
       return res.json({ success: true, rooms: [], count: 0 });
     }
 
+    const roomIds = rooms.map(r => r._id);
+
     // ---- FETCH BOOKINGS (ONLY RELEVANT ONES) ----
     const bookingQuery = timesProvided
       ? {
+        room: { $in: roomIds },
         start: { $lt: requestedEnd },
         end: { $gt: requestedStart }
       }
       : {
+        room: { $in: roomIds },
         start: { $lt: dayEnd },
         end: { $gt: dayStart }
       };
@@ -559,79 +592,154 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
     // ---- GROUP BOOKINGS BY ROOM ----
     const bookingsByRoom = new Map();
-    for (const b of bookings) {
-      const key = String(b.room);
+    for (const booking of bookings) {
+      const key = String(booking.room);
       if (!bookingsByRoom.has(key)) bookingsByRoom.set(key, []);
-      bookingsByRoom.get(key).push(b);
+      bookingsByRoom.get(key).push(booking);
     }
 
     const timeOverlap = (s1, e1, s2, e2) =>
       s1 < e2 && e1 > s2;
 
+    const parse12h = (timeStr, baseDate) => {
+      const match = timeStr?.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (!match) return new Date(NaN);
+      let [_, hours, minutes, modifier] = match;
+      hours = parseInt(hours, 10);
+      minutes = parseInt(minutes, 10);
+      if (hours === 12) hours = (modifier.toUpperCase() === 'AM' ? 0 : 12);
+      else if (modifier.toUpperCase() === 'PM') hours += 12;
+
+      const d = new Date(baseDate.getTime());
+      d.setUTCHours(hours, minutes, 0, 0);
+      d.setUTCMinutes(d.getUTCMinutes() - TZ_OFFSET_MINUTES);
+      return d;
+    };
+
     const availableRooms = [];
+    const targetDateISO = targetDate.toISOString().split('T')[0];
 
     for (const room of rooms) {
       if (room.isBookingClosed) continue;
 
+      // ---- BLACKOUT DATES CHECK ----
+      if (Array.isArray(room.blackoutDates)) {
+        const isBlackout = room.blackoutDates.some(bd => {
+          const bdDate = new Date(bd);
+          return !isNaN(bdDate.getTime()) && bdDate.toISOString().split('T')[0] === targetDateISO;
+        });
+        if (isBlackout) continue;
+      }
+
       const roomBookings = bookingsByRoom.get(String(room._id)) || [];
+
+      // Mapper for response object (avoids mutation)
+      let integrityError = false;
+      const formatResponseRoom = (r, slots = null) => {
+        const bldgId = r.building.toString();
+        const bldg = buildingMap.get(bldgId);
+        if (!bldg && buildingMap.size > 0) {
+          console.warn(`[getAvailableRoomsByTime] Cache miss for building ${bldgId}`);
+        }
+
+        const fLabel = formatFloorLabel(r.floor);
+        return {
+          ...r,
+          building: bldg ? { name: bldg.name } : { name: null },
+          amenities: r.amenities.map(id => amenityMap.get(id.toString())).filter(Boolean),
+          floor: fLabel ? `${fLabel} floor` : r.floor,
+          availableTimeSlots: slots || r.availableTimeSlots
+        };
+      };
 
       if (timesProvided) {
         // TIME RANGE MODE
-
         if (roomBookings.length) continue;
 
         const hasReservedConflict = room.reservedSlots?.some(slot => {
-          const slotStart = new Date(slot.start);
-          const slotEnd = new Date(slot.end);
-          return timeOverlap(requestedStart, requestedEnd, slotStart, slotEnd);
+          const slotDateStr = slot.dateISTYMD || (slot.date ? new Date(slot.date).toISOString().split('T')[0] : null);
+          if (slotDateStr !== targetDateISO) return false;
+
+          const resvStart = parse12h(slot.startTime, targetDate);
+          const resvEnd = parse12h(slot.endTime, targetDate);
+
+          if (isNaN(resvStart.getTime()) || isNaN(resvEnd.getTime())) {
+            console.error(`[getAvailableRoomsByTime] Data Integrity Error: Malformed slot in room ${room._id}`);
+            integrityError = true;
+            return true;
+          }
+          return timeOverlap(requestedStart, requestedEnd, resvStart, resvEnd);
         });
 
-        if (hasReservedConflict) continue;
+        if (integrityError || hasReservedConflict) continue;
 
-        // Inject from cache
-        const b = buildingMap.get(room.building.toString());
-        room.building = b ? { name: b.name } : { name: null };
-        room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
-        const fLabel = formatFloorLabel(room.floor);
-        if (fLabel) room.floor = `${fLabel} floor`;
-
-        availableRooms.push(room);
+        availableRooms.push(formatResponseRoom(room));
       } else {
         // DAILY MODE
-
         let availableSlots = room.availableTimeSlots || [];
 
+        // Filter against bookings
         if (roomBookings.length) {
           availableSlots = availableSlots.filter(slot => {
-            const slotStart = new Date(slot.start);
-            const slotEnd = new Date(slot.end);
+            const slotStart = parse12h(slot.startTime, targetDate);
+            const slotEnd = parse12h(slot.endTime, targetDate);
 
-            return !roomBookings.some(b =>
-              timeOverlap(slotStart, slotEnd, b.start, b.end)
+            if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) {
+              integrityError = true;
+              return false;
+            }
+
+            return !roomBookings.some(booking =>
+              timeOverlap(slotStart, slotEnd, booking.start, booking.end)
             );
           });
         }
+        if (integrityError) continue;
+
+        // Filter against reservedSlots
+        const dailyReserved = (room.reservedSlots || []).filter(slot => {
+          const slotDateStr = slot.dateISTYMD || (slot.date ? new Date(slot.date).toISOString().split('T')[0] : null);
+          return slotDateStr === targetDateISO;
+        });
+
+        if (availableSlots.length && dailyReserved.length) {
+          availableSlots = availableSlots.filter(slot => {
+            const slotStart = parse12h(slot.startTime, targetDate);
+            const slotEnd = parse12h(slot.endTime, targetDate);
+
+            if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) {
+              integrityError = true;
+              return false;
+            }
+
+            return !dailyReserved.some(resv => {
+              const resvStart = parse12h(resv.startTime, targetDate);
+              const resvEnd = parse12h(resv.endTime, targetDate);
+              if (isNaN(resvStart.getTime()) || isNaN(resvEnd.getTime())) {
+                integrityError = true;
+                return true;
+              }
+              return timeOverlap(slotStart, slotEnd, resvStart, resvEnd);
+            });
+          });
+        }
+        if (integrityError) {
+          console.error(`[getAvailableRoomsByTime] Data Integrity Error: Skipping room ${room._id} due to malformed slots`);
+          continue;
+        }
 
         if (availableSlots.length > 0) {
-          room.availableTimeSlots = availableSlots;
-
-          // Inject from cache
-          const b = buildingMap.get(room.building.toString());
-          room.building = b ? { name: b.name } : { name: null };
-          room.amenities = room.amenities.map(id => amenityMap.get(id.toString()));
-          const fLabel = formatFloorLabel(room.floor);
-          if (fLabel) room.floor = `${fLabel} floor`;
-
-          availableRooms.push(room);
+          availableRooms.push(formatResponseRoom(room, availableSlots));
         }
       }
     }
 
     return res.json({
       success: true,
-      date: targetDate,
+      date: targetDate, // Already sanitized Date object
       rooms: availableRooms,
-      count: availableRooms.length
+      count: availableRooms.length,
+      truncated
     });
 
   } catch (error) {
