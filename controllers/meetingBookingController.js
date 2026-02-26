@@ -191,16 +191,17 @@ function parseISTDateTime(input) {
 // Create booking with conflict and availability checks
 export const createBooking = async (req, res) => {
   try {
+    const body = req.body || {};
+    // Extract with fallbacks for camel/snake case
+    const roomId = body.room || body.room_id;
+    const memberId = body.memberId || body.member_id || body.member;
+    const client = body.client || body.client_id;
+    const paymentMethod = body.paymentMethod || body.payment_method;
+    const start = body.start || body.start_time;
+    const end = body.end || body.end_time;
     const {
-      room: roomId,
-      member,
-      memberId,
-      client,
-      paymentMethod,
       idempotencyKey,
       visitors,
-      start,
-      end,
       amenitiesRequested,
       currency,
       amount,
@@ -216,7 +217,7 @@ export const createBooking = async (req, res) => {
       guests, // array of { name, email, phone }
       guest: bodyGuest,
       guestId: bodyGuestId
-    } = req.body || {};
+    } = body;
 
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
@@ -232,6 +233,29 @@ export const createBooking = async (req, res) => {
     if (durationMinutes < 30) {
       return res.status(400).json({ success: false, message: "Booking time slot must be at least 30 minutes." });
     }
+
+    // Top-Level Idempotency Check (General/External)
+    const effectiveIdempotencyKey = idempotencyKey || (externalSource && referenceNumber ? `${externalSource}-${referenceNumber}` : null);
+    if (effectiveIdempotencyKey) {
+      const orConditions = [{ 'payment.idempotencyKey': effectiveIdempotencyKey }];
+      if (externalSource && referenceNumber) {
+        orConditions.push({ externalSource, referenceNumber });
+      }
+
+      const existingBooking = await MeetingBooking.findOne({
+        $or: orConditions,
+        payment: { $exists: true } // Ensure it's not a generic query match
+      }).populate('room');
+
+      if (existingBooking) {
+        return res.status(201).json({
+          success: true,
+          message: "Booking already processed (idempotent return)",
+          data: { bookingId: existingBooking._id, status: existingBooking.status }
+        });
+      }
+    }
+
     // Determine member/client/guest context (admin flow may not have a member)
     const roleName = String(req.user?.roleName || req.authType || '').toLowerCase();
     const currentMemberId = req.memberId || memberId || null;
@@ -284,6 +308,9 @@ export const createBooking = async (req, res) => {
     const room = await MeetingRoom.findById(roomId).populate('building');
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
+    // Validate availability constraints (hours, blackout dates, etc)
+    // Note: checkAvailability still checks basic rules, but the actual atomic conflict
+    // prevention happens during creation below.
     const avail = await checkAvailability(room, startDt, endDt);
     if (!avail.ok) return res.status(400).json({ success: false, message: avail.reason });
 
@@ -421,7 +448,7 @@ export const createBooking = async (req, res) => {
         return res.status(400).json({
           success: false,
           code: "INSUFFICIENT_CREDITS",
-          message: `Insufficient credits. Required: ${requiredCredits}, Available: ${currentBalance}`,
+          message: `Insufficient credits to complete this booking. Required: ${requiredCredits}, Available: ${currentBalance}. Please top up your wallet.`,
           required: requiredCredits,
           available: currentBalance
         });
@@ -429,22 +456,29 @@ export const createBooking = async (req, res) => {
 
 
       // Consume credits with overdraft support
-      const result = await WalletService.consumeCreditsWithOverdraft({
-        clientId,
-        memberId: currentMemberId,
-        requiredCredits,
-        idempotencyKey,
-        refType: "meeting_booking",
-        refId: new mongoose.Types.ObjectId(), // Will be updated with booking ID after creation
-        meta: {
-          roomId,
-          durationHours,
-          creditValue,
-          totalAmount: totalsForCredits.total,
-          visitorsCount: visitors?.length || 0
+      let result;
+      try {
+        result = await WalletService.consumeCreditsWithOverdraft({
+          clientId,
+          memberId: currentMemberId,
+          requiredCredits,
+          idempotencyKey,
+          refType: "meeting_booking",
+          refId: new mongoose.Types.ObjectId(), // Will be updated with booking ID after creation
+          meta: {
+            roomId,
+            durationHours,
+            creditValue,
+            totalAmount: totalsForCredits.total,
+            visitorsCount: visitors?.length || 0
+          }
+        });
+      } catch (err) {
+        if (err.message === "Transaction already processed") {
+          return res.status(201).json({ success: true, message: "Transaction already processed", data: {} });
         }
-
-      });
+        return res.status(400).json({ success: false, message: err.message });
+      }
 
       paymentDetails = {
         method: "credits",
@@ -493,7 +527,7 @@ export const createBooking = async (req, res) => {
 
       if (discountStatus === "pending") {
         // Skip invoice creation; wait for approval
-        paymentDetails = { method: paymentMethod || "cash" };
+        paymentDetails = { method: paymentMethod || "cash", idempotencyKey: effectiveIdempotencyKey || undefined };
       } else {
         // Apply approved or no discount
         const totals = computeInvoiceTotals(baseAmount, appliedDiscountPercent || 0);
@@ -525,18 +559,21 @@ export const createBooking = async (req, res) => {
 
         paymentDetails = {
           method: paymentMethod || "cash",
-          amount: (invoice?.total ?? totals.total) // GST-inclusive total
+          amount: (invoice?.total ?? totals.total), // GST-inclusive total
+          idempotencyKey: effectiveIdempotencyKey || undefined
         };
       }
     } else {
       // Other payment methods
       paymentDetails = {
         method: paymentMethod || "cash",
-        amount: amount || undefined
+        amount: amount || undefined,
+        idempotencyKey: effectiveIdempotencyKey || undefined
       };
     }
 
-    const booking = await MeetingBooking.create({
+    // Prepare booking document data
+    const bookingData = {
       room: roomId,
       member: currentMemberId || undefined,
       client: clientId || undefined,
@@ -561,7 +598,76 @@ export const createBooking = async (req, res) => {
       // external idempotency
       externalSource: externalSource || undefined,
       referenceNumber: referenceNumber || undefined,
-    });
+      ...(effectiveIdempotencyKey ? { 'payment.idempotencyKey': effectiveIdempotencyKey } : {})
+    };
+
+    // ATOMIC BOOKING CREATION
+    // To prevent race conditions, we attempt to insert the booking ONLY if no overlapping
+    // booking exists in the database. Since MongoDB doesn't natively support conditional
+    // inserts based on complex queries without a unique index on the exact fields, we use
+    // a transaction if replica sets are enabled, or a pre-insert lock/check.
+
+    // For standalone/simple setup without transactions, we rely on a tight check-and-insert
+    // paired with the idempotency key. Since true "conditional insert" on overlap requires
+    // either a transaction or a specialized schema, we will do a strict check right before insert.
+    // If we're relying on purely atomic, we can use a session, but let's implement a robust
+    // query check just milliseconds before the create.
+
+    let booking;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // Double check overlap strictly inside the transaction lock
+        const overlap = await MeetingBooking.findOne({
+          room: roomId,
+          status: { $in: ["booked", "payment_pending"] },
+          start: { $lt: endDt },
+          end: { $gt: startDt }
+        }).session(session).lean();
+
+        if (overlap) {
+          throw new Error("ATOMIC_CONFLICT");
+        }
+
+        // Create the booking atomically
+        const [created] = await MeetingBooking.create([bookingData], { session });
+        booking = created;
+      });
+    } catch (err) {
+      // ROLLBACK CREDITS IF BOOKING FAILED
+      if (paymentMethod === "credits" && currentMemberId) {
+        try {
+          const creditsToRefund = Number(paymentDetails.coveredCredits || 0);
+          if (creditsToRefund > 0) {
+            const rollbackIdKey = `${idempotencyKey}_rollback_${Date.now()}`;
+            await WalletService.reverseCredits({
+              clientId,
+              memberId: currentMemberId,
+              credits: creditsToRefund,
+              idempotencyKey: rollbackIdKey,
+              refType: "meeting_booking",
+              refId: new mongoose.Types.ObjectId(),
+              meta: {
+                reason: `Booking failed: ${err.message}`,
+                title: "Booking Failure Credit Rollback",
+                originalIdempotencyKey: idempotencyKey
+              }
+            });
+            console.log(`[createBooking] Credits rolled back for client ${clientId} due to ${err.message}`);
+          }
+        } catch (rollbackErr) {
+          console.error(`[createBooking] CRITICAL: Credit rollback failed:`, rollbackErr.message);
+        }
+      }
+
+      if (err.message === "ATOMIC_CONFLICT") {
+        return res.status(409).json({ success: false, message: "Time slot conflicts with an existing booking that was just created." });
+      }
+      throw err; // Re-throw other errors
+    } finally {
+      session.endSession();
+    }
+
 
     // Add reserved slot to meeting room
     const bookingStart = new Date(startDt);
@@ -617,7 +723,11 @@ export const createBooking = async (req, res) => {
               invoice.zoho_invoice_number = zohoInv.invoice.invoice_number;
               await invoice.save();
               console.log(`[createBooking] Pushed invoice ${invoice._id} to Zoho: ${invoice.zoho_invoice_id}`);
+            } else if (paymentMethod === 'credits') {
+              throw new Error("Zoho Invoice Push Failed (no ID returned)");
             }
+          } else if (paymentMethod === 'credits') {
+            throw new Error("Client document not found for Zoho sync");
           }
         }
 
@@ -634,9 +744,6 @@ export const createBooking = async (req, res) => {
             }
 
             if (zohoContactId) {
-              // Determine invoice IDs to apply payment to
-              // If this is a consolidated payment (e.g. multiple invoices), we might need logic
-              // But here it's 1-to-1 for the booking
               await recordZohoPayment(invoice.zoho_invoice_id, {
                 customer_id: zohoContactId,
                 payment_mode: "Credits",
@@ -652,9 +759,15 @@ export const createBooking = async (req, res) => {
               console.log(`[createBooking] Recorded credit payment in Zoho for invoice ${invoice.zoho_invoice_id}`);
             } else {
               console.warn(`[createBooking] Skipping Zoho payment recording: No zohoBooksContactId found for client ${invoice.client}`);
+              if (paymentMethod === 'credits') {
+                throw new Error("Missing Zoho Contact ID for credit payment sync");
+              }
             }
           } catch (payErr) {
             console.warn(`[createBooking] Failed to record credit payment in Zoho:`, payErr.message);
+            if (paymentMethod === 'credits') {
+              throw new Error(`Zoho Payment Record Failed: ${payErr.message}`);
+            }
           }
         }
 
@@ -673,6 +786,9 @@ export const createBooking = async (req, res) => {
 
       } catch (err) {
         console.error(`[createBooking] Error processing Zoho invoice/PDF:`, err);
+        if (paymentMethod === 'credits') {
+          throw err; // Trigger post-booking compensation
+        }
       }
     }
 
@@ -906,6 +1022,52 @@ export const createBooking = async (req, res) => {
     return res.status(201).json({ success: true, data: responseData });
   } catch (error) {
     console.error("Create booking error:", error);
+
+    // POST-BOOKING COMPENSATION (e.g. Zoho failed for a credit booking)
+    if (booking && paymentMethod === "credits" && currentMemberId) {
+      try {
+        console.warn(`[createBooking] Critical Post-Booking failure. Reversing booking ${booking._id} and credits.`);
+
+        // 1. Mark booking as cancelled
+        await MeetingBooking.findByIdAndUpdate(booking._id, {
+          status: 'cancelled',
+          notes: (notes || '') + `\n[System Rollback: ${error.message}]`
+        });
+
+        // 2. Remove reserved slots from room
+        await MeetingRoom.findByIdAndUpdate(roomId, {
+          $pull: { reservedSlots: { bookingId: booking._id } }
+        });
+
+        // 3. Void invoice if it exists
+        if (invoice) {
+          await Invoice.findByIdAndUpdate(invoice._id, { status: 'void' });
+        }
+
+        // 4. Reverse credits
+        const creditsToRefund = Number(paymentDetails.coveredCredits || 0);
+        if (creditsToRefund > 0) {
+          const rollbackIdKey = `${idempotencyKey}_post_sync_rollback_${Date.now()}`;
+          await WalletService.reverseCredits({
+            clientId,
+            memberId: currentMemberId,
+            credits: creditsToRefund,
+            idempotencyKey: rollbackIdKey,
+            refType: "meeting_booking",
+            refId: booking._id,
+            meta: {
+              reason: `Post-booking failure: ${error.message}`,
+              title: "Post-Booking Failure Credit Rollback",
+              originalIdempotencyKey: idempotencyKey
+            }
+          });
+          console.log(`[createBooking] Credits rolled back after sync failure for booking ${booking._id}`);
+        }
+      } catch (compensationErr) {
+        console.error(`[createBooking] CRITICAL: Post-booking compensation failed:`, compensationErr.message);
+      }
+    }
+
     return res.status(500).json({ success: false, message: error.message });
   }
 };

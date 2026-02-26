@@ -1460,6 +1460,33 @@ export const createRazorpayOrder = async (req, res) => {
       description
     };
 
+    // --- Order Idempotency Check for Meeting Bookings ---
+    // If the frontend passed an idempotencyKey, check if we already have an active order for it.
+    // This prevents double-creation if the user clicks "Pay" twice rapidly or network drops.
+    // We reuse the primary idempotencyKey to keep the API surface simple.
+    const checkoutIdempotencyKey = req.body.idempotencyKey;
+    if (checkoutIdempotencyKey && item.type === 'meeting') {
+      try {
+        const bookingCheck = await MeetingBooking.findOne({
+          _id: item.id,
+          'payment.idempotencyKey': checkoutIdempotencyKey,
+          'payment.razorpayOrderId': { $exists: true }
+        }).lean();
+
+        if (bookingCheck && bookingCheck.payment.razorpayOrderId) {
+          // We already created an order for this exact checkout attempt.
+          // Verify the amount hasn't somehow changed (it shouldn't for the same key).
+          if (bookingCheck.payment.amount === response.amount) {
+            response.order_id = bookingCheck.payment.razorpayOrderId;
+            await apiLogger.logWebhookResponse(requestId, 200, response, true);
+            return res.json(response);
+          }
+        }
+      } catch (e) {
+        console.warn("Error checking order idempotency:", e.message);
+      }
+    }
+
     // Create actual Razorpay order
     try {
       const rzpOrder = await loggedRazorpay.createOrder({
@@ -1473,6 +1500,23 @@ export const createRazorpayOrder = async (req, res) => {
         relatedEntityId: item.id
       });
       response.order_id = rzpOrder.id;
+
+      // Save the generated order ID and the idempotency key back to the booking
+      // Note: we update the primary idempotencyKey here as well, so order tracking
+      // relies on the same key as creation tracking.
+      if (item.type === 'meeting' && checkoutIdempotencyKey) {
+        await MeetingBooking.updateOne(
+          { _id: item.id },
+          {
+            $set: {
+              'payment.idempotencyKey': checkoutIdempotencyKey,
+              'payment.razorpayOrderId': rzpOrder.id,
+              'payment.amount': response.amount
+            }
+          }
+        );
+      }
+
     } catch (rzpErr) {
       console.error("Failed to create Razorpay order in createRazorpayOrder:", rzpErr);
       return res.status(500).json({
@@ -1628,9 +1672,47 @@ export const handleRazorpaySuccess = async (req, res) => {
       paymentData.client = clientId;
     }
 
-    // Create payment record
-    const payment = new Payment(paymentData);
-    await payment.save();
+    // Idempotency: Create payment record only if it doesn't already exist for this Razorpay ID
+    let payment = await Payment.findOne({ paymentGatewayRef: razorpay_payment_id });
+    let isDuplicatePayment = false;
+
+    if (payment) {
+      // We already processed this payment (e.g., from webhook or duplicate click)
+      isDuplicatePayment = true;
+      console.log(`[Payment] Duplicate payment detected: ${razorpay_payment_id}. Proceeding to return success without reprocessing state.`);
+    } else {
+      payment = new Payment(paymentData);
+      try {
+        await payment.save();
+      } catch (saveErr) {
+        if (saveErr.code === 11000) {
+          // Caught exact duplicate race condition during save
+          isDuplicatePayment = true;
+          payment = await Payment.findOne({ paymentGatewayRef: razorpay_payment_id });
+          if (!payment) throw saveErr; // Shouldn't happen
+        } else {
+          throw saveErr;
+        }
+      }
+    }
+
+    // Skip all provisioning, emailing, and slot reservations if we already processed this
+    if (isDuplicatePayment) {
+      const response = {
+        success: true,
+        message: "Payment was already processed successfully",
+        item,
+        payment: {
+          id: payment._id,
+          razorpay_payment_id,
+          amount: payment.amount,
+          status: "completed"
+        }
+      };
+      await apiLogger.logWebhookResponse(requestId, 200, response, true);
+      return res.json(response);
+    }
+
 
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
@@ -2221,14 +2303,19 @@ export const handleRazorpayWebhook = async (req, res) => {
                     console.error('Webhook Zoho sync error:', syncErr?.message || syncErr);
                   }
                 }
-                // Update booking status to booked if payment was pending
-                if (booking.status === 'payment_pending') {
-                  booking.status = 'booked';
-                  await booking.save();
+                // Update booking status to booked if payment was pending (ATOMICALLY)
+                const updatedBooking = await MeetingBooking.findOneAndUpdate(
+                  { _id: booking._id, status: 'payment_pending' },
+                  { $set: { status: 'booked' } },
+                  { new: true } // Returns null if status was already booked or cancelled
+                );
+
+                if (updatedBooking) {
+                  // Only run these ONE TIME, guaranteed by the atomic transition above
                   // Add reserved slot to meeting room
-                  await addMeetingRoomReservedSlot(booking._id);
+                  await addMeetingRoomReservedSlot(updatedBooking._id);
                   // Provision BHAiFi + Matrix access for the booked meeting timeslot
-                  try { await provisionAccessForMeetingBooking({ bookingId: booking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
+                  try { await provisionAccessForMeetingBooking({ bookingId: updatedBooking._id }); } catch (e) { console.warn('[MeetingAccess] Provision failed on webhook', e?.message); }
                 }
 
               }

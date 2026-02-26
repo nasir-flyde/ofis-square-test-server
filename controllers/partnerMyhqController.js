@@ -281,38 +281,12 @@ export async function bookRoom(req, res) {
     if (!room) return res.status(400).json({ status: 400, success: false, message: "Invalid value: room_id" });
     if (room.status !== 'active') return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
 
+    // Conflict check - logic remains same but execution moves into transaction below
     const start = toIST(start_time);
     const end = toIST(end_time);
     if (isNaN(start) || isNaN(end) || end <= start) {
       return res.status(400).json({ status: 400, success: false, message: "Invalid start_time or end_time" });
     }
-    // Within building hours and allowed days
-    const openM = hhmmToMinutes(room.building?.openingTime || '09:00');
-    const closeM = hhmmToMinutes(room.building?.closingTime || '19:00');
-    const sMin = minutesSinceMidnightWallTime(start);
-    const eMin = minutesSinceMidnightWallTime(end);
-
-    const dow = start.getUTCDay();
-    const allowedDays = room.availability?.daysOfWeek || [1, 2, 3, 4, 5];
-    if (!allowedDays.includes(dow)) {
-      return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available on this day" });
-    }
-
-    if (sMin < openM || eMin > closeM) {
-      return res.status(400).json({ status: 400, success: false, message: `Booking must be within operating hours ${(room.building?.openingTime || '09:00')}-${(room.building?.closingTime || '19:00')} IST` });
-    }
-    // Blackout
-    const dayStr = start.toISOString().slice(0, 10);
-    const blackout = (room.blackoutDates || []).some(d => new Date(d).toISOString().slice(0, 10) === dayStr);
-    if (blackout) return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
-    // Conflict
-    const overlap = await MeetingBooking.findOne({
-      room: room._id,
-      status: { $in: ['booked', 'payment_pending'] },
-      start: { $lt: end },
-      end: { $gt: start },
-    }).select('_id').lean();
-    if (overlap) return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
 
     // Create visitors (primary + guests)
     const visitorIds = [];
@@ -358,17 +332,72 @@ export async function bookRoom(req, res) {
       console.error('myhq visitor create error', e?.message);
     }
 
-    // Create booking (payment pending by default for cash-like flow)
-    const booking = await MeetingBooking.create({
-      room: room._id,
-      start,
-      end,
-      visitors: visitorIds,
-      status: 'booked',
-      externalSource: 'myhq',
-      referenceNumber: reference_number,
-      currency: 'INR',
-    });
+    // Create booking ATOMICALLY via transaction
+    let booking;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // 1. Within building hours and allowed days (Final check inside lock)
+        const openM = hhmmToMinutes(room.building?.openingTime || '09:00');
+        const closeM = hhmmToMinutes(room.building?.closingTime || '19:00');
+        const sMin = minutesSinceMidnightWallTime(start);
+        const eMin = minutesSinceMidnightWallTime(end);
+
+        const dow = start.getUTCDay();
+        const allowedDays = room.availability?.daysOfWeek || [1, 2, 3, 4, 5];
+        if (!allowedDays.includes(dow)) throw new Error("CONFLICT_DAY");
+
+        if (sMin < openM || eMin > closeM) throw new Error("CONFLICT_HOURS");
+
+        // 2. Blackout
+        const dayStr = start.toISOString().slice(0, 10);
+        const blackout = (room.blackoutDates || []).some(d => new Date(d).toISOString().slice(0, 10) === dayStr);
+        if (blackout) throw new Error("CONFLICT_BLACKOUT");
+
+        // 3. Final overlap check inside transaction
+        const overlap = await MeetingBooking.findOne({
+          room: room._id,
+          status: { $in: ['booked', 'payment_pending'] },
+          start: { $lt: end },
+          end: { $gt: start },
+        }).session(session).select('_id').lean();
+
+        if (overlap) throw new Error("CONFLICT_OVERLAP");
+
+        // 4. Check for reference number double-booking just in case
+        const refDup = await MeetingBooking.findOne({ externalSource: 'myhq', referenceNumber: reference_number }).session(session).select('_id').lean();
+        if (refDup) throw new Error("CONFLICT_IDEMPOTENCY");
+
+        // 5. Create the booking
+        const [created] = await MeetingBooking.create([{
+          room: room._id,
+          start,
+          end,
+          visitors: visitorIds,
+          status: 'booked',
+          externalSource: 'myhq',
+          referenceNumber: reference_number,
+          currency: 'INR',
+        }], { session });
+
+        booking = created;
+      });
+    } catch (err) {
+      if (err.message === "CONFLICT_DAY" || err.message === "CONFLICT_BLACKOUT" || err.message === "CONFLICT_OVERLAP") {
+        return res.status(409).json({ status: 409, success: false, message: "Booking Slot is not available" });
+      }
+      if (err.message === "CONFLICT_HOURS") {
+        return res.status(400).json({ status: 400, success: false, message: `Booking must be within operating hours ${(room.building?.openingTime || '09:00')}-${(room.building?.closingTime || '19:00')} IST` });
+      }
+      if (err.message === "CONFLICT_IDEMPOTENCY") {
+        // Fallback for immediate race if findOne above somehow missed it but transaction caught it
+        const fallback = await MeetingBooking.findOne({ externalSource: 'myhq', referenceNumber: reference_number }).select('_id').lean();
+        return res.json({ status: 200, success: true, message: "Room Booked Successfully", data: { booking_id: String(fallback._id) } });
+      }
+      throw err;
+    } finally {
+      session.endSession();
+    }
 
     // Add reserved slot to room document
     try {
@@ -586,60 +615,78 @@ export async function bookDayPass(req, res) {
 
     const passDate = startOfDayIST(date_of_booking);
 
-    // Atomically reserve a slot for this building/date
-    const usage = await DayPassDailyUsage.findOneAndUpdate(
-      { building: building._id, date: passDate },
-      { $inc: { bookedCount: 1 } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    if (Number(usage.bookedCount || 0) > totalCapacity) {
-      // Rollback and reject
-      await DayPassDailyUsage.updateOne({ building: building._id, date: passDate }, { $inc: { bookedCount: -1 } });
-      return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
-    }
-
-    // Find or create guest
-    let guest = null;
-    if (email) guest = await Guest.findOne({ email }).lean();
-    if (!guest && phone) guest = await Guest.findOne({ phone }).lean();
-    if (!guest) {
-      guest = await Guest.create({ name: name || 'Guest', email: email || undefined, phone: phone || undefined });
-    }
-
-    // Determine price: prefer building.openSpacePricing; else min active inventory price; else error
-    let price = Number(building.openSpacePricing || 0);
-    if (!price || Number.isNaN(price)) {
-      // No inventories path: require openSpacePricing
-    }
-    if (!price || Number.isNaN(price)) {
-      return res.status(400).json({ status: 400, success: false, message: 'Price not configured for day pass' });
-    }
-
+    // Atomically reserve a slot and create the pass via transaction
     let dayPass;
+    const session = await mongoose.startSession();
     try {
-      dayPass = await DayPass.create({
-        customer: guest._id,
-        member: null,
-        building: building._id,
-        bundle: null,
-        date: passDate,
-        visitDate: passDate,
-        bookingFor: 'self',
-        expiresAt: endOfDayIST(passDate),
-        price,
-        currency: 'INR',
-        status: 'issued',
-        visitorName: name,
-        visitorEmail: email,
-        visitorPhone: phone,
-        numberOfGuests: 1,
-        externalSource: 'myhq',
-        referenceNumber: reference_number,
+      await session.withTransaction(async () => {
+        // 1. Idempotency check inside transaction
+        const refDup = await DayPass.findOne({ externalSource: 'myhq', referenceNumber: reference_number }).session(session).select('_id').lean();
+        if (refDup) throw new Error("CONFLICT_IDEMPOTENCY");
+
+        // 2. Find or create guest (inside transaction for safety)
+        let guest = null;
+        if (email) guest = await Guest.findOne({ email }).session(session).lean();
+        if (!guest && phone) guest = await Guest.findOne({ phone }).session(session).lean();
+        if (!guest) {
+          const [newGuest] = await Guest.create([{ name: name || 'Guest', email: email || undefined, phone: phone || undefined }], { session });
+          guest = newGuest;
+        }
+
+        // 3. Determine price
+        let price = Number(building.openSpacePricing || 0);
+        if (!price || Number.isNaN(price)) {
+          throw new Error("MISSING_PRICE");
+        }
+
+        // 4. Atomically reserve a slot for this building/date
+        const usage = await DayPassDailyUsage.findOneAndUpdate(
+          { building: building._id, date: passDate },
+          { $inc: { bookedCount: 1 } },
+          { upsert: true, new: true, setDefaultsOnInsert: true, session }
+        );
+
+        if (Number(usage.bookedCount || 0) > totalCapacity) {
+          throw new Error("CONFLICT_CAPACITY");
+        }
+
+        // 5. Create the DayPass
+        const [created] = await DayPass.create([{
+          customer: guest._id,
+          member: null,
+          building: building._id,
+          bundle: null,
+          date: passDate,
+          visitDate: passDate,
+          bookingFor: 'self',
+          expiresAt: endOfDayIST(passDate),
+          price,
+          currency: 'INR',
+          status: 'issued',
+          visitorName: name,
+          visitorEmail: email,
+          visitorPhone: phone,
+          numberOfGuests: 1,
+          externalSource: 'myhq',
+          referenceNumber: reference_number,
+        }], { session });
+
+        dayPass = created;
       });
     } catch (err) {
-      // rollback reserved slot on failure
-      await DayPassDailyUsage.updateOne({ building: building._id, date: passDate }, { $inc: { bookedCount: -1 } });
+      if (err.message === "CONFLICT_IDEMPOTENCY") {
+        const fallback = await DayPass.findOne({ externalSource: 'myhq', referenceNumber: reference_number }).select('_id').lean();
+        return res.json({ success: true, message: 'Booked Successfully', data: { booking_id: String(fallback._id) } });
+      }
+      if (err.message === "CONFLICT_CAPACITY") {
+        return res.status(409).json({ status: 409, success: false, message: 'Booking is not available' });
+      }
+      if (err.message === "MISSING_PRICE") {
+        return res.status(400).json({ status: 400, success: false, message: 'Price not configured for day pass' });
+      }
       throw err;
+    } finally {
+      session.endSession();
     }
 
     return res.json({ success: true, message: 'Booked Successfully', data: { booking_id: String(dayPass._id) } });

@@ -24,7 +24,8 @@ const meetingBookingSchema = new Schema(
       extraCredits: { type: Number },
       overageAmount: { type: Number },
       valuePerCredit: { type: Number },
-      idempotencyKey: { type: String },
+      idempotencyKey: { type: String }, // General idempotency spanning creation & checkout
+      razorpayOrderId: { type: String }, // Safely tracks one order per checkout attempt
       amount: { type: Number }
     },
     // Building access flags (WiFi and Matrix access control)
@@ -56,5 +57,7 @@ const meetingBookingSchema = new Schema(
 meetingBookingSchema.index({ start: 1, end: 1, status: 1, room: 1 });
 // Ensure idempotency per external partner
 meetingBookingSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
+// Enforce idempotency globally per member
+meetingBookingSchema.index({ "payment.idempotencyKey": 1, member: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("MeetingBooking", meetingBookingSchema);

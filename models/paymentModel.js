@@ -39,7 +39,7 @@ const paymentSchema = new mongoose.Schema(
       index: true,
     },
 
-    paymentGatewayRef: { type: String, trim: true },
+    paymentGatewayRef: { type: String, trim: true, index: { unique: true, sparse: true } },
     referenceNumber: { type: String, trim: true },
     amount: { type: Number, required: true },
     paymentDate: { type: Date, required: true },
