@@ -562,9 +562,21 @@ export const getAvailableRoomsByTime = async (req, res) => {
       .lean();
 
     const truncated = rooms.length === finalLimit;
+    const searchMode = timesProvided ? "range" : "daily";
+    const searchMetadata = {
+      mode: searchMode,
+      date: targetDate,
+      startTime: startTime || null,
+      endTime: endTime || null
+    };
 
     if (!rooms.length) {
-      return res.json({ success: true, rooms: [], count: 0 });
+      return res.json({
+        success: true,
+        searchMetadata,
+        rooms: [],
+        count: 0
+      });
     }
 
     const roomIds = rooms.map(r => r._id);
@@ -640,101 +652,94 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
       const roomBookings = bookingsByRoom.get(String(room._id)) || [];
 
-      // Mapper for response object (avoids mutation)
       let integrityError = false;
-      const formatResponseRoom = (r, slots = null) => {
+
+      // Unified format helper
+      const formatResponseRoom = (r, slots) => {
         const bldgId = r.building.toString();
         const bldg = buildingMap.get(bldgId);
-
         const fLabel = formatFloorLabel(r.floor);
         return {
           ...r,
           building: bldg ? { name: bldg.name } : { name: null },
           amenities: r.amenities.map(id => amenityMap.get(id.toString())).filter(Boolean),
           floor: fLabel ? `${fLabel} floor` : r.floor,
-          availableTimeSlots: slots || r.availableTimeSlots
+          availableTimeSlots: slots
         };
       };
 
-      if (timesProvided) {
-        // TIME RANGE MODE
-        if (roomBookings.length) continue;
+      // 1. Calculate free slots for the day (Always needed for both modes now)
+      let freeSlots = room.availableTimeSlots || [];
 
-        const hasReservedConflict = (room.reservedSlots || []).some(slot => {
-          const slotDateStr = slot.dateISTYMD || (slot.date ? new Date(slot.date).toISOString().split('T')[0] : null);
-          if (slotDateStr !== targetDateISO) return false;
-
-          const resvStart = parse12h(slot.startTime, targetDate);
-          const resvEnd = parse12h(slot.endTime, targetDate);
-
-          if (isNaN(resvStart.getTime()) || isNaN(resvEnd.getTime())) {
+      // Filter against bookings
+      if (roomBookings.length) {
+        freeSlots = freeSlots.filter(slot => {
+          const slotStart = parse12h(slot.startTime, targetDate);
+          const slotEnd = parse12h(slot.endTime, targetDate);
+          if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) {
             integrityError = true;
-            return true;
+            return false;
           }
+          return !roomBookings.some(booking =>
+            timeOverlap(slotStart, slotEnd, booking.start, booking.end)
+          );
+        });
+      }
+
+      // Filter against reservedSlots
+      const dailyReserved = (room.reservedSlots || []).filter(slot => {
+        const slotDateStr = slot.dateISTYMD || (slot.date ? new Date(slot.date).toISOString().split('T')[0] : null);
+        return slotDateStr === targetDateISO;
+      });
+
+      if (freeSlots.length && dailyReserved.length) {
+        freeSlots = freeSlots.filter(slot => {
+          const slotStart = parse12h(slot.startTime, targetDate);
+          const slotEnd = parse12h(slot.endTime, targetDate);
+          if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) return false;
+
+          return !dailyReserved.some(resv => {
+            const resvStart = parse12h(resv.startTime, targetDate);
+            const resvEnd = parse12h(resv.endTime, targetDate);
+            if (isNaN(resvStart.getTime()) || isNaN(resvEnd.getTime())) {
+              integrityError = true;
+              return true;
+            }
+            return timeOverlap(slotStart, slotEnd, resvStart, resvEnd);
+          });
+        });
+      }
+
+      if (integrityError) {
+        integrityError = false; // Reset for next room
+        continue;
+      }
+
+      // 2. Decide if room should be included based on Mode
+      if (searchMode === "range") {
+        // Range Mode: Must be completely free in requested window
+        // (i.e. No booking or reservation overlap)
+        const hasBookingConflict = roomBookings.length > 0; // The booking query already filtered for overlap
+        const hasReservedConflict = dailyReserved.some(resv => {
+          const resvStart = parse12h(resv.startTime, targetDate);
+          const resvEnd = parse12h(resv.endTime, targetDate);
           return timeOverlap(requestedStart, requestedEnd, resvStart, resvEnd);
         });
 
-        if (integrityError || hasReservedConflict) continue;
-        availableRooms.push(formatResponseRoom(room));
+        if (!hasBookingConflict && !hasReservedConflict) {
+          availableRooms.push(formatResponseRoom(room, freeSlots));
+        }
       } else {
-        // DAILY MODE
-        let availableSlots = room.availableTimeSlots || [];
-
-        // Pre-parse dailyReserved once per room
-        const dailyReservedParsed = (room.reservedSlots || []).filter(slot => {
-          const slotDateStr = slot.dateISTYMD || (slot.date ? new Date(slot.date).toISOString().split('T')[0] : null);
-          return slotDateStr === targetDateISO;
-        }).map(resv => {
-          const resvStart = parse12h(resv.startTime, targetDate);
-          const resvEnd = parse12h(resv.endTime, targetDate);
-          return { resvStart, resvEnd };
-        });
-
-        if (dailyReservedParsed.some(r => isNaN(r.resvStart.getTime()) || isNaN(r.resvEnd.getTime()))) {
-          continue;
-        }
-
-        // Filter against bookings
-        if (roomBookings.length) {
-          availableSlots = availableSlots.filter(slot => {
-            const slotStart = parse12h(slot.startTime, targetDate);
-            const slotEnd = parse12h(slot.endTime, targetDate);
-
-            if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) {
-              integrityError = true;
-              return false;
-            }
-
-            return !roomBookings.some(booking =>
-              timeOverlap(slotStart, slotEnd, booking.start, booking.end)
-            );
-          });
-        }
-        if (integrityError) continue;
-
-        // Filter against pre-parsed reservedSlots
-        if (availableSlots.length && dailyReservedParsed.length) {
-          availableSlots = availableSlots.filter(slot => {
-            const slotStart = parse12h(slot.startTime, targetDate);
-            const slotEnd = parse12h(slot.endTime, targetDate);
-
-            if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) return false;
-
-            return !dailyReservedParsed.some(({ resvStart, resvEnd }) =>
-              timeOverlap(slotStart, slotEnd, resvStart, resvEnd)
-            );
-          });
-        }
-
-        if (availableSlots.length > 0) {
-          availableRooms.push(formatResponseRoom(room, availableSlots));
+        // Daily Mode: Must have at least one free slot
+        if (freeSlots.length > 0) {
+          availableRooms.push(formatResponseRoom(room, freeSlots));
         }
       }
     }
 
     return res.json({
       success: true,
-      date: targetDate, // Already sanitized Date object
+      searchMetadata,
       rooms: availableRooms,
       count: availableRooms.length,
       truncated
