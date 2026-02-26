@@ -13,16 +13,8 @@ const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, n
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
 };
 
-const generateQRToken = (visitorId, validOn) => {
-  const payload = {
-    sub: `visitor:${visitorId}`,
-    typ: "visitor_checkin",
-    validOn: validOn.toISOString().split('T')[0],
-    exp: Math.floor(validOn.getTime() / 1000) + (24 * 60 * 60)
-  };
-
-  // For now, return a simple token format until JWT is properly configured
-  return `${visitorId}-${validOn.toISOString().split('T')[0]}-${Date.now().toString(36)}`;
+const generateQRToken = () => {
+  return crypto.randomBytes(16).toString('hex');
 };
 
 async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) {
@@ -315,7 +307,7 @@ export const approveCheckin = async (req, res) => {
     visitor.status = "invited";
     visitor.approvedBy = req.user?.id;
     visitor.approvedAt = new Date();
-    const qrToken = generateQRToken(visitor._id, visitor.expectedVisitDate);
+    const qrToken = generateQRToken();
     visitor.qrToken = qrToken;
     visitor.qrExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -900,25 +892,19 @@ export const scanQRCode = async (req, res) => {
     if (!token) {
       return res.status(400).json({ success: false, message: "QR token is required" });
     }
-    const secret = process.env.JWT_SECRET || "your-jwt-secret";
-    let decoded;
 
-    try {
-      decoded = jwt.verify(token, secret);
-    } catch (jwtError) {
-      return res.status(401).json({ success: false, message: "Invalid or expired QR code" });
-    }
-    const visitorId = decoded.sub?.replace('visitor:', '');
-    if (!visitorId) {
-      return res.status(400).json({ success: false, message: "Invalid QR code format" });
-    }
-    const visitor = await Visitor.findOne({ _id: visitorId, deletedAt: null });
+    const visitor = await Visitor.findOne({ qrToken: token, deletedAt: null });
     if (!visitor) {
-      return res.status(404).json({ success: false, message: "Visitor not found" });
+      return res.status(404).json({ success: false, message: "Invalid or expired QR code" });
     }
-    const tokenDate = decoded.validOn;
+
+    if (visitor.qrExpiresAt && visitor.qrExpiresAt < new Date()) {
+      return res.status(401).json({ success: false, message: "QR code has expired" });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
     const expectedDate = visitor.expectedVisitDate.toISOString().split('T')[0];
-    if (tokenDate !== expectedDate) {
+    if (expectedDate !== today) {
       return res.status(400).json({
         success: false,
         message: "QR code is not valid for today's visit"
