@@ -2,8 +2,6 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
 
-// Allows access only to users with roleName 'community'.
-// Works with or without authVerify: if req.userRole is absent, it will read JWT and extract roleName.
 const communityMiddleware = (req, res, next) => {
   try {
     let roleName;
@@ -30,7 +28,7 @@ const communityMiddleware = (req, res, next) => {
     if (!roleName) return res.status(401).json({ error: "Unauthorized" });
 
     const name = String(roleName).toLowerCase();
-    if (name === "community") {
+    if (name === "community" || name === "communitylead") {
       return next();
     }
 

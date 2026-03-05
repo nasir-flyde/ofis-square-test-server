@@ -34,7 +34,7 @@ export const getCommunityDashboard = async (req, res) => {
         $lt: endOfDay
       }
     }).populate('client');
-    
+
     const activeClients = new Set(activeMeetingBookings.map(booking => booking.client?._id?.toString())).size;
 
     // Get available meeting rooms/cabins
@@ -71,31 +71,31 @@ export const getCommunityDashboard = async (req, res) => {
         $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
       }
     })
-    .populate('client', 'contactPerson')
-    .populate('room', 'name')
-    .sort({ createdAt: -1 })
-    .limit(5);
+      .populate('client', 'contactPerson')
+      .populate('room', 'name')
+      .sort({ createdAt: -1 })
+      .limit(5);
 
     const recentTickets = await Ticket.find({
       createdAt: {
         $gte: new Date(Date.now() - 24 * 60 * 60 * 1000)
       }
     })
-    .populate('client', 'contactPerson')
-    .sort({ createdAt: -1 })
-    .limit(3);
+      .populate('client', 'contactPerson')
+      .sort({ createdAt: -1 })
+      .limit(3);
 
     const recentVisitors = await Visitor.find({
       checkInTime: {
         $gte: new Date(Date.now() - 24 * 60 * 60 * 1000)
       }
     })
-    .sort({ checkInTime: -1 })
-    .limit(3);
+      .sort({ checkInTime: -1 })
+      .limit(3);
 
     // Format recent activity
     const recentActivity = [];
-    
+
     // Add meeting booking activities
     recentMeetingBookings.forEach(booking => {
       recentActivity.push({
@@ -138,7 +138,7 @@ export const getCommunityDashboard = async (req, res) => {
       },
       recentActivity: limitedActivity
     };
-    
+
     // Log dashboard access
     await logActivity({
       userId: req.userId,
@@ -254,7 +254,7 @@ export const getCommunityClientById = async (req, res) => {
     const { id } = req.params;
     const client = await Client.findById(id);
     if (!client) return res.status(404).json({ success: false, error: "Client not found" });
-    
+
     // Log client view
     await logActivity({
       userId: req.userId,
@@ -266,7 +266,7 @@ export const getCommunityClientById = async (req, res) => {
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
-    
+
     return res.json({ success: true, data: client });
   } catch (err) {
     console.error("getCommunityClientById error:", err);
@@ -405,7 +405,7 @@ export const getCommunityTickets = async (req, res) => {
     }
 
     const { page = 1, limit = 20, status, priority, search } = req.query;
-    
+
     const filter = { building: buildingId };
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
@@ -418,7 +418,7 @@ export const getCommunityTickets = async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    
+
     const tickets = await Ticket.find(filter)
       .populate('building', 'name address')
       .populate('cabin', 'name')
@@ -470,7 +470,7 @@ export const getCommunityBuildingClients = async (req, res) => {
     }
 
     const { page = 1, limit = 20, search } = req.query;
-    
+
     // Return clients directly attached to this building in the Client table
     const filter = { building: buildingId };
     if (search) {
@@ -483,11 +483,25 @@ export const getCommunityBuildingClients = async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    
+
     const clients = await Client.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
+
+    // If communityLead, calculate outstanding for each client
+    if (req.userRole?.roleName === 'communityLead') {
+      const statuses = ["issued", "partially_paid", "overdue", "sent"];
+
+      for (const client of clients) {
+        const res = await Invoice.aggregate([
+          { $match: { client: client._id, status: { $in: statuses } } },
+          { $group: { _id: null, amount: { $sum: "$balance" } } },
+        ]);
+        client.outstandingAmount = res[0]?.amount || 0;
+      }
+    }
 
     const total = await Client.countDocuments(filter);
 
@@ -531,7 +545,7 @@ export const getCommunityInventory = async (req, res) => {
 
     // Import Building model
     const Building = mongoose.model('Building');
-    
+
     // Get building details
     const building = await Building.findById(buildingId);
     if (!building) {
@@ -589,12 +603,12 @@ export const getCommunityEvents = async (req, res) => {
     }
 
     const { page = 1, limit = 20, status, category, search } = req.query;
-    
+
     // Filter events by building and status
-    const filter = { 
+    const filter = {
       'location.building': buildingId,
     };
-    
+
     if (status && status !== 'all') filter.status = status;
     if (category && category !== 'all') filter.category = category;
     if (search) {
@@ -605,7 +619,7 @@ export const getCommunityEvents = async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    
+
     const events = await Event.find(filter)
       .populate('category', 'name')
       .populate('location.building', 'name address')

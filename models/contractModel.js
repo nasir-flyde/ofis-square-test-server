@@ -105,6 +105,7 @@ const contractSchema = new mongoose.Schema(
     lockInPeriodMonths: { type: Number, default: 0 },
     noticePeriodDays: { type: Number, default: 30 },
     // Escalation details
+    escalationRatePercentage: { type: Number, default: 0 },
     escalation: {
       ratePercent: { type: Number, default: 0 },
       frequencyMonths: { type: Number, default: 12 }
@@ -423,9 +424,9 @@ const contractSchema = new mongoose.Schema(
     // Comments/notes
     comments: [
       {
-        _id: { 
-          type: mongoose.Schema.Types.ObjectId, 
-          default: () => new mongoose.Types.ObjectId() 
+        _id: {
+          type: mongoose.Schema.Types.ObjectId,
+          default: () => new mongoose.Types.ObjectId()
         },
         by: {
           type: mongoose.Schema.Types.ObjectId,
@@ -443,8 +444,8 @@ const contractSchema = new mongoose.Schema(
           ref: "User"
         }],
         // Thread/reply support
-        parentCommentId: { 
-          type: mongoose.Schema.Types.ObjectId, 
+        parentCommentId: {
+          type: mongoose.Schema.Types.ObjectId,
           default: null,
           ref: "comments"
         },
@@ -493,7 +494,7 @@ const contractSchema = new mongoose.Schema(
 );
 
 // Middleware to automatically update iskycapproved using normalized KYC items
-contractSchema.pre('save', async function(next) {
+contractSchema.pre('save', async function (next) {
   try {
     const requiredDocs = await DocumentEntity.find({
       isActive: true,

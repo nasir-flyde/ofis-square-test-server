@@ -13,7 +13,9 @@ import {
     getBulkFinancialsSampleCSV,
     getBulkMembersSampleCSV,
     bulkImportMembers,
-    listPendingMigrations
+    listPendingMigrations,
+    getBulkContractsSampleCSV,
+    bulkImportContracts
 } from '../controllers/migrationController.js';
 import authMiddleware from '../middlewares/authVerify.js';
 import upload, { kycUploads } from '../middlewares/multer.js';
@@ -34,5 +36,9 @@ router.get('/bulk-financials/sample-csv', getBulkFinancialsSampleCSV);
 router.post('/bulk-members', authMiddleware, upload.single('file'), bulkImportMembers);
 router.get('/pending', authMiddleware, listPendingMigrations);
 router.get('/bulk-members/sample-csv', getBulkMembersSampleCSV);
+
+// Contracts Bulk Import
+router.get('/bulk-contracts/sample-csv', authMiddleware, getBulkContractsSampleCSV);
+router.post('/bulk-contracts', authMiddleware, bulkImportContracts);
 
 export default router;

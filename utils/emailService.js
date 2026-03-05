@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { SendMailClient } from "zeptomail";
+import AppConfig from '../models/appConfigModel.js';
 
 dotenv.config();
 
@@ -8,6 +9,46 @@ const zeptoClient = new SendMailClient({
   url: process.env.ZEPTOMAIL_URL || "https://api.zeptomail.in/v1.1/email",
   token: process.env.ZEPTOMAIL_TOKEN,
 });
+
+export const stopEmailService = async () => {
+  try {
+    await AppConfig.findOneAndUpdate(
+      {},
+      { emailServiceActive: false },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return true;
+  } catch (error) {
+    console.error('Error stopping email service:', error);
+    return false;
+  }
+};
+
+export const startEmailService = async () => {
+  try {
+    await AppConfig.findOneAndUpdate(
+      {},
+      { emailServiceActive: true },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return true;
+  } catch (error) {
+    console.error('Error starting email service:', error);
+    return false;
+  }
+};
+
+export const getEmailServiceStatus = async () => {
+  try {
+    const config = await AppConfig.findOne({});
+    // Default to true if not explicitly set to false
+    return config ? config.emailServiceActive !== false : true;
+  } catch (error) {
+    console.error('Error fetching email service status:', error);
+    return true; // fail-safe default
+  }
+};
+
 
 const getWelcomeEmailTemplate = (clientData) => {
   const { companyName, contactPerson, email } = clientData;
@@ -110,6 +151,12 @@ const getWelcomeEmailTemplate = (clientData) => {
 // Send welcome email function
 export const sendWelcomeEmail = async (clientData) => {
   try {
+    const isActive = await getEmailServiceStatus();
+    if (!isActive) {
+      console.warn('Email service is currently stopped.');
+      return { success: false, error: 'Email service is stopped.' };
+    }
+
     const emailTemplate = getWelcomeEmailTemplate(clientData);
 
     // If ZeptoMail is configured, use it
@@ -150,6 +197,12 @@ export const sendWelcomeEmail = async (clientData) => {
 // Test email function for debugging
 export const sendTestEmail = async (to, subject = 'Test Email') => {
   try {
+    const isActive = await getEmailServiceStatus();
+    if (!isActive) {
+      console.warn('Email service is currently stopped.');
+      return { success: false, error: 'Email service is stopped.' };
+    }
+
     console.log(`📧 TEST EMAIL: Sending to ${to} with subject "${subject}"`);
     return { success: true, demo: true, message: 'Test email logged' };
   } catch (error) {

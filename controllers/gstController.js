@@ -1,7 +1,4 @@
 import axios from "axios";
-import { getAccessToken } from "../utils/gstTokenManager.js";
-
-const SANDBOX_BASE_URL = "https://api.sandbox.co.in";
 
 export const validateGST = async (req, res) => {
     try {
@@ -11,22 +8,16 @@ export const validateGST = async (req, res) => {
             return res.status(400).json({ success: false, message: "GSTIN is required" });
         }
 
-        const token = await getAccessToken();
+        const token = process.env.SUREPASS_BEARER_TOKEN;
 
-        if (!token) {
-            return res.status(500).json({ success: false, message: "Failed to authenticate with GST Service" });
-        }
-
-        const apiKey = process.env.SANDBOX_API_KEY || "key_live_62fe648618cb4ddea42383f62e962614";
+        const url = process.env.SUREPASS_URL;
 
         const response = await axios.post(
-            `${SANDBOX_BASE_URL}/gst/compliance/public/gstin/search`,
-            { gstin },
+            url,
+            { id_number: gstin },
             {
                 headers: {
-                    Authorization: token,
-                    "x-api-key": apiKey,
-                    "x-api-version": "1.0.0",
+                    Authorization: `Bearer ${token}`,
                     "Content-Type": "application/json",
                 },
             }
@@ -34,11 +25,27 @@ export const validateGST = async (req, res) => {
 
         if (response.data && response.data.data) {
             const apiData = response.data.data;
+            const stateCodeMap = {
+                "35": "AN", "28": "AP", "12": "AR", "18": "AS", "10": "BR", "04": "CH", "22": "CT",
+                "26": "DN", "25": "DN", "07": "DL", "30": "GA", "24": "GJ", "06": "HR", "02": "HP",
+                "01": "JK", "20": "JH", "29": "KA", "32": "KL", "37": "LA", "31": "LD", "23": "MP",
+                "27": "MH", "14": "MN", "17": "ML", "15": "MZ", "13": "NL", "21": "OR", "34": "PY",
+                "03": "PB", "08": "RJ", "11": "SK", "33": "TN", "36": "TS", "16": "TR", "09": "UP",
+                "05": "UK", "19": "WB"
+            };
+            const stateCode = gstin.substring(0, 2);
+
             return res.status(200).json({
                 success: true,
                 data: {
-                    name: apiData.data.lgnm,
-                    place_of_supply: apiData.data.stjCd ? apiData.data.stjCd.substring(0, 2) : "",
+                    name: apiData.legal_name,
+                    tradeNam: apiData.business_name,
+                    place_of_supply: stateCodeMap[stateCode] || stateCode,
+                    pradr: {
+                        addr: {
+                            st: apiData.address
+                        }
+                    }
                 },
             });
         } else {

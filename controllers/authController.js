@@ -124,7 +124,7 @@ export const adminLogin = async (req, res) => {
     }
 
     // Block client, client legal team, member, community, and staff roles from admin portal
-    const blockedRoles = ['client', 'client legal team', 'member', 'community', 'staff'];
+    const blockedRoles = ['client', 'client legal team', 'member', 'community', 'staff', 'communityLead'];
     const normalizedRoleName = (role.roleName || '').toLowerCase().trim();
 
     if (blockedRoles.includes(normalizedRoleName)) {
@@ -466,7 +466,8 @@ export const communityLogin = async (req, res) => {
     const role = await Role.findById(user.role);
     if (!role) return res.status(401).json({ error: "User role not found" });
 
-    if ((role.roleName || "").toLowerCase() !== "community") {
+    const roleNameLower = (role.roleName || "").toLowerCase();
+    if (roleNameLower !== "community" && roleNameLower !== "communitylead") {
       return res.status(403).json({ error: "Not a community account" });
     }
 

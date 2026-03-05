@@ -74,6 +74,7 @@ export const createBySales = async (req, res) => {
       lockInPeriodMonths,
       noticePeriodDays,
       escalation,
+      escalationRatePercentage,
       renewal,
       fullyServicedBusinessHours,
       cleaningAndRestorationFees,
@@ -246,6 +247,7 @@ export const createBySales = async (req, res) => {
       },
       ...(noticePeriodDays !== undefined ? { noticePeriodDays: Number(noticePeriodDays) } : {}),
       ...(escalation ? { escalation } : {}),
+      ...(escalationRatePercentage !== undefined ? { escalationRatePercentage: Number(escalationRatePercentage) } : {}),
       ...(renewal ? { renewal } : {}),
       ...(fullyServicedBusinessHours ? { fullyServicedBusinessHours } : {}),
       ...(Array.isArray(freebies) ? { freebies } : {}),
@@ -380,6 +382,7 @@ export const salesEditCommercials = async (req, res) => {
       lockInPeriodMonths,
       noticePeriodDays,
       escalation,
+      escalationRatePercentage,
       renewal,
       fullyServicedBusinessHours,
       cleaningAndRestorationFees,
@@ -426,6 +429,7 @@ export const salesEditCommercials = async (req, res) => {
       };
     }
     if (typeof noticePeriodDays !== 'undefined' && noticePeriodDays !== null) contract.noticePeriodDays = Number(noticePeriodDays);
+    if (typeof escalationRatePercentage !== 'undefined' && escalationRatePercentage !== null) contract.escalationRatePercentage = Number(escalationRatePercentage);
     if (escalation && typeof escalation === 'object') contract.escalation = escalation;
     if (renewal && typeof renewal === 'object') contract.renewal = renewal;
     if (fullyServicedBusinessHours && typeof fullyServicedBusinessHours === 'object') contract.fullyServicedBusinessHours = fullyServicedBusinessHours;

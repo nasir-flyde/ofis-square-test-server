@@ -10,6 +10,7 @@
     "setup": "node test-setup.js",
     "postinstall": "puppeteer browsers install chrome || true",
     "check-db": "node check-roles.js",
+    "test:jest": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "define:project": "node scripts/project-definer.mjs"
   },
   "engines": {
@@ -48,5 +49,8 @@
     "socket.io": "^4.8.1",
     "xlsx": "^0.18.5",
     "zeptomail": "^7.0.1"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
   }
 }

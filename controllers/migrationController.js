@@ -20,7 +20,9 @@ import {
     createZohoInvoiceFromLocal,
     recordZohoPayment,
     deleteZohoInvoice,
-    deleteZohoPayment
+    deleteZohoPayment,
+    updateContact,
+    getContacts
 } from '../utils/zohoBooks.js';
 import { generateLocalInvoiceNumber } from '../utils/invoiceNumberGenerator.js';
 import { logCRUDActivity, logErrorActivity } from '../utils/activityLogger.js';
@@ -28,7 +30,6 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 
-// --- Progress Tracking ---
 export const getMigrationStatus = async (req, res) => {
     try {
         const { email, clientId } = req.query;
@@ -60,8 +61,6 @@ export const getMigrationStatus = async (req, res) => {
         if (client.kycStatus === 'verified') currentStep = 3;
         if (contract) currentStep = 4;
         if (cabin) currentStep = 5;
-        // Invoices are created in Step 5. We'll check if any exist (besides SD invoice maybe?)
-        // Migration usually creates multiple. If invoices > 0, probably Step 5 is done.
         if (invoices.length > 0) currentStep = 6;
         if (membersCount > 1) currentStep = 7; // Assuming 1 member is the owner created in Step 1
 
@@ -91,23 +90,31 @@ export const getMigrationStatus = async (req, res) => {
 export const saveClientStep = async (req, res) => {
     try {
         const { client: clientData, clientId } = req.body;
-
-        // 1. Zoho Sync
         let zohoBooksContactId = clientData.zohoBooksContactId;
+
+        const tempClient = {
+            ...clientData,
+            email: clientData.email,
+            companyName: clientData.companyName,
+            contactPerson: clientData.contactPerson,
+            phone: clientData.phone,
+            gstNo: clientData.gstNo,
+            billingAddress: clientData.billingAddress || {}
+        };
+        if (!tempClient.contactPerson && clientData.firstName) {
+            tempClient.contactPerson = `${clientData.firstName} ${clientData.lastName}`.trim();
+        }
+
         if (!zohoBooksContactId) {
-            const tempClient = {
-                ...clientData,
-                email: clientData.email,
-                companyName: clientData.companyName,
-                contactPerson: clientData.contactPerson,
-                phone: clientData.phone,
-                gstNo: clientData.gstNo,
-                billingAddress: clientData.billingAddress || {}
-            };
-            if (!tempClient.contactPerson && clientData.firstName) {
-                tempClient.contactPerson = `${clientData.firstName} ${clientData.lastName}`.trim();
-            }
             zohoBooksContactId = await findOrCreateContactFromClient(tempClient);
+        } else {
+            // Also update Zoho Books if it exists
+            try {
+                // Find or prepare payload for update
+                await findOrCreateContactFromClient(tempClient, zohoBooksContactId);
+            } catch (e) {
+                console.error("Failed to update zoho books contact", e);
+            }
         }
 
         const payload = {
@@ -156,9 +163,21 @@ export const saveClientStep = async (req, res) => {
         if (clientId) {
             client = await Client.findByIdAndUpdate(clientId, { $set: payload }, { new: true });
         } else {
-            // Create new
-            client = await Client.create(payload);
-            isNew = true;
+            const clientQueryOpts = [];
+            if (payload.email) clientQueryOpts.push({ email: payload.email });
+            if (payload.phone) clientQueryOpts.push({ phone: payload.phone });
+
+            let existingClient = null;
+            if (clientQueryOpts.length > 0) {
+                existingClient = await Client.findOne({ $or: clientQueryOpts });
+            }
+
+            if (existingClient) {
+                client = await Client.findByIdAndUpdate(existingClient._id, { $set: payload }, { new: true });
+            } else {
+                client = await Client.create(payload);
+                isNew = true;
+            }
         }
 
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
@@ -169,9 +188,7 @@ export const saveClientStep = async (req, res) => {
                 let roleClient = await Role.findOne({ roleName: { $regex: /^client$/i } });
                 if (!roleClient) roleClient = await Role.create({ roleName: "client", permissions: [] });
 
-                let user = await User.findOne({
-                    $or: [{ email: client.email }, { phone: client.phone }]
-                });
+                let user = await User.findOne({ email: client.email });
 
                 if (!user) {
                     const name = client.contactPerson?.trim() || client.companyName?.trim() || "Client User";
@@ -186,6 +203,7 @@ export const saveClientStep = async (req, res) => {
                     user.role = roleClient._id;
                     await user.save();
                 }
+
                 client.ownerUser = user._id;
                 await client.save();
 
@@ -348,6 +366,7 @@ export const saveContractStep = async (req, res) => {
             lockInPeriodMonths: Number(contractData.lockInPeriodMonths || 12),
             noticePeriodDays: Number(contractData.noticePeriodDays || 30),
             escalation: contractData.escalation || { ratePercent: 0, frequencyMonths: 12 },
+            escalationRatePercentage: Number(contractData.escalationRatePercentage || 0),
             renewal: contractData.renewal || { isAutoRenewal: false, renewalTermMonths: 12 },
             fullyServicedBusinessHours: contractData.fullyServicedBusinessHours || {
                 startTime: '09:00',
@@ -907,7 +926,7 @@ export const bulkImportMigration = async (req, res) => {
                 });
 
                 if (!building) {
-                    rowResult.errors.push(`Building not found: ${row.building}`);
+                    rowResult.errors.push(`Building not found: ${buildingSearch}`);
                 }
 
                 // 2. Client Deduplication check
@@ -1015,13 +1034,14 @@ export const bulkImportMigration = async (req, res) => {
                     endDate: endDate,
                     billingStartDate: startDate,
                     billingEndDate: endDate,
-                    monthlyRent: Number(row.monthlyrent),
+                    monthlyRent: Number(row['monthly subscription'] || row.monthlysubscription || row.monthlyrent || 0),
                     capacity: Number(row.capacity || 1),
-                    initialCredits: Number(row.initialcredits || 0),
+                    initialCredits: Number(row['mr credits'] || row.initialcredits || 0),
                     printerCredits: Number(row.printercredits || 0),
                     legalExpenses: Number(row.legalexpenses || 1200),
                     lockInPeriodMonths: Number(row.lockinmonths || 12),
                     noticePeriodDays: Number(row.noticeperiod || 30),
+                    escalationRatePercentage: Number(row.escalationratepercentage || 0),
                     isApproved: true,
                     status: 'active',
                     source: 'migration',
@@ -1330,8 +1350,8 @@ export const getBulkImportSampleCSV = async (req, res) => {
             'Billing Attention', 'Billing Street 1', 'Billing Street 2', 'Billing City', 'Billing State', 'Billing Zip', 'Billing Country', 'Billing Phone',
             'Shipping Attention', 'Shipping Street 1', 'Shipping Street 2', 'Shipping City', 'Shipping State', 'Shipping Zip', 'Shipping Country', 'Shipping Phone',
             'GST No', 'GST Treatment', 'Place of Supply',
-            'Building', 'Cabin Number', 'Start Date', 'End Date', 'Monthly Rent', 'Capacity',
-            'Initial Credits', 'Credit Value', 'Printer Credits', 'Legal Expenses', 'Lockin Months', 'Notice Period',
+            'Building', 'Cabin Number', 'Start Date', 'End Date', 'Monthly Subscription', 'Capacity',
+            'MR Credits', 'Credit Value', 'Printer Credits', 'Legal Expenses', 'Lockin Months', 'Notice Period', 'Escalation Rate %',
             'Deposit Agreed', 'Deposit Paid', 'Deposit Paid Date', 'Payment Type', 'Payment Ref', 'Signed Contract'
         ];
 
@@ -1353,7 +1373,7 @@ export const getBulkImportSampleCSV = async (req, res) => {
             'John Doe', '123 Main St', 'Suite 100', 'Mumbai', 'Maharashtra', '400001', 'India', '9876543210',
             '27ABCDE1234F1Z5', 'business_gst', 'Maharashtra',
             'Bldg-001', '101', '2025-01-01', '2025-12-31', '50000', '10',
-            '1000', '1', '500', '2000', '6', '30',
+            '1000', '1', '500', '2000', '6', '30', '10',
             '150000', '50000', '2024-12-30', 'Bank Transfer', 'TXN123456', 'https://example.com/contract.pdf'
         ];
 
@@ -1717,7 +1737,7 @@ export const getBulkFinancialsSampleCSV = async (req, res) => {
 // --- Bulk Member Import ---
 
 export const getBulkMembersSampleCSV = (req, res) => {
-    const csvContent = `firstName,lastName,email,phone,role_name,rfid,company_name\nJohn,Doe,john.doe@example.com,9876543210,member,12345678,Acme Corp\nJane,Smith,jane.smith@example.com,9876543211,client,87654321,Globex Corp`;
+    const csvContent = `firstName,lastName,email,phone,isBossUser,rfid,company_name\nJohn,Doe,john.doe@example.com,9876543210,false,12345678,Acme Corp\nJane,Smith,jane.smith@example.com,9876543211,true,87654321,Globex Corp`;
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="bulk_members_sample.csv"');
     res.send(csvContent);
@@ -1765,7 +1785,7 @@ export const bulkImportMembers = async (req, res) => {
 
         for (const row of rows) {
             const errors = [];
-            const { firstName, lastName, email, phone, role_name, rfid, company_name } = row;
+            const { firstName, lastName, email, phone, isBossUser, rfid, company_name } = row;
 
             // 1. Basic Validation
             if (!firstName) errors.push('First Name required');
@@ -1774,17 +1794,12 @@ export const bulkImportMembers = async (req, res) => {
 
             // 2. Validate Role
             let roleId = null;
-            if (role_name) {
-                const r = roleMap.get(role_name.toLowerCase());
-                if (!r) {
-                    errors.push(`Role '${role_name}' not found`);
-                } else if (!['client', 'member'].includes(r.roleName.toLowerCase())) {
-                    errors.push(`Role '${role_name}' not allowed for bulk import`);
-                } else {
-                    roleId = r._id;
-                }
+            const targetRoleName = (isBossUser === 'true' || isBossUser === '1') ? 'client' : 'member';
+            const r = roleMap.get(targetRoleName);
+            if (!r) {
+                errors.push(`Role '${targetRoleName}' not found in system`);
             } else {
-                errors.push('Role Name required');
+                roleId = r._id;
             }
 
             // 3. Validate Client & Contracts/Cabins
@@ -2062,6 +2077,332 @@ export const listPendingMigrations = async (req, res) => {
         return res.json({ success: true, count: pending.length, clients: pending });
     } catch (error) {
         console.error('listPendingMigrations error:', error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- Bulk Contract Import ---
+
+export const getBulkContractsSampleCSV = async (req, res) => {
+    try {
+        const headers = [
+            'Client Name', 'Building', 'Cabin Number', 'Start Date', 'End Date',
+            'Monthly Subscription', 'Capacity', 'MR Credits', 'Printer Credits',
+            'Legal Expenses', 'Lockin Months', 'Notice Period', 'Escalation Rate %',
+            'Deposit Agreed', 'Deposit Paid', 'Deposit Paid Date', 'Payment Type', 'Payment Ref',
+            'Signed Contract', 'GST Number'
+        ];
+
+        const sampleRow = [
+            'Acme Corp', 'Bldg-001', '101', '2025-01-01', '2025-12-31',
+            '50000', '10', '1000', '500', '2000', '12', '30', '0',
+            '150000', '150000', '2024-12-30', 'Bank Transfer', 'TXN789012', 'https://example.com/contract.pdf', '22AAAAA0000A1Z5'
+        ];
+
+        const csvContent = [headers.join(','), sampleRow.join(',')].join('\n');
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="bulk_contracts_sample.csv"');
+        res.send(csvContent);
+    } catch (error) {
+        console.error('getBulkContractsSampleCSV error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+export const bulkImportContracts = async (req, res) => {
+    try {
+        const { rows, dryRun = false } = req.body;
+        if (!rows || !Array.isArray(rows)) {
+            return res.status(400).json({ success: false, message: 'Invalid data format' });
+        }
+
+        const formatDateToISO = (date) => {
+            if (!date) return undefined;
+            const d = new Date(date);
+            if (isNaN(d.getTime())) return undefined;
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        };
+
+        const parseDate = (dateStr) => {
+            if (!dateStr || typeof dateStr !== 'string') return null;
+            if (dateStr.includes('-')) {
+                const parts = dateStr.split('-');
+                if (parts.length === 3) {
+                    const [d, m, y] = parts.map(Number);
+                    if (y > 1000) return new Date(y, m - 1, d);
+                    if (d > 1000) return new Date(d, m - 1, y);
+                }
+            }
+            const d = new Date(dateStr);
+            return isNaN(d.getTime()) ? null : d;
+        };
+
+        const results = [];
+        let successCount = 0;
+        const WalletService = (await import("../services/walletService.js")).default;
+
+        for (const row of rows) {
+            try {
+                const rowResult = { ...row, errors: [], status: 'Ready' };
+                const clientNameInput = (row['Client Name'] || row.clientName || row.client_name || '').trim();
+
+                // 1. Client Check (By Name)
+                if (!clientNameInput) {
+                    rowResult.errors.push(`Client Name is required`);
+                    rowResult.status = 'Error';
+                    results.push(rowResult);
+                    continue;
+                }
+
+                const client = await Client.findOne({
+                    companyName: { $regex: new RegExp(`^${clientNameInput}$`, 'i') }
+                });
+
+                if (!client) {
+                    rowResult.errors.push(`Client not found with name: ${clientNameInput}`);
+                    rowResult.status = 'Error';
+                    results.push(rowResult);
+                    continue;
+                }
+
+                rowResult.clientName = client.companyName || `${client.firstName} ${client.lastName}`.trim();
+
+                // 2. Building Check
+                const buildingSearch = (row.Building || row.building || '').trim();
+                const building = await Building.findOne({
+                    $or: [
+                        { name: { $regex: new RegExp(`^${buildingSearch}$`, 'i') } },
+                        { _id: buildingSearch.length === 24 ? buildingSearch : undefined }
+                    ].filter(x => x._id !== undefined || x.name !== undefined)
+                });
+                if (!building) {
+                    rowResult.errors.push(`Building not found: ${buildingSearch}`);
+                }
+
+                // 3. Date Validation
+                const startDate = parseDate(row['Start Date'] || row.startdate || row.startDate);
+                const endDate = parseDate(row['End Date'] || row.enddate || row.endDate);
+                if (!startDate) rowResult.errors.push(`Invalid start date: ${row['Start Date'] || row.startdate || row.startDate}`);
+                if (!endDate) rowResult.errors.push(`Invalid end date: ${row['End Date'] || row.enddate || row.endDate}`);
+
+                if (rowResult.errors.length > 0) {
+                    rowResult.status = 'Error';
+                    results.push(rowResult);
+                    continue;
+                }
+
+                if (dryRun) {
+                    rowResult.success = true;
+                    results.push(rowResult);
+                    continue;
+                }
+
+                // --- GST Parsing ---
+                const gstInput = (row['GST Number'] || row.gstnumber || row.gstNumber || row.gst_number);
+                let parsedGstNo, parsedGstTreatment, parsedPlaceOfSupply;
+
+                if (gstInput && typeof gstInput === 'string' && gstInput.trim()) {
+                    parsedGstNo = gstInput.trim();
+                    parsedGstTreatment = 'business_gst';
+
+                    const stateCodeMap = {
+                        "35": "AN", "28": "AP", "12": "AR", "18": "AS", "10": "BR", "04": "CH", "22": "CT",
+                        "26": "DN", "25": "DN", "07": "DL", "30": "GA", "24": "GJ", "06": "HR", "02": "HP",
+                        "01": "JK", "20": "JH", "29": "KA", "32": "KL", "37": "LA", "31": "LD", "23": "MP",
+                        "27": "MH", "14": "MN", "17": "ML", "15": "MZ", "13": "NL", "21": "OR", "34": "PY",
+                        "03": "PB", "08": "RJ", "11": "SK", "33": "TN", "36": "TS", "16": "TR", "09": "UP",
+                        "05": "UK", "19": "WB"
+                    };
+                    const statePrefix = parsedGstNo.substring(0, 2);
+                    parsedPlaceOfSupply = stateCodeMap[statePrefix] || statePrefix;
+                }
+
+                // --- ACTUAL IMPORT ---
+                const contract = await Contract.create({
+                    client: client._id,
+                    building: building._id,
+                    startDate: startDate,
+                    endDate: endDate,
+                    billingStartDate: startDate,
+                    billingEndDate: endDate,
+                    monthlyRent: Number(row['Monthly Subscription'] || row.monthlysubscription || row.monthlySubscription || 0),
+                    capacity: Number(row.Capacity || row.capacity || 1),
+                    initialCredits: Number(row['MR Credits'] || row.mrcredits || row.initialCredits || 0),
+                    printerCredits: Number(row['Printer Credits'] || row.printercredits || row.printerCredits || 0),
+                    legalExpenses: Number(row['Legal Expenses'] || row.legalexpenses || row.legalExpenses || 1200),
+                    lockInPeriodMonths: Number(row['Lockin Months'] || row.lockinmonths || row.lockInPeriodMonths || 12),
+                    noticePeriodDays: Number(row['Notice Period'] || row.noticeperiod || row.noticePeriodDays || 30),
+                    escalationRatePercentage: Number(row['Escalation Rate %'] || row.escalationratepercentage || row.escalationRatePercentage || 0),
+                    isApproved: true,
+                    status: 'active',
+                    source: 'migration',
+                    termsAndConditions: 'Bulk Contract Migration',
+                    fileUrl: row['Signed Contract'] || row.signedcontract || row.fileUrl || undefined,
+                    gst_no: parsedGstNo,
+                    gst_treatment: parsedGstTreatment,
+                    place_of_supply: parsedPlaceOfSupply,
+                    iskycuploaded: true,
+                    iskycapproved: true,
+                    adminapproved: true,
+                    legalteamapproved: true,
+                    clientapproved: true,
+                    financeapproved: true,
+                    securitydeposited: true,
+                    iscontractsentforsignature: true,
+                    iscontractstamppaperupload: true,
+                    isclientsigned: true,
+                    isfinalapproval: true,
+                    salesSeniorApproved: true
+                });
+
+                // Grant Credits
+                const credits = Number(row['MR Credits'] || row.mrcredits || row.initialCredits || 0);
+                if (credits > 0) {
+                    await WalletService.grantCredits({
+                        clientId: client._id,
+                        credits: credits,
+                        valuePerCredit: 500,
+                        refType: 'contract',
+                        refId: contract._id,
+                        meta: { reason: 'Bulk Contract Migration Credits' }
+                    });
+                }
+
+                // Security Deposit
+                const depositAgreed = Number(row['Deposit Agreed'] || row.depositagreed || row.depositAgreed || 0);
+                if (depositAgreed > 0) {
+                    const depositPaid = Number(row['Deposit Paid'] || row.depositpaid || row.depositPaid || 0);
+                    const paidDate = parseDate(row['Deposit Paid Date'] || row.depositpaiddate || row.depositPaidDate) || new Date();
+
+                    const sd = await SecurityDeposit.create({
+                        client: client._id,
+                        contract: contract._id,
+                        building: building._id,
+                        agreed_amount: depositAgreed,
+                        amount_paid: depositPaid,
+                        status: depositPaid >= depositAgreed ? 'PAID' : (depositPaid > 0 ? 'PARTIAL' : 'DUE'),
+                        paid_date: depositPaid > 0 ? paidDate : undefined,
+                        notes: 'Bulk Contract Migration'
+                    });
+
+                    // Local Invoice for SD
+                    const invoiceNumber = await generateLocalInvoiceNumber();
+                    const invoice = await Invoice.create({
+                        client: client._id,
+                        contract: contract._id,
+                        building: building._id,
+                        deposit: sd._id,
+                        invoice_number: invoiceNumber,
+                        type: 'security_deposit',
+                        status: depositPaid >= depositAgreed ? 'paid' : (depositPaid > 0 ? 'partially_paid' : 'sent'),
+                        date: paidDate,
+                        due_date: startDate,
+                        line_items: [{ description: 'Security Deposit', quantity: 1, unitPrice: depositAgreed, amount: depositAgreed }],
+                        sub_total: depositAgreed,
+                        total: depositAgreed,
+                        balance: Math.max(0, depositAgreed - depositPaid),
+                        amount_paid: depositPaid,
+                        source: 'migration',
+                        billing_address: { ...client.billingAddress, attention: client.contactPerson || client.companyName }
+                    });
+                    sd.invoice_id = invoice._id;
+                    await sd.save();
+
+                    // Update Client Record
+                    client.securityDeposit = sd._id;
+                    client.isSecurityPaid = depositPaid >= depositAgreed;
+                    if (!client.building) client.building = building._id;
+                    client.isMigrated = true;
+                    client.isClientApproved = true;
+                    client.companyDetailsComplete = true;
+                    client.kycStatus = 'verified';
+                    client.membershipStatus = 'active';
+
+                    if (parsedGstNo) {
+                        client.gstNumber = parsedGstNo;
+                        client.gstNo = parsedGstNo;
+                        client.taxRegNo = parsedGstNo;
+                        client.gstTreatment = parsedGstTreatment;
+                        client.isTaxable = true;
+
+                        if (parsedPlaceOfSupply) {
+                            if (!client.taxInfoList) client.taxInfoList = [];
+                            const existing = client.taxInfoList.find(t => t.tax_registration_no === parsedGstNo);
+                            if (existing) {
+                                existing.place_of_supply = parsedPlaceOfSupply;
+                                existing.is_primary = true;
+                            } else {
+                                client.taxInfoList.push({
+                                    tax_registration_no: parsedGstNo,
+                                    place_of_supply: parsedPlaceOfSupply,
+                                    is_primary: true
+                                });
+                            }
+                        }
+                    }
+
+                    await client.save();
+
+                    contract.securityDeposit = sd._id;
+                    await contract.save();
+
+                    // Payment for SD
+                    if (depositPaid > 0) {
+                        const payment = await Payment.create({
+                            client: client._id,
+                            contract: contract._id,
+                            amount: depositPaid,
+                            paymentDate: paidDate,
+                            type: row['Payment Type'] || row.paymenttype || row.paymentType || 'Bank Transfer',
+                            referenceNumber: row['Payment Ref'] || row.paymentref || row.paymentRef,
+                            status: 'success',
+                            invoice: invoice._id,
+                            invoices: [{ invoice: invoice._id, amount_applied: depositPaid }],
+                            applied_total: depositPaid
+                        });
+                        invoice.payment_id = payment._id;
+                        await invoice.save();
+                    }
+
+                }
+
+                // Cabin Allocation
+                const cabinNumber = (row['Cabin Number'] || row.cabinnumber || row.cabinNumber)?.trim();
+                if (cabinNumber) {
+                    const cabin = await Cabin.findOne({ building: building._id, number: { $regex: new RegExp(`^${cabinNumber}$`, 'i') } });
+                    if (cabin) {
+                        await Cabin.findByIdAndUpdate(cabin._id, {
+                            allocatedTo: client._id,
+                            contract: contract._id,
+                            status: 'occupied',
+                            $push: {
+                                blocks: {
+                                    client: client._id,
+                                    contract: contract._id,
+                                    fromDate: contract.startDate,
+                                    toDate: contract.endDate,
+                                    status: 'active',
+                                    reason: 'Bulk Contract Migration'
+                                }
+                            }
+                        });
+                    }
+                }
+
+                successCount++;
+                rowResult.success = true;
+                results.push(rowResult);
+
+            } catch (rowErr) {
+                console.error(`Row processing error:`, rowErr);
+                results.push({ ...row, status: 'Error', errors: [rowErr.message] });
+            }
+        }
+
+        return res.json({ success: true, dryRun, count: dryRun ? rows.length : successCount, results });
+    } catch (error) {
+        console.error('bulkImportContracts error:', error);
         return res.status(500).json({ success: false, message: error.message });
     }
 };

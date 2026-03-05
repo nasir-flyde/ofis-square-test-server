@@ -74,7 +74,7 @@ const universalAuthMiddleware = async (req, res, next) => {
       }
 
       // Community user: attach building context
-      if (roleName === 'community') {
+      if (roleName === 'community' || roleName === 'communitylead') {
         if (decoded.buildingId) {
           try {
             const building = await Building.findById(decoded.buildingId);
