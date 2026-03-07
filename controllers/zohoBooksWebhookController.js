@@ -6,6 +6,7 @@ import Member from "../models/memberModel.js";
 import Invoice from "../models/invoiceModel.js";
 import Payment from "../models/paymentModel.js";
 import { sendWelcomeEmail } from "../utils/emailService.js";
+import { sendNotification } from "../utils/notificationHelper.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import apiLogger from "../utils/apiLogger.js";
 import { enforceAccessByInvoices } from "../services/accessService.js";
@@ -312,9 +313,9 @@ async function handleCustomerCreated(customerData) {
 
     console.log(`Created new client ${newClient._id} from Zoho customer ${customerId}`);
 
-    // Create user and member records if email OR phone are available (not both required)
+    // Create user and member records if phone is available
     let createdUserId = null;
-    if (newClient.email || newClient.phone) {
+    if (newClient.phone) {
       try {
         createdUserId = await createUserAndMemberForClient(newClient);
       } catch (userErr) {
@@ -322,20 +323,31 @@ async function handleCustomerCreated(customerData) {
       }
     }
 
-    // Send welcome email
+    // Send welcome email using dynamic template
     if (newClient.email) {
       try {
-        const emailResult = await sendWelcomeEmail({
-          companyName: newClient.companyName,
-          contactPerson: newClient.contactPerson,
-          email: newClient.email
+        await sendNotification({
+          to: {
+            email: newClient.email,
+            phone: newClient.phone,
+            clientId: newClient._id,
+            userId: createdUserId || undefined
+          },
+          channels: { email: true, inApp: true, push: true },
+          templateKey: 'welcome_mail',
+          templateVariables: {
+            memberName: newClient.contactPerson || newClient.companyName || 'Member',
+            companyName: newClient.companyName || 'Ofis Square',
+            portalLink: process.env.PORTAL_URL || 'https://portal.ofissquare.com'
+          },
+          title: 'Welcome to Ofis Square',
+          metadata: {
+            category: 'welcome',
+            tags: ['welcome', 'zoho_books']
+          },
+          source: 'zoho_books_webhook'
         });
-
-        if (emailResult.success) {
-          console.log(`Welcome email sent to ${newClient.email} for Zoho-created client`);
-        } else {
-          console.error(`Failed to send welcome email:`, emailResult.error);
-        }
+        console.log(`Welcome email sent to ${newClient.email} via notification template`);
       } catch (emailErr) {
         console.error("Welcome email error for Zoho-created client:", emailErr);
       }
@@ -444,9 +456,9 @@ async function handleContactCreated(contactData) {
 
     console.log(`Created new client ${newClient._id} from Zoho contact ${contactId}`);
 
-    // Create user and member records if email OR phone are available (not both required)
+    // Create user and member records if phone is available
     let createdUserId = null;
-    if (newClient.email || newClient.phone) {
+    if (newClient.phone) {
       try {
         createdUserId = await createUserAndMemberForClient(newClient);
       } catch (userErr) {
@@ -454,22 +466,33 @@ async function handleContactCreated(contactData) {
       }
     }
 
-    // Send welcome email
+    // Send welcome email using dynamic template
     if (newClient.email) {
       try {
-        const emailResult = await sendWelcomeEmail({
-          companyName: newClient.companyName,
-          contactPerson: newClient.contactPerson,
-          email: newClient.email
+        await sendNotification({
+          to: {
+            email: newClient.email,
+            phone: newClient.phone,
+            clientId: newClient._id,
+            userId: createdUserId || undefined
+          },
+          channels: { email: true, inApp: true, push: true },
+          templateKey: 'welcome_mail',
+          templateVariables: {
+            memberName: newClient.contactPerson || newClient.companyName || 'Member',
+            companyName: newClient.companyName || 'Ofis Square',
+            portalLink: process.env.PORTAL_URL || 'https://portal.ofissquare.com'
+          },
+          title: 'Welcome to Ofis Square',
+          metadata: {
+            category: 'welcome',
+            tags: ['welcome', 'zoho_books_legacy']
+          },
+          source: 'zoho_books_webhook'
         });
-
-        if (emailResult.success) {
-          console.log(`Welcome email sent to ${newClient.email} for Zoho-created client`);
-        } else {
-          console.error(`Failed to send welcome email:`, emailResult.error);
-        }
+        console.log(`Welcome email sent to ${newClient.email} via notification template (legacy contact)`);
       } catch (emailErr) {
-        console.error("Welcome email error for Zoho-created client:", emailErr);
+        console.error("Welcome email error for Zoho-created client (legacy):", emailErr);
       }
     }
 

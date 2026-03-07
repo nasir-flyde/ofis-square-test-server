@@ -6,6 +6,7 @@ import NotificationCategory from '../models/NotificationCategoryModel.js';
 import admin from '../utils/firebase.js';
 import { getSMSProvider } from '../services/notifications/smsProvider.js';
 import { getEmailProvider } from '../services/notifications/emailProvider.js';
+import { getEmailServiceStatus } from './emailService.js';
 import { renderTemplateByKey, renderArbitraryContent } from '../services/notifications/templateService.js';
 
 const smsProvider = getSMSProvider();
@@ -569,6 +570,14 @@ async function sendEmail(notification, attachments = []) {
     }
 
     notification.updateDeliveryStatus('email', 'queued', { details: 'Sending email' });
+
+    const isActive = await getEmailServiceStatus();
+    if (!isActive) {
+      console.warn(`[notificationHelper:sendEmail] Email service is disabled via AppConfig. Skipping send to ${notification.to.email}`);
+      notification.updateDeliveryStatus('email', 'skipped', { details: 'Email service disabled via AppConfig' });
+      return;
+    }
+
     notification.emailDelivery.provider = 'zeptomail';
 
     const result = await emailProvider.send({
