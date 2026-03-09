@@ -64,7 +64,8 @@ const corsOptions = {
     'https://ofis-square-superadmin.vercel.app',
     'https://main.d2k6kxddchtshx.amplifyapp.com',
     'https://main.d1ojq4e0j0ohx9.amplifyapp.com',
-    'https://main.d16k3z1kxnexw9.amplifyapp.com'
+    'https://main.d16k3z1kxnexw9.amplifyapp.com',
+    "https://ofis-square-doc.vercel.app"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
