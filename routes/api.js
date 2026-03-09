@@ -64,6 +64,7 @@ import cityRoutes from "./cityRoutes.js";
 import privacyPolicyRoutes from "./privacyPolicyRoutes.js";
 import notificationCategoriesRoutes from "./notificationCategories.js";
 import discountBundleRoutes from "./discountBundles.js";
+import docSupportRoutes from "./docSupportRoutes.js";
 
 const router = express.Router();
 
@@ -133,4 +134,5 @@ router.use("/cities", cityRoutes);
 router.use("/tours", tourRoutes);
 router.use("/privacy-policies", privacyPolicyRoutes);
 router.use("/discount-bundles", discountBundleRoutes);
+router.use("/doc-support", docSupportRoutes);
 export default router;
