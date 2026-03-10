@@ -74,7 +74,9 @@ export const createBhaifiUser = async (req, res) => {
     const { memberId, contractId } = req.body || {};
     if (!memberId) return res.status(400).json({ success: false, message: "memberId is required" });
 
-    const member = await Member.findById(memberId).populate("client");
+    const member = await Member.findById(memberId).populate([
+      { path: "client", populate: { path: "building" } }
+    ]);
     if (!member) return res.status(404).json({ success: false, message: "Member not found" });
 
     const name = [member.firstName, member.lastName].filter(Boolean).join(" ") || member.companyName || "Member";
@@ -93,18 +95,60 @@ export const createBhaifiUser = async (req, res) => {
     // Idempotency: check existing
     let existing = await BhaifiUser.findOne({ member: member._id, userName });
     if (existing) {
-      return res.json({ success: true, message: "Bhaifi user already exists", data: existing });
+      return res.json({ success: true, message: "Bhaifi user already exists locally", data: existing });
     }
 
-    const nasId = getEnvNasId();
+    let nasId = getEnvNasId();
+    const building = member.client?.building;
+
+    if (building?.wifiAccess?.enterpriseLevel?.enabled &&
+      Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+      building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
+
+      const nasDocs = await BhaifiNas.find({
+        _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
+        isActive: true
+      }).select('nasId').lean();
+
+      if (nasDocs.length > 0) {
+        nasId = nasDocs[0].nasId;
+        console.log(`[BHAIFI] Using building NAS mapping for member ${member._id}:`, { nasId, buildingId: building._id });
+      }
+    } else {
+      console.log(`[BHAIFI] Using default NAS ID for member ${member._id} (no active building mapping found)`, { nasId });
+    }
+
     const idType = 1;
+    let apiUserId = null;
+    let apiResponseData = null;
+    let apiRequestPayload = null;
 
     console.log("[BHAIFI] Creating user for member", {
       memberId: String(member._id),
       payload: { email, idType, name, nasId, userName }
     });
-    const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
-    console.log("[BHAIFI] Create user API success", { memberId: String(member._id), responseKeys: Object.keys(apiRes?.data || {}) });
+
+    try {
+      const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
+      apiUserId = apiRes?.data?.id || apiRes?.data?.userId || null;
+      apiResponseData = apiRes?.data;
+      apiRequestPayload = apiRes?.payload;
+      console.log("[BHAIFI] Create user API success", { memberId: String(member._id), responseKeys: Object.keys(apiRes?.data || {}) });
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data || {};
+      const msg = (data?.message || e?.message || '').toLowerCase();
+      const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
+      const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate');
+
+      if (isAlreadyExists) {
+        console.warn("[BHAIFI] createBhaifiUser: User already exists on Bhaifi, creating local record only.", { memberId: String(member._id), userName });
+        apiRequestPayload = { email, idType, name, nasId, userName };
+      } else {
+        console.error("[BHAIFI] createBhaifiUser failed", { memberId: String(member._id), error: msg, status });
+        throw e;
+      }
+    }
 
     const doc = await BhaifiUser.create({
       member: member._id,
@@ -115,10 +159,10 @@ export const createBhaifiUser = async (req, res) => {
       userName,
       idType,
       nasId,
-      bhaifiUserId: apiRes?.data?.id || apiRes?.data?.userId || null,
+      bhaifiUserId: apiUserId,
       status: "active",
       lastSyncAt: new Date(),
-      meta: { request: apiRes?.payload, response: apiRes?.data },
+      meta: { request: apiRequestPayload, response: apiResponseData },
     });
 
     // Immediately whitelist if contractId provided and contract has endDate

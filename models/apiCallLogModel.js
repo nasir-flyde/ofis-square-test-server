@@ -11,7 +11,7 @@ const apiCallLogSchema = new mongoose.Schema({
   service: {
     type: String,
     required: true,
-    enum: ['zoho_books', 'zoho_sign', 'razorpay', 'sms_waale', 'other','matrix'],
+    enum: ['zoho_books', 'zoho_sign', 'razorpay', 'sms_waale', 'other', 'DayPass', 'matrix'],
     index: true
   },
   operation: {
@@ -26,7 +26,7 @@ const apiCallLogSchema = new mongoose.Schema({
     enum: ['outgoing', 'incoming'],
     index: true
   },
-  
+
   // Request details
   method: {
     type: String,
@@ -45,7 +45,7 @@ const apiCallLogSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null
   },
-  
+
   // Response details
   statusCode: {
     type: Number,
@@ -59,7 +59,7 @@ const apiCallLogSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null
   },
-  
+
   // Timing and performance
   startTime: {
     type: Date,
@@ -74,7 +74,7 @@ const apiCallLogSchema = new mongoose.Schema({
     type: Number, // milliseconds
     index: true
   },
-  
+
   // Status tracking
   success: {
     type: Boolean,
@@ -89,7 +89,7 @@ const apiCallLogSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  
+
   // Context and relationships
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -103,14 +103,15 @@ const apiCallLogSchema = new mongoose.Schema({
   },
   relatedEntity: {
     type: String,
-    enum: ['invoice', 'contract', 'payment', 'client', 'daypass', 'bundle', 'other'],
+    enum: ['invoice', 'contract', 'payment', 'client', 'daypass', 'bundle', 'other',
+      'DayPass', 'DayPassBundle', 'MeetingBooking'],
     index: true
   },
   relatedEntityId: {
     type: mongoose.Schema.Types.ObjectId,
     index: true
   },
-  
+
   // Retry tracking
   attemptNumber: {
     type: Number,
@@ -130,7 +131,7 @@ const apiCallLogSchema = new mongoose.Schema({
     default: null,
     index: true // Links retry attempts to original request
   },
-  
+
   // Webhook specific fields
   webhookSignature: {
     type: String,
@@ -144,7 +145,7 @@ const apiCallLogSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  
+
   // Additional metadata
   userAgent: {
     type: String,
@@ -159,13 +160,13 @@ const apiCallLogSchema = new mongoose.Schema({
     enum: ['development', 'staging', 'production'],
     default: process.env.NODE_ENV || 'development'
   },
-  
+
   // Data masking flag
   dataMasked: {
     type: Boolean,
     default: false
   },
-  
+
   // Raw data backup (for debugging)
   rawRequest: {
     type: String,
@@ -193,17 +194,17 @@ apiCallLogSchema.index({ direction: 1, service: 1, createdAt: -1 });
 apiCallLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
 
 // Virtual for response time in seconds
-apiCallLogSchema.virtual('responseTimeSeconds').get(function() {
+apiCallLogSchema.virtual('responseTimeSeconds').get(function () {
   return this.duration ? (this.duration / 1000).toFixed(3) : null;
 });
 
 // Virtual for success rate calculation
-apiCallLogSchema.virtual('isRetry').get(function() {
+apiCallLogSchema.virtual('isRetry').get(function () {
   return this.attemptNumber > 1;
 });
 
 // Static methods
-apiCallLogSchema.statics.findByService = function(service, limit = 100) {
+apiCallLogSchema.statics.findByService = function (service, limit = 100) {
   return this.find({ service })
     .sort({ createdAt: -1 })
     .limit(limit)
@@ -211,11 +212,11 @@ apiCallLogSchema.statics.findByService = function(service, limit = 100) {
     .populate('clientId', 'companyName email');
 };
 
-apiCallLogSchema.statics.findFailures = function(hours = 24, limit = 100) {
+apiCallLogSchema.statics.findFailures = function (hours = 24, limit = 100) {
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
-  return this.find({ 
-    success: false, 
-    createdAt: { $gte: since } 
+  return this.find({
+    success: false,
+    createdAt: { $gte: since }
   })
     .sort({ createdAt: -1 })
     .limit(limit)
@@ -223,9 +224,9 @@ apiCallLogSchema.statics.findFailures = function(hours = 24, limit = 100) {
     .populate('clientId', 'companyName email');
 };
 
-apiCallLogSchema.statics.getServiceStats = async function(service, hours = 24) {
+apiCallLogSchema.statics.getServiceStats = async function (service, hours = 24) {
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
-  
+
   const stats = await this.aggregate([
     {
       $match: {
@@ -237,11 +238,11 @@ apiCallLogSchema.statics.getServiceStats = async function(service, hours = 24) {
       $group: {
         _id: null,
         totalCalls: { $sum: 1 },
-        successfulCalls: { 
-          $sum: { $cond: ['$success', 1, 0] } 
+        successfulCalls: {
+          $sum: { $cond: ['$success', 1, 0] }
         },
-        failedCalls: { 
-          $sum: { $cond: ['$success', 0, 1] } 
+        failedCalls: {
+          $sum: { $cond: ['$success', 0, 1] }
         },
         avgDuration: { $avg: '$duration' },
         maxDuration: { $max: '$duration' },
@@ -249,7 +250,7 @@ apiCallLogSchema.statics.getServiceStats = async function(service, hours = 24) {
       }
     }
   ]);
-  
+
   if (stats.length === 0) {
     return {
       totalCalls: 0,
@@ -261,16 +262,16 @@ apiCallLogSchema.statics.getServiceStats = async function(service, hours = 24) {
       minDuration: 0
     };
   }
-  
+
   const result = stats[0];
-  result.successRate = result.totalCalls > 0 ? 
+  result.successRate = result.totalCalls > 0 ?
     ((result.successfulCalls / result.totalCalls) * 100).toFixed(2) : 0;
-  
+
   return result;
 };
 
 // Instance methods
-apiCallLogSchema.methods.maskSensitiveData = function() {
+apiCallLogSchema.methods.maskSensitiveData = function () {
   // Mask authorization headers
   if (this.headers && this.headers.Authorization) {
     const auth = this.headers.Authorization;
@@ -278,33 +279,33 @@ apiCallLogSchema.methods.maskSensitiveData = function() {
       this.headers.Authorization = auth.substring(0, 8) + '***';
     }
   }
-  
+
   // Mask API keys in request body
   if (this.requestBody && typeof this.requestBody === 'object') {
     this.requestBody = this._maskObjectData(this.requestBody);
   }
-  
+
   // Mask sensitive response data
   if (this.responseBody && typeof this.responseBody === 'object') {
     this.responseBody = this._maskObjectData(this.responseBody);
   }
-  
+
   this.dataMasked = true;
   return this;
 };
 
-apiCallLogSchema.methods._maskObjectData = function(obj) {
+apiCallLogSchema.methods._maskObjectData = function (obj) {
   const sensitiveFields = [
     'password', 'token', 'key', 'secret', 'authorization',
     'api_key', 'access_token', 'refresh_token', 'client_secret',
     'razorpay_key', 'zoho_token', 'webhook_secret'
   ];
-  
+
   const masked = { ...obj };
-  
+
   for (const [key, value] of Object.entries(masked)) {
     const lowerKey = key.toLowerCase();
-    
+
     if (sensitiveFields.some(field => lowerKey.includes(field))) {
       if (typeof value === 'string' && value.length > 8) {
         masked[key] = value.substring(0, 8) + '***';
@@ -315,7 +316,7 @@ apiCallLogSchema.methods._maskObjectData = function(obj) {
       masked[key] = this._maskObjectData(value);
     }
   }
-  
+
   return masked;
 };
 

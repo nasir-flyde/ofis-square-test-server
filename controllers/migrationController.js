@@ -29,6 +29,8 @@ import { logCRUDActivity, logErrorActivity } from '../utils/activityLogger.js';
 import { sendNotification } from "../utils/notificationHelper.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
+import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
+import { grantOnContractActivation } from "../services/accessService.js";
 
 export const getMigrationStatus = async (req, res) => {
     try {
@@ -2387,6 +2389,91 @@ export const bulkImportContracts = async (req, res) => {
                                 }
                             }
                         });
+
+                        // --- Access Provisioning (Access Points & Policy) ---
+                        try {
+                            console.log(`[BulkImportAccess] Starting access provisioning for cabin ${cabin.number} (Contract: ${contract._id})`);
+                            const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
+                            let ensuredPolicy = policyResult?.policy;
+
+                            // Fallback: create default building-scoped policy directly if not available
+                            if (!ensuredPolicy) {
+                                console.log(`[BulkImportAccess] No policy found via service. Creating fallback default policy for contract ${contract._id}`);
+                                ensuredPolicy = await AccessPolicy.create({
+                                    buildingId: building._id,
+                                    name: "Default Access",
+                                    description: `Auto-created at bulk migration for contract ${contract._id}`,
+                                    accessPointIds: [],
+                                    isDefaultForBuilding: true,
+                                    effectiveFrom: contract.startDate,
+                                    effectiveTo: contract.endDate,
+                                });
+                                console.log(`[BulkImportAccess] Fallback policy created: ${ensuredPolicy._id}`);
+                            }
+
+                            if (ensuredPolicy) {
+                                console.log(`[BulkImportAccess] Access Policy ready: ${ensuredPolicy._id}`);
+                                const apIdSet = new Set();
+                                const matrixDevices = cabin.matrixDevices || [];
+
+                                for (const did of matrixDevices) {
+                                    let ap = await AccessPoint.findOne({
+                                        buildingId: building._id,
+                                        "deviceBindings.deviceId": did,
+                                    }).select("_id").lean();
+
+                                    if (!ap) {
+                                        const nameSuffix = String(did).slice(-6);
+                                        const createdAp = await AccessPoint.create({
+                                            buildingId: building._id,
+                                            name: `AP ${cabin.number}-${nameSuffix}`,
+                                            bindingType: "cabin",
+                                            resource: {
+                                                refType: "Cabin",
+                                                refId: cabin._id,
+                                                label: cabin.number,
+                                            },
+                                            pointType: "DOOR",
+                                            deviceBindings: [{
+                                                vendor: "MATRIX_COSEC",
+                                                deviceId: did,
+                                                direction: "BIDIRECTIONAL",
+                                            }],
+                                            status: "active",
+                                        });
+                                        apIdSet.add(String(createdAp._id));
+                                        console.log(`[BulkImportAccess] Created new AccessPoint: ${createdAp._id} for device ${did}`);
+                                    } else {
+                                        apIdSet.add(String(ap._id));
+                                        console.log(`[BulkImportAccess] Reusing existing AccessPoint: ${ap._id} for device ${did}`);
+                                    }
+                                }
+
+                                if (apIdSet.size > 0) {
+                                    const objectIdList = Array.from(apIdSet).map(id => new mongoose.Types.ObjectId(id));
+                                    const policyUpdate = await AccessPolicy.updateOne(
+                                        { _id: ensuredPolicy._id },
+                                        { $addToSet: { accessPointIds: { $each: objectIdList } } }
+                                    );
+                                    console.log(`[BulkImportAccess] Updated AccessPolicy ${ensuredPolicy._id} with ${objectIdList.length} APs. Modified: ${policyUpdate.modifiedCount}`);
+                                }
+
+                                // Grant Access
+                                console.log(`[BulkImportAccess] Granting access for contract ${contract._id}`);
+                                await grantOnContractActivation(contract, {
+                                    policyId: ensuredPolicy._id,
+                                    startsAt: contract.startDate || new Date(),
+                                    endsAt: contract.endDate || undefined,
+                                    source: "BULK_MIGRATION",
+                                });
+                                console.log(`[BulkImportAccess] Access provisioning completed successfully for ${clientNameInput}`);
+                            } else {
+                                console.warn(`[BulkImportAccess] No policy found or created for contract ${contract._id}`);
+                            }
+                        } catch (accessErr) {
+                            console.error(`[BulkImportAccess] Provisioning failed for client ${clientNameInput}:`, accessErr);
+                            // We don't fail the whole import for access provisioning errors
+                        }
                     }
                 }
 

@@ -17,6 +17,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import { recordCancellation } from "./cancelledBookingController.js";
+import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
 
 // Helper: convert any date-like to IST Date object (ending in Z for wall-time)
 function toIST(date) {
@@ -311,6 +312,33 @@ export const createSingleDayPass = async (req, res) => {
       }
 
       await session.commitTransaction();
+
+      // Push invoice to Zoho Books (non-blocking, after DB commit)
+      if (invoice) {
+        // Resolve client for Zoho
+        let clientForZoho = null;
+        try {
+          if (clientIdForInvoice) {
+            const Client = (await import('../models/clientModel.js')).default;
+            clientForZoho = await Client.findById(clientIdForInvoice).select('zohoBooksContactId email companyName');
+          } else if (customerType === 'member') {
+            const memberDoc = await Member.findById(customerId).populate('client');
+            clientForZoho = memberDoc?.client || null;
+            if (clientForZoho) {
+              const Client = (await import('../models/clientModel.js')).default;
+              clientForZoho = await Client.findById(clientForZoho).select('zohoBooksContactId email companyName');
+            }
+          }
+
+          if (clientForZoho) {
+            pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id }).catch(e =>
+              console.warn('[DayPass] Zoho invoice push failed (non-blocking):', e?.message)
+            );
+          }
+        } catch (zohoErr) {
+          console.warn('[DayPass] Could not resolve client for Zoho push:', zohoErr?.message);
+        }
+      }
 
       await dayPass.populate([
         { path: 'customer', select: 'name email phone' },
@@ -1316,5 +1344,33 @@ export const getAvailability = async (req, res) => {
   } catch (e) {
     console.error('getAvailability error:', e);
     return res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// Manually trigger building access provisioning
+export const provisionAccess = async (req, res) => {
+  try {
+    const { dayPassId } = req.params;
+    const { provisionAccessForDayPass } = await import("../services/dayPassIssuanceService.js");
+
+    const dayPass = await DayPass.findById(dayPassId);
+    if (!dayPass) {
+      return res.status(404).json({ error: "Day pass not found" });
+    }
+
+    // Call the central provisioning service
+    await provisionAccessForDayPass(dayPass);
+
+    return res.json({
+      success: true,
+      message: "Building access provisioning triggered successfully",
+      buildingAccess: dayPass.buildingAccess
+    });
+  } catch (error) {
+    console.error("provisionAccess error:", error);
+    return res.status(500).json({
+      error: "Failed to provision building access",
+      message: error.message
+    });
   }
 };

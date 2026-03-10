@@ -1,8 +1,11 @@
 import apiLogger from './apiLogger.js';
 import { getValidAccessToken } from './zohoTokenManager.js';
+import { createZohoInvoiceFromLocal } from './zohoBooks.js';
+
 
 const ORG_ID = process.env.ZOHO_BOOKS_ORG_ID || "60047183737";
-const BASE_URL = "https://www.zohoapis.in/books/api/v3";
+const BASE_URL = "https://www.zohoapis.in/books/v3";
+
 
 /**
  * Logged wrapper for Zoho Books API calls
@@ -29,10 +32,10 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'GET',
-        headers: { 
+        headers: {
           'Authorization': `Zoho-oauthtoken ${authToken}`,
           'Content-Type': 'application/json'
         }
@@ -42,7 +45,7 @@ class LoggedZohoBooks {
       if (!response.ok) {
         throw new Error(data.message || 'Zoho API error');
       }
-      
+
       return data;
     } catch (error) {
       console.error('❌ Error fetching contacts:', error.message);
@@ -73,9 +76,9 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/contacts?organization_id=${ORG_ID}`;
-      
+
       const sanitizedPayload = this._sanitizeContactPayload(payload);
-      
+
       const response = await loggedFetch(url, {
         method: 'POST',
         headers: {
@@ -114,7 +117,7 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/invoices?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'POST',
         headers: {
@@ -153,7 +156,7 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/customerpayments?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'POST',
         headers: {
@@ -192,10 +195,10 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/invoices/${invoiceId}?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'GET',
-        headers: { 
+        headers: {
           'Authorization': `Zoho-oauthtoken ${authToken}`,
           'Content-Type': 'application/json'
         }
@@ -230,10 +233,10 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/invoices/${invoiceId}?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'GET',
-        headers: { 
+        headers: {
           'Authorization': `Zoho-oauthtoken ${authToken}`,
           'Content-Type': 'application/json'
         }
@@ -268,7 +271,7 @@ class LoggedZohoBooks {
     try {
       const authToken = await getValidAccessToken();
       const url = `${BASE_URL}/invoices/${invoiceId}/email?organization_id=${ORG_ID}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'POST',
         headers: {
@@ -310,7 +313,7 @@ class LoggedZohoBooks {
         ...queryParams
       });
       const url = `${BASE_URL}/customerpayments?${params.toString()}`;
-      
+
       const response = await loggedFetch(url, {
         method: 'GET',
         headers: {
@@ -354,7 +357,7 @@ class LoggedZohoBooks {
   _sanitizeContactPayload(payload) {
     const allowedKeys = new Set([
       "contact_name", "company_name", "email", "phone", "mobile", "contact_type",
-      "is_customer", "is_supplier", "customer_sub_type", "billing_address", 
+      "is_customer", "is_supplier", "customer_sub_type", "billing_address",
       "shipping_address", "website", "currency_code", "notes", "custom_fields",
       "legal_name", "payment_terms", "payment_terms_label", "pan_no", "gst_no",
       "gst_treatment", "tax_reg_no", "contact_persons", "first_name", "last_name",
@@ -366,7 +369,7 @@ class LoggedZohoBooks {
 
     const sanitized = {};
     const removed = [];
-    
+
     for (const [k, v] of Object.entries(payload || {})) {
       if (allowedKeys.has(k)) {
         sanitized[k] = v;
@@ -384,7 +387,7 @@ class LoggedZohoBooks {
         "salutation", "first_name", "last_name", "email", "phone", "mobile",
         "designation", "department", "is_primary_contact", "enable_portal"
       ]);
-      
+
       sanitized.contact_persons = sanitized.contact_persons.map((cp) => {
         const out = {};
         if (cp && typeof cp === "object") {
@@ -411,7 +414,7 @@ class LoggedZohoBooks {
 
   _buildContactPayload(clientDoc) {
     const contactPerson = clientDoc?.contactPerson || undefined;
-    
+
     return {
       contact_name: clientDoc?.companyName || clientDoc?.contactPerson || "Unknown",
       company_name: clientDoc?.companyName || clientDoc?.contactPerson || "Unknown",
@@ -482,5 +485,40 @@ class LoggedZohoBooks {
 
 // Create singleton instance
 const loggedZohoBooks = new LoggedZohoBooks();
+
+/**
+ * Shared helper: push a local Invoice document to Zoho Books and persist the zoho_invoice_id.
+ *
+ * @param {Object} invoiceDoc  - Saved Mongoose Invoice document
+ * @param {Object} clientDoc   - Mongoose Client document with zohoBooksContactId
+ * @param {Object} [opts]      - Optional { userId }
+ * @returns {Promise<Object|null>} Zoho invoice object or null on failure
+ */
+export async function pushInvoiceToZoho(invoiceDoc, clientDoc, opts = {}) {
+  if (!invoiceDoc || !clientDoc) return null;
+  if (invoiceDoc.zoho_invoice_id) return null; // already synced
+
+  if (!clientDoc.zohoBooksContactId) {
+    console.warn('[ZohoInvoice] Client has no zohoBooksContactId — skipping Zoho push for invoice', String(invoiceDoc._id));
+    return null;
+  }
+
+  try {
+    // Leverage the robust GST and tax calculation logic already built in zohoBooks.js
+    const zohoInvoice = await createZohoInvoiceFromLocal(invoiceDoc, clientDoc);
+
+    if (zohoInvoice?.invoice_id) {
+      invoiceDoc.zoho_invoice_id = zohoInvoice.invoice_id;
+      invoiceDoc.zoho_invoice_number = zohoInvoice.invoice_number;
+      invoiceDoc.source = 'zoho';
+      await invoiceDoc.save();
+    }
+
+    return zohoInvoice || null;
+  } catch (err) {
+    console.error('[ZohoInvoice] Failed to push invoice to Zoho:', err?.message || err);
+    return null;
+  }
+}
 
 export default loggedZohoBooks;

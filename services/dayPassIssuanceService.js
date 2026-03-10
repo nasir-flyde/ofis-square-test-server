@@ -20,7 +20,7 @@ export const issueDayPass = async (dayPassId, session = null) => {
     const dayPass = await DayPass.findById(dayPassId)
       .populate('building')
       .session(session);
-    
+
     if (!dayPass) {
       throw new Error("Day pass not found");
     }
@@ -31,14 +31,14 @@ export const issueDayPass = async (dayPassId, session = null) => {
 
     // Update status to issued
     dayPass.status = "issued";
-    
+
     // Create visitor record if not already created and booking is for self
     if (!dayPass.visitorCreated && dayPass.bookingFor === "self") {
       await createVisitorForSelfBooking(dayPass, session);
       dayPass.visitorCreated = true;
       dayPass.status = "invited";
     }
-    
+
     // For "other" bookings, create visitor if draft details exist
     if (!dayPass.visitorCreated && dayPass.bookingFor === "other" && dayPass.visitDate && dayPass.visitorDetailsDraft) {
       await createVisitorForOtherBooking(dayPass, session);
@@ -46,14 +46,14 @@ export const issueDayPass = async (dayPassId, session = null) => {
     }
 
     await dayPass.save({ session });
-    
-    // Non-blocking access provisioning for Guest-based day passes
+
+    // Non-blocking access provisioning for Day Passes
     try {
-      await provisionAccessForGuestDayPass(dayPass);
+      await provisionAccessForDayPass(dayPass);
     } catch (provErr) {
-      console.warn("[Provision] Guest day-pass provisioning failed", { dayPassId: String(dayPass._id), message: provErr?.message });
+      console.warn("[Provision] Day-pass provisioning failed", { dayPassId: String(dayPass._id), message: provErr?.message });
     }
-    
+
     return { success: true, message: "Day pass issued successfully" };
   } catch (error) {
     console.error("Issuance error:", error);
@@ -67,10 +67,10 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
     // Get user details from customer
     let customerDetails = null;
     let customerType = null; // 'guest' | 'member' | 'client'
-    
+
     // Try to find customer as Guest first
     customerDetails = await Guest.findById(dayPass.customer).session(session);
-    
+
     // If not found as Guest, try as Member
     if (!customerDetails) {
       const memberDoc = await Member.findById(dayPass.customer)
@@ -111,7 +111,7 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
     const visitDate = dayPass.visitDate ? new Date(dayPass.visitDate) : new Date();
     const arrivalTime = new Date(visitDate);
     arrivalTime.setHours(0, 0, 0, 0);
-    
+
     const departureTime = new Date(visitDate);
     departureTime.setHours(23, 59, 59, 999);
 
@@ -123,7 +123,7 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
     dayPass.expectedDepartureTime = departureTime;
     dayPass.date = visitDate; // Set actual visit date
     dayPass.qrCode = crypto.randomBytes(16).toString('hex');
-    dayPass.qrExpiresAt = departureTime; 
+    dayPass.qrExpiresAt = departureTime;
 
     // Create visitor record in Visitor collection
     const visitor = new Visitor({
@@ -161,7 +161,7 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
 const createVisitorForOtherBooking = async (dayPass, session) => {
   try {
     const draft = dayPass.visitorDetailsDraft;
-    
+
     if (!draft || !draft.name) {
       // Do not block issuance if draft is incomplete; allow managing visitor later
       console.warn("Visitor draft details incomplete for other booking; skipping visitor creation");
@@ -172,7 +172,7 @@ const createVisitorForOtherBooking = async (dayPass, session) => {
     const visitDate = new Date(dayPass.visitDate);
     const arrivalTime = new Date(visitDate);
     arrivalTime.setHours(0, 0, 0, 0);
-    
+
     const departureTime = new Date(visitDate);
     departureTime.setHours(23, 59, 59, 999);
 
@@ -196,7 +196,7 @@ const createVisitorForOtherBooking = async (dayPass, session) => {
 // Batch issue multiple day passes
 export const issueDayPassBatch = async (dayPassIds, session = null) => {
   const results = [];
-  
+
   for (const passId of dayPassIds) {
     try {
       const result = await issueDayPass(passId, session);
@@ -205,7 +205,7 @@ export const issueDayPassBatch = async (dayPassIds, session = null) => {
       results.push({ passId, success: false, error: error.message });
     }
   }
-  
+
   return results;
 };
 
@@ -238,9 +238,9 @@ const buildDayWindowForBuilding = (building, baseDate) => {
   const opening = (building?.openingTime || '09:00').split(':');
   const closing = (building?.closingTime || '19:00').split(':');
   const start = new Date(baseDate);
-  start.setHours(Number(opening[0]||'9'), Number(opening[1]||'0'), 0, 0);
+  start.setHours(Number(opening[0] || '9'), Number(opening[1] || '0'), 0, 0);
   const end = new Date(baseDate);
-  end.setHours(Number(closing[0]||'19'), Number(closing[1]||'0'), 0, 0);
+  end.setHours(Number(closing[0] || '19'), Number(closing[1] || '0'), 0, 0);
   return {
     startDateString: formatDateTime(start),
     endDateString: formatDateTime(end),
@@ -249,26 +249,36 @@ const buildDayWindowForBuilding = (building, baseDate) => {
   };
 };
 
-async function provisionAccessForGuestDayPass(dayPassDoc) {
+export async function provisionAccessForDayPass(dayPassDoc) {
   try {
-    // Only for guest customers
-    const guest = await Guest.findById(dayPassDoc.customer).lean();
-    if (!guest) return; // not a guest-based pass
-
     const building = dayPassDoc.building || (await DayPass.findById(dayPassDoc._id).populate('building')).building;
     if (!building) return;
+
+    // customer mapping for backward compatibility if needed in old code paths
+    let guestIdRef = null;
+    try {
+      if (dayPassDoc.customer) {
+        const gdoc = await Guest.findById(dayPassDoc.customer).lean();
+        if (gdoc) guestIdRef = gdoc._id;
+      }
+    } catch (e) { }
 
     const visitDate = dayPassDoc.date || dayPassDoc.visitDate || new Date();
     const { startDateString, endDateString, end } = buildDayWindowForBuilding(building, new Date(visitDate));
 
     // ------- BhaiFi: ensure user + whitelist for the day -------
     try {
-      const name = dayPassDoc.visitorName || guest.name || 'Guest';
-      const email = dayPassDoc.visitorEmail || guest.email || null;
-      const phone = dayPassDoc.visitorPhone || guest.phone || null;
+      const name = dayPassDoc.visitorName || 'Guest';
+      const email = dayPassDoc.visitorEmail || null;
+      const phone = dayPassDoc.visitorPhone || null;
       const userName = normalizePhoneToUserName(phone);
       if (email && userName) {
-        let bhaifi = await BhaifiUser.findOne({ guest: guest._id, userName });
+        let bhaifi = null;
+        if (guestIdRef) {
+          bhaifi = await BhaifiUser.findOne({ guest: guestIdRef, userName });
+        } else {
+          bhaifi = await BhaifiUser.findOne({ userName });
+        }
         // Resolve NAS list from building.wifiAccess.daypass; fallback to default env NAS
         let nasIds = [];
         try {
@@ -278,7 +288,7 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
             const nasDocs = await BhaifiNas.find({ _id: { $in: refIds }, isActive: true }).select('nasId').lean();
             nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
           }
-        } catch (_) {}
+        } catch (_) { }
         if (!Array.isArray(nasIds) || nasIds.length === 0) {
           nasIds = [getEnvNasId()];
         }
@@ -287,7 +297,7 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
         if (!bhaifi) {
           const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
           bhaifi = await BhaifiUser.create({
-            guest: guest._id,
+            ...(guestIdRef ? { guest: guestIdRef } : {}),
             email,
             name,
             userName,
@@ -331,7 +341,7 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
           console.warn('[Provision][Bhaifi] Failed to mark wifiAccess=true on DayPass', { dayPassId: String(dayPassDoc._id), message: markErr?.message });
         }
       } else {
-        console.warn('[Provision][Bhaifi] Skipping: missing email or valid phone for guest', { guestId: String(guest._id) });
+        console.warn('[Provision][Bhaifi] Skipping: missing email or valid phone for day pass', { dayPassId: String(dayPassDoc._id) });
       }
     } catch (e) {
       console.warn('[Provision][Bhaifi] Failed', { dayPassId: String(dayPassDoc._id), message: e?.message });
@@ -339,11 +349,11 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
 
     // ------- Matrix: ensure user, set validTill, assign devices by building policy -------
     try {
-      const name = dayPassDoc.visitorName || guest.name || 'Guest';
-      const email = dayPassDoc.visitorEmail || guest.email || undefined;
-      const phone = dayPassDoc.visitorPhone || guest.phone || undefined;
+      const name = dayPassDoc.visitorName || 'Guest';
+      const email = dayPassDoc.visitorEmail || undefined;
+      const phone = dayPassDoc.visitorPhone || undefined;
       const normalizedPhone = normalizePhoneToUserName(phone);
-      const externalUserId = normalizedPhone || `guest:${String(guest._id)}`;
+      const externalUserId = normalizedPhone || (guestIdRef ? `guest:${String(guestIdRef)}` : `daypass:${String(dayPassDoc._id)}`);
 
       let mu = await MatrixUser.findOne({ externalUserId });
       if (!mu) {
@@ -403,7 +413,7 @@ async function provisionAccessForGuestDayPass(dayPassDoc) {
                 }
               }
               if (assigned > 0) {
-                try { await MatrixUser.findByIdAndUpdate(mu._id, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch {}
+                try { await MatrixUser.findByIdAndUpdate(mu._id, { $set: { isDeviceAssigned: true, isEnrolled: true } }); } catch { }
               }
             }
           }

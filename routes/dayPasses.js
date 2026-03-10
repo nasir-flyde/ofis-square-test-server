@@ -12,6 +12,7 @@ import {
   issueDayPassManual,
   getAvailability,
   cancelDayPass,
+  provisionAccess,
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -29,6 +30,7 @@ router.post("/single", authMiddleware, createSingleDayPass);
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
 router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
 router.post("/:dayPassId/issue", issueDayPassManual);
+router.post("/:dayPassId/provision-access", provisionAccess);
 router.get("/user/:customerId", getUserDayPasses);
 router.get("/:dayPassId", getDayPassDetails);
 router.put("/:id/cancel", authMiddleware, cancelDayPass);

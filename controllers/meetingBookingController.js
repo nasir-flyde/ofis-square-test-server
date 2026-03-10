@@ -18,12 +18,14 @@ import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { createZohoInvoiceFromLocal, fetchZohoInvoicePdfBinary, recordZohoPayment } from "../utils/zohoBooks.js";
 
-// Convert date to IST time string (HH:MM)
+// Convert a UTC Date to IST time string HH:MM
 function toHHMM(date) {
-  const d = new Date(date);
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
+  return new Date(date).toLocaleTimeString('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }); // returns "HH:MM"
 }
 
 function addMinutes(dt, mins) {
@@ -31,7 +33,10 @@ function addMinutes(dt, mins) {
 }
 
 function sameDay(a, b) {
-  return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+  // Compare in IST calendar days
+  const dayA = new Date(a).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const dayB = new Date(b).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  return dayA === dayB;
 }
 
 // Helper: convert any date-like to IST Date object
@@ -48,11 +53,7 @@ function toIST(date) {
 
 // Helper: get IST day in YYYY-MM-DD string
 function formatYMDIST(dateLike) {
-  const d = new Date(dateLike);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  return new Date(dateLike).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
 // Compute discounted totals with 18% GST
@@ -114,9 +115,9 @@ async function checkAvailability(room, start, end) {
     maxBookingMinutes = 480,
   } = availability;
 
-  // Day of week rule
-  const dow = start.getUTCDay();
-  if (!daysOfWeek.includes(dow)) return { ok: false, reason: "Room not available on this day" };
+  // Day of week rule — use IST calendar day
+  const istDayOfWeek = new Date(start.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) + 'T00:00:00+05:30').getDay();
+  if (!daysOfWeek.includes(istDayOfWeek)) return { ok: false, reason: "Room not available on this day" };
 
   // Must be same-day booking for now (simplifies hours logic)
   if (!sameDay(start, end)) return { ok: false, reason: "Bookings must start and end on the same day" };
@@ -164,29 +165,28 @@ async function checkAvailability(room, start, end) {
   return { ok: true };
 }
 
-// Helper: parse body-provided datetime and return it as IST Wall Time (Date object ending in Z)
+// Helper: parse body-provided datetime treating input as IST wall time, returning true UTC Date
 function parseISTDateTime(input) {
-  if (input instanceof Date) return toIST(input);
-  if (typeof input === 'number') return toIST(new Date(input));
+  if (input instanceof Date) return input; // assume already UTC
+  if (typeof input === 'number') return new Date(input);
   if (typeof input !== 'string') return new Date(NaN);
 
   const trimmed = input.trim();
 
-  // 1. If it looks like ISO (2026-02-22T09:30:00.000Z), it might already be Wall Time.
-  // But usually users send "2026-02-22 09:30" meaning IST.
-
+  // Normalise "YYYY-MM-DD HH:mm" or "YYYY-MM-DDTHH:mm" (no offset) → treat as IST
   let iso = trimmed.replace(' ', 'T');
-  // Remove any trailing Z or offset to treat it as "local numbers"
+  // Strip any existing timezone suffix so we can reinterpret as IST
   iso = iso.replace(/Z|[+-]\d{2}:?\d{2}$/, '');
 
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(iso)) {
     iso = iso + ':00';
   }
 
-  // We want the resulting Date object to represent HH:mm as UTC (Z)
-  const d = new Date(iso + 'Z');
+  // Append +05:30 so JS parses it as IST and converts to true UTC internally
+  const d = new Date(iso + '+05:30');
   return isNaN(d) ? new Date(NaN) : d;
 }
+
 
 // Create booking with conflict and availability checks
 export const createBooking = async (req, res) => {
@@ -1940,5 +1940,34 @@ export const listDiscountRequests = async (req, res) => {
   } catch (error) {
     console.error('listDiscountRequests error:', error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Manually trigger building access provisioning for meeting rooms
+export const provisionAccess = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { provisionAccessForMeetingBooking } = await import("../services/meetingAccessService.js");
+
+    const booking = await MeetingBooking.findById(id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+
+    // Call the central provisioning service
+    const result = await provisionAccessForMeetingBooking({ bookingId: id });
+
+    return res.json({
+      success: result.ok,
+      message: result.ok ? "Building access provisioning triggered successfully" : result.error,
+      buildingAccess: booking.buildingAccess
+    });
+  } catch (error) {
+    console.error("provisionAccess error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to provision building access",
+      error: error.message
+    });
   }
 };

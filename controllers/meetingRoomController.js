@@ -498,9 +498,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
 
-    // BASE IST DAY CALCULATION
-    // Input date "YYYY-MM-DD" is parsed as UTC midnight.
-    // IST midnight of that day = UTC - 5:30 (previous day 18:30)
+    // Base IST day boundaries: bookings now stored as true UTC, so IST midnight = UTC - 5:30
     const dayStart = new Date(targetDate.getTime());
     dayStart.setUTCMinutes(dayStart.getUTCMinutes() - TZ_OFFSET_MINUTES);
 
@@ -556,7 +554,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // ---- FETCH ROOMS (LEAN + PROJECTION + LIMIT) ----
     const rooms = await MeetingRoom.find(roomFilter)
       .select(
-        "name capacity floor building amenities blackoutDates reservedSlots availableTimeSlots isBookingClosed"
+        "name capacity floor building amenities blackoutDates reservedSlots availableTimeSlots isBookingClosed images pricing"
       )
       .limit(finalLimit)
       .lean();
@@ -625,11 +623,15 @@ export const getAvailableRoomsByTime = async (req, res) => {
       let [_, hours, minutes, modifier] = match;
       hours = parseInt(hours, 10);
       minutes = parseInt(minutes, 10);
-      if (hours === 12) hours = (modifier.toUpperCase() === 'AM' ? 0 : 12);
-      else if (modifier.toUpperCase() === 'PM') hours += 12;
+      if (hours === 12) {
+        hours = modifier.toUpperCase() === 'AM' ? 0 : 12;
+      } else if (modifier.toUpperCase() === 'PM') {
+        hours += 12;
+      }
 
       const d = new Date(baseDate.getTime());
       d.setUTCHours(hours, minutes, 0, 0);
+      // Convert IST slot time to true UTC (subtract 5:30h) to match booking storage
       d.setUTCMinutes(d.getUTCMinutes() - TZ_OFFSET_MINUTES);
       timeCache.set(timeStr, d);
       return d;
@@ -668,22 +670,50 @@ export const getAvailableRoomsByTime = async (req, res) => {
         };
       };
 
-      // 1. Calculate free slots for the day (Always needed for both modes now)
+      // Helper: convert a UTC Date back to 12h IST string for slot objects
+      const toSlot12h = (utcDate) => {
+        // Add IST offset to get the IST wall-time as UTC numbers
+        const ist = new Date(utcDate.getTime());
+        ist.setUTCMinutes(ist.getUTCMinutes() + TZ_OFFSET_MINUTES);
+        const h24 = ist.getUTCHours();
+        const mm = String(ist.getUTCMinutes()).padStart(2, '0');
+        const p = h24 >= 12 ? 'PM' : 'AM';
+        const h12 = h24 % 12 || 12;
+        return `${String(h12).padStart(2, '0')}:${mm} ${p}`;
+      };
+
+      // Helper: subtract bookings/reservations from a slot, returning remaining sub-slots
+      const subtractIntervals = (slots, intervals) => {
+        let result = slots;
+        for (const interval of intervals) {
+          const next = [];
+          for (const slot of result) {
+            const sS = parse12h(slot.startTime, targetDate);
+            const sE = parse12h(slot.endTime, targetDate);
+            if (isNaN(sS.getTime()) || isNaN(sE.getTime())) { integrityError = true; continue; }
+            const { start: bS, end: bE } = interval;
+            if (!timeOverlap(sS, sE, bS, bE)) {
+              // No overlap — keep whole slot
+              next.push(slot);
+            } else {
+              // Portion BEFORE the booking
+              if (bS > sS) next.push({ startTime: slot.startTime, endTime: toSlot12h(bS) });
+              // Portion AFTER the booking
+              if (bE < sE) next.push({ startTime: toSlot12h(bE), endTime: slot.endTime });
+              // (if fully covered, both conditions fail → slot is dropped)
+            }
+          }
+          result = next;
+        }
+        return result;
+      };
+
+      // 1. Calculate free slots for the day — split against bookings
       let freeSlots = room.availableTimeSlots || [];
 
-      // Filter against bookings
       if (roomBookings.length) {
-        freeSlots = freeSlots.filter(slot => {
-          const slotStart = parse12h(slot.startTime, targetDate);
-          const slotEnd = parse12h(slot.endTime, targetDate);
-          if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) {
-            integrityError = true;
-            return false;
-          }
-          return !roomBookings.some(booking =>
-            timeOverlap(slotStart, slotEnd, booking.start, booking.end)
-          );
-        });
+        const bookingIntervals = roomBookings.map(b => ({ start: b.start, end: b.end }));
+        freeSlots = subtractIntervals(freeSlots, bookingIntervals);
       }
 
       // Filter against reservedSlots
@@ -693,21 +723,10 @@ export const getAvailableRoomsByTime = async (req, res) => {
       });
 
       if (freeSlots.length && dailyReserved.length) {
-        freeSlots = freeSlots.filter(slot => {
-          const slotStart = parse12h(slot.startTime, targetDate);
-          const slotEnd = parse12h(slot.endTime, targetDate);
-          if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) return false;
-
-          return !dailyReserved.some(resv => {
-            const resvStart = parse12h(resv.startTime, targetDate);
-            const resvEnd = parse12h(resv.endTime, targetDate);
-            if (isNaN(resvStart.getTime()) || isNaN(resvEnd.getTime())) {
-              integrityError = true;
-              return true;
-            }
-            return timeOverlap(slotStart, slotEnd, resvStart, resvEnd);
-          });
-        });
+        const reservedIntervals = dailyReserved
+          .map(resv => ({ start: parse12h(resv.startTime, targetDate), end: parse12h(resv.endTime, targetDate) }))
+          .filter(r => !isNaN(r.start.getTime()) && !isNaN(r.end.getTime()));
+        freeSlots = subtractIntervals(freeSlots, reservedIntervals);
       }
 
       if (integrityError) {

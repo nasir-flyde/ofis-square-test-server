@@ -4,7 +4,7 @@ import clientMiddleware from "../middlewares/clientMiddleware.js";
 import universalMiddleware from "../middlewares/universalAuthVerify.js";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
 import communityMiddleware from "../middlewares/communityMiddleware.js";
-import { createBooking, listBookings, cancelBooking, utilizationReport, getBookingById, getBookingsByMember, addVisitorToBooking, requestDiscount, approveDiscount, rejectDiscount, listDiscountRequests } from "../controllers/meetingBookingController.js";
+import { createBooking, listBookings, cancelBooking, utilizationReport, getBookingById, getBookingsByMember, addVisitorToBooking, requestDiscount, approveDiscount, rejectDiscount, listDiscountRequests, provisionAccess } from "../controllers/meetingBookingController.js";
 
 const router = express.Router();
 
@@ -20,6 +20,7 @@ router.post("/:id/visitors", addVisitorToBooking);
 router.post("/:id/discount/request", communityMiddleware, requestDiscount);
 router.post("/:id/discount/approve", authMiddleware, approveDiscount);
 router.post("/:id/discount/reject", authMiddleware, rejectDiscount);
+router.post("/:id/provision-access", provisionAccess);
 
 // Reports
 router.get("/reports/utilization", authMiddleware, utilizationReport);

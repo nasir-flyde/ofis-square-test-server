@@ -11,6 +11,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import DiscountBundle from "../models/discountBundleModel.js";
+import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
 
 
 // Create a new day pass bundle
@@ -366,6 +367,31 @@ export const createDayPassBundle = async (req, res) => {
       }
 
       await session.commitTransaction();
+
+      // Push invoice to Zoho Books (non-blocking, fires after DB commit)
+      if (invoice) {
+        try {
+          let clientForZoho = null;
+          const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
+          if (clientIdForInvoice) {
+            const { default: Client } = await import('../models/clientModel.js');
+            clientForZoho = await Client.findById(clientIdForInvoice).select('zohoBooksContactId email companyName');
+          } else if (customerType === 'member') {
+            const memberDoc = await Member.findById(customerId).populate('client');
+            if (memberDoc?.client) {
+              const { default: Client } = await import('../models/clientModel.js');
+              clientForZoho = await Client.findById(memberDoc.client).select('zohoBooksContactId email companyName');
+            }
+          }
+          if (clientForZoho) {
+            pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id }).catch(e =>
+              console.warn('[DayPassBundle] Zoho invoice push failed (non-blocking):', e?.message)
+            );
+          }
+        } catch (zohoErr) {
+          console.warn('[DayPassBundle] Could not resolve client for Zoho push:', zohoErr?.message);
+        }
+      }
 
       // Populate response data
       await bundle.populate([
