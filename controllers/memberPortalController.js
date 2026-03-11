@@ -19,6 +19,7 @@ import { normalizePhoneToUserName, formatDateTime, endOfDayString } from "../con
 import Guest from "../models/guestModel.js";
 import DayPass from "../models/dayPassModel.js";
 import CommonArea from "../models/commonAreaModel.js";
+import Video from "../models/videoModel.js";
 
 // Member Dashboard API - Get dashboard stats and recent activity
 export const getMemberDashboard = async (req, res) => {
@@ -1088,7 +1089,7 @@ export const getAppHomePageData = async (req, res) => {
           ]
         }).populate('buildingId', 'name openingTime closingTime');
 
-        if (guest) req.guestId = guest._id; // Restore for subsequent logic
+        if (guest) req.guestId = guest._id;
       }
 
       if (guest) {
@@ -1398,6 +1399,7 @@ export const getAppHomePageData = async (req, res) => {
           thisWeek: weeksEvents,
           all: allEvents
         },
+        videos: await Video.find({ status: 'published' }).sort({ createdAt: -1 }),
         bookingsToday
       }
     });
