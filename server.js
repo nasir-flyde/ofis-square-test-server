@@ -54,6 +54,7 @@ const corsOptions = {
     'https://ofissquare.generaltech.works',
     'https://ospl.generaltech.works',
     'https://ospl-admin.generaltech.works',
+    'https://ofis-square-new-member.vercel.app',
     'https://ospl-community.generaltech.works',
     'https://ospl-member.generaltech.works',
     'https://ospl-frontdesk.generaltech.works',
