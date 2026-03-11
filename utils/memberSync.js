@@ -54,6 +54,7 @@ export const syncMemberToUser = async (memberId, memberData, req) => {
         }
         if (memberData.email) userUpdate.email = memberData.email.toLowerCase().trim();
         if (memberData.phone) userUpdate.phone = memberData.phone.trim();
+        if (memberData.role) userUpdate.role = memberData.role;
 
         const updatedUser = await User.findByIdAndUpdate(member.user, { $set: userUpdate }, { new: true });
 
@@ -118,7 +119,16 @@ export const syncMemberIntegrations = async (member, req) => {
 
         // Bhaifi Sync
         try {
-            await ensureBhaifiForMember({ memberId: member._id });
+            const Contract = (await import("../models/contractModel.js")).default;
+            const activeContract = await Contract.findOne({
+                client: clientId,
+                status: "active"
+            }).sort({ createdAt: -1 }).select("_id").lean();
+
+            await ensureBhaifiForMember({
+                memberId: member._id,
+                contractId: activeContract?._id
+            });
         } catch (e) {
             console.warn("Bhaifi sync failed during member update:", e.message);
         }

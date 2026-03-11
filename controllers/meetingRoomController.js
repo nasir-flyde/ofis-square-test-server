@@ -657,7 +657,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
       let integrityError = false;
 
       // Unified format helper
-      const formatResponseRoom = (r, slots) => {
+      const formatResponseRoom = (r, slots, reservations) => {
         const bldgId = r.building.toString();
         const bldg = buildingMap.get(bldgId);
         const fLabel = formatFloorLabel(r.floor);
@@ -666,7 +666,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           building: bldg ? { name: bldg.name } : { name: null },
           amenities: r.amenities.map(id => amenityMap.get(id.toString())).filter(Boolean),
           floor: fLabel ? `${fLabel} floor` : r.floor,
-          availableTimeSlots: slots
+          availableTimeSlots: slots,
+          reservedSlots: reservations
         };
       };
 
@@ -745,13 +746,40 @@ export const getAvailableRoomsByTime = async (req, res) => {
           return timeOverlap(requestedStart, requestedEnd, resvStart, resvEnd);
         });
 
+        // Merge actual bookings and reserved items for the response
+        const filteredReserved = [
+          ...roomBookings.map(b => ({
+            startTime: toSlot12h(b.start),
+            endTime: toSlot12h(b.end),
+            bookingId: b._id
+          })),
+          ...dailyReserved.map(resv => ({
+            startTime: resv.startTime,
+            endTime: resv.endTime,
+            bookingId: resv.bookingId
+          }))
+        ];
+
         if (!hasBookingConflict && !hasReservedConflict) {
-          availableRooms.push(formatResponseRoom(room, freeSlots));
+          availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved));
         }
       } else {
         // Daily Mode: Must have at least one free slot
         if (freeSlots.length > 0) {
-          availableRooms.push(formatResponseRoom(room, freeSlots));
+          // Merge actual bookings and reserved items for the response
+          const filteredReserved = [
+            ...roomBookings.map(b => ({
+              startTime: toSlot12h(b.start),
+              endTime: toSlot12h(b.end),
+              bookingId: b._id
+            })),
+            ...dailyReserved.map(resv => ({
+              startTime: resv.startTime,
+              endTime: resv.endTime,
+              bookingId: resv.bookingId
+            }))
+          ];
+          availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved));
         }
       }
     }

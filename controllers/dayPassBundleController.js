@@ -451,44 +451,15 @@ export const createDayPassBundle = async (req, res) => {
         };
       }
       if (paymentMethod !== 'credits') {
-        resp.razorpayConfig = {
-          key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
-          amount: finalAmount * 100, // Razorpay expects amount in paise
-          currency: 'INR',
-          name: 'Ofis Square',
-          description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
-          prefill: {
-            name: customer.name || customer.companyName,
-            email: customer.email,
-            contact: customer.phone
-          },
-          theme: { color: '#3399cc' }
-        };
-
-        // Create actual Razorpay order
-        try {
-          const rzpOrder = await loggedRazorpay.createOrder({
-            amount: finalAmount * 100,
-            currency: 'INR',
-            receipt: `receipt_bundle_${bundle._id}`
-          }, {
-            userId: req.user?._id,
-            clientId: bundle.customer?.constructor.modelName === 'Client' ? bundle.customer?._id : (req.user?.clientId || null),
-            relatedEntity: 'DayPassBundle',
-            relatedEntityId: bundle._id
-          });
-          resp.razorpayConfig.order_id = rzpOrder.id;
-        } catch (rzpErr) {
-          console.error("Failed to create Razorpay order for Bundle:", rzpErr);
-          return res.status(500).json({
-            error: "Failed to initialize Razorpay payment",
-            reason: rzpErr.message,
-            message: "A valid Razorpay order could not be created for this bundle. Please check backend credentials."
-          });
-        }
-
+        resp.razorpayKey = process.env.RAZORPAY_KEY_ID;
+        resp.amount = finalAmount * 100;
+        resp.currency = 'INR';
       }
-      res.status(201).json(resp);
+      res.status(201).json({
+        success: true,
+        message: 'Day pass bundle created successfully',
+        data: resp
+      });
 
     } catch (error) {
       await session.abortTransaction();

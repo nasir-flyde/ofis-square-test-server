@@ -173,10 +173,22 @@ export const createMember = async (req, res) => {
 
       // MATRIX: create/upsert user, attach to member, enqueue job
       try {
-        let matrixUserId;
-        try {
+        let matrixUserId = null;
+        if (phone) {
+          let p = String(phone).replace(/\D/g, "");
+          p = p.replace(/^0+/, "");
+          const last10 = p.length > 10 ? p.slice(-10) : p;
+          if (last10.length === 10) matrixUserId = `91${last10}`;
+          console.log(`createMember: normalized phone ${phone} to matrixUserId ${matrixUserId}`);
+        }
+
+        if (!matrixUserId) {
           const random6 = Math.floor(100000 + Math.random() * 900000);
           matrixUserId = `MEM${random6}`;
+          console.log(`createMember: using random Matrix ID ${matrixUserId} (phone not provided or invalid)`);
+        }
+
+        try {
           await matrixApi.createUser({
             id: matrixUserId,
             name: name || undefined,
@@ -186,10 +198,6 @@ export const createMember = async (req, res) => {
           });
         } catch (apiErr) {
           console.warn("Matrix createUser failed (createMember)", String(member._id), apiErr?.message);
-          if (!matrixUserId) {
-            const fallbackRand = Math.floor(100000 + Math.random() * 900000);
-            matrixUserId = `MEM${fallbackRand}`;
-          }
         }
 
         try {
@@ -252,10 +260,9 @@ export const createMember = async (req, res) => {
           if (buildingIdForJobs) {
             // Find a default/appropriate access policy for this building
             const policyDoc = await AccessPolicy.findOne({
-              $or: [
-                { buildingId: buildingIdForJobs, isDefaultForBuilding: true },
-                { buildingId: buildingIdForJobs }
-              ]
+              buildingId: buildingIdForJobs,
+              isDefaultForBuilding: true,
+              status: "active"
             }).select('accessPointIds').lean();
 
             if (policyDoc?.accessPointIds?.length) {
@@ -305,7 +312,19 @@ export const createMember = async (req, res) => {
 
       // BHAIFI: provision WiFi user and attach refs on member
       try {
-        const bhaifiDoc = await ensureBhaifiForMember({ memberId: member._id });
+        const activeContract = await mongoose.model('Contract').findOne({
+          client: clientId,
+          status: "active"
+        }).sort({ createdAt: -1 }).select("_id").lean();
+
+        if (activeContract) {
+          console.log(`createMember: found active contract ${activeContract._id} for BHAiFi sync.`);
+        }
+
+        const bhaifiDoc = await ensureBhaifiForMember({
+          memberId: member._id,
+          contractId: activeContract?._id
+        });
         if (bhaifiDoc?._id) {
           try {
             await Member.findByIdAndUpdate(member._id, {

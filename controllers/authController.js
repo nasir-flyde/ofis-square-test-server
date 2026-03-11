@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import Users from "../models/userModel.js";
 import Role from "../models/roleModel.js";
+import { normalizePhone, getPhoneFormats } from "../utils/phoneUtils.js";
 import { createJWT } from "../middlewares/createJwt.js";
 import { createAccessToken, createRefreshToken, generateTokenFamily } from "../middlewares/createJwtRefresh.js";
 import { storeRefreshToken, validateRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllUserTokens, getDeviceInfo } from "../utils/refreshTokenService.js";
@@ -102,7 +103,7 @@ export const adminLogin = async (req, res) => {
     }
     const query = email
       ? { email: email.toLowerCase().trim() }
-      : { phone: phone.trim() };
+      : { phone: { $in: getPhoneFormats(phone) } };
     const user = await Users.findOne(query);
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
@@ -191,7 +192,7 @@ export const clientLogin = async (req, res) => {
 
     const query = email
       ? { email: email.toLowerCase().trim() }
-      : { phone: phone.trim() };
+      : { phone: { $in: getPhoneFormats(phone) } };
 
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -280,7 +281,7 @@ export const memberLogin = async (req, res) => {
       return res.status(400).json({ error: "Email or phone and password are required" });
     }
 
-    const query = email ? { email } : { phone };
+    const query = email ? { email } : { phone: { $in: getPhoneFormats(phone) } };
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
     const isMatch = password === user.password;
@@ -455,7 +456,7 @@ export const communityLogin = async (req, res) => {
 
     const query = email
       ? { email: email.toLowerCase().trim() }
-      : { phone: phone.trim() };
+      : { phone: { $in: getPhoneFormats(phone) } };
 
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -676,14 +677,17 @@ export const sendMemberClientOtp = async (req, res) => {
       return res.status(400).json({ error: "Phone number is required" });
     }
 
-    const normalizedPhone = phone.replace(/\D/g, '');
-    if (normalizedPhone.length !== 10) {
+    const normalizedPhone = normalizePhone(phone);
+    const phoneFormats = getPhoneFormats(phone);
+    const clean10 = normalizedPhone.replace(/\D/g, '').slice(-10);
+
+    if (clean10.length !== 10) {
       return res.status(400).json({ error: "Please enter a valid 10-digit phone number" });
     }
 
-    // Find user by phone
-    let user = await Users.findOne({ phone: normalizedPhone }).populate('role');
-    let lead = await Lead.findOne({ phone: normalizedPhone });
+    // Find user by phone formats
+    let user = await Users.findOne({ phone: { $in: phoneFormats } }).populate('role');
+    let lead = await Lead.findOne({ phone: { $in: phoneFormats } });
 
     if (!user && !lead) {
       // Auto-create lead if neither user nor lead found
@@ -732,8 +736,8 @@ export const sendMemberClientOtp = async (req, res) => {
     const otp = normalizedPhone === '7982294822' ? '123456' : generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    // Clear existing OTPs for this phone
-    await OTP.deleteMany({ phone: normalizedPhone });
+    // Clear existing OTPs for this phone (in all formats to be safe)
+    await OTP.deleteMany({ phone: { $in: phoneFormats } });
     await OTP.create({
       email: user?.email || lead?.email,
       phone: normalizedPhone,
@@ -814,13 +818,19 @@ export const verifyMemberClientOtp = async (req, res) => {
       return res.status(400).json({ error: "Phone and OTP are required" });
     }
 
-    const normalizedPhone = phone.replace(/\D/g, '');
+    const normalizedPhone = normalizePhone(phone);
+    const phoneFormats = getPhoneFormats(phone);
+    const clean10 = normalizedPhone.replace(/\D/g, '').slice(-10);
+
+    if (clean10.length !== 10) {
+      return res.status(400).json({ error: "Please enter a valid 10-digit phone number" });
+    }
 
     // Import OTP model dynamically
     const OTP = (await import("../models/otpModel.js")).default;
 
     const otpRecord = await OTP.findOne({
-      phone: normalizedPhone,
+      phone: { $in: phoneFormats },
       expiresAt: { $gt: new Date() }
     });
 
@@ -841,8 +851,8 @@ export const verifyMemberClientOtp = async (req, res) => {
     }
 
     // Find user and lead
-    const user = await Users.findOne({ phone: normalizedPhone }).populate('role');
-    let lead = await Lead.findOne({ phone: normalizedPhone });
+    const user = await Users.findOne({ phone: { $in: phoneFormats } }).populate('role');
+    let lead = await Lead.findOne({ phone: { $in: phoneFormats } });
 
     if (!user && !lead) {
       return res.status(404).json({ error: "Neither user nor lead found" });
@@ -932,7 +942,7 @@ export const verifyMemberClientOtp = async (req, res) => {
         $or: [
           { user: user._id, client: client._id },
           { email: user.email, client: client._id },
-          { phone: user.phone, client: client._id }
+          { phone: { $in: getPhoneFormats(user.phone) }, client: client._id }
         ]
       });
 
@@ -1546,7 +1556,7 @@ export const verifyStaffOtp = async (req, res) => {
     const OTP = (await import("../models/otpModel.js")).default;
 
     const otpRecord = await OTP.findOne({
-      phone: normalizedPhone,
+      phone: { $in: phoneFormats },
       expiresAt: { $gt: new Date() }
     });
 

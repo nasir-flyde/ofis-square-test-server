@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Client from '../models/clientModel.js';
 import Contract from '../models/contractModel.js';
 import Cabin from '../models/cabinModel.js';
@@ -1886,9 +1887,18 @@ export const bulkImportMembers = async (req, res) => {
                     const createdMember = await Member.create(memberData);
 
                     // C. Matrix Provisioning
-                    let matrixUserId;
-                    const random6 = Math.floor(100000 + Math.random() * 900000);
-                    matrixUserId = `MEM${random6}`; // Simple ID generation
+                    let matrixUserId = null;
+                    if (phone) {
+                        let p = String(phone).replace(/\D/g, "");
+                        p = p.replace(/^0+/, "");
+                        const last10 = p.length > 10 ? p.slice(-10) : p;
+                        if (last10.length === 10) matrixUserId = `91${last10}`;
+                    }
+
+                    if (!matrixUserId) {
+                        const random6 = Math.floor(100000 + Math.random() * 900000);
+                        matrixUserId = `MEM${random6}`;
+                    }
 
                     try {
                         // Create Matrix User
@@ -1954,10 +1964,9 @@ export const bulkImportMembers = async (req, res) => {
                             if (buildingIdForJobs) {
                                 // Find valid Access Policy
                                 const policyDoc = await AccessPolicy.findOne({
-                                    $or: [
-                                        { buildingId: buildingIdForJobs, isDefaultForBuilding: true },
-                                        { buildingId: buildingIdForJobs }
-                                    ]
+                                    buildingId: buildingIdForJobs,
+                                    isDefaultForBuilding: true,
+                                    status: "active"
                                 }).select('accessPointIds').lean();
 
                                 if (policyDoc?.accessPointIds?.length) {
@@ -2393,6 +2402,47 @@ export const bulkImportContracts = async (req, res) => {
                         // --- Access Provisioning (Access Points & Policy) ---
                         try {
                             console.log(`[BulkImportAccess] Starting access provisioning for cabin ${cabin.number} (Contract: ${contract._id})`);
+
+                            const apIdSet = new Set();
+                            const matrixDevices = cabin.matrixDevices || [];
+                            console.log(`[BulkImportAccess] Cabin ${cabin.number} matrixDevices:`, matrixDevices);
+
+                            for (const did of matrixDevices) {
+                                let ap = await AccessPoint.findOne({
+                                    buildingId: building._id,
+                                    "deviceBindings.deviceId": did,
+                                }).select("_id").lean();
+
+                                if (!ap) {
+                                    const nameSuffix = String(did).slice(-6);
+                                    const createdAp = await AccessPoint.create({
+                                        buildingId: building._id,
+                                        name: `AP ${cabin.number}-${nameSuffix}`,
+                                        bindingType: "cabin",
+                                        resource: {
+                                            refType: "Cabin",
+                                            refId: cabin._id,
+                                            label: cabin.number,
+                                        },
+                                        pointType: "DOOR",
+                                        deviceBindings: [{
+                                            vendor: "MATRIX_COSEC",
+                                            deviceId: did,
+                                            direction: "BIDIRECTIONAL",
+                                        }],
+                                        status: "active",
+                                    });
+                                    apIdSet.add(String(createdAp._id));
+                                    console.log(`[BulkImportAccess] Created new AccessPoint: ${createdAp._id} for device ${did}`);
+                                } else {
+                                    apIdSet.add(String(ap._id));
+                                    console.log(`[BulkImportAccess] Reusing existing AccessPoint: ${ap._id} for device ${did}`);
+                                }
+                            }
+
+                            const objectIdList = Array.from(apIdSet).map(id => new mongoose.Types.ObjectId(id));
+                            console.log(`[BulkImportAccess] AccessPoint IDs to attach:`, Array.from(apIdSet));
+
                             const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
                             let ensuredPolicy = policyResult?.policy;
 
@@ -2403,7 +2453,7 @@ export const bulkImportContracts = async (req, res) => {
                                     buildingId: building._id,
                                     name: "Default Access",
                                     description: `Auto-created at bulk migration for contract ${contract._id}`,
-                                    accessPointIds: [],
+                                    accessPointIds: objectIdList,
                                     isDefaultForBuilding: true,
                                     effectiveFrom: contract.startDate,
                                     effectiveTo: contract.endDate,
@@ -2412,45 +2462,7 @@ export const bulkImportContracts = async (req, res) => {
                             }
 
                             if (ensuredPolicy) {
-                                console.log(`[BulkImportAccess] Access Policy ready: ${ensuredPolicy._id}`);
-                                const apIdSet = new Set();
-                                const matrixDevices = cabin.matrixDevices || [];
-
-                                for (const did of matrixDevices) {
-                                    let ap = await AccessPoint.findOne({
-                                        buildingId: building._id,
-                                        "deviceBindings.deviceId": did,
-                                    }).select("_id").lean();
-
-                                    if (!ap) {
-                                        const nameSuffix = String(did).slice(-6);
-                                        const createdAp = await AccessPoint.create({
-                                            buildingId: building._id,
-                                            name: `AP ${cabin.number}-${nameSuffix}`,
-                                            bindingType: "cabin",
-                                            resource: {
-                                                refType: "Cabin",
-                                                refId: cabin._id,
-                                                label: cabin.number,
-                                            },
-                                            pointType: "DOOR",
-                                            deviceBindings: [{
-                                                vendor: "MATRIX_COSEC",
-                                                deviceId: did,
-                                                direction: "BIDIRECTIONAL",
-                                            }],
-                                            status: "active",
-                                        });
-                                        apIdSet.add(String(createdAp._id));
-                                        console.log(`[BulkImportAccess] Created new AccessPoint: ${createdAp._id} for device ${did}`);
-                                    } else {
-                                        apIdSet.add(String(ap._id));
-                                        console.log(`[BulkImportAccess] Reusing existing AccessPoint: ${ap._id} for device ${did}`);
-                                    }
-                                }
-
-                                if (apIdSet.size > 0) {
-                                    const objectIdList = Array.from(apIdSet).map(id => new mongoose.Types.ObjectId(id));
+                                if (objectIdList.length > 0) {
                                     const policyUpdate = await AccessPolicy.updateOne(
                                         { _id: ensuredPolicy._id },
                                         { $addToSet: { accessPointIds: { $each: objectIdList } } }

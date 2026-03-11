@@ -266,50 +266,53 @@ export const createSingleDayPass = async (req, res) => {
 
       await dayPass.save({ session });
 
-      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
       let invoice = null;
       let clientIdForInvoice = req.clientId || null;
-      if (paymentMethod !== 'credits') {
-        if (!clientIdForInvoice) {
-          const memberLookupId = customerType === 'member' ? customerId : (memberId || null);
-          if (memberLookupId) {
-            try {
-              const memberDoc = await Member.findById(memberLookupId).select('client');
-              if (memberDoc?.client) clientIdForInvoice = memberDoc.client;
-            } catch (_) { }
-          }
+
+      if (!clientIdForInvoice) {
+        const memberLookupId = customerType === 'member' ? customerId : (memberId || null);
+        if (memberLookupId) {
+          try {
+            const memberDoc = await Member.findById(memberLookupId).select('client');
+            if (memberDoc?.client) clientIdForInvoice = memberDoc.client;
+          } catch (_) { }
         }
-        if (!clientIdForInvoice && customerType === 'client') {
-          clientIdForInvoice = customerId;
-        }
-
-        invoice = new Invoice({
-          client: clientIdForInvoice,
-          guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
-          building: buildingId,
-          type: "regular",
-          category: "day_pass",
-          invoice_number: `DP-${Date.now()}`,
-          line_items: [{
-            description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}`,
-            quantity: 1,
-            unitPrice: price,
-            amount: price,
-            rate: price,
-            tax_percentage: gstRate
-          }],
-          sub_total: price,
-          tax_total: taxAmount,
-          total: totalAmount,
-          status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-        });
-
-        await invoice.save({ session });
-
-        dayPass.invoice = invoice._id;
-        await dayPass.save({ session });
       }
+      if (!clientIdForInvoice && customerType === 'client') {
+        clientIdForInvoice = customerId;
+      }
+
+      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+      const creditsPerPass = building.creditValue || 500;
+      const creditsRequired = paymentMethod === 'credits' ? Math.ceil(totalAmount / creditsPerPass) : 0;
+      const creditSuffix = creditsRequired > 0 ? ` (${creditsRequired} Credits)` : '';
+
+      invoice = new Invoice({
+        client: clientIdForInvoice,
+        guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
+        building: buildingId,
+        type: "regular",
+        category: "day_pass",
+        invoice_number: `DP-${Date.now()}`,
+        line_items: [{
+          description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
+          quantity: 1,
+          unitPrice: price,
+          amount: price,
+          rate: price,
+          tax_percentage: gstRate
+        }],
+        sub_total: price,
+        tax_total: taxAmount,
+        total: totalAmount,
+        status: "draft",
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      });
+
+      await invoice.save({ session });
+
+      dayPass.invoice = invoice._id;
+      await dayPass.save({ session });
 
       await session.commitTransaction();
 
@@ -394,43 +397,14 @@ export const createSingleDayPass = async (req, res) => {
       if (invoice) {
         responseData.invoice = invoice;
       }
+      
+      // We no longer create Razorpay orders automatically here. 
+      // The frontend should call /api/payments/razorpay/create-order explicitly 
+      // using the dayPassId returned in this response.
       if (paymentMethod !== 'credits') {
-        responseData.razorpayConfig = {
-          key: process.env.RAZORPAY_KEY_ID || 'rzp_test_02U4mUmreLeYrU',
-          amount: totalAmount * 100, // Razorpay expects amount in paise
-          currency: 'INR',
-          name: 'Ofis Square',
-          description: `Day Pass - ${building.name}`,
-          prefill: {
-            name: customer.companyName,
-            email: customer.email,
-            contact: customer.phone
-          },
-          theme: { color: '#3399cc' }
-        };
-
-        // Create actual Razorpay order
-        try {
-          const rzpOrder = await loggedRazorpay.createOrder({
-            amount: totalAmount * 100,
-            currency: 'INR',
-            receipt: `receipt_dp_${dayPass._id}`
-          }, {
-            userId: req.user?._id,
-            clientId: clientIdForInvoice || (customerType === 'client' ? customerId : null),
-            relatedEntity: 'DayPass',
-            relatedEntityId: dayPass._id
-          });
-          responseData.razorpayConfig.order_id = rzpOrder.id;
-        } catch (rzpErr) {
-          console.error("Failed to create Razorpay order for DayPass:", rzpErr);
-          return res.status(500).json({
-            error: "Failed to initialize Razorpay payment",
-            reason: rzpErr.message,
-            message: "A valid Razorpay order could not be created. Please check backend credentials."
-          });
-        }
-
+        responseData.razorpayKey = process.env.RAZORPAY_KEY_ID;
+        responseData.amount = totalAmount * 100;
+        responseData.currency = 'INR';
       }
 
       res.status(201).json({
@@ -830,7 +804,7 @@ export const checkInWithQR = async (req, res) => {
       return res.status(400).json({ error: "Day pass is not valid for today" });
     }
 
-    if (dayPass.status !== "invited") {
+    if (dayPass.status !== "invited" && dayPass.status !== "issued") {
       return res.status(400).json({
         error: `Cannot check-in. Pass status: ${dayPass.status}`
       });

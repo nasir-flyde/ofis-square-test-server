@@ -2259,16 +2259,35 @@ export const getClientMembers = async (req, res) => {
     const members = await Member.find(query)
       .populate('desk', 'number status building cabin')
       .populate('user', 'name email')
+      .populate({
+        path: 'matrixUser',
+        populate: {
+          path: 'cards',
+          select: 'cardUid'
+        }
+      })
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
 
     const total = await Member.countDocuments(query);
 
+    // Map members to include rfid data at top level for UI
+    const mappedMembers = members.map(member => {
+      const memberObj = member.toObject();
+      const card = memberObj.matrixUser?.cards?.[0];
+      return {
+        ...memberObj,
+        rfidCardId: card?._id || null,
+        rfidUuid: card?.cardUid || null,
+        isCardCredentialVerified: memberObj.matrixUser?.isCardCredentialVerified || false
+      };
+    });
+
     return res.json({
       success: true,
       data: {
-        members,
+        members: mappedMembers,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -2299,27 +2318,29 @@ export const createClientMember = async (req, res) => {
 
     let userId = null;
 
-    // Create user automatically if email is provided
-    if (email) {
+    let roleName = role;
+    if (mongoose.Types.ObjectId.isValid(role)) {
+      const roleDoc = await Role.findById(role);
+      if (roleDoc) {
+        roleName = roleDoc.roleName;
+      }
+    }
+
+    // Create user automatically if email and role are provided
+    if (email && role) {
       try {
-        // Find member role with specific ID
-        const memberRole = await Role.findById("68bfc2b86ecb1276d721bf71");
+        const rawPassword = '123456';
 
-        if (memberRole) {
-          const rawPassword = '123456';
-          // Remove password encryption - store as plain text
+        const user = await User.create({
+          name: `${firstName} ${lastName || ''}`.trim(),
+          email: email,
+          password: rawPassword,
+          phone: phone,
+          role: role, // Use the provided role ID directly
+          isActive: true
+        });
 
-          const user = await User.create({
-            name: `${firstName} ${lastName || ''}`.trim(),
-            email: email,
-            password: rawPassword, // Store password without encryption
-            phone: phone,
-            role: memberRole._id,
-            isActive: true
-          });
-
-          userId = user._id;
-        }
+        userId = user._id;
       } catch (userErr) {
         console.log("Failed to create user for member:", userErr.message);
       }
@@ -2330,7 +2351,7 @@ export const createClientMember = async (req, res) => {
       lastName,
       email,
       phone,
-      role,
+      role: roleName, // Store roleName string in Member
       client: clientId,
       user: userId,
       status: "active"
@@ -2487,33 +2508,6 @@ export const createClientMember = async (req, res) => {
             }
 
             console.log(`createClientMember: RFID assignment flow completed successfully.`);
-
-            // 5. Automated BHAiFi Provisioning
-            console.log(`createClientMember: starting BHAiFi provisioning for member ${member._id}`);
-            try {
-              const activeContract = await Contract.findOne({
-                client: clientId,
-                status: "active"
-              }).sort({ createdAt: -1 }).select("_id").lean();
-
-              const bhaifiDoc = await ensureBhaifiForMember({
-                memberId: member._id,
-                contractId: activeContract?._id
-              });
-
-              if (bhaifiDoc) {
-                console.log(`createClientMember: BHAiFi provisioning successful, user: ${bhaifiDoc.userName}`);
-                await Member.findByIdAndUpdate(member._id, {
-                  $set: {
-                    bhaifiUser: bhaifiDoc._id,
-                    bhaifiUserName: bhaifiDoc.userName
-                  }
-                });
-              }
-            } catch (bhaifiErr) {
-              console.error("createClientMember: BHAiFi provisioning failed:", bhaifiErr.message);
-              // We do not fail the whole request if BHAiFi provisioning fails
-            }
           } else {
             console.warn(`createClientMember: could not normalize phone for MatrixUser assignment.`);
           }
@@ -2523,6 +2517,39 @@ export const createClientMember = async (req, res) => {
       } catch (rfidErr) {
         console.error("createClientMember: failed to assign RFID card:", rfidErr.message);
       }
+    }
+
+    // 5. Automated BHAiFi Provisioning (Always attempt for all members)
+    console.log(`createClientMember: starting BHAiFi provisioning for member ${member._id}`);
+    try {
+      const activeContract = await Contract.findOne({
+        client: clientId,
+        status: "active"
+      }).sort({ createdAt: -1 }).select("_id").lean();
+
+      if (activeContract) {
+        console.log(`createClientMember: found active contract ${activeContract._id} for BHAiFi sync.`);
+      } else {
+        console.log(`createClientMember: no active contract found for BHAiFi sync.`);
+      }
+
+      const bhaifiDoc = await ensureBhaifiForMember({
+        memberId: member._id,
+        contractId: activeContract?._id
+      });
+
+      if (bhaifiDoc) {
+        console.log(`createClientMember: BHAiFi provisioning successful, user: ${bhaifiDoc.userName}`);
+        await Member.findByIdAndUpdate(member._id, {
+          $set: {
+            bhaifiUser: bhaifiDoc._id,
+            bhaifiUserName: bhaifiDoc.userName
+          }
+        });
+      }
+    } catch (bhaifiErr) {
+      console.error("createClientMember: BHAiFi provisioning failed:", bhaifiErr.message);
+      // We do not fail the whole request if BHAiFi provisioning fails
     }
 
     // Send platform access welcome email to the new member (template-based)
@@ -2567,7 +2594,15 @@ export const updateClientMember = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    const { firstName, lastName, email, phone, role, status } = req.body || {};
+    const { firstName, lastName, email, phone, role, status, cardId } = req.body || {};
+
+    let roleName = role;
+    if (role && mongoose.Types.ObjectId.isValid(role)) {
+      const roleDoc = await Role.findById(role);
+      if (roleDoc) {
+        roleName = roleDoc.roleName;
+      }
+    }
 
     const member = await Member.findOneAndUpdate(
       { _id: id, client: clientId }, // Ensure member belongs to this client
@@ -2576,7 +2611,7 @@ export const updateClientMember = async (req, res) => {
         lastName,
         email,
         phone,
-        role,
+        role: roleName, // Store roleName string in Member
         status
       },
       { new: true, runValidators: true }
@@ -2584,6 +2619,96 @@ export const updateClientMember = async (req, res) => {
 
     if (!member) {
       return res.status(404).json({ error: "Member not found" });
+    }
+
+    // Handle RFID card assignment if provided
+    if (cardId) {
+      console.log(`updateClientMember: cardId ${cardId} provided, starting assignment flow.`);
+      try {
+        const card = await RFIDCard.findById(cardId);
+        if (card) {
+          console.log(`updateClientMember: found RFID card with UID ${card.cardUid}`);
+          // Identify/Normalize Matrix User ID (e.g. 91 prefixed phone)
+          let externalUserId = null;
+          if (phone || member.phone) {
+            let p = String(phone || member.phone).replace(/\D/g, "");
+            p = p.replace(/^0+/, "");
+            const last10 = p.length > 10 ? p.slice(-10) : p;
+            if (last10.length === 10) externalUserId = `91${last10}`;
+          }
+
+          if (externalUserId) {
+            // Find or create MatrixUser
+            let mUser = await MatrixUser.findOne({ externalUserId });
+            if (!mUser) {
+              mUser = await MatrixUser.create({
+                name: `${firstName || member.firstName} ${lastName || member.lastName || ''}`.trim(),
+                phone: phone || member.phone,
+                email: email || member.email,
+                externalUserId: externalUserId,
+                memberId: member._id,
+                clientId: clientId,
+                status: 'active'
+              });
+            }
+
+            // Link card to MatrixUser
+            await MatrixUser.findByIdAndUpdate(mUser._id, {
+              $addToSet: { cards: cardId }
+            });
+
+            // Update card ownership
+            await RFIDCard.findByIdAndUpdate(cardId, {
+              currentMemberId: member._id,
+              clientId: clientId,
+              status: "ACTIVE",
+              activatedAt: new Date()
+            });
+
+            // 1. Direct Matrix API User Creation/Update
+            try {
+              await matrixApi.createUser({
+                id: externalUserId,
+                name: `${firstName || member.firstName} ${lastName || member.lastName || ''}`.trim(),
+                email: (email || member.email) || undefined,
+                phone: (phone || member.phone) || undefined,
+                status: "active"
+              });
+            } catch (apiErr) {
+              console.error("updateClientMember: Matrix createUser failed:", apiErr.message);
+            }
+
+            // 2. Direct Card Credential Setting
+            try {
+              await matrixApi.setCardCredential({ externalUserId, data: card.cardUid });
+              await MatrixUser.findByIdAndUpdate(mUser._id, { $set: { isCardCredentialVerified: true } });
+            } catch (cardErr) {
+              console.error("updateClientMember: Matrix setCardCredential failed:", cardErr.message);
+            }
+
+            // 3. Final local updates & Job Enqueue
+            await Member.findByIdAndUpdate(member._id, {
+              matrixUser: mUser._id,
+              matrixExternalUserId: externalUserId
+            });
+
+            // Enqueue provisioning job
+            try {
+              await ProvisioningJob.create({
+                vendor: "MATRIX_COSEC",
+                jobType: "ASSIGN_CARD",
+                memberId: member._id,
+                cardId: card._id,
+                payload: { cardUid: card.cardUid, memberId: member._id }
+              });
+            } catch (jobErr) {
+              console.error("updateClientMember: failed to enqueue provisioning job:", jobErr.message);
+            }
+          }
+        }
+      } catch (rfidErr) {
+        console.error("updateClientMember: failed to assign RFID card:", rfidErr.message);
+      }
     }
 
     // Sync to User if exists

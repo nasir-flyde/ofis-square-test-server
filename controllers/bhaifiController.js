@@ -282,8 +282,6 @@ export const createNasForBuilding = async (req, res) => {
     if (!nasId || !String(nasId).trim()) return res.status(400).json({ success: false, message: 'nasId is required' });
     const b = await Building.findById(buildingId).select('_id');
     if (!b) return res.status(404).json({ success: false, message: 'Building not found' });
-
-    // Idempotent upsert-like behavior: find existing by (building, nasId)
     let doc = await BhaifiNas.findOne({ building: buildingId, nasId: String(nasId).trim() });
     if (!doc) {
       doc = await BhaifiNas.create({ building: buildingId, nasId: String(nasId).trim(), label: label || undefined, isActive: Boolean(isActive) });
@@ -295,7 +293,6 @@ export const createNasForBuilding = async (req, res) => {
     }
     return res.status(201).json({ success: true, data: doc });
   } catch (err) {
-    // Handle unique constraint violation gracefully
     if (err && err.code === 11000) {
       try {
         const { buildingId } = req.params;
@@ -351,7 +348,8 @@ export const whitelistBhaifiUser = async (req, res) => {
     const nasId = doc.nasId || getEnvNasId();
     if (!userName) return res.status(400).json({ success: false, message: "Missing userName to whitelist" });
 
-    const startDate = normalizeToDateTimeString(startOverride) || formatDateTime(new Date());
+    // Always use current time (avoids 422 errors for past dates)
+    const startDate = formatDateTime(new Date());
     let endDate = normalizeToDateTimeString(endOverride);
     if (!endDate) {
       if (doc.contract?.endDate) {
@@ -455,14 +453,14 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
   const idType = 1;
   let doc = await BhaifiUser.findOne({ member: member._id, userName });
 
-  // If not found locally, try to create (or link if exists remotely)
-  if (!doc) {
+  // Provision remotely if not found remotely (missing bhaifiUserId) or if local record doesn't exist
+  if (!doc || !doc.bhaifiUserId) {
     let apiUserId = null;
     let apiResponseData = null;
     let apiRequestPayload = null;
 
     try {
-      console.log("[BHAIFI] ensureBhaifiForMember creating user", {
+      console.log("[BHAIFI] ensureBhaifiForMember ensuring user exists remotely", {
         memberId: String(member._id),
         payload: { email, idType, name, nasId, userName }
       });
@@ -470,9 +468,9 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       apiUserId = apiRes?.data?.id || apiRes?.data?.userId;
       apiResponseData = apiRes?.data;
       apiRequestPayload = apiRes?.payload;
-      console.log("[BHAIFI] ensureBhaifiForMember create success", { memberId: String(member._id) });
+      console.log("[BHAIFI] ensureBhaifiForMember remote creation success", { memberId: String(member._id), apiUserId });
     } catch (e) {
-      // If error is "already exists", we proceed to create local record anyway
+      // If error is "already exists", we proceed to create/link local record
       const status = e?.response?.status;
       const data = e?.response?.data || {};
       const msg = (data?.message || e?.message || '').toLowerCase();
@@ -480,33 +478,46 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate');
 
       if (isAlreadyExists) {
-        console.warn("[BHAIFI] ensureBhaifiForMember: User already exists on Bhaifi, creating local record only.", { memberId: String(member._id), userName });
-        // We might not get the ID back in an error, so we leave apiUserId null or undefined
+        console.warn("[BHAIFI] ensureBhaifiForMember: User already exists on Bhaifi, keeping local record.", { memberId: String(member._id), userName });
+        // Try to capture ID from response if available on conflict
+        apiUserId = data?.id || data?.userId || (data?.data && (data.data.id || data.data.userId)) || null;
+        apiResponseData = data;
       } else {
-        console.error("[BHAIFI] ensureBhaifiForMember create failed", {
+        console.error("[BHAIFI] ensureBhaifiForMember remote creation failed", {
           memberId: String(member._id),
           payload: { email, idType, name, nasId, userName },
           error: msg,
           status,
         });
-        throw e;
+        // If we have doc, but API failed with other error, we don't necessarily throw if it was already local
+        if (!doc) throw e;
       }
     }
 
-    doc = await BhaifiUser.create({
-      member: member._id,
-      client: member.client || null,
-      contract: contractId || null,
-      email,
-      name,
-      userName,
-      idType,
-      nasId,
-      bhaifiUserId: apiUserId || null,
-      status: "active",
-      lastSyncAt: new Date(),
-      meta: { request: apiRequestPayload, response: apiResponseData },
-    });
+    if (!doc) {
+      doc = await BhaifiUser.create({
+        member: member._id,
+        client: member.client || null,
+        contract: contractId || null,
+        email,
+        name,
+        userName,
+        idType,
+        nasId,
+        bhaifiUserId: apiUserId || null,
+        status: "active",
+        lastSyncAt: new Date(),
+        meta: { request: apiRequestPayload, response: apiResponseData },
+      });
+    } else {
+      // Update existing local record with remote ID if we got it
+      doc.bhaifiUserId = apiUserId || doc.bhaifiUserId;
+      doc.lastSyncAt = new Date();
+      if (apiResponseData) {
+        doc.meta = { ...(doc.meta || {}), lastEnsuredResponse: apiResponseData };
+      }
+      await doc.save();
+    }
   }
 
   // Always ensure whitelist if contractId provided (whether doc existed or was just created)
@@ -514,11 +525,10 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
     try {
       const contract = await Contract.findById(contractId).select('startDate endDate');
       if (contract?.endDate) {
-        const startDate = contract.startDate ? formatDateTime(new Date(contract.startDate)) : formatDateTime(new Date());
+        const startDate = formatDateTime(new Date());
         const endDate = endOfDayString(new Date(contract.endDate));
         console.log('[BHAIFI] Whitelisting after creation (auto-provision)', { memberId: String(member._id), startDate, endDate, userName, nasId });
         await bhaifiWhitelist({ nasId, startDate, endDate, userName });
-        // Persist whitelist record on auto-provision path
         const startAt = new Date(startDate.replace(' ', 'T'));
         const endAt = new Date(endDate.replace(' ', 'T'));
         doc.lastWhitelistedAt = new Date();
@@ -569,7 +579,7 @@ export const grantEnterpriseAccess = async (req, res) => {
     const nasDocs = await BhaifiNas.find({ _id: { $in: nasRefIds }, isActive: true }).select('nasId label').lean();
     const nasIds = nasDocs.map(d => d.nasId).filter(Boolean);
     if (!nasIds.length) return res.status(400).json({ success: false, message: 'No active NAS found for building enterprise configuration' });
-    const startDate = normalizeToDateTimeString(startOverride) || formatDateTime(new Date());
+    const startDate = formatDateTime(new Date());
     let endDate = normalizeToDateTimeString(endOverride);
     if (!endDate) {
       const d = Number(enterprise?.defaultValidityDays);

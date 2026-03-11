@@ -2577,9 +2577,74 @@ export const payWithCredits = async (req, res) => {
 
     await payment.save();
 
-    // Update invoice if exists
+    // Sync invoice to Zoho and record payment if applicable
     if (item.invoice) {
-      await applyInvoicePayment(item.invoice._id, totalAmount);
+      try {
+        const inv = await Invoice.findById(item.invoice._id);
+        if (inv) {
+          // Resolve client for Zoho
+          let clientForZoho = null;
+          if (finalClientId) {
+            clientForZoho = await Client.findById(finalClientId);
+          }
+
+          if (clientForZoho) {
+            // Create invoice in Zoho if missing
+            if (!inv.zoho_invoice_id) {
+              try {
+                const zohoData = await createZohoInvoiceFromLocal(inv, clientForZoho);
+                if (zohoData?.invoice) {
+                  inv.zoho_invoice_id = zohoData.invoice.invoice_id;
+                  inv.zoho_invoice_number = zohoData.invoice.invoice_number;
+                  inv.source = 'zoho';
+                  await inv.save();
+                }
+              } catch (e) {
+                console.warn('[payWithCredits] Zoho invoice creation failed:', e.message);
+              }
+            }
+
+            // Record payment in Zoho
+            if (inv.zoho_invoice_id && clientForZoho.zohoBooksContactId) {
+              try {
+                const zohoPayload = {
+                  customer_id: clientForZoho.zohoBooksContactId,
+                  payment_mode: 'Credits',
+                  amount: totalAmount,
+                  date: new Date().toISOString().slice(0, 10),
+                  invoices: [{ invoice_id: inv.zoho_invoice_id, amount_applied: totalAmount }],
+                  reference_number: payment.referenceNumber,
+                  description: payment.notes
+                };
+                const zohoResp = await recordZohoPayment(inv.zoho_invoice_id, zohoPayload);
+                if (zohoResp?.payment) {
+                  payment.zoho_payment_id = zohoResp.payment.payment_id;
+                  payment.payment_number = zohoResp.payment.payment_number;
+                  payment.zoho_status = zohoResp.payment.status;
+                  payment.raw_zoho_response = zohoResp;
+                  payment.source = 'zoho_books';
+                  await payment.save();
+                }
+              } catch (e) {
+                console.warn('[payWithCredits] Zoho payment recording failed:', e.message);
+              }
+            }
+          }
+          
+          // Apply locally
+          await applyInvoicePayment(inv._id, totalAmount);
+        }
+      } catch (zohoErr) {
+        console.error("[payWithCredits] Zoho sync error:", zohoErr);
+      }
+    }
+
+    // Re-fetch item to get updated status and populated fields
+    let updatedItem;
+    if (dayPassId) {
+      updatedItem = await DayPass.findById(dayPassId).populate('building').populate('invoice');
+    } else {
+      updatedItem = await DayPassBundle.findById(bundleId).populate('building').populate('invoice');
     }
 
     const responseMessage = dayPassId
@@ -2594,7 +2659,7 @@ export const payWithCredits = async (req, res) => {
         amount: totalAmount,
         balanceAfter
       },
-      item,
+      item: updatedItem,
       payment: {
         id: payment._id,
         amount: payment.amount,

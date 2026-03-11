@@ -32,11 +32,16 @@ export const issueDayPass = async (dayPassId, session = null) => {
     // Update status to issued
     dayPass.status = "issued";
 
-    // Create visitor record if not already created and booking is for self
+    // For "self" bookings: Populate pass details and grant building access without creating a redundant Visitor record
     if (!dayPass.visitorCreated && dayPass.bookingFor === "self") {
-      await createVisitorForSelfBooking(dayPass, session);
+      await populatePassDetailsForSelf(dayPass, session);
       dayPass.visitorCreated = true;
-      dayPass.status = "invited";
+      // Default auto-grant for self-bookings as requested
+      dayPass.buildingAccess = {
+        wifiAccess: true,
+        accessControl: true
+      };
+      dayPass.status = "issued"; 
     }
 
     // For "other" bookings, create visitor if draft details exist
@@ -61,12 +66,10 @@ export const issueDayPass = async (dayPassId, session = null) => {
   }
 };
 
-// Create visitor record for self bookings
-const createVisitorForSelfBooking = async (dayPass, session) => {
+// Populate pass details from customer record for self bookings (skips Visitor collection)
+const populatePassDetailsForSelf = async (dayPass, session) => {
   try {
-    // Get user details from customer
     let customerDetails = null;
-    let customerType = null; // 'guest' | 'member' | 'client'
 
     // Try to find customer as Guest first
     customerDetails = await Guest.findById(dayPass.customer).session(session);
@@ -76,25 +79,19 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
       const memberDoc = await Member.findById(dayPass.customer)
         .populate('user')
         .session(session);
-      if (memberDoc) {
-        customerType = 'member';
-        if (memberDoc.user) {
-          customerDetails = {
-            name: memberDoc.user.name,
-            email: memberDoc.user.email,
-            phone: memberDoc.user.phone
-          };
-        }
+      if (memberDoc && memberDoc.user) {
+        customerDetails = {
+          name: memberDoc.user.name,
+          email: memberDoc.user.email,
+          phone: memberDoc.user.phone
+        };
       }
-    } else {
-      customerType = 'guest';
     }
 
     // If still not found, try as Client
     if (!customerDetails) {
       const clientDoc = await Client.findById(dayPass.customer).session(session);
       if (clientDoc) {
-        customerType = 'client';
         customerDetails = {
           name: clientDoc.contactPerson || clientDoc.companyName || 'Client',
           email: clientDoc.email || undefined,
@@ -107,52 +104,26 @@ const createVisitorForSelfBooking = async (dayPass, session) => {
       throw new Error("Customer details not found for self booking");
     }
 
-    // Use visitDate if available, otherwise use current date as fallback
     const visitDate = dayPass.visitDate ? new Date(dayPass.visitDate) : new Date();
-    const arrivalTime = new Date(visitDate);
-    arrivalTime.setHours(0, 0, 0, 0);
-
     const departureTime = new Date(visitDate);
     departureTime.setHours(23, 59, 59, 999);
 
-    // Update day pass with visitor details
+    const arrivalTime = new Date(visitDate);
+    arrivalTime.setHours(0, 0, 0, 0);
+
+    // Update day pass with visitor details directly
     dayPass.visitorName = customerDetails.name;
     dayPass.visitorPhone = customerDetails.phone;
     dayPass.visitorEmail = customerDetails.email;
     dayPass.expectedArrivalTime = arrivalTime;
     dayPass.expectedDepartureTime = departureTime;
-    dayPass.date = visitDate; // Set actual visit date
+    dayPass.date = visitDate;
     dayPass.qrCode = crypto.randomBytes(16).toString('hex');
     dayPass.qrExpiresAt = departureTime;
 
-    // Create visitor record in Visitor collection
-    const visitor = new Visitor({
-      name: customerDetails.name,
-      email: customerDetails.email,
-      phone: customerDetails.phone,
-      building: dayPass.building,
-      expectedVisitDate: visitDate,
-      expectedArrivalTime: arrivalTime,
-      expectedDepartureTime: departureTime,
-      dayPass: dayPass._id,
-      status: 'invited',
-      createdBy: dayPass.customer,
-      // Set host based on customer type
-      hostMember: customerType === 'member' ? dayPass.customer : null,
-      hostClient: customerType === 'client' ? dayPass.customer : null,
-      hostGuest: customerType === 'guest' ? dayPass.customer : null
-    });
-
-    await visitor.save({ session });
-
-    // Attach visitor to day pass visitors array
-    const current = Array.isArray(dayPass.visitors) ? dayPass.visitors : [];
-    dayPass.visitors = [...current, visitor._id];
-    // Note: DayPass save is called by caller after this helper; no extra save needed here
-
-    console.log(`Created visitor record for self booking: ${customerDetails.name} on ${visitDate.toDateString()}`);
+    console.log(`Populated self-booking details for: ${customerDetails.name}`);
   } catch (error) {
-    console.error("Error creating visitor for self booking:", error);
+    console.error("Error populating self-booking details:", error);
     throw error;
   }
 };
