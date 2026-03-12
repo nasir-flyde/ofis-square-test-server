@@ -774,13 +774,21 @@ export const sendMemberClientOtp = async (req, res) => {
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
 
     try {
-      await Promise.allSettled([
-        SendSMS({ phone: normalizedPhone, message: smsText }).then(() => console.log('SMS sent successfully')),
-        sendWhatsAppOTP({ phone: normalizedPhone, otp }).then(() => console.log('WhatsApp OTP sent successfully'))
+      const results = await Promise.allSettled([
+        SendSMS({ phone: clean10, message: smsText }),
+        sendWhatsAppOTP({ phone: clean10, otp })
       ]);
+
+      results.forEach((result, index) => {
+        const type = index === 0 ? 'SMS' : 'WhatsApp';
+        if (result.status === 'fulfilled') {
+          console.log(`✅ ${type} sent successfully to ${clean10}`);
+        } else {
+          console.error(`❌ ${type} sending failed for ${clean10}:`, result.reason);
+        }
+      });
     } catch (err) {
-      console.error('Message sending failed:', err);
-      console.log('Delivery failed, but OTP is logged above for testing');
+      console.error('Unexpected error in message sending batch:', err);
     }
 
     await logAuthActivity(req, 'OTP_SENT', 'SUCCESS', null, {
