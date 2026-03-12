@@ -42,11 +42,18 @@ async function loadTokens() {
 
 async function saveTokens() {
   try {
-    try { await fs.mkdir(path.dirname(TOKEN_FILE_PATH), { recursive: true }); } catch (_) {}
+    const dir = path.dirname(TOKEN_FILE_PATH);
+    try { 
+      await fs.mkdir(dir, { recursive: true }); 
+    } catch (mkdirError) {
+      if (mkdirError.code !== 'EEXIST') {
+        console.warn(`Warning: Could not create directory ${dir}:`, mkdirError.message);
+      }
+    }
     await fs.writeFile(TOKEN_FILE_PATH, JSON.stringify(tokenData, null, 2));
     console.log(`Saved Zoho token to: ${TOKEN_FILE_PATH}`);
   } catch (error) {
-    console.error("Failed to save tokens:", error.message);
+    console.error(`Failed to save tokens: ${error.message}${error.code ? ` (Code: ${error.code})` : ''}, while writing to ${TOKEN_FILE_PATH}`);
   }
 }
 

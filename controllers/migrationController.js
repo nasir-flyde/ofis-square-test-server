@@ -33,6 +33,18 @@ import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
 import { grantOnContractActivation } from "../services/accessService.js";
 
+const mapPaymentType = (type) => {
+    const t = (type || '').trim().toUpperCase();
+    if (['RTGS', 'NEFT', 'IMPS', 'BANK TRANSFER', 'BANKTRANSFER', 'INTERNAL TRANSFER', 'WIRE', 'DIRECT DEPOSIT'].includes(t)) {
+        return 'Bank Transfer';
+    }
+    if (['CASH'].includes(t)) return 'Cash';
+    if (['UPI'].includes(t)) return 'UPI';
+    if (['CHEQUE', 'CHECK'].includes(t)) return 'Cheque';
+    if (['CARD', 'CREDIT CARD', 'DEBIT CARD', 'CREDITCARD', 'DEBITCARD'].includes(t)) return 'Card';
+    return 'Bank Transfer'; // Default for migration
+};
+
 export const getMigrationStatus = async (req, res) => {
     try {
         const { email, clientId } = req.query;
@@ -2226,12 +2238,6 @@ export const bulkImportContracts = async (req, res) => {
                     continue;
                 }
 
-                if (dryRun) {
-                    rowResult.success = true;
-                    results.push(rowResult);
-                    continue;
-                }
-
                 // --- GST Parsing ---
                 const gstInput = (row['GST Number'] || row.gstnumber || row.gstNumber || row.gst_number);
                 let parsedGstNo, parsedGstTreatment, parsedPlaceOfSupply;
@@ -2252,60 +2258,65 @@ export const bulkImportContracts = async (req, res) => {
                     parsedPlaceOfSupply = stateCodeMap[statePrefix] || statePrefix;
                 }
 
-                // --- ACTUAL IMPORT ---
-                const contract = await Contract.create({
-                    client: client._id,
-                    building: building._id,
-                    startDate: startDate,
-                    endDate: endDate,
-                    billingStartDate: startDate,
-                    billingEndDate: endDate,
-                    monthlyRent: Number(row['Monthly Subscription'] || row.monthlysubscription || row.monthlySubscription || 0),
-                    capacity: Number(row.Capacity || row.capacity || 1),
-                    initialCredits: Number(row['MR Credits'] || row.mrcredits || row.initialCredits || 0),
-                    printerCredits: Number(row['Printer Credits'] || row.printercredits || row.printerCredits || 0),
-                    legalExpenses: Number(row['Legal Expenses'] || row.legalexpenses || row.legalExpenses || 1200),
-                    lockInPeriodMonths: Number(row['Lockin Months'] || row.lockinmonths || row.lockInPeriodMonths || 12),
-                    noticePeriodDays: Number(row['Notice Period'] || row.noticeperiod || row.noticePeriodDays || 30),
-                    escalationRatePercentage: Number(row['Escalation Rate %'] || row.escalationratepercentage || row.escalationRatePercentage || 0),
-                    isApproved: true,
-                    status: 'active',
-                    source: 'migration',
-                    termsAndConditions: 'Bulk Contract Migration',
-                    fileUrl: row['Signed Contract'] || row.signedcontract || row.fileUrl || undefined,
-                    gst_no: parsedGstNo,
-                    gst_treatment: parsedGstTreatment,
-                    place_of_supply: parsedPlaceOfSupply,
-                    iskycuploaded: true,
-                    iskycapproved: true,
-                    adminapproved: true,
-                    legalteamapproved: true,
-                    clientapproved: true,
-                    financeapproved: true,
-                    securitydeposited: true,
-                    iscontractsentforsignature: true,
-                    iscontractstamppaperupload: true,
-                    isclientsigned: true,
-                    isfinalapproval: true,
-                    salesSeniorApproved: true
-                });
+                // --- ACTUAL IMPORT SIMULATION ---
+                let contractIdForSim = "SIMULATED_ID";
+                let contract;
+                if (!dryRun) {
+                    contract = await Contract.create({
+                        client: client._id,
+                        building: building._id,
+                        startDate: startDate,
+                        endDate: endDate,
+                        billingStartDate: startDate,
+                        billingEndDate: endDate,
+                        monthlyRent: Number(row['Monthly Subscription'] || row.monthlysubscription || row.monthlySubscription || 0),
+                        capacity: Number(row.Capacity || row.capacity || 1),
+                        initialCredits: Number(row['MR Credits'] || row.mrcredits || row.initialCredits || 0),
+                        printerCredits: Number(row['Printer Credits'] || row.printercredits || row.printerCredits || 0),
+                        legalExpenses: Number(row['Legal Expenses'] || row.legalexpenses || row.legalExpenses || 1200),
+                        lockInPeriodMonths: Number(row['Lockin Months'] || row.lockinmonths || row.lockInPeriodMonths || 12),
+                        noticePeriodDays: Number(row['Notice Period'] || row.noticeperiod || row.noticePeriodDays || 30),
+                        escalationRatePercentage: Number(row['Escalation Rate %'] || row.escalationratepercentage || row.escalationRatePercentage || 0),
+                        isApproved: true,
+                        status: 'active',
+                        source: 'migration',
+                        termsAndConditions: 'Bulk Contract Migration',
+                        fileUrl: row['Signed Contract'] || row.signedcontract || row.fileUrl || undefined,
+                        gst_no: parsedGstNo,
+                        gst_treatment: parsedGstTreatment,
+                        place_of_supply: parsedPlaceOfSupply,
+                        iskycuploaded: true,
+                        iskycapproved: true,
+                        adminapproved: true,
+                        legalteamapproved: true,
+                        clientapproved: true,
+                        financeapproved: true,
+                        securitydeposited: true,
+                        iscontractsentforsignature: true,
+                        iscontractstamppaperupload: true,
+                        isclientsigned: true,
+                        isfinalapproval: true,
+                        salesSeniorApproved: true
+                    });
+                    contractIdForSim = contract._id;
+                }
 
                 // Grant Credits
                 const credits = Number(row['MR Credits'] || row.mrcredits || row.initialCredits || 0);
-                if (credits > 0) {
+                if (credits > 0 && !dryRun) {
                     await WalletService.grantCredits({
                         clientId: client._id,
                         credits: credits,
                         valuePerCredit: 500,
                         refType: 'contract',
-                        refId: contract._id,
+                        refId: contractIdForSim,
                         meta: { reason: 'Bulk Contract Migration Credits' }
                     });
                 }
 
                 // Sync Printer Credits to Wallet
                 const printerCredits = Number(row['Printer Credits'] || row.printercredits || row.printerCredits || 0);
-                if (printerCredits > 0) {
+                if (printerCredits > 0 && !dryRun) {
                     try {
                         await ClientCreditWallet.findOneAndUpdate(
                             { client: client._id },
@@ -2313,12 +2324,14 @@ export const bulkImportContracts = async (req, res) => {
                             { new: true, upsert: true }
                         );
                     } catch (walletErr) {
-                        console.warn(`Row ${i + 1}: failed to sync printer credits to wallet:`, walletErr.message);
+                        console.warn(`Row processing: failed to sync printer credits to wallet:`, walletErr.message);
                     }
                 }
 
-                // Security Deposit
+                // Security Deposit logic
                 const depositAgreed = Number(row['Deposit Agreed'] || row.depositagreed || row.depositAgreed || 0);
+                let totalPaidToApply = 0;
+                let paymentsToCreate = [];
                 if (depositAgreed > 0) {
                     const rawPaid = String(row['Deposit Paid'] || row.depositpaid || row.depositPaid || '0');
                     const rawDates = String(row['Deposit Paid Date'] || row.depositpaiddate || row.depositPaidDate || '');
@@ -2331,149 +2344,147 @@ export const bulkImportContracts = async (req, res) => {
                     const splitRefs = rawRefs.includes('/') ? rawRefs.split('/') : [rawRefs];
 
                     const installmentCount = Math.max(splitPaid.length, splitDates.length, splitTypes.length, splitRefs.length);
-                    let totalPaidToApply = 0;
-                    const paymentsToCreate = [];
 
                     for (let i = 0; i < installmentCount; i++) {
                         let pAmount = splitPaid[i] !== undefined ? splitPaid[i] : (i === 0 ? Number(rawPaid) : 0);
-                        
-                        // Capping Logic 
                         if (totalPaidToApply + pAmount > depositAgreed) {
                             pAmount = Math.max(0, depositAgreed - totalPaidToApply);
                         }
-                        
                         if (pAmount <= 0) continue;
                         totalPaidToApply += pAmount;
 
                         paymentsToCreate.push({
                             amount: pAmount,
                             date: parseDate(splitDates[i] || splitDates[splitDates.length - 1]) || new Date(),
-                            type: (splitTypes[i] || splitTypes[0] || 'Bank Transfer').trim(),
+                            type: mapPaymentType(splitTypes[i] || splitTypes[0] || 'Bank Transfer'),
                             ref: (splitRefs[i] || splitRefs[0] || '').trim()
                         });
                     }
 
-                    const sd = await SecurityDeposit.create({
-                        client: client._id,
-                        contract: contract._id,
-                        building: building._id,
-                        agreed_amount: depositAgreed,
-                        amount_paid: totalPaidToApply,
-                        status: totalPaidToApply >= depositAgreed ? 'PAID' : (totalPaidToApply > 0 ? 'PARTIAL' : 'DUE'),
-                        paid_date: paymentsToCreate.length > 0 ? paymentsToCreate[paymentsToCreate.length - 1].date : undefined,
-                        notes: 'Bulk Contract Migration'
-                    });
-
-                    // Local Invoice for SD
-                    const invoiceNumber = await generateLocalInvoiceNumber();
-                    const invoice = await Invoice.create({
-                        client: client._id,
-                        contract: contract._id,
-                        building: building._id,
-                        deposit: sd._id,
-                        invoice_number: invoiceNumber,
-                        type: 'security_deposit',
-                        status: totalPaidToApply >= depositAgreed ? 'paid' : (totalPaidToApply > 0 ? 'partially_paid' : 'sent'),
-                        date: paymentsToCreate.length > 0 ? paymentsToCreate[0].date : new Date(),
-                        due_date: startDate,
-                        line_items: [{ description: 'Security Deposit', quantity: 1, unitPrice: depositAgreed, amount: depositAgreed }],
-                        sub_total: depositAgreed,
-                        total: depositAgreed,
-                        balance: Math.max(0, depositAgreed - totalPaidToApply),
-                        amount_paid: totalPaidToApply,
-                        source: 'migration',
-                        billing_address: { ...client.billingAddress, attention: client.contactPerson || client.companyName }
-                    });
-                    sd.invoice_id = invoice._id;
-                    await sd.save();
-
-                    // Update Client Record
-                    client.securityDeposit = sd._id;
-                    client.isSecurityPaid = totalPaidToApply >= depositAgreed;
-                    if (!client.building) client.building = building._id;
-                    client.isMigrated = true;
-                    client.isClientApproved = true;
-                    client.companyDetailsComplete = true;
-                    client.kycStatus = 'verified';
-                    client.membershipStatus = 'active';
-
-                    if (parsedGstNo) {
-                        client.gstNumber = parsedGstNo;
-                        client.gstNo = parsedGstNo;
-                        client.taxRegNo = parsedGstNo;
-                        client.gstTreatment = parsedGstTreatment;
-                        client.isTaxable = true;
-
-                        if (parsedPlaceOfSupply) {
-                            if (!client.taxInfoList) client.taxInfoList = [];
-                            const existing = client.taxInfoList.find(t => t.tax_registration_no === parsedGstNo);
-                            if (existing) {
-                                existing.place_of_supply = parsedPlaceOfSupply;
-                                existing.is_primary = true;
-                            } else {
-                                client.taxInfoList.push({
-                                    tax_registration_no: parsedGstNo,
-                                    place_of_supply: parsedPlaceOfSupply,
-                                    is_primary: true
-                                });
-                            }
-                        }
-                    }
-
-                    await client.save();
-
-                    contract.securityDeposit = sd._id;
-                    await contract.save();
-
-                    // Create Payments
-                    for (const pData of paymentsToCreate) {
-                        const payment = await Payment.create({
+                    if (!dryRun) {
+                        const sd = await SecurityDeposit.create({
                             client: client._id,
-                            contract: contract._id,
-                            amount: pData.amount,
-                            paymentDate: pData.date,
-                            type: pData.type,
-                            referenceNumber: pData.ref,
-                            status: 'success',
-                            invoice: invoice._id,
-                            invoices: [{ invoice: invoice._id, amount_applied: pData.amount }],
-                            applied_total: pData.amount
+                            contract: contractIdForSim,
+                            building: building._id,
+                            agreed_amount: depositAgreed,
+                            amount_paid: totalPaidToApply,
+                            status: totalPaidToApply >= depositAgreed ? 'PAID' : (totalPaidToApply > 0 ? 'PARTIAL' : 'DUE'),
+                            paid_date: paymentsToCreate.length > 0 ? paymentsToCreate[paymentsToCreate.length - 1].date : undefined,
+                            notes: 'Bulk Contract Migration'
                         });
-                        // Link the last payment to invoice's payment_id field if needed
-                        invoice.payment_id = payment._id;
-                    }
-                    await invoice.save();
-                }
 
-                // Cabin Allocation
-                const cabinNumber = (row['Cabin Number'] || row.cabinnumber || row.cabinNumber)?.trim();
-                if (cabinNumber) {
-                    const cabin = await Cabin.findOne({ building: building._id, number: { $regex: new RegExp(`^${cabinNumber}$`, 'i') } });
-                    if (cabin) {
-                        await Cabin.findByIdAndUpdate(cabin._id, {
-                            allocatedTo: client._id,
-                            contract: contract._id,
-                            status: 'occupied',
-                            $push: {
-                                blocks: {
-                                    client: client._id,
-                                    contract: contract._id,
-                                    fromDate: contract.startDate,
-                                    toDate: contract.endDate,
-                                    status: 'active',
-                                    reason: 'Bulk Contract Migration'
+                        const invoiceNumber = await generateLocalInvoiceNumber();
+                        const invoice = await Invoice.create({
+                            client: client._id,
+                            contract: contractIdForSim,
+                            building: building._id,
+                            deposit: sd._id,
+                            invoice_number: invoiceNumber,
+                            type: 'security_deposit',
+                            status: totalPaidToApply >= depositAgreed ? 'paid' : (totalPaidToApply > 0 ? 'partially_paid' : 'sent'),
+                            date: paymentsToCreate.length > 0 ? paymentsToCreate[0].date : new Date(),
+                            due_date: startDate,
+                            line_items: [{ description: 'Security Deposit', quantity: 1, unitPrice: depositAgreed, amount: depositAgreed }],
+                            sub_total: depositAgreed,
+                            total: depositAgreed,
+                            balance: Math.max(0, depositAgreed - totalPaidToApply),
+                            amount_paid: totalPaidToApply,
+                            source: 'migration',
+                            billing_address: { ...client.billingAddress, attention: client.contactPerson || client.companyName }
+                        });
+                        sd.invoice_id = invoice._id;
+                        await sd.save();
+
+                        client.securityDeposit = sd._id;
+                        client.isSecurityPaid = totalPaidToApply >= depositAgreed;
+                        if (!client.building) client.building = building._id;
+                        client.isMigrated = true;
+                        client.isClientApproved = true;
+                        client.companyDetailsComplete = true;
+                        client.kycStatus = 'verified';
+                        client.membershipStatus = 'active';
+
+                        if (parsedGstNo) {
+                            client.gstNumber = parsedGstNo;
+                            client.gstNo = parsedGstNo;
+                            client.taxRegNo = parsedGstNo;
+                            client.gstTreatment = parsedGstTreatment;
+                            client.isTaxable = true;
+
+                            if (parsedPlaceOfSupply) {
+                                if (!client.taxInfoList) client.taxInfoList = [];
+                                const existing = client.taxInfoList.find(t => t.tax_registration_no === parsedGstNo);
+                                if (existing) {
+                                    existing.place_of_supply = parsedPlaceOfSupply;
+                                    existing.is_primary = true;
+                                } else {
+                                    client.taxInfoList.push({
+                                        tax_registration_no: parsedGstNo,
+                                        place_of_supply: parsedPlaceOfSupply,
+                                        is_primary: true
+                                    });
                                 }
                             }
-                        });
+                        }
+                        await client.save();
 
-                        // --- Access Provisioning (Access Points & Policy) ---
+                        contract.securityDeposit = sd._id;
+                        await contract.save();
+
+                        for (const pData of paymentsToCreate) {
+                            try {
+                                const payment = await Payment.create({
+                                    client: client._id,
+                                    contract: contractIdForSim,
+                                    amount: pData.amount,
+                                    paymentDate: pData.date,
+                                    type: pData.type,
+                                    referenceNumber: pData.ref,
+                                    status: 'success',
+                                    invoice: invoice._id,
+                                    invoices: [{ invoice: invoice._id, amount_applied: pData.amount }],
+                                    applied_total: pData.amount,
+                                    source: 'migration'
+                                });
+                                invoice.payment_id = payment._id;
+                            } catch (paymentErr) {
+                                console.error(`Failed to create payment for ${client.companyName}:`, paymentErr.message);
+                                results[results.length - 1].errors.push(`Payment failed: ${paymentErr.message}`);
+                            }
+                        }
+                        await invoice.save();
+                    }
+                }
+
+                // Cabin Allocation simulation
+                const cabinNumber = (row['Cabin Number'] || row.cabinnumber || row.cabinNumber)?.trim();
+                let cabin;
+                let apSim = { created: 0, reused: 0 };
+                if (cabinNumber) {
+                    cabin = await Cabin.findOne({ building: building._id, number: { $regex: new RegExp(`^${cabinNumber}$`, 'i') } });
+                    if (cabin) {
+                        if (!dryRun) {
+                            await Cabin.findByIdAndUpdate(cabin._id, {
+                                allocatedTo: client._id,
+                                contract: contractIdForSim,
+                                status: 'occupied',
+                                $push: {
+                                    blocks: {
+                                        client: client._id,
+                                        contract: contractIdForSim,
+                                        fromDate: startDate,
+                                        toDate: endDate,
+                                        status: 'active',
+                                        reason: 'Bulk Contract Migration'
+                                    }
+                                }
+                            });
+                        }
+
+                        // --- Access Provisioning simulation ---
                         try {
-                            console.log(`[BulkImportAccess] Starting access provisioning for cabin ${cabin.number} (Contract: ${contract._id})`);
-
                             const apIdSet = new Set();
                             const matrixDevices = cabin.matrixDevices || [];
-                            console.log(`[BulkImportAccess] Cabin ${cabin.number} matrixDevices:`, matrixDevices);
-
                             for (const did of matrixDevices) {
                                 let ap = await AccessPoint.findOne({
                                     buildingId: building._id,
@@ -2481,79 +2492,73 @@ export const bulkImportContracts = async (req, res) => {
                                 }).select("_id").lean();
 
                                 if (!ap) {
-                                    const nameSuffix = String(did).slice(-6);
-                                    const createdAp = await AccessPoint.create({
-                                        buildingId: building._id,
-                                        name: `AP ${cabin.number}-${nameSuffix}`,
-                                        bindingType: "cabin",
-                                        resource: {
-                                            refType: "Cabin",
-                                            refId: cabin._id,
-                                            label: cabin.number,
-                                        },
-                                        pointType: "DOOR",
-                                        deviceBindings: [{
-                                            vendor: "MATRIX_COSEC",
-                                            deviceId: did,
-                                            direction: "BIDIRECTIONAL",
-                                        }],
-                                        status: "active",
-                                    });
-                                    apIdSet.add(String(createdAp._id));
-                                    console.log(`[BulkImportAccess] Created new AccessPoint: ${createdAp._id} for device ${did}`);
+                                    apSim.created++;
+                                    if (!dryRun) {
+                                        const nameSuffix = String(did).slice(-6);
+                                        const createdAp = await AccessPoint.create({
+                                            buildingId: building._id,
+                                            name: `AP ${cabin.number}-${nameSuffix}`,
+                                            bindingType: "cabin",
+                                            resource: { refType: "Cabin", refId: cabin._id, label: cabin.number },
+                                            pointType: "DOOR",
+                                            deviceBindings: [{ vendor: "MATRIX_COSEC", deviceId: did, direction: "BIDIRECTIONAL" }],
+                                            status: "active",
+                                        });
+                                        apIdSet.add(String(createdAp._id));
+                                    }
                                 } else {
-                                    apIdSet.add(String(ap._id));
-                                    console.log(`[BulkImportAccess] Reusing existing AccessPoint: ${ap._id} for device ${did}`);
+                                    apSim.reused++;
+                                    if (!dryRun) apIdSet.add(String(ap._id));
                                 }
                             }
 
-                            const objectIdList = Array.from(apIdSet).map(id => new mongoose.Types.ObjectId(id));
-                            console.log(`[BulkImportAccess] AccessPoint IDs to attach:`, Array.from(apIdSet));
-
-                            const policyResult = await ensureDefaultAccessPolicyForContract(contract._id);
-                            let ensuredPolicy = policyResult?.policy;
-
-                            // Fallback: create default building-scoped policy directly if not available
-                            if (!ensuredPolicy) {
-                                console.log(`[BulkImportAccess] No policy found via service. Creating fallback default policy for contract ${contract._id}`);
-                                ensuredPolicy = await AccessPolicy.create({
-                                    buildingId: building._id,
-                                    name: "Default Access",
-                                    description: `Auto-created at bulk migration for contract ${contract._id}`,
-                                    accessPointIds: objectIdList,
-                                    isDefaultForBuilding: true,
-                                    effectiveFrom: contract.startDate,
-                                    effectiveTo: contract.endDate,
-                                });
-                                console.log(`[BulkImportAccess] Fallback policy created: ${ensuredPolicy._id}`);
-                            }
-
-                            if (ensuredPolicy) {
-                                if (objectIdList.length > 0) {
-                                    const policyUpdate = await AccessPolicy.updateOne(
-                                        { _id: ensuredPolicy._id },
-                                        { $addToSet: { accessPointIds: { $each: objectIdList } } }
-                                    );
-                                    console.log(`[BulkImportAccess] Updated AccessPolicy ${ensuredPolicy._id} with ${objectIdList.length} APs. Modified: ${policyUpdate.modifiedCount}`);
+                            if (!dryRun) {
+                                const objectIdList = Array.from(apIdSet).map(id => new mongoose.Types.ObjectId(id));
+                                const policyResult = await ensureDefaultAccessPolicyForContract(contractIdForSim);
+                                let ensuredPolicy = policyResult?.policy;
+                                if (!ensuredPolicy) {
+                                    ensuredPolicy = await AccessPolicy.create({
+                                        buildingId: building._id,
+                                        name: "Default Access",
+                                        description: `Auto-created at bulk migration`,
+                                        accessPointIds: objectIdList,
+                                        isDefaultForBuilding: true,
+                                        effectiveFrom: startDate,
+                                        effectiveTo: endDate,
+                                    });
                                 }
-
-                                // Grant Access
-                                console.log(`[BulkImportAccess] Granting access for contract ${contract._id}`);
-                                await grantOnContractActivation(contract, {
-                                    policyId: ensuredPolicy._id,
-                                    startsAt: contract.startDate || new Date(),
-                                    endsAt: contract.endDate || undefined,
-                                    source: "BULK_MIGRATION",
-                                });
-                                console.log(`[BulkImportAccess] Access provisioning completed successfully for ${clientNameInput}`);
-                            } else {
-                                console.warn(`[BulkImportAccess] No policy found or created for contract ${contract._id}`);
+                                if (ensuredPolicy) {
+                                    if (objectIdList.length > 0) {
+                                        await AccessPolicy.updateOne({ _id: ensuredPolicy._id }, { $addToSet: { accessPointIds: { $each: objectIdList } } });
+                                    }
+                                    await grantOnContractActivation(contract, {
+                                        policyId: ensuredPolicy._id,
+                                        startsAt: startDate || new Date(),
+                                        endsAt: endDate || undefined,
+                                        source: "BULK_MIGRATION",
+                                    });
+                                }
                             }
                         } catch (accessErr) {
-                            console.error(`[BulkImportAccess] Provisioning failed for client ${clientNameInput}:`, accessErr);
-                            // We don't fail the whole import for access provisioning errors
                         }
                     }
+                }
+
+                if (dryRun) {
+                    rowResult.simulation = {
+                        mrCreditsToGrant: credits,
+                        printerCreditsToSync: printerCredits,
+                        securityDeposit: {
+                            agreed: depositAgreed,
+                            totalPaid: totalPaidToApply,
+                            installments: paymentsToCreate.length
+                        },
+                        cabin: cabin ? `Found (${cabin.number})` : (cabinNumber ? 'Not Found' : 'N/A'),
+                        accessPoints: apSim
+                    };
+                    rowResult.success = true;
+                    results.push(rowResult);
+                    continue;
                 }
 
                 successCount++;
