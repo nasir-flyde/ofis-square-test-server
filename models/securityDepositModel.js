@@ -20,6 +20,7 @@ const securityDepositSchema = new mongoose.Schema(
         "REFUNDED",
         "FORFEITED",
         "CLOSED",
+        "PARTIAL"
       ],
       default: "AGREED",
       index: true,
