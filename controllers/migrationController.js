@@ -2137,15 +2137,38 @@ export const bulkImportContracts = async (req, res) => {
 
         const parseDate = (dateStr) => {
             if (!dateStr || typeof dateStr !== 'string') return null;
-            if (dateStr.includes('-')) {
-                const parts = dateStr.split('-');
-                if (parts.length === 3) {
-                    const [d, m, y] = parts.map(Number);
-                    if (y > 1000) return new Date(y, m - 1, d);
-                    if (d > 1000) return new Date(d, m - 1, y);
+
+            const s = dateStr.trim();
+            if (!s) return null;
+
+            // Handle DD-MM-YYYY or DD-MM-YY
+            const parts = s.split(/[-/.]/);
+            if (parts.length === 3) {
+                let day, month, year;
+                if (parts[0].length === 4) {
+                    // YYYY-MM-DD
+                    year = parseInt(parts[0], 10);
+                    month = parseInt(parts[1], 10) - 1;
+                    day = parseInt(parts[2], 10);
+                } else if (parts[2].length === 4) {
+                    // DD-MM-YYYY
+                    day = parseInt(parts[0], 10);
+                    month = parseInt(parts[1], 10) - 1;
+                    year = parseInt(parts[2], 10);
+                } else if (parts[2].length === 2) {
+                    // DD-MM-YY (Assume 20xx)
+                    day = parseInt(parts[0], 10);
+                    month = parseInt(parts[1], 10) - 1;
+                    year = 2000 + parseInt(parts[2], 10);
+                }
+
+                if (year && !isNaN(month) && day) {
+                    const d = new Date(year, month, day);
+                    return isNaN(d.getTime()) ? null : d;
                 }
             }
-            const d = new Date(dateStr);
+
+            const d = new Date(s);
             return isNaN(d.getTime()) ? null : d;
         };
 
@@ -2280,20 +2303,64 @@ export const bulkImportContracts = async (req, res) => {
                     });
                 }
 
+                // Sync Printer Credits to Wallet
+                const printerCredits = Number(row['Printer Credits'] || row.printercredits || row.printerCredits || 0);
+                if (printerCredits > 0) {
+                    try {
+                        await ClientCreditWallet.findOneAndUpdate(
+                            { client: client._id },
+                            { $set: { printerBalance: printerCredits } },
+                            { new: true, upsert: true }
+                        );
+                    } catch (walletErr) {
+                        console.warn(`Row ${i + 1}: failed to sync printer credits to wallet:`, walletErr.message);
+                    }
+                }
+
                 // Security Deposit
                 const depositAgreed = Number(row['Deposit Agreed'] || row.depositagreed || row.depositAgreed || 0);
                 if (depositAgreed > 0) {
-                    const depositPaid = Number(row['Deposit Paid'] || row.depositpaid || row.depositPaid || 0);
-                    const paidDate = parseDate(row['Deposit Paid Date'] || row.depositpaiddate || row.depositPaidDate) || new Date();
+                    const rawPaid = String(row['Deposit Paid'] || row.depositpaid || row.depositPaid || '0');
+                    const rawDates = String(row['Deposit Paid Date'] || row.depositpaiddate || row.depositPaidDate || '');
+                    const rawTypes = String(row['Payment Type'] || row.paymenttype || row.paymentType || 'Bank Transfer');
+                    const rawRefs = String(row['Payment Ref'] || row.paymentref || row.paymentRef || '');
+
+                    const splitPaid = rawPaid.includes('/') ? rawPaid.split('/').map(v => Number(v.trim())) : [Number(rawPaid)];
+                    const splitDates = rawDates.includes('/') ? rawDates.split('/') : [rawDates];
+                    const splitTypes = rawTypes.includes('/') ? rawTypes.split('/') : [rawTypes];
+                    const splitRefs = rawRefs.includes('/') ? rawRefs.split('/') : [rawRefs];
+
+                    const installmentCount = Math.max(splitPaid.length, splitDates.length, splitTypes.length, splitRefs.length);
+                    let totalPaidToApply = 0;
+                    const paymentsToCreate = [];
+
+                    for (let i = 0; i < installmentCount; i++) {
+                        let pAmount = splitPaid[i] !== undefined ? splitPaid[i] : (i === 0 ? Number(rawPaid) : 0);
+                        
+                        // Capping Logic 
+                        if (totalPaidToApply + pAmount > depositAgreed) {
+                            pAmount = Math.max(0, depositAgreed - totalPaidToApply);
+                        }
+                        
+                        if (pAmount <= 0) continue;
+                        totalPaidToApply += pAmount;
+
+                        paymentsToCreate.push({
+                            amount: pAmount,
+                            date: parseDate(splitDates[i] || splitDates[splitDates.length - 1]) || new Date(),
+                            type: (splitTypes[i] || splitTypes[0] || 'Bank Transfer').trim(),
+                            ref: (splitRefs[i] || splitRefs[0] || '').trim()
+                        });
+                    }
 
                     const sd = await SecurityDeposit.create({
                         client: client._id,
                         contract: contract._id,
                         building: building._id,
                         agreed_amount: depositAgreed,
-                        amount_paid: depositPaid,
-                        status: depositPaid >= depositAgreed ? 'PAID' : (depositPaid > 0 ? 'PARTIAL' : 'DUE'),
-                        paid_date: depositPaid > 0 ? paidDate : undefined,
+                        amount_paid: totalPaidToApply,
+                        status: totalPaidToApply >= depositAgreed ? 'PAID' : (totalPaidToApply > 0 ? 'PARTIAL' : 'DUE'),
+                        paid_date: paymentsToCreate.length > 0 ? paymentsToCreate[paymentsToCreate.length - 1].date : undefined,
                         notes: 'Bulk Contract Migration'
                     });
 
@@ -2306,14 +2373,14 @@ export const bulkImportContracts = async (req, res) => {
                         deposit: sd._id,
                         invoice_number: invoiceNumber,
                         type: 'security_deposit',
-                        status: depositPaid >= depositAgreed ? 'paid' : (depositPaid > 0 ? 'partially_paid' : 'sent'),
-                        date: paidDate,
+                        status: totalPaidToApply >= depositAgreed ? 'paid' : (totalPaidToApply > 0 ? 'partially_paid' : 'sent'),
+                        date: paymentsToCreate.length > 0 ? paymentsToCreate[0].date : new Date(),
                         due_date: startDate,
                         line_items: [{ description: 'Security Deposit', quantity: 1, unitPrice: depositAgreed, amount: depositAgreed }],
                         sub_total: depositAgreed,
                         total: depositAgreed,
-                        balance: Math.max(0, depositAgreed - depositPaid),
-                        amount_paid: depositPaid,
+                        balance: Math.max(0, depositAgreed - totalPaidToApply),
+                        amount_paid: totalPaidToApply,
                         source: 'migration',
                         billing_address: { ...client.billingAddress, attention: client.contactPerson || client.companyName }
                     });
@@ -2322,7 +2389,7 @@ export const bulkImportContracts = async (req, res) => {
 
                     // Update Client Record
                     client.securityDeposit = sd._id;
-                    client.isSecurityPaid = depositPaid >= depositAgreed;
+                    client.isSecurityPaid = totalPaidToApply >= depositAgreed;
                     if (!client.building) client.building = building._id;
                     client.isMigrated = true;
                     client.isClientApproved = true;
@@ -2358,24 +2425,24 @@ export const bulkImportContracts = async (req, res) => {
                     contract.securityDeposit = sd._id;
                     await contract.save();
 
-                    // Payment for SD
-                    if (depositPaid > 0) {
+                    // Create Payments
+                    for (const pData of paymentsToCreate) {
                         const payment = await Payment.create({
                             client: client._id,
                             contract: contract._id,
-                            amount: depositPaid,
-                            paymentDate: paidDate,
-                            type: row['Payment Type'] || row.paymenttype || row.paymentType || 'Bank Transfer',
-                            referenceNumber: row['Payment Ref'] || row.paymentref || row.paymentRef,
+                            amount: pData.amount,
+                            paymentDate: pData.date,
+                            type: pData.type,
+                            referenceNumber: pData.ref,
                             status: 'success',
                             invoice: invoice._id,
-                            invoices: [{ invoice: invoice._id, amount_applied: depositPaid }],
-                            applied_total: depositPaid
+                            invoices: [{ invoice: invoice._id, amount_applied: pData.amount }],
+                            applied_total: pData.amount
                         });
+                        // Link the last payment to invoice's payment_id field if needed
                         invoice.payment_id = payment._id;
-                        await invoice.save();
                     }
-
+                    await invoice.save();
                 }
 
                 // Cabin Allocation
