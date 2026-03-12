@@ -31,6 +31,12 @@ const paymentSchema = new mongoose.Schema(
         "Cheque",
         "Online Gateway",
         "PayPal",
+        "RTGS",
+        "NEFT",
+        "IMPS",
+        "Internal Transfer",
+        "Wire",
+        "Direct Deposit",
         "Razorpay",
         "Stripe",
         "Other"
