@@ -24,8 +24,8 @@ const authorize = (roles = []) => {
 };
 
 // Public/Member routes (with token)
-router.post("/upload", authMiddleware, upload.single("document"), createPrinterRequest);
-router.get("/my-requests", authMiddleware, getPrinterRequests);
+router.post("/upload", upload.single("document"), createPrinterRequest);
+router.get("/my-requests", getPrinterRequests);
 
 // Admin/Community routes
 router.patch("/:id/ready", authMiddleware, markAsReady);
