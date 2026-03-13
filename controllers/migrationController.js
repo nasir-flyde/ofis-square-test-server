@@ -16,6 +16,7 @@ import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import Building from '../models/buildingModel.js';
 import imagekit from '../utils/imageKit.js';
+import ClientCreditWallet from '../models/clientCreditWalletModel.js';
 import {
     findOrCreateContactFromClient,
     createZohoInvoiceFromLocal,
@@ -2320,7 +2321,7 @@ export const bulkImportContracts = async (req, res) => {
                     try {
                         await ClientCreditWallet.findOneAndUpdate(
                             { client: client._id },
-                            { $set: { printerBalance: printerCredits } },
+                            { $inc: { printerBalance: printerCredits } },
                             { new: true, upsert: true }
                         );
                     } catch (walletErr) {
