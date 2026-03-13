@@ -6,7 +6,7 @@ import {
   getPrinterRequests
 } from "../controllers/printerController.js";
 import authMiddleware from "../middlewares/authVerify.js";
-import upload from "../middlewares/multer.js";
+import { kycUploads as upload } from "../middlewares/multer.js";
 
 const router = express.Router();
 
@@ -24,7 +24,7 @@ const authorize = (roles = []) => {
 };
 
 // Public/Member routes (with token)
-router.post("/upload", upload.single("document"), createPrinterRequest);
+router.post("/upload", authMiddleware, upload, createPrinterRequest);
 router.get("/my-requests", getPrinterRequests);
 
 // Admin/Community routes

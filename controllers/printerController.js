@@ -16,15 +16,17 @@ export const createPrinterRequest = async (req, res) => {
     let { clientId, memberId, documentUrl, fileName, buildingId } = req.body || {};
 
     // Upload file to ImageKit if it exists in the request
-    if (req.file) {
+    const fileToUpload = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+
+    if (fileToUpload) {
       try {
         const uploadResponse = await new Promise((resolve, reject) => {
           imagekit.upload({
-            file: req.file.buffer, // required, from multer
-            fileName: fileName || req.file.originalname, // required
+            file: fileToUpload.buffer, // required, from multer
+            fileName: fileName || fileToUpload.originalname, // required
             folder: '/printer_requests'
           }, function(error, result) {
-            if(error) reject(error);
+            if (error) reject(error);
             else resolve(result);
           });
         });
@@ -122,7 +124,7 @@ export const markAsReady = async (req, res) => {
 
     // Notify client/member
     try {
-      const recipient = printerRequest.member 
+      const recipient = printerRequest.member
         ? { userId: printerRequest.member.user, email: printerRequest.member.email }
         : { clientId: printerRequest.client._id, email: printerRequest.client.email };
 
@@ -302,3 +304,7 @@ export const getPrinterRequests = async (req, res) => {
     });
   }
 };
+return res.status(500).json({
+  success: false,
+  message: error.message
+});
