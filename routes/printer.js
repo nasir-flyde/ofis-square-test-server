@@ -5,7 +5,7 @@ import {
   completeRequest,
   getPrinterRequests
 } from "../controllers/printerController.js";
-import authMiddleware from "../middlewares/universalAuthVerify.js";
+import authMiddleware from "../middlewares/authVerify.js";
 import { kycUploads as upload } from "../middlewares/multer.js";
 
 const router = express.Router();
