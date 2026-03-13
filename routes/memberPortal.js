@@ -2,6 +2,7 @@ import express from "express";
 import memberMiddleware from "../middlewares/memberMiddleware.js";
 import universalMiddleware from '../middlewares/universalAuthVerify.js';
 import upload from "../middlewares/multer.js";
+import printerRoutes from "./printer.js";
 import {
   getMemberDashboard,
   getMyProfile,
@@ -32,6 +33,7 @@ router.get("/me", universalMiddleware, getMyProfile);
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 router.put("/me/edit", universalMiddleware, editMember);
+router.use("/printer", printerRoutes);
 
 
 
