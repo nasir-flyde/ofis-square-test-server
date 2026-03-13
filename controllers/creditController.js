@@ -72,7 +72,7 @@ export const getCreditAlerts = async (req, res) => {
 // POST /api/credits/consolidate - Manually trigger credit consolidation
 export const triggerCreditConsolidation = async (req, res) => {
   try {
-    const { year, month, clientId } = req.body;
+    const { year, month, clientId } = req.body || {};
 
     // If clientId is provided, use the single client exceeded invoice endpoint
     if (clientId) {
@@ -172,7 +172,7 @@ export const getClientCreditTransactions = async (req, res) => {
 // POST /api/credits/grant - Grant credits to a client (wallet only, no invoice)
 export const grantCredits = async (req, res) => {
   try {
-    const { clientId, credits, idempotencyKey = null, reason } = req.body;
+    const { clientId, credits, idempotencyKey = null, reason } = req.body || {};
 
     if (!clientId || !credits || credits <= 0) {
       return res.status(400).json({
@@ -469,7 +469,7 @@ export const previewCreditGrant = async (req, res) => {
 // POST /api/credits/exceeded-invoice - Generate exceeded credits invoice for a client
 export const generateExceededCreditsInvoice = async (req, res) => {
   try {
-    const { clientId, year, month, preview = false, singleInvoice = true } = req.body;
+    const { clientId, year, month, preview = false, singleInvoice = true } = req.body || {};
 
     if (!clientId || !year || !month) {
       return res.status(400).json({
@@ -605,7 +605,7 @@ export const recordCreditTransaction = async (req, res) => {
       purpose = '',
       description = '',
       idempotencyKey = null
-    } = req.body;
+    } = req.body || {};
 
     if (!clientId || !quantity || quantity <= 0) {
       return res.status(400).json({

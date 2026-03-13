@@ -26,8 +26,11 @@ export const SendSMS = async ({ phone, message }) => {
     format: 'json',
   };
 
-  // Optional debug log with masked key
-  // console.log('📤 SMS Params:', { ...params, apikey: '***hidden***' });
+  // Debug log with masked key
+  console.log('📤 Sending SMS:', {
+    ...params,
+    apikey: '***' + (SMS_API_KEY ? SMS_API_KEY.slice(-4) : 'hidden')
+  });
 
   try {
     const response = await axios.get(SMS_BASE_URL, {
@@ -35,9 +38,9 @@ export const SendSMS = async ({ phone, message }) => {
       timeout: 10000,
     });
 
-    // console.log('📱 SMS API Response:', response.data);
+    console.log('📱 SMS API Response:', response.data);
 
-    if (response.data?.status === 'success' || response.data?.status === 'OK') {
+    if (response.data?.status === 'success' || response.data?.status === 'OK' || response.data?.status === '1') {
       return {
         success: true,
         data: response.data,
@@ -45,9 +48,14 @@ export const SendSMS = async ({ phone, message }) => {
       };
     }
 
+    console.error('❌ SMS API Error Content:', response.data);
     throw new Error(`SMS API returned error: ${JSON.stringify(response.data)}`);
   } catch (error) {
-    // console.error('❌ SMS sending failed:', { phone: cleanPhone, error: error.message, response: error.response?.data });
+    console.error('❌ SMS sending failed:', {
+      phone: cleanPhone,
+      errorMessage: error.message,
+      response: error.response?.data
+    });
     throw new Error(`Failed to send SMS to ${cleanPhone}: ${error.message}`);
   }
 };

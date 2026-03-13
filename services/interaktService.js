@@ -34,6 +34,12 @@ export const sendWhatsAppOTP = async ({ phone, otp }) => {
         }
     };
 
+    // Debug log with masked key
+    console.log('📤 Sending WhatsApp OTP via Interakt:', {
+        ...payload,
+        phoneNumber: `***${payload.phoneNumber.slice(-4)}`
+    });
+
     try {
         const response = await axios.post(INTERAKT_BASE_URL, payload, {
             headers: {
@@ -42,7 +48,7 @@ export const sendWhatsAppOTP = async ({ phone, otp }) => {
             }
         });
 
-        console.log(`WhatsApp OTP sent to ${cleanPhone}:`, response.data);
+        console.log(`✅ WhatsApp OTP API Response for ${cleanPhone}:`, response.data);
 
         return {
             success: true,
@@ -51,9 +57,10 @@ export const sendWhatsAppOTP = async ({ phone, otp }) => {
         };
 
     } catch (error) {
-        console.error('Interakt WhatsApp send failed:', error.response?.data || error.message);
-        // Don't throw logic error effectively, to match smsService throwing pattern or handle gracefully?
-        // smsService throws, so we should too if we want catch block in controller to handle it.
-        throw new Error(`Failed to send WhatsApp OTP: ${error.response?.data?.message || error.message}`);
+        console.error('❌ Interakt WhatsApp send failed:', {
+            phone: cleanPhone,
+            error: error.response?.data || error.message
+        });
+        throw new Error(`Failed to send WhatsApp OTP: ${JSON.stringify(error.response?.data) || error.message}`);
     }
 };

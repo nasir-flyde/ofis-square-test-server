@@ -87,7 +87,7 @@ export const getUsers = async (req, res) => {
 
 export const createClientLegalUser = async (req, res) => {
   try {
-    const { clientId, name, email, phone, password } = req.body;
+    const { clientId, name, email, phone, password } = req.body || {};
 
     if (!clientId || !mongoose.Types.ObjectId.isValid(clientId)) {
       return res.status(400).json({ success: false, message: "Valid clientId is required" });
@@ -167,7 +167,7 @@ export const getUserById = async (req, res) => {
 
 export const createUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, buildingId, isActive } = req.body;
+    const { name, email, phone, password, role, buildingId, isActive } = req.body || {};
 
     // Validate required fields
     if (!name || !email || !phone || !password || !role) {
@@ -290,7 +290,7 @@ export const createUser = async (req, res) => {
 // PUT /api/users/:id - Update user
 export const updateUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, buildingId } = req.body;
+    const { name, email, phone, password, role, buildingId } = req.body || {};
     const id = req.params.id;
 
     // Check if user exists
@@ -641,7 +641,7 @@ export const verifyDeleteUserOTP = async (req, res) => {
 
 export const verifyUpdateUserOTP = async (req, res) => {
   try {
-    const { userId, otp, name, email, phone, password, role, buildingId } = req.body;
+    const { userId, otp, name, email, phone, password, role, buildingId } = req.body || {};
 
     // 1. Verify OTP first
     const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });

@@ -101,6 +101,30 @@ class NotificationRenderer {
           </div>
         `,
         text: 'Your Pro Forma Invoice for {{buildingName}} (₹{{totalAmount}}) is ready.'
+      },
+      send_printer_request: {
+        subject: 'Action Required: New Printer Request',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>New Printer Request</h2>
+            <p>A new printer request has been submitted for document: <strong>{{fileName}}</strong>.</p>
+            <p>Please check the admin portal to process it.</p>
+          </div>
+        `,
+        text: 'New printer request for {{fileName}}. Please check the admin portal.',
+        sms: 'New printer request for {{fileName}}. Please check the admin portal.'
+      },
+      send_printer_ready: {
+        subject: 'Your Print is Ready!',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Your Print is Ready</h2>
+            <p>Hi {{name}},</p>
+            <p>Your print for <strong>{{fileName}}</strong> is ready at the front desk. Please collect it.</p>
+          </div>
+        `,
+        text: 'Hi {{name}}, your print for {{fileName}} is ready at the front desk.',
+        sms: 'Hi {{name}}, your print for {{fileName}} is ready at the front desk. Please collect it.'
       }
     };
   }
