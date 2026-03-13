@@ -22,6 +22,8 @@ const router = express.Router();
 
 router.get("/me/tickets", universalMiddleware, getMyTickets);
 router.get("/me/visitors", universalMiddleware, getMyVisitors);
+router.post("/me/printer-requests", universalMiddleware, upload.any(), createPrinterRequest);
+router.get("/me/printer-requests", universalMiddleware, getPrinterRequests);
 router.post("/me/tickets", universalMiddleware, upload.any(), createMyTicket);
 router.get("/me/notifications", universalMiddleware, getMyNotifications);
 router.post("/me/notifications/:id/read", universalMiddleware, markNotificationRead);
@@ -33,8 +35,9 @@ router.get("/me", universalMiddleware, getMyProfile);
 router.use(memberMiddleware);
 router.get("/me/dashboard", getMemberDashboard);
 router.put("/me/edit", universalMiddleware, editMember);
-router.use("/printer", printerRoutes);
+router.put("/me/edit", universalMiddleware, editMember);
 
 
 
 export default router;
+
