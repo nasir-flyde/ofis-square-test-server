@@ -3,6 +3,44 @@ import imagekit from "../utils/imageKit.js";
 import { createObjectCsvStringifier } from 'csv-writer';
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 
+/**
+ * Normalizes nested keys from form-data (e.g., "photos[0][category]") into a proper nested object structure.
+ * Also handles simple array notation like "amenities[]".
+ */
+const normalizeNestedBody = (body) => {
+  const result = {};
+  for (const key in body) {
+    const value = body[key];
+    if (key.includes('[') || key.includes(']')) {
+      // Handle nested keys like "photos[0][category]" or "amenities[]"
+      const parts = key.split(/[\[\]]+/).filter(Boolean);
+      let current = result;
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const nextPart = parts[i + 1];
+        const isArrayIndex = /^\d+$/.test(nextPart) || (nextPart === undefined && key.endsWith('[]'));
+
+        if (!current[part]) {
+          current[part] = (isArrayIndex || /^\d+$/.test(part)) ? [] : {};
+        }
+
+        if (i === parts.length - 1) {
+          if (Array.isArray(current)) {
+            current.push(value);
+          } else {
+            current[part] = value;
+          }
+        } else {
+          current = current[part];
+        }
+      }
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+};
+
 export const exportBuildings = async (req, res) => {
   try {
     const { status, city } = req.query || {};
@@ -138,6 +176,11 @@ export const exportBuildings = async (req, res) => {
 
 export const createBuilding = async (req, res) => {
   try {
+    // Normalize body if it comes from form-data with nested keys
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+      req.body = normalizeNestedBody(req.body);
+    }
+
     const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes } = req.body || {};
 
     if (!name || !address || !city) {
@@ -145,9 +188,35 @@ export const createBuilding = async (req, res) => {
     }
 
     const processedPhotos = [];
-    if (photos && Array.isArray(photos)) {
+    
+    // 1. Process files from req.files (e.g. photos[0][file])
+    const fileMap = new Map();
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        // Field name might be like "photos[0][file]"
+        if (file.fieldname.startsWith('photos[')) {
+          const match = file.fieldname.match(/photos\[(\d+)\]/);
+          if (match) {
+            const index = parseInt(match[1]);
+            if (!fileMap.has(index)) fileMap.set(index, {});
+            fileMap.get(index).file = file.buffer || file.path;
+            fileMap.get(index).name = file.originalname;
+          }
+        }
+      }
+    }
+
+    // 2. Combine files with metadata from photos array
+    const photosToProcess = Array.isArray(photos) ? [...photos] : [];
+    fileMap.forEach((fileInfo, index) => {
+      if (!photosToProcess[index]) photosToProcess[index] = {};
+      photosToProcess[index].file = fileInfo.file;
+      photosToProcess[index].name = fileInfo.name || photosToProcess[index].name;
+    });
+
+    if (photosToProcess.length > 0) {
       const categoryMap = new Map();
-      for (const photo of photos) {
+      for (const photo of photosToProcess) {
         try {
           if (photo.category && Array.isArray(photo.images)) {
             const category = photo.category.trim();
@@ -353,15 +422,39 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Normalize body if it comes from form-data with nested keys
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+      req.body = normalizeNestedBody(req.body);
+    }
+
     const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
     let processedPhotos;
-    if (photos && Array.isArray(photos)) {
+    
+    // Handle files in update similar to create
+    const photosToProcess = Array.isArray(photos) ? [...photos] : (photos ? [photos] : undefined);
+    if (req.files && req.files.length > 0 && photosToProcess) {
+      for (const file of req.files) {
+        if (file.fieldname.startsWith('photos[')) {
+          const match = file.fieldname.match(/photos\[(\d+)\]/);
+          if (match) {
+            const index = parseInt(match[1]);
+            if (photosToProcess[index]) {
+              photosToProcess[index].file = file.buffer || file.path;
+              photosToProcess[index].name = file.originalname;
+            }
+          }
+        }
+      }
+    }
+
+    if (photosToProcess && Array.isArray(photosToProcess)) {
       processedPhotos = [];
       const categoryMap = new Map();
-      for (const photo of photos) {
+      for (const photo of photosToProcess) {
         try {
           if (photo.category && Array.isArray(photo.images)) {
             const category = photo.category.trim();

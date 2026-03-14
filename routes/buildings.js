@@ -12,10 +12,12 @@ import {
   exportBuildings
 } from "../controllers/buildingController.js";
 
+import upload from "../middlewares/multer.js";
+
 const router = express.Router();
 
 // Create Building (auth required)
-router.post("/", authMiddleware, createBuilding);
+router.post("/", authMiddleware, upload.any(), createBuilding);
 
 router.get("/export", exportBuildings);
 
@@ -32,7 +34,7 @@ router.get("/:id/daypass-pricing", (req, res) => {
 });
 
 // Update Building (auth required)
-router.put("/:id", authMiddleware, updateBuilding);
+router.put("/:id", authMiddleware, upload.any(), updateBuilding);
 
 // Update Building Day Pass Pricing (auth required)
 router.put("/:id/daypass-pricing", authMiddleware, async (req, res) => {
