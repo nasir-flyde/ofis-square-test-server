@@ -554,7 +554,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
     // ---- FETCH ROOMS (LEAN + PROJECTION + LIMIT) ----
     const rooms = await MeetingRoom.find(roomFilter)
       .select(
-        "name capacity floor building amenities blackoutDates reservedSlots availableTimeSlots isBookingClosed images pricing"
+        "name capacity floor building amenities blackoutDates reservedSlots availableTimeSlots availability isBookingClosed images pricing"
       )
       .limit(finalLimit)
       .lean();
@@ -640,8 +640,20 @@ export const getAvailableRoomsByTime = async (req, res) => {
     const availableRooms = [];
     const targetDateISO = targetDate.toISOString().split('T')[0];
 
+    // Requested day of week (0=Sun, 1=Mon, ..., 6=Sat)
+    // targetDate is Parsed UTC midnight, which represents the start of the day in UTC.
+    // Since businesses operate in IST, we should ensure we get the weekday for the date string provided.
+    const requestedDay = targetDate.getUTCDay();
+
     for (const room of rooms) {
       if (room.isBookingClosed) continue;
+
+      // ---- DAY OF WEEK AVAILABILITY CHECK ----
+      if (room.availability && Array.isArray(room.availability.daysOfWeek)) {
+        if (!room.availability.daysOfWeek.includes(requestedDay)) {
+          continue;
+        }
+      }
 
       // ---- BLACKOUT DATES CHECK ----
       if (Array.isArray(room.blackoutDates)) {

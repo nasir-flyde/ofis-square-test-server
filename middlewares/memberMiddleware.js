@@ -18,8 +18,8 @@ const memberMiddleware = (req, res, next) => {
       return res.status(401).json({ error: "Unauthorized: Invalid token" });
     }
 
-    const roleName = decoded?.roleName;
-    if (!roleName || String(roleName).toLowerCase() !== "member") {
+    const roleName = String(decoded?.roleName || "").toLowerCase();
+    if (roleName !== "member" && roleName !== "client") {
       return res.status(403).json({ error: "Forbidden: Member access required" });
     }
 
