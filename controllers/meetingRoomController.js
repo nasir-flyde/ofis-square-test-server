@@ -281,30 +281,56 @@ export const getAvailableSlots = async (req, res) => {
     const targetDate = new Date(date);
     targetDate.setHours(0, 0, 0, 0);
 
-    // Filter reserved slots for the specific date
+    // Fetch all bookings for the room on this date that are not cancelled
+    const bookings = await MeetingBooking.find({
+      room: id,
+      status: { $in: ["booked", "payment_pending"] },
+      start: { $gte: targetDate, $lt: new Date(targetDate.getTime() + 24 * 60 * 60 * 1000) }
+    }).lean();
+
+    // Convert bookings to HH:MM format for comparison
+    const occupiedRanges = bookings.map(b => {
+      const start = new Date(b.start).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata'
+      });
+      const end = new Date(b.end).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata'
+      });
+      return { startTime: start, endTime: end };
+    });
+
+    // Also consider manually reserved slots in the room model
     const reservedForDate = room.reservedSlots.filter(slot => {
       const slotDate = new Date(slot.date);
       slotDate.setHours(0, 0, 0, 0);
       return slotDate.getTime() === targetDate.getTime();
     });
 
-    // Get reserved time ranges
     const reservedTimes = reservedForDate.map(slot => ({
       startTime: slot.startTime,
       endTime: slot.endTime
     }));
 
-    // Filter available slots by removing reserved ones
+    // Combine both sources
+    const allOccupiedRanges = [...occupiedRanges, ...reservedTimes];
+
+    // Filter available slots by removing occupied ones
     const availableSlots = room.availableTimeSlots.filter(slot => {
-      return !reservedTimes.some(reserved =>
-        reserved.startTime === slot.startTime && reserved.endTime === slot.endTime
+      return !allOccupiedRanges.some(occupied =>
+        occupied.startTime === slot.startTime && occupied.endTime === slot.endTime
       );
     });
 
     return res.json({
       success: true,
       data: availableSlots,
-      reservedSlots: reservedTimes,
+      reservedSlots: allOccupiedRanges,
       totalSlots: room.availableTimeSlots.length,
       availableCount: availableSlots.length
     });

@@ -190,6 +190,7 @@ function parseISTDateTime(input) {
 
 // Create booking with conflict and availability checks
 export const createBooking = async (req, res) => {
+  let booking;
   try {
     const body = req.body || {};
     // Extract with fallbacks for camel/snake case
@@ -977,6 +978,7 @@ export const createBooking = async (req, res) => {
     }
 
     const responseData = {
+      _id: booking._id,
       bookingId: booking._id,
       buildingName: room.building?.name || "Ofis Square",
       buildingAddress: room.building?.address || "",

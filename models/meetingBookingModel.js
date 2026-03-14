@@ -53,6 +53,13 @@ const meetingBookingSchema = new Schema(
 
 meetingBookingSchema.index({ start: 1, end: 1, status: 1, room: 1 });
 meetingBookingSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
-meetingBookingSchema.index({ "payment.idempotencyKey": 1, member: 1 }, { unique: true, sparse: true });
+meetingBookingSchema.index(
+  { "payment.idempotencyKey": 1, member: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { "payment.idempotencyKey": { $gt: "" } }
+  }
+);
 
 export default mongoose.model("MeetingBooking", meetingBookingSchema);
