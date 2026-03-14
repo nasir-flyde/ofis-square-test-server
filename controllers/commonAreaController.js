@@ -380,11 +380,12 @@ export const importCommonAreasFromCSV = async (req, res) => {
         else payload.name = name;
 
         // Area Type
-        const areaType = norm(originalRow.areaType).toUpperCase();
-        if (areaType && !validAreaTypes.includes(areaType)) {
-          errors.push(`Invalid Area Type: ${areaType}. Must be one of ${validAreaTypes.join(', ')}`);
+        const rawAreaType = norm(originalRow.areaType);
+        const areaTypeUpper = rawAreaType.toUpperCase();
+        if (AREA_TYPE_CANONICAL[areaTypeUpper]) {
+          payload.areaType = AREA_TYPE_CANONICAL[areaTypeUpper];
         } else {
-          payload.areaType = areaType ? AREA_TYPE_CANONICAL[areaType] : "OTHER";
+          payload.areaType = rawAreaType || "OTHER";
         }
 
         // Description
