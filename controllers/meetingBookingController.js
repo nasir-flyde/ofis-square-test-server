@@ -985,7 +985,8 @@ export const createBooking = async (req, res) => {
       dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
       capacity: room.capacity,
       images: room.images || [],
-      totalPricing: invoice?.total || paymentDetails?.amount || 0
+      totalPricing: invoice?.total || paymentDetails?.amount || 0,
+      creditsUsed: paymentDetails?.coveredCredits || 0
     };
 
     if ((paymentMethod === 'cash' || paymentMethod === 'card' || paymentMethod === 'razorpay' || paymentMethod === 'online') && discountStatus !== 'pending') {
