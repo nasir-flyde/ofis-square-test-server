@@ -311,6 +311,8 @@ export const assignClientToCard = async (req, res) => {
     const before = card.toObject();
     card.clientId = client._id;
     card.companyUserId = ownerUser?._id || card.companyUserId;
+    card.status = "ISSUED";
+    card.issuedAt = card.issuedAt || new Date();
     await card.save();
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", card._id, { before, after: card.toObject(), fields: ["clientId", "companyUserId"] }, { clientId: client._id, companyUserId: ownerUser?._id });
@@ -820,6 +822,8 @@ export const importRFIDCardClientAssignmentsFromCSV = async (req, res) => {
           const before = card.toObject();
           card.clientId = client._id;
           card.companyUserId = ownerUser?._id || card.companyUserId;
+          card.status = "ISSUED";
+          card.issuedAt = card.issuedAt || new Date();
           await card.save();
           await logCRUDActivity(req, "UPDATE", "RFIDCard", card._id, { before, after: card.toObject(), fields: ["clientId", "companyUserId"] }, { clientId: client._id, companyUserId: ownerUser?._id, csvLine: row.__line });
           assignedCount += 1;

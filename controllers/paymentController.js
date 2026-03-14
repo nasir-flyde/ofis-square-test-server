@@ -383,9 +383,24 @@ export const getPayments = async (req, res) => {
 export const getPaymentById = async (req, res) => {
   try {
     const { id } = req.params;
-    const payment = await Payment.findById(id)
+    let payment = await Payment.findById(id)
       .populate("invoice", "invoice_number total amount_paid balance due_date status")
       .populate("client", "companyName contactPerson phone email");
+
+    if (!payment) {
+      // Check if it's a draft payment
+      payment = await DraftPayment.findById(id)
+        .populate("invoice", "invoice_number total amount_paid balance due_date status")
+        .populate("client", "companyName contactPerson phone email");
+      
+      if (payment) {
+        // synthesize some fields for frontend compatibility if needed
+        const p = payment.toObject();
+        p.isDraft = true;
+        return res.json({ success: true, data: p });
+      }
+    }
+
     if (!payment) return res.status(404).json({ success: false, message: "Payment not found" });
     return res.json({ success: true, data: payment });
   } catch (error) {

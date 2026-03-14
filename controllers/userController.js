@@ -230,6 +230,7 @@ export const createUser = async (req, res) => {
       phone,
       password: hashedPassword,
       role: role,
+      buildingId,
       isActive: isActive !== undefined ? isActive : true
     };
 
@@ -592,6 +593,7 @@ export const verifyCreateUserOTP = async (req, res) => {
       phone: phone?.trim(),
       password: hashedPassword,
       role: role,
+      buildingId,
       isActive: isActive !== undefined ? isActive : true,
       isAdminVerified: true
     };
@@ -769,6 +771,33 @@ export const verifyUpdateUserOTP = async (req, res) => {
         message: "User with this email or phone already exists"
       });
     }
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const checkUniqueness = async (req, res) => {
+  try {
+    const { email, phone, excludeId } = req.query;
+    if (!email && !phone) {
+      return res.status(400).json({ success: false, message: "Email or phone is required" });
+    }
+
+    const query = { _id: { $ne: excludeId } };
+    const orCondition = [];
+    if (email) orCondition.push({ email: email.toLowerCase().trim() });
+    if (phone) orCondition.push({ phone: phone.trim() });
+    
+    if (orCondition.length > 0) {
+      query.$or = orCondition;
+    }
+
+    const existingUser = await User.findOne(query);
+    return res.json({
+      success: true,
+      exists: !!existingUser,
+      message: existingUser ? "Already in use" : "Available"
+    });
+  } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 };

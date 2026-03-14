@@ -10,7 +10,8 @@ import {
   updateMember,
   deleteMember,
   getMemberProfile,
-  exportMembers
+  exportMembers,
+  checkUniqueness
 } from "../controllers/memberController.js";
 
 const router = express.Router();
@@ -34,6 +35,8 @@ router.get(
   requirePermission(PERMISSIONS.MEMBER_READ),
   getMembers
 );
+
+router.get("/check-uniqueness", authMiddleware, checkUniqueness);
 
 // Profile routes (define BEFORE parameterized routes to avoid conflicts)
 // Get own profile from JWT (supports member/client auth via universal middleware)

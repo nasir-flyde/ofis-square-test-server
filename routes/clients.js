@@ -44,6 +44,7 @@ import {
   searchClient
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
+import { checkUniqueness as checkMemberUniqueness } from "../controllers/memberController.js";
 import authMiddleware from "../middlewares/authVerify.js";
 import { populateUserRole, requirePermission } from "../middlewares/rbacMiddleware.js";
 import { PERMISSIONS } from "../constants/permissions.js";
@@ -81,6 +82,7 @@ router.post("/tickets", clientMiddleware, kycUploads, createClientTicket);
 
 router.get("/members", clientMiddleware, getClientMembers);
 router.post("/members", clientMiddleware, createClientMember);
+router.get("/members/check-uniqueness", clientMiddleware, checkMemberUniqueness);
 router.put("/members/:id", clientMiddleware, updateClientMember);
 router.delete("/members/:id", clientMiddleware, deleteClientMember);
 router.get("/rfid-cards", clientMiddleware, getClientRfidCards);

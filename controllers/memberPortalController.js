@@ -783,6 +783,7 @@ export const getHomePageData = async (req, res) => {
     let cabinType = null;
     let buildingOpeningTime = null;
     let buildingClosingTime = null;
+    let buildingId = null;
 
     // --- 1. Identify User & Basic Info ---
     if (isClient) {
@@ -802,9 +803,12 @@ export const getHomePageData = async (req, res) => {
         if (cabin) {
           cabinNumber = cabin.number;
           buildingName = cabin.building?.name;
+          buildingId = cabin.building?._id;
           cabinType = cabin.type || null;
           buildingOpeningTime = cabin.building?.openingTime || null;
           buildingClosingTime = cabin.building?.closingTime || null;
+        } else if (req.client.building) {
+          buildingId = req.client.building;
         }
       }
     } else {
@@ -827,17 +831,17 @@ export const getHomePageData = async (req, res) => {
 
         if (member.desk) {
           cabinNumber = member.desk.cabin?.number;
-          // Prefer building from client if available (usually consistent), else from desk relation if we populated it
-          // In member populate above, we populated member -> client -> building
           buildingName = member.client?.building?.name;
           cabinType = member.desk.cabin?.type || null;
           buildingOpeningTime = member.client?.building?.openingTime || null;
           buildingClosingTime = member.client?.building?.closingTime || null;
+          buildingId = member.client?.building?._id;
         } else if (member.client && member.client.building) {
           // If no desk, fallback to client's building
           buildingName = member.client.building.name;
           buildingOpeningTime = member.client.building.openingTime || null;
           buildingClosingTime = member.client.building.closingTime || null;
+          buildingId = member.client.building._id || member.client.building;
         }
       }
     }
@@ -1027,7 +1031,8 @@ export const getHomePageData = async (req, res) => {
           contract: contractData,
           cabinType,
           buildingOpeningTime,
-          buildingClosingTime
+          buildingClosingTime,
+          buildingId
         },
         events: {
           today: todaysEvents,
