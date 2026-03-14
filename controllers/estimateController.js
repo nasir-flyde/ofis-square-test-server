@@ -108,6 +108,39 @@ export const createProforma = async (req, res) => {
       totalAmount: estimate.total,
     });
 
+    // PUSH TO ZOHO AS DRAFT DIRECTLY
+    try {
+      if (!clientDoc.zohoBooksContactId) {
+        const contactId = await findOrCreateContactFromClient(clientDoc);
+        if (contactId) {
+          clientDoc.zohoBooksContactId = contactId;
+          await clientDoc.save();
+        }
+      }
+
+      if (clientDoc.zohoBooksContactId) {
+        // Update local estimate with customer_id if it was missing
+        if (!estimate.customer_id) {
+          estimate.customer_id = clientDoc.zohoBooksContactId;
+        }
+
+        const zohoResp = await createZohoEstimateFromLocal(estimate.toObject(), clientDoc.toObject());
+        const zId = zohoResp?.estimate?.estimate_id || zohoResp?.estimate_id;
+        const zNumber = zohoResp?.estimate?.estimate_number || zohoResp?.estimate_number;
+        
+        if (zId) {
+          estimate.zoho_estimate_id = zId;
+          estimate.zoho_estimate_number = zNumber || estimate.zoho_estimate_number;
+          estimate.source = "zoho";
+        }
+        await estimate.save();
+      }
+    } catch (zohoErr) {
+      console.error("Failed to push proforma to Zoho during creation:", zohoErr.message);
+      await logErrorActivity(req, zohoErr, "Proforma Creation - Zoho Push");
+      // We don't fail the whole request if Zoho push fails, but we log it
+    }
+
     return res.status(201).json({ success: true, data: estimate });
   } catch (error) {
     await logErrorActivity(req, error, "Estimate Creation");

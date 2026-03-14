@@ -101,6 +101,7 @@ const clientSchema = new mongoose.Schema(
     gstNumber: { type: String, trim: true, default: undefined },
     gstNo: { type: String, trim: true, default: undefined },
     gstTreatment: { type: String, trim: true, default: undefined },
+    placeOfContact: { type: String, trim: true, default: undefined },
     isTaxable: { type: Boolean, default: true },
     taxRegNo: { type: String, trim: true, default: undefined },
     // Optional: store multiple GST registrations locally to mirror Zoho tax_info_list

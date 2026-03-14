@@ -389,6 +389,13 @@ export const salesEditCommercials = async (req, res) => {
       freebies,
       payAsYouGo,
       termsAndConditionAcceptance,
+      billingStartDate,
+      billingEndDate,
+      gst_no,
+      gst_treatment,
+      place_of_supply,
+      securityDepositId,
+      cabin,
     } = req.body || {};
 
     const contract = await Contract.findById(id);
@@ -444,6 +451,14 @@ export const salesEditCommercials = async (req, res) => {
         clientAcceptance: termsAndConditionAcceptance.clientAcceptance,
       };
     }
+
+    if (billingStartDate) contract.billingStartDate = billingStartDate;
+    if (billingEndDate) contract.billingEndDate = billingEndDate;
+    if (gst_no) contract.gst_no = gst_no;
+    if (gst_treatment) contract.gst_treatment = gst_treatment;
+    if (place_of_supply) contract.place_of_supply = place_of_supply;
+    if (securityDepositId) contract.securityDeposit = securityDepositId;
+    if (cabin) contract.cabin = cabin;
 
     // Recompute duration months if dates provided
     try {

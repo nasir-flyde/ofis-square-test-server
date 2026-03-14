@@ -116,7 +116,7 @@ export const listCommonAreas = async (req, res) => {
     if (q) filter.name = { $regex: q, $options: "i" };
 
     const items = await CommonArea.find(filter)
-      .populate("buildingId", "name address city")
+      .populate("buildingId", "name address city state")
       .populate("matrixDevices", "name device_id externalDeviceId")
       .sort({ createdAt: -1 });
 
@@ -132,7 +132,7 @@ export const getCommonAreaById = async (req, res) => {
   try {
     const id = req.params.id;
     const item = await CommonArea.findById(id)
-      .populate("buildingId", "name address city")
+      .populate("buildingId", "name address city state")
       .populate("matrixDevices", "name device_id externalDeviceId");
 
     if (!item) return res.status(404).json({ success: false, message: "Common area not found" });
