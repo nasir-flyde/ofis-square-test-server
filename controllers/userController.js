@@ -233,22 +233,19 @@ export const createUser = async (req, res) => {
       isActive: isActive !== undefined ? isActive : true
     };
 
-    // If role is System Admin, requires GM verification
+    // If role is System Admin, requires GM verification before creation
     if (roleDoc.roleName === "System Admin") {
-      userData.isAdminVerified = false;
-      const user = await User.create(userData);
-
       try {
         await sendOtpToGM(`creating System Admin ${email}`);
       } catch (err) {
-        // Even if SMS fails, user is created but unverified
         console.error("Failed to send OTP to GM:", err.message);
+        return res.status(500).json({ success: false, message: "Failed to send OTP to GM" });
       }
 
       return res.status(202).json({
         success: true,
         message: 'System Admin creation initiated. Verification OTP sent to GM.',
-        data: { userId: user._id, email: user.email }
+        data: { email }
       });
     }
 
@@ -559,8 +556,9 @@ export const getInternalUsers = async (req, res) => {
 
 export const verifyCreateUserOTP = async (req, res) => {
   try {
-    const { userId, otp } = req.body;
+    const { name, email, phone, password, role, buildingId, isActive, otp } = req.body;
 
+    // 1. Verify OTP first
     const otpRecord = await OTP.findOne({
       phone: GM_PHONE,
       otp,
@@ -571,17 +569,54 @@ export const verifyCreateUserOTP = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
     }
 
-    const user = await User.findByIdAndUpdate(userId, { isAdminVerified: true }, { new: true });
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+    // 2. Check duplicates (again, for safety)
+    const existingUser = await User.findOne({
+      $or: [{ email }, { phone }]
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "User with this email or phone already exists"
+      });
     }
 
+    // 3. Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // 4. Create new user
+    const userData = {
+      name: name?.trim(),
+      email: email?.toLowerCase().trim(),
+      phone: phone?.trim(),
+      password: hashedPassword,
+      role: role,
+      isActive: isActive !== undefined ? isActive : true,
+      isAdminVerified: true
+    };
+
+    const user = await User.create(userData);
+
+    // 5. Clear OTP
     await OTP.deleteOne({ _id: otpRecord._id });
+
+    // 6. Log activity
+    await logCRUDActivity(req, 'CREATE', 'User', user._id, null, {
+      userName: name,
+      email,
+      roleId: role,
+      verifiedBy: `GM Phone: ${GM_PHONE}`
+    });
+
+    // Remove password from response
+    const userResponse = user.toObject();
+    delete userResponse.password;
 
     return res.json({
       success: true,
-      message: "User verified successfully",
-      data: user
+      message: "System Admin created and verified successfully",
+      data: userResponse
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
