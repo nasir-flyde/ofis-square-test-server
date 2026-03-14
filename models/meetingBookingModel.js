@@ -24,17 +24,15 @@ const meetingBookingSchema = new Schema(
       extraCredits: { type: Number },
       overageAmount: { type: Number },
       valuePerCredit: { type: Number },
-      idempotencyKey: { type: String }, // General idempotency spanning creation & checkout
-      razorpayOrderId: { type: String }, // Safely tracks one order per checkout attempt
+      idempotencyKey: { type: String },
+      razorpayOrderId: { type: String },
       amount: { type: Number }
     },
-    // Building access flags (WiFi and Matrix access control)
     buildingAccess: {
       wifiAccess: { type: Boolean, default: false },
       matrixAccess: { type: Boolean, default: false }
     },
 
-    // Discount workflow
     usingDefaultBuildingDiscount: { type: Boolean, default: false },
     discountStatus: { type: String, enum: ["none", "pending", "approved", "rejected"], default: "none", index: true },
     requestedDiscountPercent: { type: Number, min: 0, max: 100 },
@@ -47,17 +45,14 @@ const meetingBookingSchema = new Schema(
     approvedAt: { type: Date },
     notes: { type: String, trim: true },
 
-    // External integration fields for idempotency
-    externalSource: { type: String, index: true }, // e.g., 'myhq'
-    referenceNumber: { type: String, index: true }, // partner-provided unique reference
+    externalSource: { type: String, index: true },
+    referenceNumber: { type: String, index: true },
   },
   { timestamps: true, collection: "meeting_bookings" }
 );
 
 meetingBookingSchema.index({ start: 1, end: 1, status: 1, room: 1 });
-// Ensure idempotency per external partner
 meetingBookingSchema.index({ externalSource: 1, referenceNumber: 1 }, { unique: true, sparse: true });
-// Enforce idempotency globally per member
 meetingBookingSchema.index({ "payment.idempotencyKey": 1, member: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("MeetingBooking", meetingBookingSchema);

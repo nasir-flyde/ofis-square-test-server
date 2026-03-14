@@ -389,7 +389,6 @@ export const createBooking = async (req, res) => {
     // Resolve discount cap early if a discount is requested and not paying with credits
     let discountCap;
     if (hasDiscountRequest) {
-      // Reject discount with credits
       if (paymentMethod === "credits") {
         return res.status(400).json({ success: false, code: "DISCOUNT_NOT_ALLOWED_WITH_CREDITS", message: "Discounts are not applicable when paying with credits" });
       }
@@ -401,7 +400,6 @@ export const createBooking = async (req, res) => {
       requestedDiscountPercent = Number(discount.percent);
       requestedReason = discount.reason;
       if (requestedDiscountPercent <= discountCap) {
-        // immediate apply
         const totals = computeInvoiceTotals(baseAmount, requestedDiscountPercent);
         appliedDiscountPercent = requestedDiscountPercent;
         discountAmount = totals.discountAmount;
@@ -412,23 +410,18 @@ export const createBooking = async (req, res) => {
     }
 
     if (paymentMethod === "credits") {
-      // Credits can only be used with a valid member context
       if (!currentMemberId) {
         return res.status(400).json({ success: false, code: "MEMBER_REQUIRED_FOR_CREDITS", message: "memberId is required when paying with credits" });
       }
       if (!idempotencyKey) {
         return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
       }
-
-      // Check if current member is allowed to use credits
       if (memberDoc.status !== "active") {
         return res.status(403).json({ success: false, code: "MEMBER_INACTIVE", message: "Member is inactive" });
       }
       if (memberDoc.allowedUsingCredits === false) {
         return res.status(403).json({ success: false, code: "CREDITS_NOT_ALLOWED", message: "This member is not allowed to use credits" });
       }
-
-      // Get pricing for this room (using contract's creditValue or default 500)
       let creditValue = 500;
       try {
         const contract = await Contract.findOne({ client: clientId, status: "active", credit_enabled: true });
@@ -436,12 +429,9 @@ export const createBooking = async (req, res) => {
           creditValue = contract.credit_value;
         }
       } catch (_) { }
-
-      // Calculate total GST-inclusive amount to determine required credits
       const totalsForCredits = computeInvoiceTotals(baseAmount, 0);
       const requiredCredits = Math.ceil(totalsForCredits.total / creditValue);
 
-      // Check balance before attempting consumption
       const wallet = await ClientCreditWallet.findOne({ client: clientId });
       const currentBalance = wallet?.balance || 0;
       if (currentBalance < requiredCredits) {
@@ -453,9 +443,6 @@ export const createBooking = async (req, res) => {
           available: currentBalance
         });
       }
-
-
-      // Consume credits with overdraft support
       let result;
       try {
         result = await WalletService.consumeCreditsWithOverdraft({
@@ -712,11 +699,9 @@ export const createBooking = async (req, res) => {
 
     if (invoice) {
       try {
-        // 1. Push to Zoho if not already synced
         if (!invoice.zoho_invoice_id && invoice.client) {
           const clientDoc = await Client.findById(invoice.client);
           if (clientDoc) {
-            // Create Zoho invoice
             const zohoInv = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
             if (zohoInv?.invoice?.invoice_id) {
               invoice.zoho_invoice_id = zohoInv.invoice.invoice_id;
@@ -730,13 +715,8 @@ export const createBooking = async (req, res) => {
             throw new Error("Client document not found for Zoho sync");
           }
         }
-
-        // 2. If paid via credits, record payment in Zoho to mark as paid
         if (invoice.zoho_invoice_id && paymentMethod === 'credits' && invoice.status === 'paid') {
-          // Check if already paid in Zoho (balance check or just try record)
-          // We simply record the full amount as 'Credits' payment mode
           try {
-            // Ensure we have the Zoho Contact ID
             let zohoContactId = null;
             if (invoice.client) {
               const cDoc = await Client.findById(invoice.client).select('zohoBooksContactId');

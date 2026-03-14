@@ -11,8 +11,7 @@ export const exportBuildings = async (req, res) => {
     if (city) filter.city = city;
 
     const buildings = await Building.find(filter)
-      .populate('city', 'name')
-      .populate('amenities', 'name')
+      .populate('city', 'name state')
       .populate('dayPassMatrixPolicyId', 'name')
       .populate('wifiAccess.enterpriseLevel.nasRefs', 'name ip')
       .populate('wifiAccess.daypass.nasRefs', 'name ip')
@@ -327,8 +326,7 @@ export const getBuildings = async (req, res) => {
     if (city) filter.city = city;
 
     const buildings = await Building.find(filter)
-      .populate('city', 'name')
-      .populate('amenities', 'name icon iconUrl description')
+      .populate('city', 'name state')
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: buildings });
@@ -341,8 +339,7 @@ export const getBuildingById = async (req, res) => {
   try {
     const { id } = req.params;
     const building = await Building.findById(id)
-      .populate('city', 'name')
-      .populate('amenities', 'name icon iconUrl description');
+      .populate('city', 'name state');
 
     if (!building) {
       return res.status(404).json({ success: false, message: "Building not found" });

@@ -8,27 +8,22 @@ import { SendSMS, generateOtp } from "../services/smsService.js";
 import mongoose from "mongoose";
 import { syncUserToMember } from "../utils/memberSync.js";
 
-const GM_EMAIL = "nasiransari777@outlook.com";
+const GM_PHONE = "7709690538";
 
 const sendOtpToGM = async (purpose) => {
-  const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
-  if (!gmUser || !gmUser.phone) {
-    throw new Error(`GM user (${GM_EMAIL}) not found or has no phone number`);
-  }
-
   const otp = generateOtp();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-  await OTP.deleteMany({ phone: gmUser.phone });
+  // Use hardcoded GM_PHONE for OTP record
+  await OTP.deleteMany({ phone: GM_PHONE });
   await OTP.create({
-    email: GM_EMAIL,
-    phone: gmUser.phone,
+    phone: GM_PHONE,
     otp,
     expiresAt
   });
 
-  const smsText = `OTP for ${purpose}: ${otp}. Valid for 10 min. Do not share.`;
-  await SendSMS({ phone: gmUser.phone, message: smsText });
+  const smsText = `Your OTP to log in to ExPro is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
+  await SendSMS({ phone: GM_PHONE, message: smsText });
   console.log(`🔐 GM OTP for ${purpose}: ${otp}`);
   return otp;
 };
@@ -443,7 +438,7 @@ export const deleteUser = async (req, res) => {
     }
 
     // If deleting GM or System Admin, requires OTP verification
-    const isGM = userToDelete.email && userToDelete.email.toLowerCase() === GM_EMAIL.toLowerCase();
+    const isGM = userToDelete.phone === GM_PHONE;
     const isSystemAdmin = userToDelete.role?.roleName === 'System Admin';
 
     if (isGM || isSystemAdmin) {
@@ -565,14 +560,9 @@ export const getInternalUsers = async (req, res) => {
 export const verifyCreateUserOTP = async (req, res) => {
   try {
     const { userId, otp } = req.body;
-    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
-
-    if (!gmUser || !gmUser.phone) {
-      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
-    }
 
     const otpRecord = await OTP.findOne({
-      phone: gmUser.phone,
+      phone: GM_PHONE,
       otp,
       expiresAt: { $gt: new Date() }
     });
@@ -601,14 +591,9 @@ export const verifyCreateUserOTP = async (req, res) => {
 export const verifyDeleteUserOTP = async (req, res) => {
   try {
     const { userId, otp } = req.body;
-    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
-
-    if (!gmUser || !gmUser.phone) {
-      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
-    }
 
     const otpRecord = await OTP.findOne({
-      phone: gmUser.phone,
+      phone: GM_PHONE,
       otp,
       expiresAt: { $gt: new Date() }
     });
@@ -627,7 +612,7 @@ export const verifyDeleteUserOTP = async (req, res) => {
     await logCRUDActivity(req, 'DELETE', 'User', userId, null, {
       userName: user.name,
       email: user.email,
-      verifiedBy: GM_EMAIL
+      verifiedBy: `GM Phone: ${GM_PHONE}`
     });
 
     return res.json({
@@ -644,13 +629,8 @@ export const verifyUpdateUserOTP = async (req, res) => {
     const { userId, otp, name, email, phone, password, role, buildingId } = req.body || {};
 
     // 1. Verify OTP first
-    const gmUser = await User.findOne({ email: { $regex: new RegExp(`^${GM_EMAIL}$`, 'i') } });
-    if (!gmUser || !gmUser.phone) {
-      return res.status(500).json({ success: false, message: "GM verification setup not complete" });
-    }
-
     const otpRecord = await OTP.findOne({
-      phone: gmUser.phone,
+      phone: GM_PHONE,
       otp,
       expiresAt: { $gt: new Date() }
     });
@@ -731,7 +711,7 @@ export const verifyUpdateUserOTP = async (req, res) => {
     }, {
       userName: user.name,
       updatedFields: Object.keys(updateData),
-      verifiedBy: GM_EMAIL
+      verifiedBy: `GM Phone: ${GM_PHONE}`
     });
 
     // Sync to Member if exists

@@ -770,7 +770,7 @@ export const sendMemberClientOtp = async (req, res) => {
     }
 
     // Send SMS
-    const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
+    const smsText = `Your OTP to log in to ExPro is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
 
     try {
