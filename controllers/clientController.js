@@ -1825,7 +1825,7 @@ export const getClientInvoices = async (req, res) => {
     }
 
     const { page = 1, limit = 10, status } = req.query;
-    const query = { client: clientId };
+    const query = { client: clientId, type: { $ne: "security_deposit" } };
     if (status) query.status = status;
 
     const invoices = await Invoice.find(query)
