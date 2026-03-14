@@ -478,20 +478,11 @@ export async function cancelBooking(req, res) {
       ? building.meetingCancellationGraceMinutes
       : parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || process.env.BOOKING_CANCELLATION_GRACE_MINUTES || '5', 10);
 
-    const cutoffMinutes = typeof building?.meetingCancellationCutoffMinutes === 'number'
-      ? building.meetingCancellationCutoffMinutes
-      : parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
-
     // Allow immediate grace window from creation
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
 
-    // Allow cancellation until cutoff before the booking start (IST-safe via wall time)
-    const startWallTime = new Date(booking.start); // Already wall time Z
-    const cutoffTime = new Date(startWallTime.getTime() - cutoffMinutes * 60 * 1000);
-    const beforeCutoff = now.getTime() < cutoffTime.getTime();
-
-    if (!(withinGrace || beforeCutoff)) {
-      return res.status(403).json({ status: 403, success: false, message: "Outside Booking Cancellation Window" });
+    if (!withinGrace) {
+      return res.status(403).json({ status: 403, success: false, message: "Outside Booking Cancellation Window (Grace Period Expired)" });
     }
 
     booking.status = 'cancelled';
@@ -716,22 +707,10 @@ export async function cancelDayPassBooking(req, res) {
       ? building.meetingCancellationGraceMinutes
       : parseInt(process.env.MYHQ_CANCELLATION_GRACE_MINUTES || '5', 10);
 
-    const cutoffMinutes = typeof building?.meetingCancellationCutoffMinutes === 'number'
-      ? building.meetingCancellationCutoffMinutes
-      : parseInt(process.env.MYHQ_CANCELLATION_CUTOFF_MINUTES || '60', 10);
-
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
 
-    // Determine the effective start time on the pass date using building openingTime
-    const baseDate = startOfDayIST(pass.date || now);
-    const [hh, mm] = String(building?.openingTime || '09:00').split(':').map(Number);
-    const startTime = new Date(baseDate);
-    startTime.setHours(hh || 9, mm || 0, 0, 0);
-    const cutoffTime = new Date(startTime.getTime() - cutoffMinutes * 60 * 1000);
-    const beforeCutoff = now.getTime() < cutoffTime.getTime();
-
-    if (!(withinGrace || beforeCutoff)) {
-      return res.status(403).json({ status: 403, success: false, message: 'Outside Booking Cancellation Window' });
+    if (!withinGrace) {
+      return res.status(403).json({ status: 403, success: false, message: 'Outside Booking Cancellation Window (Grace Period Expired)' });
     }
 
     pass.status = 'cancelled';

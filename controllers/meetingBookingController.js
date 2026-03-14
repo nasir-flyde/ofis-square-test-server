@@ -1102,7 +1102,7 @@ export const cancelBooking = async (req, res) => {
       .populate({
         path: 'room',
         select: 'building',
-        populate: { path: 'building', select: 'openingTime closingTime meetingCancellationGraceMinutes meetingCancellationCutoffMinutes' }
+        populate: { path: 'building', select: 'openingTime closingTime meetingCancellationGraceMinutes' }
       });
     if (!booking) {
       console.warn('[CancelFlow] Booking not found', { bookingId: String(req.params.id) });
@@ -1128,32 +1128,17 @@ export const cancelBooking = async (req, res) => {
       if (!Number.isFinite(graceMinutes) || graceMinutes < 0) graceMinutes = 5;
     } catch (_) { }
 
-    // Cutoff minutes (before start) sourced from building with env/default fallback
-    let cutoffMinutes = 60;
-    try {
-      const cv = booking?.room?.building?.meetingCancellationCutoffMinutes;
-      cutoffMinutes = (typeof cv === 'number' && !Number.isNaN(cv)) ? cv : parseInt(process.env.BOOKING_CANCELLATION_CUTOFF_MINUTES || '60', 10);
-      if (!Number.isFinite(cutoffMinutes) || cutoffMinutes < 0) cutoffMinutes = 60;
-    } catch (_) { }
-
     const withinGrace = (now.getTime() - createdAt.getTime()) <= graceMinutes * 60 * 1000;
-    const startIST = toIST(booking.start);
-    const cutoffTime = new Date(startIST.getTime() - cutoffMinutes * 60 * 1000);
-    const beforeCutoff = now.getTime() < cutoffTime.getTime();
 
     console.log('[CancelFlow] Window check', {
       bookingId: String(booking._id),
       graceMinutes,
-      cutoffMinutes,
       createdAtISO: createdAt.toISOString(),
-      startIST: startIST.toISOString(),
-      cutoffTimeISO: cutoffTime.toISOString(),
       withinGrace,
-      beforeCutoff
     });
-    if (!(withinGrace || beforeCutoff)) {
+    if (!withinGrace) {
       console.warn('[CancelFlow] Outside window, denying cancellation', { bookingId: String(booking._id) });
-      return res.status(403).json({ success: false, message: "Outside Booking Cancellation Window" });
+      return res.status(403).json({ success: false, message: "Outside Booking Cancellation Window (Grace Period Expired)" });
     }
 
     // Proceed with cancellation

@@ -32,7 +32,6 @@ export const exportBuildings = async (req, res) => {
         { id: 'openingTime', title: 'Opening Time' },
         { id: 'closingTime', title: 'Closing Time' },
         { id: 'meetingCancellationGrace', title: 'Meeting Cancel Grace (min)' },
-        { id: 'meetingCancellationCutoff', title: 'Meeting Cancel Cutoff (min)' },
 
         { id: 'totalFloors', title: 'Total Floors' },
         { id: 'status', title: 'Status' },
@@ -94,7 +93,6 @@ export const exportBuildings = async (req, res) => {
         openingTime: b.openingTime || '',
         closingTime: b.closingTime || '',
         meetingCancellationGrace: b.meetingCancellationGraceMinutes || 0,
-        meetingCancellationCutoff: b.meetingCancellationCutoffMinutes || 0,
 
         totalFloors: b.totalFloors || '',
         status: b.status || '',
@@ -140,7 +138,7 @@ export const exportBuildings = async (req, res) => {
 
 export const createBuilding = async (req, res) => {
   try {
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -203,6 +201,7 @@ export const createBuilding = async (req, res) => {
       amenities,
       status,
       perSeatPricing,
+      meetingCancellationGraceMinutes,
       photos: processedPhotos,
       openSpacePricing: req.body.openSpacePricing || 500,
       businessMapLink
@@ -354,7 +353,7 @@ export const getBuildingById = async (req, res) => {
 export const updateBuilding = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -487,6 +486,12 @@ export const updateBuilding = async (req, res) => {
       updatePayload.securityDepositThreshold = sdt;
     }
 
+    if (meetingCancellationGraceMinutes !== undefined) {
+      updatePayload.meetingCancellationGraceMinutes = Number(meetingCancellationGraceMinutes);
+    }
+    if (meetingCancellationGraceMinutes !== undefined) {
+      updatePayload.meetingCancellationGraceMinutes = Number(meetingCancellationGraceMinutes);
+    }
     if (tdsSettings !== undefined) {
       const sanitizedTds = {};
       if (typeof tdsSettings?.enabled === 'boolean') sanitizedTds.enabled = tdsSettings.enabled;
