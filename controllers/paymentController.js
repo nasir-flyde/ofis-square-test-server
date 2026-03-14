@@ -1252,7 +1252,7 @@ export const createRazorpayOrder = async (req, res) => {
         return res.status(400).json({ error: "Day pass is not pending payment" });
       }
 
-      amount = dayPass.invoice?.total || dayPass.price;
+      amount = dayPass.invoice?.total || dayPass.totalAmount || dayPass.price;
       buildingName = dayPass.building?.name || "Workspace";
       description = `Day Pass - ${buildingName}`;
       item = { type: 'daypass', id: dayPassId };
@@ -1600,6 +1600,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Single day pass payment
       const dayPass = await DayPass.findById(dayPassId)
         .populate('invoice')
+        .populate('member')
         .populate('customer');
 
       if (!dayPass) {
@@ -1614,6 +1615,7 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Bundle payment
       const bundle = await DayPassBundle.findById(bundleId)
         .populate('invoice')
+        .populate('member')
         .populate('customer');
 
       if (!bundle) {
@@ -1651,40 +1653,115 @@ export const handleRazorpaySuccess = async (req, res) => {
       paymentNotes = `Razorpay payment for meeting booking ${booking._id}`;
     }
 
-    // Determine customer type and set appropriate payment fields
-    let paymentData = {
-      invoice: invoice?._id || (invoiceId || undefined),
-      type: "Razorpay",
-      amount: amount / 100, // Convert from paise
-      paymentDate: new Date(),
-      referenceNumber: razorpay_payment_id,
-      paymentGatewayRef: razorpay_payment_id,
-      currency: "INR",
-      notes: paymentNotes,
-      source: "manual"
-    };
-
-    // Set client or guest based on customer type
-    if (customer) {
-      if (customer.constructor.modelName === 'Guest') {
-        paymentData.guest = customer._id;
-        // Guests don't have associated clients in the current schema
+    // Resolve customer document
+    let customerDoc = null;
+    if (dayPassId || bundleId) {
+      if (item.customer) {
+        customerDoc = item.customer;
       }
-      else if (customer.constructor.modelName === 'Member') {
-        // For members, try to get associated client
-        const member = await Member.findById(customer._id).populate('client');
-        if (member?.client) {
-          paymentData.client = member.client._id;
-        }
-      }
-      else if (customer.constructor.modelName === 'Client') {
-        paymentData.client = customer._id;
+    } else if (meetingBookingId) {
+      customerDoc = item.client || item.member;
+      if (!customerDoc && item.member) {
+        customerDoc = await Member.findById(item.member._id).populate('client');
+        if (customerDoc?.client) customerDoc = customerDoc.client;
       }
     }
 
-    // If clientId explicitly provided by frontend, ensure it is set
-    if (clientId && !paymentData.client) {
-      paymentData.client = clientId;
+    // Define paymentData for use in deferred invoice and payment record
+    const paymentData = {
+      invoice: invoice?._id,
+      client: clientId || (customerDoc?.constructor?.modelName === 'Client' ? customerDoc._id : (customerDoc?.client || null)),
+      guest: !clientId && customerDoc?.constructor?.modelName === 'Guest' ? customerDoc._id : null,
+      amount: Number(amount) / 100,
+      paymentDate: new Date(),
+      referenceNumber: razorpay_payment_id,
+      paymentGatewayRef: razorpay_payment_id,
+      type: "Razorpay",
+      currency: "INR",
+      notes: paymentNotes,
+      source: "webhook",
+      status: "completed"
+    };
+
+    // --- Deferred Invoice Creation Logic ---
+    if (!invoice && (dayPassId || bundleId || meetingBookingId)) {
+        console.log(`[Payment] Invoice missing for ${dayPassId ? 'Day Pass' : (bundleId ? 'Bundle' : 'Booking')}. Creating deferred invoice.`);
+        
+        try {
+            const buildingId = item.building?._id || (item.room?.building?._id || item.building);
+            const { default: Building } = await import('../models/buildingModel.js');
+            const building = await Building.findById(buildingId);
+            
+            const clientIdForInvoice = clientId || (customerDoc?.constructor?.modelName === 'Client' ? customerDoc._id : null);
+            const guestIdForInvoice = !clientIdForInvoice ? (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc._id : null) : null;
+
+            let lineItems = [];
+            let baseAmount = 0;
+            let taxAmount = 0;
+            let finalAmount = paymentData.amount;
+            let gstRate = 18;
+
+            if (dayPassId) {
+                baseAmount = item.price;
+                taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
+                lineItems = [{
+                    description: `Day Pass - ${building?.name || 'Workspace'}`,
+                    quantity: 1,
+                    unitPrice: baseAmount,
+                    amount: baseAmount,
+                    rate: baseAmount,
+                    tax_percentage: gstRate
+                }];
+            } else if (bundleId) {
+                baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
+                taxAmount = finalAmount - baseAmount;
+                lineItems = [{
+                    description: `Day Pass Bundle - ${building?.name || 'Workspace'} (${item.no_of_dayPasses} passes)`,
+                    quantity: item.no_of_dayPasses,
+                    unitPrice: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
+                    amount: baseAmount,
+                    rate: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
+                    tax_percentage: gstRate
+                }];
+            } else if (meetingBookingId) {
+                baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
+                taxAmount = finalAmount - baseAmount;
+                lineItems = [{
+                    description: `Meeting Room Booking - ${item.room?.name || 'Room'}`,
+                    quantity: 1,
+                    unitPrice: baseAmount,
+                    amount: baseAmount,
+                    rate: baseAmount,
+                    tax_percentage: gstRate
+                }];
+            }
+
+            invoice = new Invoice({
+                client: clientIdForInvoice,
+                guest: guestIdForInvoice,
+                building: buildingId,
+                type: "regular",
+                category: dayPassId ? "day_pass" : (bundleId ? "day_pass" : "meeting_room"),
+                invoice_number: `${dayPassId ? 'DP' : (bundleId ? 'DPB' : 'MR')}-${Date.now()}`,
+                line_items: lineItems,
+                sub_total: baseAmount,
+                tax_total: taxAmount,
+                total: finalAmount,
+                status: "draft",
+                due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+            });
+
+            await invoice.save();
+            item.invoice = invoice._id;
+            await item.save();
+            
+            paymentData.invoice = invoice._id;
+            console.log(`[Payment] Deferred invoice created: ${invoice.invoice_number}`);
+
+        } catch (invErr) {
+            console.error('[Payment] Failed to create deferred invoice:', invErr.message);
+            // Non-blocking but serious
+        }
     }
 
     // Idempotency: Create payment record only if it doesn't already exist for this Razorpay ID
@@ -1866,6 +1943,8 @@ export const handleRazorpaySuccess = async (req, res) => {
       } catch (_) { }
     }
 
+    console.log(`[ZohoSync] Starting Zoho sync evaluation. Invoice found: ${!!invoice}`);
+
     // Update invoice and push to Zoho for meeting bookings
     if (invoice) {
       // If this is a meeting booking flow, mirror day pass Zoho integration
@@ -1998,6 +2077,7 @@ export const handleRazorpaySuccess = async (req, res) => {
 
       // If this is a day pass or bundle payment, sync to Zoho Books similarly
       if (dayPassId || bundleId) {
+        console.log(`[ZohoSync] Evaluating DayPass/Bundle Zoho sync for ${dayPassId || bundleId}`);
         // Track whether we applied locally during Zoho success to avoid double-applying later
         let appliedViaZohoSuccess = false;
 
@@ -2007,36 +2087,52 @@ export const handleRazorpaySuccess = async (req, res) => {
           let clientForZoho = null;
           if (dayPassId) {
             itemForZoho = await DayPass.findById(dayPassId)
-              .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+              .populate('customer')
               .populate('invoice');
           } else if (bundleId) {
             itemForZoho = await DayPassBundle.findById(bundleId)
-              .populate({ path: 'customer', select: 'client zohoBooksContactId', options: { strictPopulate: false } })
+              .populate('customer')
               .populate('invoice');
           }
 
-          // Resolve client depending on customer type
-          // Customer could be Guest, Member, or Client
-          if (itemForZoho?.customer) {
-            const ctor = itemForZoho.customer.constructor?.modelName;
-            if (ctor === 'Client') {
-              clientForZoho = itemForZoho.customer;
-            } else if (ctor === 'Member') {
-              const mem = await Member.findById(itemForZoho.customer._id).populate('client');
+          // Resolve client/guest for Zoho
+          if (itemForZoho?.member) {
+            // member is populated due to ref: "Member"
+            const mem = await Member.findById(itemForZoho.member._id || itemForZoho.member).populate('client');
+            clientForZoho = mem?.client || null;
+          } else if (itemForZoho?.customer) {
+            const rawCustomer = itemForZoho.customer._id || itemForZoho.customer;
+            // If it's a guest, find it
+            const guest = await Guest.findById(rawCustomer);
+            if (guest) {
+              clientForZoho = guest;
+            } else {
+              // Fallback to Member/Client check if not a guest
+              const mem = await Member.findById(rawCustomer).populate('client');
               clientForZoho = mem?.client || null;
-            } else if (ctor === 'Guest') {
-              // Guests have no direct Zoho linkage; skip Zoho sync for guest-only purchases
-              clientForZoho = null;
+              if (!clientForZoho) {
+                clientForZoho = await Client.findById(rawCustomer);
+              }
             }
           }
 
+          console.log(`[ZohoSync] Resolved client for Zoho: ${clientForZoho?._id} (Name: ${clientForZoho?.companyName || clientForZoho?.name || clientForZoho?.firstName})`);
+
           // Create invoice in Zoho if linked client exists and no zoho invoice yet
           if (clientForZoho && itemForZoho?.invoice && !itemForZoho.invoice.zoho_invoice_id) {
-            await createInvoiceInZoho(itemForZoho.invoice, clientForZoho);
+             console.log(`[ZohoPush] Pushing invoice ${itemForZoho.invoice._id} to Zoho for client ${clientForZoho._id}`);
+             const { pushInvoiceToZoho: pushToZoho } = await import('../utils/loggedZohoBooks.js');
+             const zohoInvoice = await pushToZoho(itemForZoho.invoice, clientForZoho, { userId: req.user?._id, blocking: true });
+             if (zohoInvoice?.invoice) {
+                 console.log(`[ZohoPush] ✅ Invoice synced to Zoho: ${zohoInvoice.invoice.invoice_number}`);
+             }
+             // Reload invoice to get zoho_invoice_id
+             itemForZoho.invoice = await Invoice.findById(itemForZoho.invoice._id);
           }
 
 
           // Record customer payment in Zoho if client is linked and invoice exists in Zoho
+          console.log(`[ZohoSync] Evaluating payment record. Contact ID: ${clientForZoho?.zohoBooksContactId}, Zoho Invoice ID: ${itemForZoho?.invoice?.zoho_invoice_id}`);
           if (clientForZoho?.zohoBooksContactId && itemForZoho?.invoice?.zoho_invoice_id) {
             const accessToken = await getValidAccessToken();
             const orgId = getOrgId();
@@ -2051,6 +2147,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               description: paymentNotes
             };
 
+            console.log(`[ZohoPush] Recording payment of ₹${paymentInrFloor} for Zoho invoice ${itemForZoho.invoice.zoho_invoice_id}`);
             const zohoResp = await fetch(zohoUrl, {
               method: 'POST',
               headers: {
@@ -2059,9 +2156,10 @@ export const handleRazorpaySuccess = async (req, res) => {
               },
               body: JSON.stringify(zohoPayload)
             });
-
+ 
             const zohoData = await zohoResp.json();
             if (zohoResp.ok) {
+              console.log(`[ZohoPush] ✅ Payment recorded in Zoho: ${zohoData.payment?.payment_number}`);
               payment.zoho_payment_id = zohoData.payment?.payment_id;
               payment.payment_number = zohoData.payment?.payment_number;
               payment.zoho_status = zohoData.payment?.status;
@@ -2071,7 +2169,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               await applyInvoicePayment(invoice._id, paymentInrFloor);
               appliedViaZohoSuccess = true;
             } else {
-              console.error('Zoho customer payment failed for day pass/bundle:', zohoData);
+              console.error('[ZohoPush] ❌ Zoho customer payment failed:', JSON.stringify(zohoData));
               // Apply locally even if Zoho fails
               await applyInvoicePayment(invoice._id, paymentInrFloor);
             }
@@ -2448,10 +2546,10 @@ export const payWithCredits = async (req, res) => {
       });
     }
 
-    // Get credit wallet
+    // Get credit wallet and its creditValue
     const wallet = await ClientCreditWallet.findOne({ client: finalClientId });
     const currentBalance = wallet?.balance || 0;
-    const creditValue = contract.credit_value || 500;
+    const creditValue = wallet?.creditValue || contract?.credit_value || 500;
 
     let item, totalAmount, creditsRequired;
 
@@ -2706,7 +2804,7 @@ export const getMemberCreditBalance = async (req, res) => {
       client: clientId,
       credit_enabled: true,
       status: "active"
-    });
+    }).populate('building');
 
     if (!contract) {
       return res.json({
@@ -2718,13 +2816,10 @@ export const getMemberCreditBalance = async (req, res) => {
       });
     }
 
-    // Get credit wallet
+    // Get credit wallet and its creditValue
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-
-    // Get creditValue from building instead of contract
-    const building = contract.building;
-    const creditValue = building?.creditValue || 500;
+    const creditValue = wallet?.creditValue || contract?.building?.creditValue || 500;
 
     res.json({
       success: true,
@@ -2772,13 +2867,10 @@ export const getClientCreditBalance = async (req, res) => {
       });
     }
 
-    // Get credit wallet
+    // Get credit wallet and its creditValue
     const wallet = await ClientCreditWallet.findOne({ client: clientId });
     const balance = wallet?.balance || 0;
-
-    // Get creditValue from building instead of contract
-    const building = contract.building;
-    const creditValue = building?.creditValue || 500;
+    const creditValue = wallet?.creditValue || contract?.building?.creditValue || 500;
 
     res.json({
       success: true,

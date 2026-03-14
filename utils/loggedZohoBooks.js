@@ -498,18 +498,32 @@ export async function pushInvoiceToZoho(invoiceDoc, clientDoc, opts = {}) {
   if (!invoiceDoc || !clientDoc) return null;
   if (invoiceDoc.zoho_invoice_id) return null; // already synced
 
+  const isBlocking = opts.blocking === true;
+
   if (!clientDoc.zohoBooksContactId) {
-    console.warn('[ZohoInvoice] Client has no zohoBooksContactId — skipping Zoho push for invoice', String(invoiceDoc._id));
-    return null;
+    if (isBlocking) {
+      // In blocking mode, we try to create the contact first if missing
+      try {
+        const { findOrCreateContactFromClient: findOrCreate } = await import('./zohoBooks.js');
+        clientDoc.zohoBooksContactId = await findOrCreate(clientDoc);
+        if (clientDoc.save) await clientDoc.save();
+      } catch (contactErr) {
+        console.error('[ZohoInvoice] Failed to create contact for blocking push:', contactErr.message);
+        throw new Error(`Zoho Contact creation failed: ${contactErr.message}`);
+      }
+    } else {
+      console.warn('[ZohoInvoice] Client has no zohoBooksContactId — skipping Zoho push for invoice', String(invoiceDoc._id));
+      return null;
+    }
   }
 
   try {
     // Leverage the robust GST and tax calculation logic already built in zohoBooks.js
     const zohoInvoice = await createZohoInvoiceFromLocal(invoiceDoc, clientDoc);
 
-    if (zohoInvoice?.invoice_id) {
-      invoiceDoc.zoho_invoice_id = zohoInvoice.invoice_id;
-      invoiceDoc.zoho_invoice_number = zohoInvoice.invoice_number;
+    if (zohoInvoice?.invoice?.invoice_id) {
+      invoiceDoc.zoho_invoice_id = zohoInvoice.invoice.invoice_id;
+      invoiceDoc.zoho_invoice_number = zohoInvoice.invoice.invoice_number;
       invoiceDoc.source = 'zoho';
       await invoiceDoc.save();
     }
@@ -517,6 +531,9 @@ export async function pushInvoiceToZoho(invoiceDoc, clientDoc, opts = {}) {
     return zohoInvoice || null;
   } catch (err) {
     console.error('[ZohoInvoice] Failed to push invoice to Zoho:', err?.message || err);
+    if (isBlocking) {
+      throw err; // Propagate error for blocking calls
+    }
     return null;
   }
 }

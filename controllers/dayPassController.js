@@ -258,6 +258,7 @@ export const createSingleDayPass = async (req, res) => {
         bookingFor,
         expiresAt,
         price,
+        totalAmount,
         status: "payment_pending",
         notes,
         createdBy: req.user?._id,
@@ -282,64 +283,80 @@ export const createSingleDayPass = async (req, res) => {
         clientIdForInvoice = customerId;
       }
 
-      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
-      const creditsPerPass = building.creditValue || 500;
+      const paymentMethod = (req.body?.paymentMethod || "").toLowerCase();
+      const isOnlinePayment = paymentMethod === "online" || paymentMethod === "razorpay";
+      let creditsPerPass = building.creditValue || 500;
+      if (clientIdForInvoice) {
+        try {
+          const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
+          if (wallet?.creditValue) {
+            creditsPerPass = wallet.creditValue;
+          }
+        } catch (_) {}
+      }
       const creditsRequired = paymentMethod === 'credits' ? Math.ceil(totalAmount / creditsPerPass) : 0;
       const creditSuffix = creditsRequired > 0 ? ` (${creditsRequired} Credits)` : '';
 
-      invoice = new Invoice({
-        client: clientIdForInvoice,
-        guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
-        building: buildingId,
-        type: "regular",
-        category: "day_pass",
-        invoice_number: `DP-${Date.now()}`,
-        line_items: [{
-          description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
-          quantity: 1,
-          unitPrice: price,
-          amount: price,
-          rate: price,
-          tax_percentage: gstRate
-        }],
-        sub_total: price,
-        tax_total: taxAmount,
-        total: totalAmount,
-        status: "draft",
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-      });
+      if (!isOnlinePayment) {
+        invoice = new Invoice({
+          client: clientIdForInvoice,
+          guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
+          building: buildingId,
+          type: "regular",
+          category: "day_pass",
+          invoice_number: `DP-${Date.now()}`,
+          line_items: [{
+            description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
+            quantity: 1,
+            unitPrice: price,
+            amount: price,
+            rate: price,
+            tax_percentage: gstRate
+          }],
+          sub_total: price,
+          tax_total: taxAmount,
+          total: totalAmount,
+          status: "draft",
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        });
 
-      await invoice.save({ session });
+        await invoice.save({ session });
 
-      dayPass.invoice = invoice._id;
-      await dayPass.save({ session });
+        dayPass.invoice = invoice._id;
+        await dayPass.save({ session });
+      }
 
       await session.commitTransaction();
 
-      // Push invoice to Zoho Books (non-blocking, after DB commit)
+      // Push invoice to Zoho Books (blocking if it was created)
       if (invoice) {
-        // Resolve client for Zoho
-        let clientForZoho = null;
         try {
+          // Resolve client for Zoho
+          let clientForZoho = null;
           if (clientIdForInvoice) {
-            const Client = (await import('../models/clientModel.js')).default;
-            clientForZoho = await Client.findById(clientIdForInvoice).select('zohoBooksContactId email companyName');
+            const { default: Client } = await import('../models/clientModel.js');
+            clientForZoho = await Client.findById(clientIdForInvoice);
           } else if (customerType === 'member') {
             const memberDoc = await Member.findById(customerId).populate('client');
-            clientForZoho = memberDoc?.client || null;
-            if (clientForZoho) {
-              const Client = (await import('../models/clientModel.js')).default;
-              clientForZoho = await Client.findById(clientForZoho).select('zohoBooksContactId email companyName');
+            if (memberDoc?.client) {
+              const { default: Client } = await import('../models/clientModel.js');
+              clientForZoho = await Client.findById(memberDoc.client);
             }
+          } else if (customerType === 'guest') {
+            clientForZoho = await Guest.findById(customerId);
           }
 
           if (clientForZoho) {
-            pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id }).catch(e =>
-              console.warn('[DayPass] Zoho invoice push failed (non-blocking):', e?.message)
-            );
+            // Making this blocking as per requirement
+            await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
           }
         } catch (zohoErr) {
-          console.warn('[DayPass] Could not resolve client for Zoho push:', zohoErr?.message);
+          console.error('[DayPass] Zoho invoice push failed:', zohoErr?.message);
+          // Throw error to notify user that creation failed due to Zoho push failure
+          return res.status(500).json({ 
+            error: "Failed to create Zoho invoice. Creation cancelled.",
+            details: zohoErr.message 
+          });
         }
       }
 

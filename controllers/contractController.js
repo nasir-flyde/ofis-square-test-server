@@ -1595,12 +1595,12 @@ export const uploadSignedContract = async (req, res) => {
 // Webhook handler for Zoho Sign events
 export const handleZohoSignWebhook = async (req, res) => {
   try {
-    const requestId = apiLogger.generateRequestId();
+    let requestId = null;
     // Log incoming webhook for API Logs
     try {
       const signatureHeader = req.headers['x-zoho-sign-webhook-signature'] || req.headers['x-webhook-signature'] || null;
       const verified = Boolean(signatureHeader) && Boolean(process.env.ZOHO_SIGN_WEBHOOK_SECRET);
-      await apiLogger.logIncomingWebhook({
+      requestId = await apiLogger.logIncomingWebhook({
         service: 'zoho_sign',
         operation: 'webhook',
         method: req.method || 'POST',
@@ -1618,6 +1618,10 @@ export const handleZohoSignWebhook = async (req, res) => {
       });
     } catch (logErr) {
       console.warn('Failed to log incoming Zoho Sign webhook:', logErr?.message);
+    }
+
+    if (!requestId) {
+        requestId = apiLogger.generateRequestId();
     }
 
     // Verify webhook signature if configured, using raw buffer

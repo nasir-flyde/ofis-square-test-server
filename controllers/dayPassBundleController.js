@@ -268,6 +268,7 @@ export const createDayPassBundle = async (req, res) => {
           bookingFor: "self",
           expiresAt: validUntil,
           price: pricePerPass,
+          totalAmount: pricePerPass * 1.18, // GST fallback
           status: "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
@@ -287,6 +288,7 @@ export const createDayPassBundle = async (req, res) => {
           bookingFor: "other",
           expiresAt: validUntil,
           price: pricePerPass,
+          totalAmount: pricePerPass * 1.18, // GST fallback
           status: "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
@@ -332,9 +334,12 @@ export const createDayPassBundle = async (req, res) => {
           );
         }
       }
-      const paymentMethod = (req.body?.paymentMethod || '').toLowerCase();
+      const paymentMethod = (req.body?.paymentMethod || "").toLowerCase();
+      const isOnlinePayment = paymentMethod === "online" || paymentMethod === "razorpay";
       let invoice = null;
-      if (paymentMethod !== 'credits') {
+
+      // Defer invoice creation for online/razorpay payments
+      if (!isOnlinePayment) {
         // Create invoice (schema: invoiceModel.js)
         const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
         invoice = new Invoice({
@@ -368,28 +373,36 @@ export const createDayPassBundle = async (req, res) => {
 
       await session.commitTransaction();
 
-      // Push invoice to Zoho Books (non-blocking, fires after DB commit)
+      // Push invoice to Zoho Books (blocking if it was created)
       if (invoice) {
         try {
           let clientForZoho = null;
           const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
+          
           if (clientIdForInvoice) {
             const { default: Client } = await import('../models/clientModel.js');
-            clientForZoho = await Client.findById(clientIdForInvoice).select('zohoBooksContactId email companyName');
+            clientForZoho = await Client.findById(clientIdForInvoice);
           } else if (customerType === 'member') {
             const memberDoc = await Member.findById(customerId).populate('client');
             if (memberDoc?.client) {
               const { default: Client } = await import('../models/clientModel.js');
-              clientForZoho = await Client.findById(memberDoc.client).select('zohoBooksContactId email companyName');
+              clientForZoho = await Client.findById(memberDoc.client);
             }
+          } else if (customerType === 'guest') {
+            clientForZoho = await Guest.findById(customerId);
           }
+
           if (clientForZoho) {
-            pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id }).catch(e =>
-              console.warn('[DayPassBundle] Zoho invoice push failed (non-blocking):', e?.message)
-            );
+            // Making this blocking as per requirement
+            await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
           }
         } catch (zohoErr) {
-          console.warn('[DayPassBundle] Could not resolve client for Zoho push:', zohoErr?.message);
+          console.error('[DayPassBundle] Zoho invoice push failed:', zohoErr?.message);
+          // Throw error to notify user that creation failed due to Zoho push failure
+          return res.status(500).json({ 
+            error: "Failed to create Zoho invoice. Creation cancelled.",
+            details: zohoErr.message 
+          });
         }
       }
 

@@ -171,9 +171,10 @@ class ApiLogger {
       logEntry.maskSensitiveData();
       
       await logEntry.save();
-      return logEntry;
+      return requestId;
     } catch (error) {
       console.error('Failed to log incoming webhook:', error);
+      return null;
     }
   }
 

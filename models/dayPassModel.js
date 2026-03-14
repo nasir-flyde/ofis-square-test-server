@@ -19,6 +19,7 @@ const dayPassSchema = new Schema(
     bookingFor: { type: String, enum: ["self", "other"], default: "self" },
     expiresAt: { type: Date, required: true },
     price: { type: Number, required: true },
+    totalAmount: { type: Number },
     currency: { type: String },
     // Linked visitors (history of visitor records associated with this pass)
     visitors: [{ type: Schema.Types.ObjectId, ref: "Visitor" }],

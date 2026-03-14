@@ -332,12 +332,13 @@ export async function getContact(contactId) {
 
 export async function findOrCreateContactFromClient(clientDoc, existingId = null) {
   const email = clientDoc?.email;
-  const companyName = clientDoc?.companyName || clientDoc?.contactPerson || "Unknown";
+  const contactName = clientDoc?.companyName || clientDoc?.name || clientDoc?.contactPerson || "Unknown";
+  const companyName = clientDoc?.companyName || clientDoc?.name || clientDoc?.contactPerson || "Unknown";
   const phone = clientDoc?.phone || undefined;
-  const contactPerson = clientDoc?.contactPerson || undefined;
+  const contactPerson = clientDoc?.contactPerson || clientDoc?.name || undefined;
 
   const payload = {
-    contact_name: companyName,
+    contact_name: contactName,
     company_name: companyName,
     email,
     phone,
@@ -412,7 +413,7 @@ export async function findOrCreateContactFromClient(clientDoc, existingId = null
 
   if (email) {
     const contacts = await getContacts();
-    const existing = contacts?.contacts?.find(c => c.email === email);
+    const existing = contacts?.contacts?.find(c => (c.email === email && email) || (c.contact_name === contactName && contactName));
     if (existing) {
       await updateContact(existing.contact_id, payload);
       return existing.contact_id;
