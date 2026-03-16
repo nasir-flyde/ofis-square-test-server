@@ -608,6 +608,11 @@ export const getMemberProfile = async (req, res) => {
           cabinType = allocatedCabin.type;
         }
       }
+
+      // Map 'cabin' to 'Private' (case-insensitive)
+      if (typeof cabinType === 'string' && cabinType.toLowerCase() === 'cabin') {
+        cabinType = 'Private';
+      }
     }
 
     // Get credit balance
