@@ -16,6 +16,7 @@ import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import { syncMemberToUser } from "../utils/memberSync.js";
+import Guest from "../models/guestModel.js";
 
 export const exportMembers = async (req, res) => {
   try {
@@ -517,6 +518,8 @@ export const deleteMember = async (req, res) => {
 // Get comprehensive member profile
 export const getMemberProfile = async (req, res) => {
   try {
+    const userRole = String((req.userRole?.roleName || req.user?.roleName || req.user?.role?.roleName || '')).toLowerCase();
+    const isOnDemand = userRole === 'ondemanduser';
     const memberId = req.memberId || req.member?._id || req.user?.memberId || req.params.id;
 
     // Validate ObjectId for param-based access to avoid CastError
@@ -528,7 +531,7 @@ export const getMemberProfile = async (req, res) => {
       });
     }
 
-    if (!memberId) {
+    if (!isOnDemand && !memberId) {
       console.log('No memberId found in request');
       return res.status(400).json({
         success: false,
@@ -542,32 +545,64 @@ export const getMemberProfile = async (req, res) => {
       });
     }
 
-    // Find member with populated client details
-    const member = await Member.findById(memberId)
-      .populate({
-        path: 'client',
-        select: 'companyName contactPerson email phone billingAddress shippingAddress'
-      })
-      .populate({
-        path: 'desk',
-        select: 'number floor',
-        populate: {
-          path: 'building',
-          select: 'name address'
-        }
-      })
-      .populate('user', 'name email phone');
+    let member = null;
+    let guest = null;
+    let membershipStatus = null;
+    let cabinType = null;
+    let name = "";
 
-    if (!member) {
-      return res.status(404).json({
-        success: false,
-        message: "Member not found"
-      });
+    if (isOnDemand) {
+      const guestId = req.guestId || req.params.id || req.query.guestId;
+      guest = await Guest.findById(guestId).populate('buildingId', 'name address');
+      if (!guest && req.user) {
+        guest = await Guest.findOne({
+          $or: [
+            ...(req.user.email ? [{ email: req.user.email }] : []),
+            ...(req.user.phone ? [{ phone: req.user.phone }] : [])
+          ]
+        }).populate('buildingId', 'name address');
+      }
+
+      if (!guest) {
+        return res.status(404).json({ success: false, message: "Guest profile not found" });
+      }
+
+      name = guest.name;
+      membershipStatus = guest.kycStatus === 'verified';
+      cabinType = "On demand";
+
+    } else {
+      // Find member with populated client details
+      member = await Member.findById(memberId)
+        .populate({
+          path: 'client',
+          select: 'companyName contactPerson email phone billingAddress shippingAddress membershipStatus'
+        })
+        .populate({
+          path: 'desk',
+          select: 'number floor',
+          populate: [
+            { path: 'building', select: 'name address' },
+            { path: 'cabin', select: 'type' }
+          ]
+        })
+        .populate('user', 'name email phone');
+
+      if (!member) {
+        return res.status(404).json({
+          success: false,
+          message: "Member not found"
+        });
+      }
+
+      name = `${member.firstName} ${member.lastName || ''}`.trim();
+      membershipStatus = !!member.client?.membershipStatus;
+      cabinType = member.desk?.cabin?.type || null;
     }
 
     // Get credit balance
     let creditBalance = null;
-    if (member.client && member.allowedUsingCredits) {
+    if (!isOnDemand && member.client && member.allowedUsingCredits) {
       const ClientCreditWallet = (await import("../models/clientCreditWalletModel.js")).default;
       const wallet = await ClientCreditWallet.findOne({
         client: member.client._id,
@@ -598,11 +633,14 @@ export const getMemberProfile = async (req, res) => {
 
     // Get tickets created by member
     const Ticket = (await import("../models/ticketModel.js")).default;
-    const ticketFilter = {
-      createdBy: memberId
-    };
-    if (member.client) {
-      ticketFilter.client = member.client._id;
+    const ticketFilter = {};
+    if (isOnDemand) {
+      ticketFilter.guest = guest._id;
+    } else {
+      ticketFilter.createdBy = memberId;
+      if (member.client) {
+        ticketFilter.client = member.client._id;
+      }
     }
 
     console.log('Ticket filter:', ticketFilter);
@@ -619,8 +657,9 @@ export const getMemberProfile = async (req, res) => {
 
     // Get events (RSVPs and attendance)
     const Event = (await import("../models/eventModel.js")).default;
+    const currentEntityId = isOnDemand ? guest._id : memberId;
     const rsvpEvents = await Event.find({
-      rsvps: memberId,
+      rsvps: currentEntityId,
       status: { $in: ['published', 'completed'] }
     })
       .populate('category', 'name color')
@@ -630,7 +669,7 @@ export const getMemberProfile = async (req, res) => {
       .limit(20);
 
     const attendedEvents = await Event.find({
-      attendance: memberId,
+      attendance: currentEntityId,
       status: 'completed'
     })
       .populate('category', 'name color')
@@ -650,7 +689,21 @@ export const getMemberProfile = async (req, res) => {
 
     // Build profile response
     const profile = {
-      member: {
+      member: isOnDemand ? {
+        id: guest._id,
+        name: guest.name,
+        firstName: guest.name?.split(' ')[0] || "",
+        lastName: guest.name?.split(' ').slice(1).join(' ') || "",
+        email: guest.email,
+        phone: guest.phone,
+        role: 'ondemanduser',
+        status: guest.kycStatus || 'active',
+        membershipStatus,
+        cabinType,
+        building: guest.buildingId,
+        createdAt: guest.createdAt,
+        updatedAt: guest.updatedAt
+      } : {
         id: member._id,
         firstName: member.firstName,
         lastName: member.lastName,
@@ -659,11 +712,13 @@ export const getMemberProfile = async (req, res) => {
         phone: member.phone,
         role: member.role,
         status: member.status,
+        membershipStatus,
+        cabinType,
         allowedUsingCredits: member.allowedUsingCredits,
         createdAt: member.createdAt,
         updatedAt: member.updatedAt
       },
-      company: member.client ? {
+      company: (!isOnDemand && member.client) ? {
         id: member.client._id,
         name: member.client.companyName,
         contactPerson: member.client.contactPerson,
@@ -672,13 +727,14 @@ export const getMemberProfile = async (req, res) => {
         billingAddress: member.client.billingAddress,
         shippingAddress: member.client.shippingAddress
       } : null,
-      desk: member.desk ? {
+      desk: (!isOnDemand && member.desk) ? {
         number: member.desk.number,
         floor: member.desk.floor,
         building: member.desk.building ? {
           name: member.desk.building.name,
           address: member.desk.building.address
-        } : null
+        } : null,
+        cabinType: cabinType // redundant but helpful
       } : null,
       creditBalance: creditBalance,
       tickets: {
@@ -740,9 +796,9 @@ export const getMemberProfile = async (req, res) => {
           total: allEvents.length,
           events: allEvents.map(event => {
             const obj = event.toObject({ virtuals: true });
-            const memberIdStr = String(memberId);
-            obj.userHasRSVP = Array.isArray(event.rsvps) && event.rsvps.some(id => String(id) === memberIdStr);
-            obj.userHasAttended = Array.isArray(event.attendance) && event.attendance.some(id => String(id) === memberIdStr);
+            const entityIdStr = String(currentEntityId);
+            obj.userHasRSVP = Array.isArray(event.rsvps) && event.rsvps.some(id => String(id) === entityIdStr);
+            obj.userHasAttended = Array.isArray(event.attendance) && event.attendance.some(id => String(id) === entityIdStr);
             return obj;
           })
         },
