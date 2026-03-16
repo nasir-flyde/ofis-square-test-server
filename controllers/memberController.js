@@ -569,7 +569,7 @@ export const getMemberProfile = async (req, res) => {
 
       name = guest.name;
       membershipStatus = guest.kycStatus === 'verified';
-      cabinType = "On demand";
+      cabinType = "On-demand";
 
     } else {
       // Find member with populated client details
@@ -598,6 +598,16 @@ export const getMemberProfile = async (req, res) => {
       name = `${member.firstName} ${member.lastName || ''}`.trim();
       membershipStatus = !!member.client?.membershipStatus;
       cabinType = member.desk?.cabin?.type || null;
+
+      if (!cabinType && member.client?._id) {
+        const allocatedCabin = await Cabin.findOne({
+          allocatedTo: member.client._id,
+          status: { $ne: 'released' }
+        }).select('type');
+        if (allocatedCabin) {
+          cabinType = allocatedCabin.type;
+        }
+      }
     }
 
     // Get credit balance
@@ -842,7 +852,7 @@ export const checkUniqueness = async (req, res) => {
     const orCondition = [];
     if (email) orCondition.push({ email: email.toLowerCase().trim() });
     if (phone) orCondition.push({ phone: phone.trim() });
-    
+
     if (orCondition.length > 0) {
       query.$or = orCondition;
     }
