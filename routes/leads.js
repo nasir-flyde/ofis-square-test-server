@@ -22,7 +22,7 @@ import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
-router.post("/signup", authMiddleware, createLead);
+router.post("/signup", authMiddleware, uploadKYCDocuments, handleUploadError, createLead);
 
 router.get("/", authMiddleware, getLeads);
 router.get("/stats", authMiddleware, getLeadStats);

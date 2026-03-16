@@ -167,7 +167,7 @@ export const saveClientStep = async (req, res) => {
 
             // System
             zohoBooksContactId,
-            membershipStatus: 'active',
+            membershipStatus: true,
             isClientApproved: true,
             isMigrated: true,
             // Don't overwrite kycStatus if it exists and is verified
@@ -2403,7 +2403,7 @@ export const bulkImportContracts = async (req, res) => {
                         client.isClientApproved = true;
                         client.companyDetailsComplete = true;
                         client.kycStatus = 'verified';
-                        client.membershipStatus = 'active';
+                        client.membershipStatus = true;
 
                         if (parsedGstNo) {
                             client.gstNumber = parsedGstNo;

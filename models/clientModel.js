@@ -146,9 +146,8 @@ const clientSchema = new mongoose.Schema(
       default: "none",
     },
     membershipStatus: {
-      type: String,
-      enum: ["active", "inactive", "pending", "suspended"],
-      default: "active",
+      type: Boolean,
+      default: true,
       index: true
     },
     // Normalized KYC documents using DocumentEntity references

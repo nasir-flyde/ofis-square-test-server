@@ -136,5 +136,6 @@ router.use("/tours", tourRoutes);
 router.use("/privacy-policies", privacyPolicyRoutes);
 router.use("/discount-bundles", discountBundleRoutes);
 router.use("/doc-support", docSupportRoutes);
+router.use("/printer", printerRoutes);
 
 export default router;

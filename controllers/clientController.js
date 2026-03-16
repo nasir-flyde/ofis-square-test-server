@@ -202,7 +202,7 @@ export const exportClients = async (req, res) => {
         contactPersons: contactsList,
 
         // Status
-        status: client.status || 'active', // 'status' might not be a direct top-level field in model, using 'membershipStatus' or similar if needed, typically 'active' is default
+        status: client.membershipStatus ? 'active' : 'suspended',
         kycStatus: client.kycStatus || 'none',
         zohoBooksContactId: client.zohoBooksContactId || '',
         createdAt: client.createdAt ? new Date(client.createdAt).toISOString().split('T')[0] : ''

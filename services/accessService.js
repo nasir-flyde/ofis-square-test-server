@@ -3,8 +3,10 @@ import crypto from "crypto";
 import AccessGrant from "../models/accessGrantModel.js";
 import Invoice from "../models/invoiceModel.js";
 import AccessAudit from "../models/accessAuditModel.js";
+import AccessPoint from "../models/accessPointModel.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import Member from "../models/memberModel.js";
+import Client from "../models/clientModel.js";
 
 const writeAudit = async ({ memberId, clientId, accessGrantId, action, actorType = "SYSTEM", actorId, reason, meta }) => {
   try {
@@ -110,9 +112,14 @@ export const enforceAccessByInvoices = async (clientId) => {
       { clientId, bypassInvoices: true, status: 'SUSPENDED' },
       { $set: { status: 'ACTIVE' } }
     );
+    // Update Client status to false (suspended)
+    await Client.findByIdAndUpdate(clientId, { $set: { membershipStatus: false } });
+
     return { action: 'suspended', modified: res.updated, bypassResumed: resumedBypassed.modifiedCount };
   } else {
     const res = await resumeGrantsForClient(clientId, 'NO_OVERDUE');
+    // Update Client status to true (active)
+    await Client.findByIdAndUpdate(clientId, { $set: { membershipStatus: true } });
     return { action: 'resumed', modified: res.updated };
   }
 };

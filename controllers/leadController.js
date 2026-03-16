@@ -105,37 +105,61 @@ const onboardOnDemandUser = async (lead) => {
 export const createLead = async (req, res) => {
   try {
     const {
-      fullName, companyName, email, city, purpose
+      fullName, firstName, lastName, companyName, email, phone, city, purpose,
+      gender, industry, numberOfEmployees, moveInTimeline, budget,
+      workingAs, kindOfWork, bookATour, status
     } = req.body;
+    
+    // Determine if we are updating an existing lead-user session or creating a new lead by an admin
+    let lead;
     let leadId = req.user._id;
+    const isAdmin = ['admin', 'superadmin', 'community', 'staff', 'communityLead'].includes(req.user.roleName);
 
-    if (!leadId) {
-      return res.status(401).json({ message: "Unauthorized mapping to lead" });
+    if (!isAdmin) {
+      // For leads themselves, we expect an existing record created by OTP
+      lead = await Lead.findById(leadId);
+      if (!lead) {
+        return res.status(404).json({ message: "Lead record not found for this user session" });
+      }
+    } else {
+      // For admins, we try to find by email/phone or create a new one
+      const query = [];
+      if (email) query.push({ email: email.toLowerCase().trim() });
+      if (phone) query.push({ phone: phone.trim() });
+
+      if (query.length > 0) {
+        lead = await Lead.findOne({ $or: query });
+      }
+      
+      if (!lead) {
+        lead = new Lead({ source: 'admin_panel', status: status || 'new' });
+      }
     }
 
-    // Update existing lead (auto-created by OTP)
-    const leadData = {
-      fullName: fullName?.trim(),
+    // Update fields
+    const updateFields = {
+      fullName: fullName?.trim() || (firstName && lastName ? `${firstName} ${lastName}` : lead.fullName),
+      firstName: firstName?.trim(),
+      lastName: lastName?.trim(),
       companyName: companyName?.trim(),
-      email: email ? email.toLowerCase().trim() : undefined,
-      city: city || undefined,
-      purpose: purpose?.trim(),
-      status: 'new',
-      source: 'website_signup'
+      email: email ? email.toLowerCase().trim() : lead.email,
+      phone: phone?.trim() || lead.phone,
+      city: city || lead.city,
+      purpose: purpose?.trim() || lead.purpose,
+      gender: gender ? gender.toLowerCase().trim() : lead.gender,
+      industry: industry?.trim() || lead.industry,
+      numberOfEmployees: numberOfEmployees || lead.numberOfEmployees,
+      moveInTimeline: moveInTimeline || lead.moveInTimeline,
+      budget: budget || lead.budget,
+      workingAs: workingAs || lead.workingAs,
+      kindOfWork: kindOfWork || lead.kindOfWork,
+      bookATour: bookATour === 'true' || bookATour === true,
+      status: status || lead.status || 'new',
     };
 
-    // Remove undefined fields
-    Object.keys(leadData).forEach(key => leadData[key] === undefined && delete leadData[key]);
-
-    const lead = await Lead.findByIdAndUpdate(
-      leadId,
-      { $set: leadData },
-      { new: true, runValidators: true }
-    );
-
-    if (!lead) {
-      return res.status(404).json({ message: "Lead record not found" });
-    }
+    // Apply updates
+    Object.assign(lead, updateFields);
+    await lead.save();
 
     // Handle KYC documents for day pass users (upload to ImageKit)
     if (purpose === 'day_pass' && req.files && req.files.length > 0) {
