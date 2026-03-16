@@ -1725,3 +1725,62 @@ export const editMember = async (req, res) => {
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
+
+// Get all events with rsvpDenied key for the member
+export const getAllEvents = async (req, res) => {
+  try {
+    const { date, building } = req.query;
+    
+    // Check for memberId to fetch restrictions (if applicable)
+    let restrictedEventIds = [];
+    const memberId = req.memberId;
+    
+    if (memberId) {
+      const member = await Member.findById(memberId).select('restrictedEvents');
+      if (member) {
+        restrictedEventIds = (member.restrictedEvents || []).map(id => id.toString());
+      }
+    }
+
+    const query = { status: 'published' };
+    
+    if (building) {
+      query['location.building'] = building;
+    }
+    
+    if (date) {
+      const searchDate = new Date(date);
+      if (!isNaN(searchDate.getTime())) {
+        const start = new Date(searchDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(searchDate);
+        end.setHours(23, 59, 59, 999);
+        query.startDate = { $gte: start, $lte: end };
+      }
+    }
+
+    const events = await Event.find(query)
+      .populate('category', 'name')
+      .populate('location.building', 'name')
+      .populate('location.room', 'name')
+      .sort({ startDate: 1 });
+
+    const result = events.map(event => {
+      const eventObj = event.toObject();
+      return {
+        ...eventObj,
+        rsvpDenied: restrictedEventIds.includes(event._id.toString())
+      };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error("getAllEvents error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+// Override rsvpEvent if needed to enforce restrictions if called from here, 
+// but rsvpEvent is usually in eventController. 
+// User asked to add access control. I will implement a check in eventController too if I have access, 
+// but first I'll add a separate rsvp check logic if I'm tasked to modify eventController as well.

@@ -436,6 +436,16 @@ const rsvpEvent = async (req, res) => {
         });
       }
     }
+    
+    // Check if event is restricted for this member
+    const memberDoc = await Member.findById(memberId).select('restrictedEvents');
+    if (memberDoc && memberDoc.restrictedEvents && memberDoc.restrictedEvents.includes(id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are restricted from RSVPing to this event'
+      });
+    }
+
     event.rsvps.push(memberId);
     await event.save();
     try {

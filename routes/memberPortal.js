@@ -15,11 +15,13 @@ import {
   markNotificationRead,
   markAllNotificationsRead,
   getMyVisitors,
-  editMember
+  editMember,
+  getAllEvents
 } from "../controllers/memberPortalController.js";
 
 const router = express.Router();
 
+router.get("/events", universalMiddleware, getAllEvents);
 router.get("/me/tickets", universalMiddleware, getMyTickets);
 router.get("/me/visitors", universalMiddleware, getMyVisitors);
 router.post("/me/tickets", universalMiddleware, upload.any(), createMyTicket);
