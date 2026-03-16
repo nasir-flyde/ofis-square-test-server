@@ -230,7 +230,7 @@ export const createUser = async (req, res) => {
       phone,
       password: hashedPassword,
       role: role,
-      buildingId,
+      buildingId: buildingId || undefined,
       isActive: isActive !== undefined ? isActive : true
     };
 
@@ -593,7 +593,7 @@ export const verifyCreateUserOTP = async (req, res) => {
       phone: phone?.trim(),
       password: hashedPassword,
       role: role,
-      buildingId,
+      buildingId: buildingId || undefined,
       isActive: isActive !== undefined ? isActive : true,
       isAdminVerified: true
     };

@@ -187,11 +187,38 @@ export const requestCheckinNew = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid hostMemberId' });
       }
     }
-    let buildingDoc = null;
     if (building) {
       buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
         return res.status(400).json({ success: false, message: 'Invalid building id' });
+      }
+    }
+
+    // Duplicate check: Same phone/email, same building, same day, active status
+    const startOfDay = new Date(expectedVisitDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(expectedVisitDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const duplicateQuery = {
+      building: building || undefined,
+      expectedVisitDate: { $gte: startOfDay, $lte: endOfDay },
+      status: { $in: ['pending_checkin', 'pending_host_approval', 'checked_in', 'invited', 'approved'] },
+      deletedAt: null,
+      $or: []
+    };
+
+    if (phone) duplicateQuery.$or.push({ phone });
+    if (email) duplicateQuery.$or.push({ email });
+
+    if (duplicateQuery.$or.length > 0) {
+      const existingVisitor = await Visitor.findOne(duplicateQuery);
+      if (existingVisitor) {
+        return res.status(409).json({
+          success: false,
+          message: 'Visitor already has an active check-in or invitation for today',
+          data: existingVisitor
+        });
       }
     }
 
@@ -402,11 +429,20 @@ export const createVisitor = async (req, res) => {
       notes
     } = req.body;
 
+    const errors = {};
     if (!name?.trim()) {
-      return res.status(400).json({ success: false, message: "Name is required" });
+      errors.name = "Name is required";
     }
     if (!expectedVisitDate) {
-      return res.status(400).json({ success: false, message: "Expected visit date is required" });
+      errors.expectedVisitDate = "Expected visit date is required";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      return res.status(422).json({
+        success: false,
+        message: "Validation failed",
+        errors
+      });
     }
 
     let hostMember = null;
@@ -421,6 +457,34 @@ export const createVisitor = async (req, res) => {
       const buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
         return res.status(404).json({ success: false, message: "Building not found" });
+      }
+    }
+
+    // Duplicate check: Same phone/email, same building, same day, active status
+    const startOfDay = new Date(expectedVisitDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(expectedVisitDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const duplicateQuery = {
+      building: building || undefined,
+      expectedVisitDate: { $gte: startOfDay, $lte: endOfDay },
+      status: { $in: ['pending_checkin', 'pending_host_approval', 'checked_in', 'invited', 'approved'] },
+      deletedAt: null,
+      $or: []
+    };
+
+    if (phone?.trim()) duplicateQuery.$or.push({ phone: phone.trim() });
+    if (email?.trim()) duplicateQuery.$or.push({ email: email.trim() });
+
+    if (duplicateQuery.$or.length > 0) {
+      const existingVisitor = await Visitor.findOne(duplicateQuery);
+      if (existingVisitor) {
+        return res.status(409).json({
+          success: false,
+          message: 'Visitor already has an active check-in or invitation for today',
+          data: existingVisitor
+        });
       }
     }
 
@@ -710,8 +774,8 @@ export const checkinVisitor = async (req, res) => {
     }
 
     if (visitor.status === 'checked_in') {
-      return res.json({
-        success: true,
+      return res.status(409).json({
+        success: false,
         data: visitor,
         message: "Visitor already checked in"
       });
@@ -916,8 +980,8 @@ export const scanQRCode = async (req, res) => {
         { path: 'building', select: 'name address' }
       ]);
 
-      return res.json({
-        success: true,
+      return res.status(409).json({
+        success: false,
         data: visitor,
         message: "Visitor already checked in"
       });
@@ -1153,7 +1217,7 @@ export const markNoShows = async () => {
 
     const result = await Visitor.updateMany(
       {
-        status: "invited",
+        status: { $in: ["invited", "pending_checkin", "approved", "pending_host_approval"] },
         expectedVisitDate: { $lt: yesterday },
         deletedAt: null
       },

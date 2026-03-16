@@ -10,6 +10,12 @@ const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ message: "Unauthorized" });
 
+    // Check if token is blacklisted
+    const { isTokenBlacklisted } = await import("../utils/tokenBlacklistService.js");
+    if (await isTokenBlacklisted(token)) {
+      return res.status(401).json({ message: "Token has been revoked", success: "false" });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "ofis-square-secret-key");
     let user;
     let roleName = decoded.roleName;

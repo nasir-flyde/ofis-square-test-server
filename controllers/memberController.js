@@ -17,6 +17,7 @@ import MatrixDevice from "../models/matrixDeviceModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 import { syncMemberToUser } from "../utils/memberSync.js";
 import Guest from "../models/guestModel.js";
+import RFIDCard from "../models/rfidCardModel.js";
 
 export const exportMembers = async (req, res) => {
   try {
@@ -70,7 +71,12 @@ export const exportMembers = async (req, res) => {
 
 export const createMember = async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, companyName, role, client, status } = req.body || {};
+    const roleName = req.userRole?.roleName || req.user?.roleName || req.user?.role?.roleName;
+    if (roleName !== 'System Admin') {
+      return res.status(403).json({ success: false, message: "Forbidden: Only System Admin can create members." });
+    }
+
+    const { firstName, lastName, email, phone, companyName, role, client, status, cardId } = req.body || {};
 
     if (!firstName) {
       return res.status(400).json({ success: false, message: "firstName is required" });
@@ -309,6 +315,68 @@ export const createMember = async (req, res) => {
         }
       } catch (e) {
         console.warn("Matrix provisioning flow failed (createMember)", String(member._id), e?.message);
+      }
+
+      // RFID ASSIGNMENT LOGIC
+      if (cardId) {
+        let currentMatrixUserId = null;
+        if (phone) {
+          let p = String(phone).replace(/\D/g, "");
+          p = p.replace(/^0+/, "");
+          const last10 = p.length > 10 ? p.slice(-10) : p;
+          if (last10.length === 10) currentMatrixUserId = `91${last10}`;
+        }
+        if (!currentMatrixUserId) {
+          // It would be the random one generated during creation
+          const mu = await MatrixUser.findOne({ memberId: member._id }).select("externalUserId").lean();
+          currentMatrixUserId = mu?.externalUserId;
+        }
+
+        if (currentMatrixUserId) {
+          try {
+            const card = await RFIDCard.findById(cardId);
+            if (card) {
+              if (card.currentMemberId) {
+                 // Revert member creation since card is already assigned
+                 await Member.findByIdAndDelete(member._id);
+                 if (createdUserId) await User.findByIdAndDelete(createdUserId);
+                 return res.status(409).json({ success: false, message: "Conflict: This RFID card is already assigned to another member." });
+              }
+              // Link card to MatrixUser
+              await MatrixUser.findOneAndUpdate(
+                { externalUserId: currentMatrixUserId, memberId: member._id },
+                { $addToSet: { cards: cardId }, $set: { isCardCredentialVerified: true } }
+              );
+              // Update RFID Card
+              await RFIDCard.findByIdAndUpdate(cardId, {
+                currentMemberId: member._id,
+                clientId: clientId || null,
+                status: "ACTIVE",
+                activatedAt: new Date()
+              });
+              // Set credential in Matrix
+              try {
+                await matrixApi.setCardCredential({ externalUserId: currentMatrixUserId, data: card.cardUid });
+              } catch (cardErr) {
+                console.warn("createMember: Matrix setCardCredential failed:", cardErr.message);
+              }
+              // Enqueue provisioning job
+              try {
+                await ProvisioningJob.create({
+                  vendor: "MATRIX_COSEC",
+                  jobType: "ASSIGN_CARD",
+                  memberId: member._id,
+                  cardId: card._id,
+                  payload: { cardUid: card.cardUid, memberId: member._id }
+                });
+              } catch (jobErr) {
+                console.warn("createMember: failed to enqueue provisioning job:", jobErr.message);
+              }
+            }
+          } catch(rfidErr) {
+            console.warn("createMember: failed to assign RFID card:", rfidErr.message);
+          }
+        }
       }
 
       // BHAIFI: provision WiFi user and attach refs on member

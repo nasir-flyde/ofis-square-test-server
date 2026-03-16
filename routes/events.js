@@ -19,7 +19,8 @@ const {
   completeEvent,
   cancelEvent,
   updateEvent,
-  deleteEvent
+  deleteEvent,
+  getAttendingEvents
 } = eventController;
 
 // Admin/Community routes (require admin auth)
@@ -34,6 +35,7 @@ router.delete('/:id', authMiddleware, deleteEvent);
 
 // Public/Member routes
 router.get('/', getEvents); // Public - can filter by status=published
+router.get('/attending', universalMiddleware, getAttendingEvents); // Member - get attending events
 router.get('/:id', getEvent); // Public - single event details
 router.get('/:id/rsvps', authMiddleware, getEventRsvps); // Admin - enriched RSVPs
 

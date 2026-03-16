@@ -420,9 +420,9 @@ const rsvpEvent = async (req, res) => {
 
     // Check capacity
     if (event.capacity > 0 && event.rsvps.length >= event.capacity) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message: 'Event is at full capacity'
+        message: 'RSVP rejected; capacity enforced'
       });
     }
 
@@ -898,6 +898,72 @@ const deleteEvent = async (req, res) => {
   }
 };
 
+// Get Attending Events (using token)
+const getAttendingEvents = async (req, res) => {
+  try {
+    let memberId = req.user?.memberId || req.memberId || req.body?.memberId || req.query?.memberId;
+
+    if (!memberId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Member ID required'
+      });
+    }
+
+    const {
+      page = 1,
+      limit = 20,
+      upcoming
+    } = req.query;
+
+    const query = { rsvps: memberId };
+    
+    // Filter upcoming events if requested
+    if (upcoming === 'true') {
+      query.startDate = { $gte: new Date() };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const events = await Event.find(query)
+      .populate('category', 'name color icon')
+      .populate('location.building', 'name address')
+      .populate('location.room', 'name capacity')
+      .populate('createdBy', 'name email')
+      .sort({ startDate: 1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Event.countDocuments(query);
+
+    const eventsWithCounts = events.map(event => ({
+      ...event.toObject(),
+      rsvpCount: event.rsvps.length,
+      attendanceCount: event.attendance.length,
+      isAvailable: event.capacity === 0 || event.rsvps.length < event.capacity
+    }));
+
+    res.json({
+      success: true,
+      data: eventsWithCounts,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalRecords: total,
+        hasMore: skip + events.length < total
+      }
+    });
+
+  } catch (error) {
+    console.error('Get attending events error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch attending events',
+      error: error.message
+    });
+  }
+};
+
 export default {
   createEvent,
   publishEvent,
@@ -910,5 +976,6 @@ export default {
   completeEvent,
   cancelEvent,
   updateEvent,
-  deleteEvent
+  deleteEvent,
+  getAttendingEvents
 };

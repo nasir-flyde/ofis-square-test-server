@@ -1319,6 +1319,14 @@ export const refreshAccessToken = async (req, res) => {
       guestId
     );
 
+    const oldAccessToken = req.headers.authorization?.split(" ")[1];
+    const { blacklistToken } = await import("../utils/tokenBlacklistService.js");
+
+    // Blacklist the old access token if it was provided
+    if (oldAccessToken) {
+      await blacklistToken(oldAccessToken, "refresh");
+    }
+
     const deviceInfo = getDeviceInfo(req);
     const newRefreshToken = await rotateRefreshToken(refreshToken, user._id, deviceInfo);
 
@@ -1360,6 +1368,13 @@ export const logout = async (req, res) => {
     }
 
     await revokeRefreshToken(refreshToken);
+
+    // Blacklist current access token
+    const accessToken = req.headers.authorization?.split(" ")[1];
+    if (accessToken) {
+      const { blacklistToken } = await import("../utils/tokenBlacklistService.js");
+      await blacklistToken(accessToken, "logout");
+    }
 
     await logAuthActivity(req, 'LOGOUT', 'SUCCESS', null, {
       userId: req.user?._id?.toString()

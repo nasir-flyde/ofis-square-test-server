@@ -141,9 +141,9 @@ visitorSchema.statics.findTodaysVisitors = function (date = new Date()) {
 visitorSchema.statics.isValidTransition = function (currentStatus, newStatus) {
   const validTransitions = {
     invited: ["pending_checkin", "pending_host_approval", "checked_in", "cancelled", "no_show"],
-    pending_checkin: ["approved", "cancelled"],
-    approved: ["pending_host_approval", "checked_in", "cancelled"],
-    pending_host_approval: ["checked_in", "cancelled"],
+    pending_checkin: ["approved", "cancelled", "no_show"],
+    approved: ["pending_host_approval", "checked_in", "cancelled", "no_show"],
+    pending_host_approval: ["checked_in", "cancelled", "no_show"],
     checked_in: ["checked_out"],
     checked_out: [],
     cancelled: [],

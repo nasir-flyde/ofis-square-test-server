@@ -221,6 +221,21 @@ export const getMyProfile = async (req, res) => {
       name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
       membershipStatus = !!member.client?.membershipStatus;
       cabinType = member.desk?.cabin?.type || null;
+
+      if (!cabinType && member.client?._id) {
+        const allocatedCabin = await Cabin.findOne({
+          allocatedTo: member.client._id,
+          status: { $ne: 'released' }
+        }).select('type');
+        if (allocatedCabin) {
+          cabinType = allocatedCabin.type;
+        }
+      }
+
+      // Map 'cabin' to 'Private' (case-insensitive)
+      if (typeof cabinType === 'string' && cabinType.toLowerCase() === 'cabin') {
+        cabinType = 'Private';
+      }
     }
 
     // Role-aware access checks

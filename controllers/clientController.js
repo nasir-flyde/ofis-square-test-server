@@ -2296,9 +2296,13 @@ export const getClientMembers = async (req, res) => {
 // Create member for client
 export const createClientMember = async (req, res) => {
   try {
-    const clientId = req.clientId;
+    const roleName = req.userRole?.roleName || req.user?.roleName || req.user?.role?.roleName || "";
+    const isSysAdmin = roleName === 'System Admin' || roleName === 'admin';
+
+    let clientId = req.clientId || (isSysAdmin ? req.body.client : null);
+
     if (!clientId) {
-      return res.status(400).json({ error: "Client ID not found in token" });
+      return res.status(400).json({ error: "Client ID not found in token or request body" });
     }
 
     const { firstName, lastName, email, phone, role, password, cardId } = req.body || {};
@@ -2309,11 +2313,11 @@ export const createClientMember = async (req, res) => {
 
     let userId = null;
 
-    let roleName = role;
+    let roleId = role;
     if (mongoose.Types.ObjectId.isValid(role)) {
       const roleDoc = await Role.findById(role);
       if (roleDoc) {
-        roleName = roleDoc.roleName;
+        roleId = roleDoc._id;
       }
     }
 
@@ -2354,6 +2358,13 @@ export const createClientMember = async (req, res) => {
       try {
         const card = await RFIDCard.findById(cardId);
         if (card) {
+          if (card.currentMemberId) {
+            await Member.findByIdAndDelete(member._id);
+            if (userId) {
+              await User.findByIdAndDelete(userId);
+            }
+            return res.status(409).json({ error: "Conflict: This RFID card is already assigned to another member." });
+          }
           console.log(`createClientMember: found RFID card with UID ${card.cardUid}`);
           // Identify/Normalize Matrix User ID (e.g. 91 prefixed phone)
           let externalUserId = null;

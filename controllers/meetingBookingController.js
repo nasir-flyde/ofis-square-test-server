@@ -191,22 +191,52 @@ function parseISTDateTime(input) {
 // Create booking with conflict and availability checks
 export const createBooking = async (req, res) => {
   let booking;
+  let invoice = null;
+  let paymentDetails = {};
+  let roomId;
+  let currentMemberId;
+  let clientId = null;
+  let paymentMethod;
+  let idempotencyKey;
+  let notes;
+  let startDt;
+  let endDt;
+  let durationHours;
+  let hourlyRate;
+
   try {
     const body = req.body || {};
     // Extract with fallbacks for camel/snake case
-    const roomId = body.room || body.room_id;
-    const memberId = body.memberId || body.member_id || body.member;
-    const client = body.client || body.client_id;
-    const paymentMethod = body.paymentMethod || body.payment_method;
+    roomId = body.room || body.room_id;
+    currentMemberId = body.memberId || body.member_id || body.member;
+    clientId = body.client || body.client_id;
+    paymentMethod = body.paymentMethod || body.payment_method;
     const start = body.start || body.start_time;
     const end = body.end || body.end_time;
-    const {
+    ({
       idempotencyKey,
+      visitors: body.visitors,
+      amenitiesRequested: body.amenitiesRequested,
+      currency: body.currency,
+      amount: body.amount,
+      notes,
+      discount: body.discount, // { percent, reason }
+      usingDefaultBuildingDiscount: body.usingDefaultBuildingDiscount, // boolean
+      // External partner payload (optional)
+      externalSource: body.externalSource,
+      referenceNumber: body.referenceNumber,
+      name: body.name,
+      email: body.email,
+      phone: body.phone,
+      guests: body.guests, // array of { name, email, phone }
+      guest: body.guest,
+      guestId: body.guestId
+    } = body);
+    const {
       visitors,
       amenitiesRequested,
       currency,
       amount,
-      notes,
       discount, // { percent, reason }
       usingDefaultBuildingDiscount, // boolean
       // External partner payload (optional)
@@ -224,8 +254,8 @@ export const createBooking = async (req, res) => {
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
 
     // Interpret provided start/end as IST wall time if no timezone provided
-    const startDt = parseISTDateTime(start);
-    const endDt = parseISTDateTime(end);
+    startDt = parseISTDateTime(start);
+    endDt = parseISTDateTime(end);
     if (isNaN(startDt) || isNaN(endDt)) {
       return res.status(400).json({ success: false, message: 'Invalid start or end datetime. Provide as IST (e.g., YYYY-MM-DD HH:mm) or include timezone.' });
     }
@@ -367,16 +397,14 @@ export const createBooking = async (req, res) => {
     }
 
     // Calculate duration and pricing
-    const durationHours = (endDt - startDt) / (1000 * 60 * 60);
+    durationHours = (endDt - startDt) / (1000 * 60 * 60);
     // For cash/card payments we use hourly pricing
-    const hourlyRate = (room.pricing?.hourlyRate ?? 500); // Default hourly rate fallback
+    hourlyRate = (room.pricing?.hourlyRate ?? 500); // Default hourly rate fallback
     const baseAmount = Math.max(0, Number(hourlyRate) * Number(durationHours));
 
     // Apply 18% GST on taxable base (after discount)
 
     // Handle credit payment
-    let paymentDetails = {};
-    let invoice = null;
     let bookingStatus = "booked";
     // Discount state
     let discountStatus = "none";
@@ -601,7 +629,6 @@ export const createBooking = async (req, res) => {
     // If we're relying on purely atomic, we can use a session, but let's implement a robust
     // query check just milliseconds before the create.
 
-    let booking;
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
@@ -1058,13 +1085,37 @@ export const createBooking = async (req, res) => {
 // List bookings with filters
 export const listBookings = async (req, res) => {
   try {
-    const { room, member, status, from, to, buildingId, building, guest, guestId } = req.query || {};
+    const { room, member, status, from, to, buildingId, building, guest, guestId, search, sort } = req.query || {};
     const filter = {};
     if (room) filter.room = room;
     if (member) filter.member = member;
     const gId = guest || guestId;
     if (gId) filter.guest = gId;
-    if (status) filter.status = status;
+
+    // Status mapping: pending_payment -> payment_pending
+    if (status === 'pending_payment') {
+      filter.status = 'payment_pending';
+    } else if (status) {
+      filter.status = status;
+    }
+
+    if (search) {
+      // Find rooms matching search string (room name)
+      const matchingRooms = await MeetingRoom.find({
+        $or: [
+          { name: { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id').lean();
+      const matchingRoomIds = matchingRooms.map(r => r._id);
+
+      if (filter.room) {
+        // If room filter already exists, intersect it with matchingRoomIds
+        filter.room = { $all: [filter.room, { $in: matchingRoomIds }] };
+      } else {
+        filter.room = { $in: matchingRoomIds };
+      }
+    }
+
     if (from || to) {
       filter.start = filter.start || {};
       if (from) filter.start.$gte = new Date(from);
@@ -1073,7 +1124,7 @@ export const listBookings = async (req, res) => {
 
     // If buildingId/building is provided (from community admin), scope bookings to rooms in that building
     const bId = buildingId || building;
-    if (bId && !room) {
+    if (bId && !room && !search) {
       try {
         const roomsInBuilding = await MeetingRoom.find({ building: bId }).select('_id').lean();
         const roomIds = roomsInBuilding.map(r => r._id);
@@ -1083,12 +1134,20 @@ export const listBookings = async (req, res) => {
       }
     }
 
+    // Sorting logic
+    let sortObj = { start: 1 }; // Default: oldest first (ascending)
+    if (sort === 'oldest') {
+      sortObj = { start: 1 };
+    } else if (sort === 'newest') {
+      sortObj = { start: -1 };
+    }
+
     const bookings = await MeetingBooking.find(filter)
       .populate("room", "name capacity amenities building")
       .populate("member", "firstName lastName email phone companyName")
       .populate("guest", "name email phone")
       .populate("visitors", "name email phone company")
-      .sort({ start: 1 });
+      .sort(sortObj);
 
     return res.json({ success: true, data: bookings });
   } catch (error) {
@@ -1925,10 +1984,14 @@ export const provisionAccess = async (req, res) => {
     // Call the central provisioning service
     const result = await provisionAccessForMeetingBooking({ bookingId: id });
 
+    // Re-fetch to pick up the updated buildingAccess flags written by the service
+    const refreshed = await MeetingBooking.findById(id).select('buildingAccess').lean();
+
     return res.json({
       success: result.ok,
       message: result.ok ? "Building access provisioning triggered successfully" : result.error,
-      buildingAccess: booking.buildingAccess
+      buildingAccess: refreshed?.buildingAccess || booking.buildingAccess,
+      ...(result.skipped ? { skipped: true, reason: result.reason } : {})
     });
   } catch (error) {
     console.error("provisionAccess error:", error);
@@ -1937,5 +2000,169 @@ export const provisionAccess = async (req, res) => {
       message: "Failed to provision building access",
       error: error.message
     });
+  }
+};
+// Pay for a pending booking using credits
+export const payBooking = async (req, res) => {
+  const { id } = req.params;
+  const startTime = Date.now();
+
+  try {
+    const booking = await MeetingBooking.findById(id)
+      .populate('room')
+      .populate('member')
+      .populate('client')
+      .populate('invoice');
+
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+
+    if (booking.status !== 'payment_pending') {
+      return res.status(400).json({ success: false, message: "Only bookings with 'payment_pending' status can be paid." });
+    }
+
+    const clientId = booking.client?._id || (booking.member?.client && (booking.member.client?._id || booking.member.client));
+    const memberId = booking.member?._id;
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "Client context missing for credit payment." });
+    }
+
+    // Ensure member has credits enabled
+    const memberDoc = booking.member;
+    if (!memberDoc) {
+      return res.status(400).json({ success: false, message: "Member account required for credit payments." });
+    }
+
+    if (memberDoc.status !== "active") {
+      return res.status(403).json({ success: false, code: "MEMBER_INACTIVE", message: "Member is inactive" });
+    }
+
+    if (memberDoc.allowedUsingCredits === false) {
+      return res.status(403).json({ success: false, code: "CREDITS_NOT_ALLOWED", message: "This member is not allowed to use credits" });
+    }
+
+    // Resolve credit value
+    let creditValue = 500;
+    try {
+      const contract = await Contract.findOne({ client: clientId, status: "active", credit_enabled: true });
+      if (contract && contract.credit_value) {
+        creditValue = contract.credit_value;
+      }
+    } catch (_) { }
+
+    const totalAmount = booking.invoice?.total || booking.amount;
+    const requiredCredits = Math.ceil(totalAmount / creditValue);
+
+    const wallet = await ClientCreditWallet.findOne({ client: clientId });
+    const currentBalance = wallet?.balance || 0;
+
+    if (currentBalance < requiredCredits) {
+      return res.status(400).json({
+        success: false,
+        code: "INSUFFICIENT_CREDITS",
+        message: `Insufficient credits. Required: ${requiredCredits}, Available: ${currentBalance}.`,
+        required: requiredCredits,
+        available: currentBalance
+      });
+    }
+
+    // Deduct credits via WalletService
+    const idempotencyKey = `pay_booking_${booking._id}_${Date.now()}`;
+    const result = await WalletService.consumeCreditsWithOverdraft({
+      clientId,
+      memberId,
+      requiredCredits,
+      idempotencyKey,
+      refType: "meeting_booking",
+      refId: booking._id,
+      meta: {
+        roomId: booking.room?._id,
+        creditValue,
+        totalAmount,
+        action: "Pay Now"
+      }
+    });
+
+    // Update booking status
+    booking.status = "booked";
+    booking.payment = {
+      ...booking.payment,
+      method: "credits",
+      coveredCredits: result.coveredCredits,
+      extraCredits: result.extraCredits,
+      overageAmount: result.overageAmount,
+      valuePerCredit: result.valuePerCredit,
+      idempotencyKey
+    };
+
+    // Update invoice if it exists
+    if (booking.invoice) {
+      const invoice = await Invoice.findById(booking.invoice._id);
+      if (invoice) {
+        invoice.status = "paid";
+        invoice.amount_paid = totalAmount;
+        invoice.balance = 0;
+        invoice.paid_at = new Date();
+        await invoice.save();
+      }
+    }
+
+    await booking.save();
+
+    // Add reserved slot to meeting room
+    try {
+      const room = await MeetingRoom.findById(booking.room._id);
+      if (room) {
+        const istYmd = new Date(booking.start).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const utcMidnightOfIstDay = new Date(`${istYmd}T00:00:00.000Z`);
+
+        const format12h = (d) => {
+          let h = d.getUTCHours();
+          const m = String(d.getUTCMinutes()).padStart(2, '0');
+          const p = h >= 12 ? 'PM' : 'AM';
+          h = h % 12 || 12;
+          return `${String(h).padStart(2, '0')}:${m} ${p}`;
+        };
+
+        const reservedSlot = {
+          date: utcMidnightOfIstDay,
+          dateISTYMD: istYmd,
+          startTime: format12h(new Date(booking.start)),
+          endTime: format12h(new Date(booking.end)),
+          bookingId: booking._id
+        };
+
+        room.reservedSlots.push(reservedSlot);
+        await room.save();
+      }
+    } catch (slotErr) {
+      console.warn('[payBooking] Failed to add reserved slot:', slotErr.message);
+    }
+
+    // Provision access
+    try {
+      await provisionAccessForMeetingBooking({ bookingId: booking._id });
+    } catch (accessErr) {
+      console.warn('[payBooking] Access provision failed:', accessErr.message);
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[payBooking] Completed in ${duration}ms`);
+
+    return res.json({
+      success: true,
+      message: "Payment successful and booking confirmed.",
+      data: {
+        bookingId: booking._id,
+        status: booking.status,
+        durationMs: duration
+      }
+    });
+
+  } catch (error) {
+    console.error("payBooking error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -507,7 +507,7 @@ export const setCardCredential = async (req, res) => {
     const refId = rfidCardId || cardId;
     if (!refId) return res.status(400).json({ success: false, message: 'rfidCardId (or cardId) is required' });
 
-    const user = await MatrixUser.findById(id).select('externalUserId policyId').lean();
+    const user = await MatrixUser.findById(id).select('name email phone externalUserId policyId').lean();
     if (!user) return res.status(404).json({ success: false, message: 'Matrix user not found' });
     if (!user.externalUserId) return res.status(400).json({ success: false, message: 'Matrix user externalUserId missing' });
 
@@ -515,87 +515,143 @@ export const setCardCredential = async (req, res) => {
     if (!card) return res.status(404).json({ success: false, message: 'RFID card not found' });
     if (!card.cardUid) return res.status(400).json({ success: false, message: 'RFID card has no cardUid' });
 
-    const resp = await matrixApi.setCardCredential({ externalUserId: user.externalUserId, data: card.cardUid });
-    const ok = !!resp?.ok;
-    if (ok) {
-      // Resolve MatrixDevice _ids to attach to the RFID card
-      const resolvedDeviceMongoIds = [];
-      try {
-        if (bodyDeviceId) {
-          const devById = await MatrixDevice.findById(bodyDeviceId).select('_id').lean();
-          if (devById?._id) resolvedDeviceMongoIds.push(devById._id);
-        } else if (bodyDevice_id) {
-          const devByCode = await MatrixDevice.findOne({ device_id: bodyDevice_id }).select('_id').lean();
-          if (devByCode?._id) resolvedDeviceMongoIds.push(devByCode._id);
-        } else {
-          // Fallback: derive from policy (request body policyId or user's stored policyId)
-          const policyId = bodyPolicyId || user?.policyId;
-          if (policyId) {
-            const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
-            if (policy && Array.isArray(policy.accessPointIds) && policy.accessPointIds.length) {
-              const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } })
-                .select('deviceBindings')
-                .lean();
-              const deviceIdStrings = [];
-              for (const ap of accessPoints) {
-                const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
-                for (const b of bindings) {
-                  if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
-                    deviceIdStrings.push(String(b.deviceId));
-                  }
-                }
-              }
-              const unique = Array.from(new Set(deviceIdStrings));
-              resolvedDeviceMongoIds.push(...unique);
-            }
-          }
-        }
-      } catch { }
+    // 1. Internal check: If card is already assigned to another active user
+    const otherUser = await MatrixUser.findOne({
+      cards: refId,
+      status: 'active',
+      _id: { $ne: id }
+    }).select('name').lean();
 
-      try {
-        // Flag user verified and link the card to the user
-        await MatrixUser.findByIdAndUpdate(
-          id,
-          {
-            $set: { isCardCredentialVerified: true },
-            $addToSet: { cards: refId },
-          }
-        );
-        // Attach devices to the RFID card if any resolved
-        if (resolvedDeviceMongoIds.length) {
-          await RFIDCard.findByIdAndUpdate(
-            refId,
-            { $addToSet: { devices: { $each: resolvedDeviceMongoIds } } }
-          );
-        }
-      } catch { }
-
-      // If dayPassId is provided, mark access control granted on that DayPass
-      if (dayPassId) {
-        try {
-          await DayPass.findByIdAndUpdate(dayPassId, { $set: { 'buildingAccess.accessControl': true } });
-        } catch (e) {
-          await logErrorActivity(req, e, 'DayPass:MarkAccessControl', { dayPassId });
-        }
-      }
-
-      // If meetingBookingId is provided, mark matrix access granted on that MeetingBooking
-      if (meetingBookingId) {
-        try {
-          await MeetingBooking.findByIdAndUpdate(meetingBookingId, { $set: { 'buildingAccess.matrixAccess': true } });
-        } catch (e) {
-          await logErrorActivity(req, e, 'MeetingBooking:MarkMatrixAccess', { meetingBookingId });
-        }
-      }
-
-      await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, {
-        setCardCredential: {
-          rfidCardId: String(refId),
-          devicesCount: resolvedDeviceMongoIds.length,
-        }
+    if (otherUser) {
+      return res.status(422).json({
+        success: false,
+        message: `already assigned to different user: ${otherUser.name}`
       });
     }
-    return res.status(ok ? 200 : 502).json({ success: ok, data: resp?.data || null, status: resp?.status || 0 });
+
+    // 2. If meetingBookingId provided, set validTill to booking end and sync with Matrix
+    let validTillUpdate = null;
+    if (meetingBookingId) {
+      const booking = await MeetingBooking.findById(meetingBookingId).select('end').lean();
+      if (booking && booking.end) {
+        validTillUpdate = booking.end;
+        try {
+          await matrixApi.createUser({
+            id: user.externalUserId,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            status: 'active',
+            accessValidityDate: validTillUpdate
+          });
+        } catch (e) {
+          await logErrorActivity(req, e, 'MatrixUser:SyncValidityOnCredentialSet', { externalUserId: user.externalUserId, validTill: validTillUpdate });
+        }
+      }
+    }
+
+    // 3. Set credential on Matrix
+    const resp = await matrixApi.setCardCredential({ externalUserId: user.externalUserId, data: card.cardUid });
+    const ok = !!resp?.ok;
+
+    if (!ok) {
+      // Check if Matrix explicitly says it's already assigned (vague check based on common COSEC patterns)
+      const errorMsg = String(resp?.data || resp?.message || "").toLowerCase();
+      if (errorMsg.includes("already assigned") || errorMsg.includes("duplicate") || errorMsg.includes("0070201018")) {
+        return res.status(422).json({
+          success: false,
+          message: 'already assigned to different user',
+          details: resp?.data
+        });
+      }
+      return res.status(502).json({ success: false, message: 'Failed to set card credential on Matrix', status: resp?.status, data: resp?.data });
+    }
+
+    // 4. Update local state
+    // Resolve MatrixDevice _ids to attach to the RFID card
+    const resolvedDeviceMongoIds = [];
+    try {
+      if (bodyDeviceId) {
+        const devById = await MatrixDevice.findById(bodyDeviceId).select('_id').lean();
+        if (devById?._id) resolvedDeviceMongoIds.push(devById._id);
+      } else if (bodyDevice_id) {
+        const devByCode = await MatrixDevice.findOne({ device_id: bodyDevice_id }).select('_id').lean();
+        if (devByCode?._id) resolvedDeviceMongoIds.push(devByCode._id);
+      } else {
+        // Fallback: derive from policy (request body policyId or user's stored policyId)
+        const policyId = bodyPolicyId || user?.policyId;
+        if (policyId) {
+          const policy = await AccessPolicy.findById(policyId).select('accessPointIds').lean();
+          if (policy && Array.isArray(policy.accessPointIds) && policy.accessPointIds.length) {
+            const accessPoints = await AccessPoint.find({ _id: { $in: policy.accessPointIds } })
+              .select('deviceBindings')
+              .lean();
+            const deviceIdStrings = [];
+            for (const ap of accessPoints) {
+              const bindings = Array.isArray(ap?.deviceBindings) ? ap.deviceBindings : [];
+              for (const b of bindings) {
+                if ((b?.vendor === 'MATRIX_COSEC') && b?.deviceId) {
+                  deviceIdStrings.push(String(b.deviceId));
+                }
+              }
+            }
+            const unique = Array.from(new Set(deviceIdStrings));
+            resolvedDeviceMongoIds.push(...unique);
+          }
+        }
+      }
+    } catch { }
+
+    try {
+      // Flag user verified, link the card, and update validity
+      const updateFields = {
+        isCardCredentialVerified: true,
+      };
+      if (validTillUpdate) updateFields.validTill = validTillUpdate;
+
+      await MatrixUser.findByIdAndUpdate(
+        id,
+        {
+          $set: updateFields,
+          $addToSet: { cards: refId },
+        }
+      );
+      // Attach devices to the RFID card if any resolved
+      if (resolvedDeviceMongoIds.length) {
+        await RFIDCard.findByIdAndUpdate(
+          refId,
+          { $addToSet: { devices: { $each: resolvedDeviceMongoIds } } }
+        );
+      }
+    } catch { }
+
+    // If dayPassId is provided, mark access control granted on that DayPass
+    if (dayPassId) {
+      try {
+        await DayPass.findByIdAndUpdate(dayPassId, { $set: { 'buildingAccess.accessControl': true } });
+      } catch (e) {
+        await logErrorActivity(req, e, 'DayPass:MarkAccessControl', { dayPassId });
+      }
+    }
+
+    // If meetingBookingId is provided, mark matrix access granted on that MeetingBooking
+    if (meetingBookingId) {
+      try {
+        await MeetingBooking.findByIdAndUpdate(meetingBookingId, { $set: { 'buildingAccess.matrixAccess': true } });
+      } catch (e) {
+        await logErrorActivity(req, e, 'MeetingBooking:MarkMatrixAccess', { meetingBookingId });
+      }
+    }
+
+    await logCRUDActivity(req, 'UPDATE', 'MatrixUser', id, null, {
+      setCardCredential: {
+        rfidCardId: String(refId),
+        devicesCount: resolvedDeviceMongoIds.length,
+        validTill: validTillUpdate
+      }
+    });
+
+    return res.status(200).json({ success: true, validTill: validTillUpdate });
   } catch (err) {
     await logErrorActivity(req, err, 'MatrixUser:SetCardCredential');
     return res.status(500).json({ success: false, message: err?.message || 'Failed to set card credential' });

@@ -38,7 +38,7 @@ const clientMiddleware = (req, res, next) => {
     if (!roleName) return res.status(401).json({ error: "Unauthorized" });
 
     const name = String(roleName).toLowerCase();
-    if (name === "admin" || name === "client") {
+    if (name === "admin" || name === "client" || name === "System Admin") {
       return next();
     }
     if (name === "client legal team") {
