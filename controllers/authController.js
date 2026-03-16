@@ -1564,7 +1564,7 @@ export const verifyStaffOtp = async (req, res) => {
     const OTP = (await import("../models/otpModel.js")).default;
 
     const otpRecord = await OTP.findOne({
-      phone: { $in: phoneFormats },
+      phone: normalizedPhone,
       expiresAt: { $gt: new Date() }
     });
 
