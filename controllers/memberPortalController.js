@@ -1761,7 +1761,7 @@ export const getAllEvents = async (req, res) => {
 
     const events = await Event.find(query)
       .populate('category', 'name')
-      .populate('location.building', 'name')
+      .populate('location.building', 'name address')
       .populate('location.room', 'name')
       .sort({ startDate: 1 });
 
