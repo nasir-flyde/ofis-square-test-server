@@ -9,6 +9,10 @@ import { createContact } from "../utils/zohoBooks.js";
 import mongoose from "mongoose";
 import { createAccessToken } from "../middlewares/createJwtRefresh.js";
 
+const extractZohoContactId = (zohoResp) => {
+  return zohoResp?.contact?.contact_id || zohoResp?.contact_id;
+};
+
 // Helper for on-demand onboarding
 const onboardOnDemandUser = async (lead) => {
   try {
@@ -60,7 +64,8 @@ const onboardOnDemandUser = async (lead) => {
           company_name: lead.companyName,
           contact_type: 'customer',
           customer_sub_type: 'individual',
-          notes: `${lead.purpose} user - Auto-created from website signup`,
+          notes: `${lead.purpose} user - Gender: ${lead.gender || 'not specified'} - Auto-created from website signup`,
+          gender: lead.gender, // Included in payload as per global rule
           billing_address: {
             address: lead.address,
             zip: lead.pincode,
@@ -76,7 +81,7 @@ const onboardOnDemandUser = async (lead) => {
           ],
         };
         const zohoResp = await createContact(zohoPayload);
-        const contactId = zohoResp?.contact?.contact_id;
+        const contactId = extractZohoContactId(zohoResp);
         if (contactId) {
           guestDoc.zohoBooksContactId = contactId;
           await guestDoc.save();
@@ -502,7 +507,8 @@ export const approveKYC = async (req, res) => {
             company_name: lead.companyName,
             contact_type: 'customer',
             customer_sub_type: 'individual',
-            notes: `Day pass user - Auto-created from KYC approval`,
+            notes: `Day pass user - Gender: ${lead.gender || 'not specified'} - Auto-created from KYC approval`,
+            gender: lead.gender, // Included as per global rule
             billing_address: { address: lead.address, zip: lead.pincode },
             contact_persons: [{
               first_name: lead.firstName, last_name: lead.lastName,
@@ -814,7 +820,8 @@ export const uploadKYCByAdmin = async (req, res) => {
             company_name: lead.companyName,
             contact_type: 'customer',
             customer_sub_type: 'individual',
-            notes: `Day pass user - Auto-created from admin KYC upload`,
+            notes: `Day pass user - Gender: ${lead.gender || 'not specified'} - Auto-created from admin KYC upload`,
+            gender: lead.gender, // Included as per global rule
             billing_address: {
               address: lead.address,
               zip: lead.pincode

@@ -203,6 +203,8 @@ export const createBooking = async (req, res) => {
   let endDt;
   let durationHours;
   let hourlyRate;
+  let guestId = null;
+  let memberDoc = null;
 
   try {
     const body = req.body || {};
@@ -213,25 +215,7 @@ export const createBooking = async (req, res) => {
     paymentMethod = body.paymentMethod || body.payment_method;
     const start = body.start || body.start_time;
     const end = body.end || body.end_time;
-    ({
-      idempotencyKey,
-      visitors: body.visitors,
-      amenitiesRequested: body.amenitiesRequested,
-      currency: body.currency,
-      amount: body.amount,
-      notes,
-      discount: body.discount, // { percent, reason }
-      usingDefaultBuildingDiscount: body.usingDefaultBuildingDiscount, // boolean
-      // External partner payload (optional)
-      externalSource: body.externalSource,
-      referenceNumber: body.referenceNumber,
-      name: body.name,
-      email: body.email,
-      phone: body.phone,
-      guests: body.guests, // array of { name, email, phone }
-      guest: body.guest,
-      guestId: body.guestId
-    } = body);
+
     const {
       visitors,
       amenitiesRequested,
@@ -249,6 +233,8 @@ export const createBooking = async (req, res) => {
       guest: bodyGuest,
       guestId: bodyGuestId
     } = body;
+    idempotencyKey = body.idempotencyKey;
+    notes = body.notes;
 
     if (!roomId) return res.status(400).json({ success: false, message: "room is required" });
     if (!start || !end) return res.status(400).json({ success: false, message: "start and end are required" });
@@ -289,10 +275,10 @@ export const createBooking = async (req, res) => {
 
     // Determine member/client/guest context (admin flow may not have a member)
     const roleName = String(req.user?.roleName || req.authType || '').toLowerCase();
-    const currentMemberId = req.memberId || memberId || null;
-    let clientId = null;
-    let guestId = req.guestId || bodyGuestId || null;
-    let memberDoc = null;
+    
+    // Merge auth context with body context
+    if (req.memberId) currentMemberId = req.memberId;
+    if (req.guestId || bodyGuestId) guestId = req.guestId || bodyGuestId;
 
     // Payment method validation for on-demand users
     if (roleName === 'ondemanduser') {
@@ -314,7 +300,7 @@ export const createBooking = async (req, res) => {
       clientId = memberDoc.client?._id;
     } else {
       // Admin/community or external partner/guest flow
-      const clientFromBody = client;
+      const clientFromBody = body.client || body.client_id;
       // If no member/client context, allow guest context (on-demand)
       if (!clientFromBody && !externalSource && !guestId && !bodyGuest) {
         return res.status(400).json({ success: false, message: "client, memberId or guest context is required" });
