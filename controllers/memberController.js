@@ -644,7 +644,8 @@ export const getMemberProfile = async (req, res) => {
       member = await Member.findById(memberId)
         .populate({
           path: 'client',
-          select: 'companyName contactPerson email phone billingAddress shippingAddress membershipStatus'
+          select: 'companyName contactPerson email phone billingAddress shippingAddress membershipStatus building',
+          populate: { path: 'building', select: 'name' }
         })
         .populate({
           path: 'desk',
@@ -804,6 +805,7 @@ export const getMemberProfile = async (req, res) => {
       company: (!isOnDemand && member.client) ? {
         id: member.client._id,
         name: member.client.companyName,
+        buildingName: member.client.building?.name || null,
         contactPerson: member.client.contactPerson,
         email: member.client.email,
         phone: member.client.phone,
