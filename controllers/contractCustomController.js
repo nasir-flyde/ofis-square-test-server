@@ -444,12 +444,12 @@ export const salesEditCommercials = async (req, res) => {
     if (payAsYouGo && typeof payAsYouGo === 'object') contract.payAsYouGo = payAsYouGo;
     if (typeof cleaningAndRestorationFees !== 'undefined' && cleaningAndRestorationFees !== null) contract.cleaningAndRestorationFees = Number(cleaningAndRestorationFees);
 
-    // Only keep clientAcceptance when updating acceptance
+    // Only update clientAcceptance if provided
     if (termsAndConditionAcceptance && typeof termsAndConditionAcceptance === 'object' && termsAndConditionAcceptance.clientAcceptance) {
-      contract.termsAndConditionAcceptance = {
-        ...(contract.termsAndConditionAcceptance || {}),
-        clientAcceptance: termsAndConditionAcceptance.clientAcceptance,
-      };
+      if (!contract.termsAndConditionAcceptance) {
+        contract.termsAndConditionAcceptance = {};
+      }
+      contract.termsAndConditionAcceptance.clientAcceptance = termsAndConditionAcceptance.clientAcceptance;
     }
 
     if (billingStartDate) contract.billingStartDate = billingStartDate;

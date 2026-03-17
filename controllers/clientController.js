@@ -1824,8 +1824,15 @@ export const getClientInvoices = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    const { page = 1, limit = 10, status } = req.query;
-    const query = { client: clientId, type: { $ne: "security_deposit" } };
+    const { page = 1, limit = 10, status, type } = req.query;
+    const query = { client: clientId };
+    
+    if (type) {
+      query.type = type;
+    } else {
+      query.type = { $ne: "security_deposit" };
+    }
+    
     if (status) query.status = status;
 
     const invoices = await Invoice.find(query)

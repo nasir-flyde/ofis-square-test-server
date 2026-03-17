@@ -153,6 +153,41 @@ export const createDeposit = async (req, res) => {
   }
 };
 
+export const updateDeposit = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { agreedAmount, notes, clientId, contractId, buildingId } = req.body || {};
+
+    const dep = await SecurityDeposit.findById(id);
+    if (!dep) return res.status(404).json({ success: false, message: "SecurityDeposit not found" });
+
+    if (agreedAmount !== undefined) {
+      dep.agreed_amount = Number(agreedAmount);
+    }
+    if (notes !== undefined) {
+      dep.notes = notes;
+    }
+    if (clientId && mongoose.Types.ObjectId.isValid(clientId)) {
+      dep.client = clientId;
+    }
+    if (contractId && mongoose.Types.ObjectId.isValid(contractId)) {
+      dep.contract = contractId;
+    }
+    if (buildingId && mongoose.Types.ObjectId.isValid(buildingId)) {
+      dep.building = buildingId;
+    }
+
+    dep.status = recomputeStatus(dep);
+    await dep.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', dep._id, null, { action: 'UPDATE', agreedAmount, notes });
+    return res.json({ success: true, data: dep });
+  } catch (error) {
+    await logErrorActivity(req, error, 'Update SecurityDeposit');
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const getDepositById = async (req, res) => {
   try {
     const { id } = req.params;

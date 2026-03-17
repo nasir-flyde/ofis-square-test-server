@@ -14,6 +14,7 @@ import {
   closeDeposit,
   generateDepositNote,
   uploadDepositImages,
+  updateDeposit,
 } from "../controllers/securityDepositController.js";
 
 const router = express.Router();
@@ -31,6 +32,14 @@ router.post(
   "/",
   authMiddleware,
   createDeposit
+);
+
+// Update a security deposit record
+router.patch(
+  "/:id",
+  authMiddleware,
+  checkPermission(PERMISSIONS.INVOICE_UPDATE),
+  updateDeposit
 );
 
 // Get a security deposit by ID

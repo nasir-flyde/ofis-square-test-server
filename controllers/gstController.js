@@ -2,7 +2,7 @@ import axios from "axios";
 
 export const validateGST = async (req, res) => {
     try {
-        const { gstin } = req.body;
+        const gstin = req.body?.gstin || req.query?.gstin;
 
         if (!gstin) {
             return res.status(400).json({ success: false, message: "GSTIN is required" });
