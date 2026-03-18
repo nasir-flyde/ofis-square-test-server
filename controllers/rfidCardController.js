@@ -13,10 +13,11 @@ import csv from "csv-parser";
 
 export const listRFIDCards = async (req, res) => {
   try {
-    const { buildingId, status, q, page = 1, limit = 50 } = req.query || {};
+    const { buildingId, status, currentMemberId, q, page = 1, limit = 50 } = req.query || {};
     const filter = {};
     if (buildingId) filter.buildingId = buildingId;
     if (status) filter.status = status;
+    if (currentMemberId) filter.currentMemberId = currentMemberId;
     if (q) {
       filter.$or = [
         { cardUid: new RegExp(String(q), "i") },

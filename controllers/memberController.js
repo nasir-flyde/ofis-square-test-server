@@ -500,6 +500,88 @@ export const updateMember = async (req, res) => {
     const updateData = req.body || {};
 
     const oldMember = await Member.findById(id);
+    if (!oldMember) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    // RFID UPDATE LOGIC (Transient cardId field)
+    if (updateData.cardId !== undefined) {
+      const newCardId = updateData.cardId;
+      try {
+        // Find current assigned card for this member
+        const currentCard = await RFIDCard.findOne({ currentMemberId: id });
+        const currentCardId = currentCard ? String(currentCard._id) : null;
+
+        if (String(newCardId || "") !== (currentCardId || "")) {
+          // Get MatrixUser for this member
+          let mu = await MatrixUser.findOne({ memberId: id });
+
+          // 1. Unassign old card if it exists
+          if (currentCard) {
+            await RFIDCard.findByIdAndUpdate(currentCard._id, {
+              $set: { currentMemberId: null, status: "ISSUED" }
+            });
+            if (mu) {
+              await MatrixUser.findByIdAndUpdate(mu._id, {
+                $pull: { cards: currentCard._id }
+              });
+            }
+          }
+
+          // 2. Assign new card if provided
+          if (newCardId) {
+            const card = await RFIDCard.findById(newCardId);
+            if (card) {
+              if (card.currentMemberId && String(card.currentMemberId) !== String(id)) {
+                return res.status(409).json({ success: false, message: "Conflict: This RFID card is already assigned to another member." });
+              }
+
+              if (mu) {
+                await MatrixUser.findByIdAndUpdate(mu._id, {
+                  $addToSet: { cards: newCardId },
+                  $set: { isCardCredentialVerified: true }
+                });
+
+                // Set credential in Matrix
+                try {
+                  await matrixApi.setCardCredential({
+                    externalUserId: mu.externalUserId,
+                    data: card.cardUid
+                  });
+                } catch (cardErr) {
+                  console.warn("updateMember: Matrix setCardCredential failed:", cardErr.message);
+                }
+
+                // Enqueue provisioning job
+                try {
+                  await ProvisioningJob.create({
+                    vendor: "MATRIX_COSEC",
+                    jobType: "ASSIGN_CARD",
+                    memberId: id,
+                    cardId: card._id,
+                    payload: { cardUid: card.cardUid, memberId: id }
+                  });
+                } catch (jobErr) {
+                  console.warn("updateMember: failed to enqueue provisioning job:", jobErr.message);
+                }
+              }
+
+              await RFIDCard.findByIdAndUpdate(newCardId, {
+                $set: {
+                  currentMemberId: id,
+                  clientId: updateData.client || oldMember?.client || null,
+                  status: "ACTIVE",
+                  activatedAt: new Date()
+                }
+              });
+            }
+          }
+        }
+      } catch (rfidErr) {
+        console.warn("updateMember: failed to update RFID card:", rfidErr.message);
+      }
+      delete updateData.cardId;
+    }
     const member = await Member.findByIdAndUpdate(
       id,
       updateData,
