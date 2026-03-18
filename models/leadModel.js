@@ -57,7 +57,8 @@ const leadSchema = new mongoose.Schema({
     trim: true,
     validate: {
       validator: function (v) {
-        return /^\d{10}$/.test(v.replace(/\D/g, ''));
+        const digits = v.replace(/\D/g, '');
+        return digits.length === 10 || (digits.length === 12 && digits.startsWith('91'));
       },
       message: 'Please enter a valid 10-digit phone number'
     }
