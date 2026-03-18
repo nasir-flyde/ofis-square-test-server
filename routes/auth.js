@@ -8,6 +8,7 @@ import {
   sendMemberClientOtp,
   verifyMemberClientOtp,
   communityLogin,
+  sendCommunityOtp,
   communitySignup,
   onDemandUserSignup,
   onDemandUserLogin,
@@ -34,6 +35,7 @@ router.post("/member-client/login", memberClientLogin);
 router.post("/member-client/send-otp", sendMemberClientOtp);
 router.post("/member-client/verify-otp", verifyMemberClientOtp);
 router.post("/community/register", communitySignup);
+router.post("/community/send-otp", sendCommunityOtp);
 router.post("/community/login", communityLogin);
 router.post("/ondemand/register", onDemandUserSignup);
 router.post("/ondemand/login", onDemandUserLogin);

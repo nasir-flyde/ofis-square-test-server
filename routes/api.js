@@ -66,6 +66,7 @@ import notificationCategoriesRoutes from "./notificationCategories.js";
 import discountBundleRoutes from "./discountBundles.js";
 import docSupportRoutes from "./docSupportRoutes.js";
 import printerRoutes from "./printer.js";
+import appRequestsRoutes from "./appRequests.js";
 
 const router = express.Router();
 
@@ -137,5 +138,6 @@ router.use("/privacy-policies", privacyPolicyRoutes);
 router.use("/discount-bundles", discountBundleRoutes);
 router.use("/doc-support", docSupportRoutes);
 router.use("/printer", printerRoutes);
+router.use("/app-requests", appRequestsRoutes);
 
 export default router;
