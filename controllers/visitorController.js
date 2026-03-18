@@ -2,6 +2,7 @@ import Visitor from "../models/visitorModel.js";
 import Member from "../models/memberModel.js";
 import User from "../models/userModel.js";
 import Building from "../models/buildingModel.js";
+import Client from "../models/clientModel.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import QRCode from "qrcode";
@@ -414,7 +415,7 @@ export const getPendingCheckinRequests = async (req, res) => {
 
 export const createVisitor = async (req, res) => {
   try {
-    const {
+    let {
       name,
       email,
       phone,
@@ -428,6 +429,18 @@ export const createVisitor = async (req, res) => {
       building,
       notes
     } = req.body;
+
+    // If a member or client is logged in, use their context for host and building
+    if (req.user?.memberId) {
+      hostMemberId = req.user.memberId;
+    }
+
+    if (req.user?.clientId) {
+      const clientDoc = await Client.findById(req.user.clientId);
+      if (clientDoc?.building) {
+        building = clientDoc.building;
+      }
+    }
 
     const errors = {};
     if (!name?.trim()) {
