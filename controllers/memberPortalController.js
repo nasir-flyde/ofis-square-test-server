@@ -1331,7 +1331,7 @@ export const getMyProfile = async (req, res) => {
               status: { $ne: 'cancelled' }
             }).populate({
               path: 'room',
-              select: 'name images building amenities capacity pricing',
+              select: 'name images building amenities capacity pricing floor',
               populate: {
                 path: 'building',
                 select: 'name address businessMapLink'
@@ -1367,51 +1367,45 @@ export const getMyProfile = async (req, res) => {
             } catch { return null; }
           };
 
-          const mappedPasses = dayPasses.map(dp => ({
-            _id: dp._id,
-            roomId: dp.building?._id,
-            roomName: dp.visitorName || "Day Pass",
-            roomBuildingName: dp.building?.name,
-            roomBuildingAddress: dp.building?.address,
-            roomBuildingMapLink: dp.building?.businessMapLink || null,
-            image: dp.building ? (buildingImageMap[dp.building._id.toString()] || null) : null,
-            start: dp.visitDate,
-            end: dp.visitDate,
-            slot: "Full Day",
-            status: dp.status,
-            type: "daypass"
-          }));
+          const mappedPasses = dayPasses.map(dp => {
+            const istYmd = new Date(dp.visitDate).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+            return {
+              _id: dp._id,
+              bookingId: dp._id,
+              buildingName: dp.building?.name || "Ofis Square",
+              buildingAddress: dp.building?.address || "",
+              meetingRoomName: dp.visitorName || "Day Pass",
+              floor: "N/A",
+              dateAndTimeSlot: `${istYmd}, Full Day`,
+              capacity: null,
+              images: dp.building ? [buildingImageMap[dp.building._id.toString()] || null].filter(Boolean) : [],
+              totalPricing: 0,
+              creditsUsed: 0,
+              status: dp.status,
+              type: "daypass"
+            };
+          });
 
           const mappedMeetings = rawMeetings.map(b => {
             const bookingStart = new Date(b.start);
             const bookingEnd = new Date(b.end);
+            const istYmd = bookingStart.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
             const startTimeStr = bookingStart.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
             const endTimeStr = bookingEnd.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
 
             return {
+              _id: b._id,
               bookingId: b._id,
-              status: b.status,
-              invoiceId: b.invoice?._id || undefined,
-              invoiceNumber: b.invoice?.invoice_number || undefined,
-              room: {
-                id: b.room?._id,
-                name: b.room?.name,
-                building: b.room?.building?.name,
-                buildingAddress: b.room?.building?.address,
-                buildingMapLink: b.room?.building?.businessMapLink || null,
-                image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
-                images: b.room?.images || []
-              },
-              timing: {
-                start: b.start,
-                end: b.end,
-                slot: `${startTimeStr} - ${endTimeStr}`
-              },
-              amenities: b.room?.amenities || [],
+              buildingName: b.room?.building?.name || "Ofis Square",
+              buildingAddress: b.room?.building?.address || "",
+              meetingRoomName: b.room?.name,
+              floor: b.room?.floor ? `${b.room.floor}${!isNaN(b.room.floor) ? 'th' : ''} floor` : "N/A",
+              dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
               capacity: b.room?.capacity,
               images: b.room?.images || [],
               totalPricing: b.invoice?.total || b.payment?.amount || 0,
               creditsUsed: b.payment?.coveredCredits || 0,
+              status: b.status,
               type: "meeting"
             };
           });
@@ -1437,7 +1431,7 @@ export const getMyProfile = async (req, res) => {
             const rawBookings = await MeetingBooking.find(bookingQuery)
               .populate({
                 path: 'room',
-                select: 'name images building amenities capacity pricing',
+                select: 'name images building amenities capacity pricing floor',
                 populate: {
                   path: 'building',
                   select: 'name address businessMapLink'
@@ -1455,33 +1449,23 @@ export const getMyProfile = async (req, res) => {
             bookingsToday = rawBookings.map(b => {
               const bookingStart = new Date(b.start);
               const bookingEnd = new Date(b.end);
+              const istYmd = bookingStart.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
               const startTimeStr = bookingStart.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
               const endTimeStr = bookingEnd.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
 
               return {
+                _id: b._id,
                 bookingId: b._id,
-                status: b.status,
-                invoiceId: b.invoice?._id || undefined,
-                invoiceNumber: b.invoice?.invoice_number || undefined,
-                room: {
-                  id: b.room?._id,
-                  name: b.room?.name,
-                  building: b.room?.building?.name,
-                  buildingAddress: b.room?.building?.address,
-                  buildingMapLink: b.room?.building?.businessMapLink || null,
-                  image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
-                  images: b.room?.images || []
-                },
-                timing: {
-                  start: b.start,
-                  end: b.end,
-                  slot: `${startTimeStr} - ${endTimeStr}`
-                },
-                amenities: b.room?.amenities || [],
+                buildingName: b.room?.building?.name || "Ofis Square",
+                buildingAddress: b.room?.building?.address || "",
+                meetingRoomName: b.room?.name,
+                floor: b.room?.floor ? `${b.room.floor}${!isNaN(b.room.floor) ? 'th' : ''} floor` : "N/A",
+                dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
                 capacity: b.room?.capacity,
                 images: b.room?.images || [],
                 totalPricing: b.invoice?.total || b.payment?.amount || 0,
                 creditsUsed: b.payment?.coveredCredits || 0,
+                status: b.status,
                 type: "meeting"
               };
             });
