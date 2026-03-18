@@ -24,6 +24,7 @@ const memberSchema = new Schema(
       type: String,
       trim: true
     }],
+    isDeleted: { type: Boolean, default: false, index: true },
     restrictedEvents: [{ type: Schema.Types.ObjectId, ref: "Event", index: true }],
   },
   { timestamps: true, collection: "members" }

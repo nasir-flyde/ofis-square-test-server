@@ -689,6 +689,19 @@ export const sendMemberClientOtp = async (req, res) => {
     let user = await Users.findOne({ phone: { $in: phoneFormats } }).populate('role');
     let lead = await Lead.findOne({ phone: { $in: phoneFormats } });
 
+    // Check if there's a deleted member with this phone
+    const deletedMember = await Member.findOne({
+      phone: { $in: phoneFormats },
+      isDeleted: true
+    });
+
+    if (deletedMember) {
+      return res.status(403).json({
+        success: false,
+        error: "This account has been deleted. Please contact support if you believe this is an error."
+      });
+    }
+
     if (!user && !lead) {
       // Auto-create lead if neither user nor lead found
       try {

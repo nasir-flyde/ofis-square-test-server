@@ -1331,12 +1331,14 @@ export const getMyProfile = async (req, res) => {
               status: { $ne: 'cancelled' }
             }).populate({
               path: 'room',
-              select: 'name images building',
+              select: 'name images building amenities capacity pricing',
               populate: {
                 path: 'building',
                 select: 'name address businessMapLink'
               }
-            }).select('room start end status member client')
+            })
+            .populate('invoice', 'invoice_number total')
+            .select('room start end status member client invoice payment')
           ]);
 
           // Fetch building common area images for "Day Pass Area"
@@ -1380,23 +1382,39 @@ export const getMyProfile = async (req, res) => {
             type: "daypass"
           }));
 
-          const mappedMeetings = rawMeetings.map(b => ({
-            _id: b._id,
-            roomId: b.room?._id,
-            roomName: b.room?.name,
-            roomBuildingName: b.room?.building?.name,
-            roomBuildingAddress: b.room?.building?.address,
-            roomBuildingMapLink: b.room?.building?.businessMapLink || null,
-            image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
-            images: b.room?.images || [],
-            start: b.start,
-            end: b.end,
-            slot: `${fmt(b.start)} - ${fmt(b.end)}`,
-            status: b.status,
-            bookedByMember: b.member,
-            bookedByClient: b.client,
-            type: "meeting"
-          }));
+          const mappedMeetings = rawMeetings.map(b => {
+            const bookingStart = new Date(b.start);
+            const bookingEnd = new Date(b.end);
+            const startTimeStr = bookingStart.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+            const endTimeStr = bookingEnd.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+
+            return {
+              bookingId: b._id,
+              status: b.status,
+              invoiceId: b.invoice?._id || undefined,
+              invoiceNumber: b.invoice?.invoice_number || undefined,
+              room: {
+                id: b.room?._id,
+                name: b.room?.name,
+                building: b.room?.building?.name,
+                buildingAddress: b.room?.building?.address,
+                buildingMapLink: b.room?.building?.businessMapLink || null,
+                image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+                images: b.room?.images || []
+              },
+              timing: {
+                start: b.start,
+                end: b.end,
+                slot: `${startTimeStr} - ${endTimeStr}`
+              },
+              amenities: b.room?.amenities || [],
+              capacity: b.room?.capacity,
+              images: b.room?.images || [],
+              totalPricing: b.invoice?.total || b.payment?.amount || 0,
+              creditsUsed: b.payment?.coveredCredits || 0,
+              type: "meeting"
+            };
+          });
 
           bookingsToday = [...mappedPasses, ...mappedMeetings];
         } else {
@@ -1419,13 +1437,14 @@ export const getMyProfile = async (req, res) => {
             const rawBookings = await MeetingBooking.find(bookingQuery)
               .populate({
                 path: 'room',
-                select: 'name images building',
+                select: 'name images building amenities capacity pricing',
                 populate: {
                   path: 'building',
                   select: 'name address businessMapLink'
                 }
               })
-              .select('room start end status member client');
+              .populate('invoice', 'invoice_number total')
+              .select('room start end status member client invoice payment');
 
             const fmt = (d) => {
               try {
@@ -1433,23 +1452,39 @@ export const getMyProfile = async (req, res) => {
               } catch { return null; }
             };
 
-            bookingsToday = rawBookings.map(b => ({
-              _id: b._id,
-              roomId: b.room?._id,
-              roomName: b.room?.name,
-              roomBuildingName: b.room?.building?.name,
-              roomBuildingAddress: b.room?.building?.address,
-              roomBuildingMapLink: b.room?.building?.businessMapLink || null,
-              image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
-              images: b.room?.images || [],
-              start: b.start,
-              end: b.end,
-              slot: `${fmt(b.start)} - ${fmt(b.end)}`,
-              status: b.status,
-              bookedByMember: b.member,
-              bookedByClient: b.client,
-              type: "meeting"
-            }));
+            bookingsToday = rawBookings.map(b => {
+              const bookingStart = new Date(b.start);
+              const bookingEnd = new Date(b.end);
+              const startTimeStr = bookingStart.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+              const endTimeStr = bookingEnd.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase();
+
+              return {
+                bookingId: b._id,
+                status: b.status,
+                invoiceId: b.invoice?._id || undefined,
+                invoiceNumber: b.invoice?.invoice_number || undefined,
+                room: {
+                  id: b.room?._id,
+                  name: b.room?.name,
+                  building: b.room?.building?.name,
+                  buildingAddress: b.room?.building?.address,
+                  buildingMapLink: b.room?.building?.businessMapLink || null,
+                  image: Array.isArray(b.room?.images) && b.room.images.length ? b.room.images[0] : null,
+                  images: b.room?.images || []
+                },
+                timing: {
+                  start: b.start,
+                  end: b.end,
+                  slot: `${startTimeStr} - ${endTimeStr}`
+                },
+                amenities: b.room?.amenities || [],
+                capacity: b.room?.capacity,
+                images: b.room?.images || [],
+                totalPricing: b.invoice?.total || b.payment?.amount || 0,
+                creditsUsed: b.payment?.coveredCredits || 0,
+                type: "meeting"
+              };
+            });
           }
         }
       } catch (e) {
@@ -1854,6 +1889,60 @@ export const getMyProfile = async (req, res) => {
       res.status(500).json({ success: false, message: "Internal Server Error" });
     }
   };
+
+/**
+ * deleteMyProfile - Soft-deletes the member and hard-deletes the associated User
+ */
+export const deleteMyProfile = async (req, res) => {
+  try {
+    const memberId = req.memberId;
+    if (!memberId) {
+      return res.status(400).json({ success: false, message: "Member ID not found in token" });
+    }
+
+    const member = await Member.findById(memberId);
+    if (!member) {
+      return res.status(404).json({ success: false, message: "Member record not found" });
+    }
+
+    if (member.isDeleted) {
+      return res.status(400).json({ success: false, message: "Member account is already deleted" });
+    }
+
+    // Hard-delete the associated User record if it exists
+    if (member.user) {
+      try {
+        await User.findByIdAndDelete(member.user);
+        console.log(`Hard-deleted user ${member.user} associated with member ${memberId}`);
+      } catch (userDelErr) {
+        console.warn(`Failed to hard-delete user ${member.user}:`, userDelErr.message);
+        // Non-blocking, but log it
+      }
+    }
+
+    // Soft-delete the Member record
+    member.isDeleted = true;
+    member.status = 'inactive';
+    // Clear user reference since the user is deleted
+    member.user = null;
+    await member.save();
+
+    // Log the activity
+    await logCRUDActivity(req, 'DELETE', 'Member', memberId, null, {
+      memberName: `${member.firstName} ${member.lastName || ''}`.trim(),
+      email: member.email,
+      reason: 'Self-deletion via portal'
+    });
+
+    res.json({
+      success: true,
+      message: "Member account deleted successfully. Access has been revoked."
+    });
+  } catch (err) {
+    console.error("deleteMyProfile error:", err);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
 
 // Override rsvpEvent if needed to enforce restrictions if called from here,
 // but rsvpEvent is usually in eventController.
