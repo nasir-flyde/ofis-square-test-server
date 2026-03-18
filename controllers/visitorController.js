@@ -189,7 +189,7 @@ export const requestCheckinNew = async (req, res) => {
       }
     }
     if (building) {
-      buildingDoc = await Building.findById(building);
+      const buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
         return res.status(400).json({ success: false, message: 'Invalid building id' });
       }
