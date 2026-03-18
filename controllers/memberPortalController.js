@@ -1843,7 +1843,8 @@ export const getMyProfile = async (req, res) => {
         const eventObj = event.toObject();
         return {
           ...eventObj,
-          rsvpDenied: restrictedEventIds.includes(event._id.toString())
+          rsvpDenied: restrictedEventIds.includes(event._id.toString()),
+          isRsvpDone: memberId ? (event.rsvps || []).some(id => id.toString() === memberId.toString()) : false
         };
       });
 

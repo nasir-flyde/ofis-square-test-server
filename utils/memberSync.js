@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import User from "../models/userModel.js";
 import Member from "../models/memberModel.js";
 import MatrixUser from "../models/matrixUserModel.js";
@@ -7,6 +8,7 @@ import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import Role from "../models/roleModel.js";
 import { logErrorActivity } from "../utils/activityLogger.js";
 
 /**
@@ -54,7 +56,19 @@ export const syncMemberToUser = async (memberId, memberData, req) => {
         }
         if (memberData.email) userUpdate.email = memberData.email.toLowerCase().trim();
         if (memberData.phone) userUpdate.phone = memberData.phone.trim();
-        if (memberData.role) userUpdate.role = memberData.role;
+        if (memberData.role) {
+            if (mongoose.Types.ObjectId.isValid(memberData.role)) {
+                userUpdate.role = memberData.role;
+            } else if (typeof memberData.role === 'string') {
+                const normalizedRole = memberData.role.toLowerCase().trim();
+                const roleDoc = await Role.findOne({ roleName: normalizedRole });
+                if (roleDoc) {
+                    userUpdate.role = roleDoc._id;
+                } else {
+                    console.warn(`syncMemberToUser: Could not resolve role name "${memberData.role}" to an ID`);
+                }
+            }
+        }
 
         const updatedUser = await User.findByIdAndUpdate(member.user, { $set: userUpdate }, { new: true });
 

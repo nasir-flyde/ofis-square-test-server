@@ -10,10 +10,13 @@ import {
   getApiLogsHealth
 } from '../controllers/apiLogsController.js';
 import authMiddleware from '../middlewares/authVerify.js';
+import { populateUserRole, requireSystemAdmin } from "../middlewares/rbacMiddleware.js";
 
 const router = express.Router();
-
 router.use(authMiddleware);
+router.use(populateUserRole);
+router.use(requireSystemAdmin);
+
 router.get('/', getApiLogs);
 router.get('/stats', getApiStats);
 router.get('/failures', getRecentFailures);

@@ -1,4 +1,5 @@
 import Building from "../models/buildingModel.js";
+import City from "../models/cityModel.js";
 import imagekit from "../utils/imageKit.js";
 import { createObjectCsvStringifier } from 'csv-writer';
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
@@ -324,6 +325,35 @@ export const createBuilding = async (req, res) => {
         type: 'Point',
         coordinates: [parseFloat(longitude), parseFloat(latitude)] // [longitude, latitude]
       };
+    }
+
+    // Add default wifiAccess for Gurugram
+    if (city) {
+      const cityDoc = await City.findById(city);
+      if (cityDoc) {
+        const cityName = cityDoc.name.toLowerCase().trim();
+        if (cityName === "gurugram" || cityName === "gururgram") {
+          buildingData.wifiAccess = {
+            enterpriseLevel: {
+              enabled: true,
+              nasRefs: [
+                "696dde95dac2caa5fbbca8b9",
+                "696dde95dac2caa5fbbca8ba",
+                "696dde95dac2caa5fbbca8bb",
+                "696dde95dac2caa5fbbca8bc",
+                "696dde95dac2caa5fbbca8bd"
+              ],
+              defaultValidityDays: 30
+            },
+            daypass: {
+              enabled: true,
+              nasRefs: [
+                "696dde95dac2caa5fbbca8bc"
+              ]
+            }
+          };
+        }
+      }
     }
 
     if (openingTime) buildingData.openingTime = String(openingTime);

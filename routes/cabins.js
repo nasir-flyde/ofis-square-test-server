@@ -12,6 +12,7 @@ import {
   exportMasterFile,
   blockCabin,
   releaseCabinBlock,
+  releaseAllBlocks,
   listCabinBlocks,
   allocateCabinFromBlock,
   importCabinsFromCSV,
@@ -54,6 +55,7 @@ router.get("/building/:buildingId/available", getAvailableCabinsByBuilding);
 // Cabin blocking APIs
 router.post("/:id/block", authMiddleware, blockCabin);
 router.get("/:id/blocks", authMiddleware, listCabinBlocks);
+router.post("/:id/blocks/release-all", authMiddleware, releaseAllBlocks);
 router.post("/:id/blocks/:blockId/release", authMiddleware, releaseCabinBlock);
 router.post("/:id/blocks/:blockId/allocate", authMiddleware, allocateCabinFromBlock);
 

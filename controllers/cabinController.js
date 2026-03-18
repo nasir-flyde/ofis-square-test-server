@@ -656,6 +656,39 @@ export const releaseCabinBlock = async (req, res) => {
   }
 };
 
+// Release all blocks on a cabin
+export const releaseAllBlocks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cabin = await Cabin.findById(id);
+    if (!cabin) return res.status(404).json({ success: false, message: 'Cabin not found' });
+
+    let releasedCount = 0;
+    const now = new Date();
+    (cabin.blocks || []).forEach(blk => {
+      if (blk.status === 'active') {
+        blk.status = 'released';
+        blk.updatedBy = req.user?.id;
+        blk.updatedAt = now;
+        releasedCount++;
+      }
+    });
+
+    if (cabin.status === 'blocked') {
+      cabin.status = 'available';
+    }
+
+    await cabin.save();
+
+    await logCRUDActivity(req, 'UPDATE', 'Cabin', cabin._id, null, { action: 'all_blocks_released', releasedCount });
+
+    return res.json({ success: true, message: `Successfully released ${releasedCount} active blocks`, releasedCount });
+  } catch (error) {
+    await logErrorActivity(req, 'UPDATE', 'Cabin', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // List blocks for a cabin (auto-expiring past blocks)
 export const listCabinBlocks = async (req, res) => {
   try {

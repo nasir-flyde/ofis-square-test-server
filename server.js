@@ -95,7 +95,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // }));
 
 app.use("/api", apiRoutes);
-app.use("/api/gst", gstRoutes);
+app.use("/api/billing/gst", gstRoutes);
 app.use("/api/bank-details", bankDetailsRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 

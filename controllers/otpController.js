@@ -5,6 +5,7 @@ import Client from "../models/clientModel.js";
 import Guest from "../models/guestModel.js";
 import OTP from "../models/otpModel.js";
 import { SendSMS, generateOtp } from "../services/smsService.js";
+import { generateAuthTokens } from "../utils/authHelpers.js";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
@@ -12,7 +13,7 @@ dotenv.config();
 // Send OTP for any role-based login
 export const sendOtpForLogin = async (req, res) => {
   try {
-    const { phone, name, email } = req.body;
+    const { phone } = req.body;
     
     if (!phone) {
       return res.status(400).json({ success: false, message: "Phone number is required" });
@@ -23,10 +24,15 @@ export const sendOtpForLogin = async (req, res) => {
       return res.status(400).json({ success: false, message: "Please enter a valid 10-digit phone number" });
     }
 
-    // Find user by phone (do not auto-create)
+    // Find user by phone
     const user = await User.findOne({ phone: normalizedPhone }).populate('role');
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found for this phone number" });
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Check if user has a phone number
+    if (!user.phone) {
+      return res.status(400).json({ success: false, message: "User does not have a registered phone number for OTP" });
     }
     const existedBefore = true;
 
@@ -51,7 +57,7 @@ export const sendOtpForLogin = async (req, res) => {
     });
 
     // Send SMS and always log OTP for testing
-    const smsText = `Your OTP to log in to ExPro is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
+    const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
     
     try {
@@ -117,6 +123,10 @@ export const verifyOtpAndLogin = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+    if (user.isAdminVerified === false) {
+      return res.status(403).json({ success: false, message: "Your account is pending GM verification. Please contact GM." });
+    }
+
     // Mark phone as verified
     await User.updateOne({ _id: user._id }, { isPhoneVerified: true });
 
@@ -124,26 +134,23 @@ export const verifyOtpAndLogin = async (req, res) => {
     await OTP.deleteOne({ _id: otpRecord._id });
 
     // Generate JWT based on role
-    let tokenPayload = {
-      id: user._id,
-      phone: user.phone,
-      roleName: user.role?.roleName || 'client'
-    };
-
+    let additionalData = {};
     let memberAllowedUsingCredits;
+
     if (user.role?.roleName === 'member') {
       const member = await Member.findOne({ user: user._id }).populate('client');
       if (member) {
-        tokenPayload.memberId = member._id;
-        tokenPayload.clientId = member.client?._id;
+        additionalData.memberId = member._id;
+        additionalData.clientId = member.client?._id;
         memberAllowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' 
           ? member.allowedUsingCredits 
           : true;
+        additionalData.allowedUsingCredits = memberAllowedUsingCredits;
       }
     } else if (user.role?.roleName === 'client') {
       const client = await Client.findOne({ ownerUser: user._id });
       if (client) {
-        tokenPayload.clientId = client._id;
+        additionalData.clientId = client._id;
       }
     } else if (user.role?.roleName === 'ondemanduser') {
       const guest = await Guest.findOne({
@@ -153,16 +160,16 @@ export const verifyOtpAndLogin = async (req, res) => {
         ],
       });
       if (guest) {
-        tokenPayload.guestId = guest._id;
+        additionalData.guestId = guest._id;
       }
     } else if (user.role?.roleName === 'community') {
-      // include buildingId in token
-      if (user.buildingId) tokenPayload.buildingId = user.buildingId;
+      if (user.buildingId) additionalData.buildingId = user.buildingId;
     }
 
-    const token = jwt.sign(tokenPayload, process.env.JWT_SECRET || "ofis-square-secret-key", {
-      expiresIn: "7d"
-    });
+    // Use generateAuthTokens for consistent admin experience, or legacy sign for others if preferred
+    // For now, let's use generateAuthTokens for all to support modern refresh flow where applicable
+    const { accessToken, refreshToken } = await generateAuthTokens(user, user.role, req, additionalData);
+    const token = accessToken;
 
     // Build safeUser object aligned with other auth endpoints
     const safeUser = {
@@ -170,30 +177,28 @@ export const verifyOtpAndLogin = async (req, res) => {
       name: user.name,
       email: user.email,
       phone: user.phone,
-      role: user.role?._id || user.role,
+      role: user.role, // Full populated role object with permissions
       roleName: user.role?.roleName,
-      ...(user.role?.roleName === 'community' ? { buildingId: user.buildingId } : {}),
+      buildingId: user.buildingId,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
       ...(user.role?.roleName === 'member' && typeof memberAllowedUsingCredits !== 'undefined' 
         ? { allowedUsingCredits: memberAllowedUsingCredits } 
         : {}),
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
     };
 
-    // Build response object similar to specific role logins while keeping success for compatibility
+    // Build final response object exactly matching adminLogin structure
     const responseData = {
-      success: true,
-      message: "Login successful",
-      token,
+      accessToken,
+      refreshToken,
       user: safeUser,
-      loginType: user.role?.roleName || 'client'
+      token: accessToken // Legacy support
     };
 
-    // Add role-specific IDs to match respective login formats
-    if (tokenPayload.memberId) responseData.memberId = tokenPayload.memberId;
-    if (tokenPayload.clientId) responseData.clientId = tokenPayload.clientId;
-    if (tokenPayload.guestId) responseData.guestId = tokenPayload.guestId;
-    if (user.role?.roleName === 'community' && user.buildingId) responseData.buildingId = user.buildingId;
+    // Add role-specific IDs for other portals if applicable
+    if (additionalData.memberId) responseData.memberId = additionalData.memberId;
+    if (additionalData.clientId) responseData.clientId = additionalData.clientId;
+    if (additionalData.guestId) responseData.guestId = additionalData.guestId;
     if (user.role?.roleName === 'member' && typeof memberAllowedUsingCredits !== 'undefined') {
       responseData.allowedUsingCredits = memberAllowedUsingCredits;
     }
@@ -242,7 +247,7 @@ export const resendOtp = async (req, res) => {
 
     // Send SMS
     try {
-      const smsText = `Your OTP to log in to ExPro is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
+      const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
       await SendSMS({ phone: normalizedPhone, message: smsText });
     } catch (err) {
       console.error('SMS sending failed:', err);

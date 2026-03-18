@@ -567,8 +567,15 @@ export const getAvailableRoomsByTime = async (req, res) => {
       else return res.status(400).json({ success: false, message: "Invalid capacity" });
     }
 
-    if (typeof floor === 'string') roomFilter.floor = floor;
-    else if (floor) return res.status(400).json({ success: false, message: "Invalid floor format" });
+    if (floor) {
+      // Support string or array of strings for floor
+      if (Array.isArray(floor)) roomFilter.floor = { $in: floor };
+      else if (typeof floor === 'string') {
+        const floors = floor.split(",").map(f => f.trim()).filter(Boolean);
+        if (floors.length > 1) roomFilter.floor = { $in: floors };
+        else if (floors.length === 1) roomFilter.floor = floors[0];
+      }
+    }
 
     if (amenities) {
       const amenityIds = Array.isArray(amenities)
@@ -672,22 +679,33 @@ export const getAvailableRoomsByTime = async (req, res) => {
     const requestedDay = targetDate.getUTCDay();
 
     for (const room of rooms) {
-      if (room.isBookingClosed) continue;
+      let bookingStatus = "available";
+      let statusPriority = 0; // 0: available, 1: starting soon, 2: busy
 
       // ---- DAY OF WEEK AVAILABILITY CHECK ----
       if (room.availability && Array.isArray(room.availability.daysOfWeek)) {
         if (!room.availability.daysOfWeek.includes(requestedDay)) {
-          continue;
+          bookingStatus = "busy";
+          statusPriority = 2;
         }
       }
 
       // ---- BLACKOUT DATES CHECK ----
-      if (Array.isArray(room.blackoutDates)) {
+      if (bookingStatus === "available" && Array.isArray(room.blackoutDates)) {
         const isBlackout = room.blackoutDates.some(bd => {
           const bdDate = new Date(bd);
           return !isNaN(bdDate.getTime()) && bdDate.toISOString().split('T')[0] === targetDateISO;
         });
-        if (isBlackout) continue;
+        if (isBlackout) {
+          bookingStatus = "busy";
+          statusPriority = 2;
+        }
+      }
+
+      // ---- BOOKING CLOSED CHECK ----
+      if (bookingStatus === "available" && room.isBookingClosed) {
+        bookingStatus = "busy";
+        statusPriority = 2;
       }
 
       const roomBookings = bookingsByRoom.get(String(room._id)) || [];
@@ -695,7 +713,7 @@ export const getAvailableRoomsByTime = async (req, res) => {
       let integrityError = false;
 
       // Unified format helper
-      const formatResponseRoom = (r, slots, reservations) => {
+      const formatResponseRoom = (r, slots, reservations, bStatus) => {
         const bldgId = r.building.toString();
         const bldg = buildingMap.get(bldgId);
         const fLabel = formatFloorLabel(r.floor);
@@ -705,7 +723,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
           amenities: r.amenities.map(id => amenityMap.get(id.toString())).filter(Boolean),
           floor: fLabel ? `${fLabel} floor` : r.floor,
           availableTimeSlots: slots,
-          reservedSlots: reservations
+          reservedSlots: reservations,
+          bookingStatus: bStatus
         };
       };
 
@@ -775,16 +794,33 @@ export const getAvailableRoomsByTime = async (req, res) => {
 
       // 2. Decide if room should be included based on Mode
       if (searchMode === "range") {
-        // Range Mode: Must be completely free in requested window
-        // (i.e. No booking or reservation overlap)
-        const hasBookingConflict = roomBookings.length > 0; // The booking query already filtered for overlap
-        const hasReservedConflict = dailyReserved.some(resv => {
+        // Range Mode: Calculate status based on conflicts
+        const hasBookingConflict = roomBookings.length > 0;
+        const dailyReservedConflict = dailyReserved.filter(resv => {
           const resvStart = parse12h(resv.startTime, targetDate);
           const resvEnd = parse12h(resv.endTime, targetDate);
           return timeOverlap(requestedStart, requestedEnd, resvStart, resvEnd);
         });
+        const hasReservedConflict = dailyReservedConflict.length > 0;
 
-        // Merge actual bookings and reserved items for the response
+        if (bookingStatus === "available" && (hasBookingConflict || hasReservedConflict)) {
+          // Find earliest conflict start
+          const starts = [
+            ...roomBookings.map(b => new Date(b.start).getTime()),
+            ...dailyReservedConflict.map(r => parse12h(r.startTime, targetDate).getTime())
+          ].filter(t => !isNaN(t));
+
+          const earliestConflict = new Date(Math.min(...starts));
+          const diffMinutes = (earliestConflict.getTime() - requestedStart.getTime()) / (1000 * 60);
+
+          if (diffMinutes > 0 && diffMinutes <= 15) {
+            bookingStatus = "starting soon";
+          } else {
+            bookingStatus = "busy";
+          }
+        }
+
+        // Merge actual bookings and reserved items
         const filteredReserved = [
           ...roomBookings.map(b => ({
             startTime: toSlot12h(b.start),
@@ -798,27 +834,26 @@ export const getAvailableRoomsByTime = async (req, res) => {
           }))
         ];
 
-        if (!hasBookingConflict && !hasReservedConflict) {
-          availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved));
-        }
+        availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved, bookingStatus));
       } else {
-        // Daily Mode: Must have at least one free slot
-        if (freeSlots.length > 0) {
-          // Merge actual bookings and reserved items for the response
-          const filteredReserved = [
-            ...roomBookings.map(b => ({
-              startTime: toSlot12h(b.start),
-              endTime: toSlot12h(b.end),
-              bookingId: b._id
-            })),
-            ...dailyReserved.map(resv => ({
-              startTime: resv.startTime,
-              endTime: resv.endTime,
-              bookingId: resv.bookingId
-            }))
-          ];
-          availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved));
+        // Daily Mode: Status is available if there's any free slot
+        if (bookingStatus === "available" && freeSlots.length === 0) {
+          bookingStatus = "busy";
         }
+
+        const filteredReserved = [
+          ...roomBookings.map(b => ({
+            startTime: toSlot12h(b.start),
+            endTime: toSlot12h(b.end),
+            bookingId: b._id
+          })),
+          ...dailyReserved.map(resv => ({
+            startTime: resv.startTime,
+            endTime: resv.endTime,
+            bookingId: resv.bookingId
+          }))
+        ];
+        availableRooms.push(formatResponseRoom(room, freeSlots, filteredReserved, bookingStatus));
       }
     }
 
