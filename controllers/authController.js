@@ -484,6 +484,7 @@ export const sendCommunityOtp = async (req, res) => {
     // Import OTP model and SMS service dynamically
     const OTP = (await import("../models/otpModel.js")).default;
     const { SendSMS, generateOtp } = await import("../services/smsService.js");
+    const { sendWhatsAppOTP } = await import("../services/interaktService.js");
 
     // Generate OTP
     const otp = normalizedPhone === '9991112323' ? '123456' : generateOtp();
@@ -498,15 +499,26 @@ export const sendCommunityOtp = async (req, res) => {
       expiresAt
     });
 
-    // Send SMS
+    // Send SMS + WhatsApp OTP
     const smsText = `Your OTP to log in to Community Portal is ${otp}. It is valid for 10 minutes. Do not share it with anyone.`;
     console.log(`🔐 Community OTP for ${normalizedPhone}: ${otp}`);
 
     try {
-      await SendSMS({ phone: normalizedPhone, message: smsText });
-      console.log('SMS sent successfully');
+      const results = await Promise.allSettled([
+        SendSMS({ phone: normalizedPhone, message: smsText }),
+        sendWhatsAppOTP({ phone: normalizedPhone, otp })
+      ]);
+
+      results.forEach((result, index) => {
+        const type = index === 0 ? 'SMS' : 'WhatsApp';
+        if (result.status === 'fulfilled') {
+          console.log(`✅ ${type} sent successfully to ${normalizedPhone}`);
+        } else {
+          console.error(`❌ ${type} sending failed for ${normalizedPhone}:`, result.reason);
+        }
+      });
     } catch (err) {
-      console.error('SMS sending failed:', err);
+      console.error('Unexpected error in message sending batch:', err);
     }
 
     await logAuthActivity(req, 'OTP_SENT', 'SUCCESS', null, {

