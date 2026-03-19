@@ -8,7 +8,7 @@ import { SendSMS, generateOtp } from "../services/smsService.js";
 import mongoose from "mongoose";
 import { syncUserToMember } from "../utils/memberSync.js";
 
-const GM_PHONE = "7709690538";
+const GM_PHONE = "9811517852";
 
 const sendOtpToGM = async (purpose) => {
   const otp = generateOtp();
@@ -786,7 +786,7 @@ export const checkUniqueness = async (req, res) => {
     const orCondition = [];
     if (email) orCondition.push({ email: email.toLowerCase().trim() });
     if (phone) orCondition.push({ phone: phone.trim() });
-    
+
     if (orCondition.length > 0) {
       query.$or = orCondition;
     }
