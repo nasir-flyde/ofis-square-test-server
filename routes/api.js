@@ -67,6 +67,7 @@ import discountBundleRoutes from "./discountBundles.js";
 import docSupportRoutes from "./docSupportRoutes.js";
 import printerRoutes from "./printer.js";
 import appRequestsRoutes from "./appRequests.js";
+import gstRoutes from "./gstRoutes.js";
 
 const router = express.Router();
 
@@ -139,5 +140,6 @@ router.use("/discount-bundles", discountBundleRoutes);
 router.use("/doc-support", docSupportRoutes);
 router.use("/printer", printerRoutes);
 router.use("/app-requests", appRequestsRoutes);
+router.use("/gst", gstRoutes);
 
 export default router;
