@@ -10,7 +10,8 @@ import {
   syncProformaFromZoho,
   convertProformaToInvoice,
   approveProforma,
-  rejectProforma
+  rejectProforma,
+  deleteProforma
 } from "../controllers/estimateController.js";
 
 const router = express.Router();
@@ -40,6 +41,7 @@ router.post(
 router.post("/:id/sync", authMiddleware, checkPermission(PERMISSIONS.INVOICE_READ), syncProformaFromZoho);
 router.post("/:id/approve", authMiddleware, checkPermission(PERMISSIONS.INVOICE_APPROVE), approveProforma);
 router.post("/:id/reject", authMiddleware, checkPermission(PERMISSIONS.INVOICE_APPROVE), rejectProforma);
+router.delete("/:id", authMiddleware, checkPermission(PERMISSIONS.INVOICE_DELETE), deleteProforma);
 
 
 export default router;

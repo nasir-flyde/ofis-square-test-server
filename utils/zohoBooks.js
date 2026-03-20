@@ -12,6 +12,122 @@ function formatDateToISO(date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * Normalizes Indian state codes/names to a two-letter uppercase token (e.g., 'HR', 'KL').
+ * Handles numeric GST state codes (e.g., '06', '32') and full state names.
+ */
+function normalizeStateToken(v) {
+  if (!v) return '';
+  let s = String(v).trim().toUpperCase();
+  // Handle common numeric GST codes -> alpha
+  const numMap = {
+    '01': 'JK', '02': 'HP', '03': 'PB', '04': 'CH', '05': 'UT', '06': 'HR', '07': 'DL', '08': 'RJ', '09': 'UP', '10': 'BR',
+    '11': 'SK', '12': 'AR', '13': 'AS', '14': 'NL', '15': 'MN', '16': 'ML', '17': 'TR', '18': 'MZ', '19': 'WB', '20': 'JH',
+    '21': 'OD', '22': 'CT', '23': 'MP', '24': 'GJ', '25': 'DD', '26': 'DN', '27': 'MH', '28': 'AP', '29': 'KA', '30': 'GA',
+    '31': 'LD', '32': 'KL', '33': 'TN', '34': 'PY', '35': 'AN', '36': 'TS', '37': 'AP', '38': 'LA'
+  };
+  if (/^\d{2}$/.test(s) && numMap[s]) return numMap[s];
+  // If it's a GST No (15 chars), take first 2 digits
+  if (/^\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{3}$/.test(s)) {
+    const code = s.substring(0, 2);
+    if (numMap[code]) return numMap[code];
+  }
+  // Strip any separators like 'IN-XX' or 'XX-YY'
+  if (s.includes('-')) s = s.split('-').pop();
+  s = s.replace(/[^A-Z]/g, '');
+  // Map names and already-alpha codes
+  const map = {
+    'ANDAMAN AND NICOBAR': 'AN', 'ANDHRA PRADESH': 'AP', 'ARUNACHAL PRADESH': 'AR', 'ASSAM': 'AS', 'BIHAR': 'BR',
+    'CHANDIGARH': 'CH', 'CHHATTISGARH': 'CT', 'DADRA AND NAGAR HAVELI': 'DN', 'DAMAN AND DIU': 'DD',
+    'DELHI': 'DL', 'NCTOFDELHI': 'DL', 'GOA': 'GA', 'GUJARAT': 'GJ', 'HARYANA': 'HR', 'HIMACHAL PRADESH': 'HP',
+    'JAMMU AND KASHMIR': 'JK', 'JHARKHAND': 'JH', 'KARNATAKA': 'KA', 'KERALA': 'KL', 'LADAKH': 'LA', 'LAKSHADWEEP': 'LD',
+    'MADHYA PRADESH': 'MP', 'MAHARASHTRA': 'MH', 'MANIPUR': 'MN', 'MEGHALAYA': 'ML', 'MIZORAM': 'MZ', 'NAGALAND': 'NL',
+    'ODISHA': 'OD', 'ORISSA': 'OD', 'PUDUCHERRY': 'PY', 'PUNJAB': 'PB', 'RAJASTHAN': 'RJ', 'SIKKIM': 'SK',
+    'TAMIL NADU': 'TN', 'TELANGANA': 'TS', 'TRIPURA': 'TR', 'UTTAR PRADESH': 'UP', 'UTTARAKHAND': 'UK', 'WEST BENGAL': 'WB',
+    'AN': 'AN', 'AP': 'AP', 'AR': 'AR', 'AS': 'AS', 'BR': 'BR', 'CH': 'CH', 'CT': 'CT', 'DD': 'DD', 'DL': 'DL', 'DN': 'DN', 'GA': 'GA', 'GJ': 'GJ', 'HP': 'HP', 'HR': 'HR', 'JH': 'JH', 'JK': 'JK', 'KA': 'KA', 'KL': 'KL', 'LA': 'LA', 'LD': 'LD', 'MH': 'MH', 'ML': 'ML', 'MN': 'MN', 'MP': 'MP', 'MZ': 'MZ', 'NL': 'NL', 'OD': 'OD', 'PB': 'PB', 'PY': 'PY', 'RJ': 'RJ', 'SK': 'SK', 'TN': 'TN', 'TR': 'TR', 'TS': 'TS', 'UK': 'UK', 'UP': 'UP', 'WB': 'WB'
+  };
+  return map[s] || s;
+}
+
+async function getZohoTaxesList() {
+  const authToken = await getValidAccessToken();
+  if (!ORG_ID) throw new Error('ZOHO_ORG_ID is not configured');
+  const url = `${BASE_URL}/settings/taxes?organization_id=${ORG_ID}`;
+  const res = await fetch(url, { method: 'GET', headers: { Authorization: `Zoho-oauthtoken ${authToken}` } });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { parse_error: true, raw: text }; }
+  if (!res.ok) return { taxes: [], taxgroups: [] };
+  return { taxes: Array.isArray(data?.taxes) ? data.taxes : [], taxgroups: Array.isArray(data?.tax_groups) ? data.tax_groups : [] };
+}
+
+function pickTaxForRate({ taxes, taxgroups }, rate, isInterstate) {
+  if (!rate || rate <= 0) return null;
+  const norm = (v) => Number(v);
+  const rateEq = (r, x) => typeof r === 'number' && !Number.isNaN(r) && Math.abs(r - x) < 0.001;
+  if (isInterstate) {
+    const matchIgst = taxes.find((t) => {
+      const r = norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage);
+      const name = String(t?.tax_name || t?.name || '').toUpperCase();
+      return rateEq(r, rate) && (name.includes('IGST') || name.includes('INTEGRATED'));
+    });
+    if (matchIgst?.tax_id) return { kind: 'tax', id: matchIgst.tax_id };
+    const anyTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+    if (anyTax?.tax_id) return { kind: 'tax', id: anyTax.tax_id };
+    return null;
+  }
+  const matchGroup = taxgroups.find((g) => rateEq(norm(g?.tax_percentage ?? g?.rate ?? g?.tax_rate ?? g?.percentage), rate));
+  if (matchGroup?.tax_group_id) return { kind: 'group', id: matchGroup.tax_group_id };
+  const matchTax = taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), rate));
+  if (matchTax?.tax_id) return { kind: 'tax', id: matchTax.tax_id };
+  return null;
+}
+
+/**
+ * Robust retry for Zoho document creation when tax mismatch occurs (interstate vs intrastate).
+ */
+async function retryZohoDocumentWithCorrectTax({ url, headers, payload, taxes, taxgroups, defaultTaxPercent, errMsg }) {
+  const msgStr = String(errMsg || '').toLowerCase();
+  const needsIgst = msgStr.includes('igst has to be applied') || msgStr.includes('interstate transaction');
+  const needsGroup = msgStr.includes('igst cannot be applied') || msgStr.includes('intrastate transaction');
+
+  if (!needsIgst && !needsGroup) return null;
+
+  console.log(`[Zoho:Retry] State mismatch detected. Needs IGST? ${needsIgst}, Needs Group? ${needsGroup}. Retrying...`);
+  const retryChosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, needsIgst);
+  if (!retryChosenTax) return null;
+
+  const retryPayload = {
+    ...payload,
+    tax_id: retryChosenTax.kind === 'tax' ? retryChosenTax.id : undefined,
+    tax_group_id: retryChosenTax.kind === 'group' ? retryChosenTax.id : undefined,
+    line_items: Array.isArray(payload.line_items)
+      ? payload.line_items.map((li) => ({
+          ...li,
+          tax_id: retryChosenTax.kind === 'tax' ? retryChosenTax.id : undefined,
+          tax_group_id: undefined // Groups NOT used at item level in Zoho
+        }))
+      : payload.line_items
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(retryPayload)
+  });
+  const text = await response.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = text; }
+
+  if (!response.ok) {
+    const finalMsg = data?.message || `Zoho retry failed (status ${response.status})`;
+    console.error(`[Zoho:Retry] Final failure:`, finalMsg);
+    throw new Error(finalMsg);
+  }
+  console.log(`[Zoho:Retry] Success!`);
+  return data;
+}
+
 export async function getContacts() {
   try {
     const authToken = await getValidAccessToken();
@@ -598,11 +714,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     }
 
     // Compute a safe place_of_supply code for payload usage
-    const placeOfSupplyCode = (typeof posCode !== 'undefined' && posCode)
-      ? posCode
-      : (normalizeStateToken((derivedPlaceOfSupply || '').trim())
-        || normalizeStateToken((invoiceDoc?.place_of_supply || '').trim())
-        || normalizeStateToken((process.env.ZOHO_ORG_STATE_CODE || '').trim()));
+    const placeOfSupplyCode = posCode || orgStateCode;
 
     const line_items = itemsArray.map((it) => {
       const li = {
@@ -698,61 +810,12 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
         const errMsg = data?.message || data?.code || `Zoho API error (status ${response.status})`;
         console.error("ZohoBooks:createInvoice error payload:", typeof data === 'object' ? JSON.stringify(data, null, 2) : data);
 
-        // Fallback: if Zoho insists IGST must be applied, retry with IGST (single tax_id) instead of CGST/SGST group
-        const msgStr = String(errMsg || '').toLowerCase();
-        const isIgstError = msgStr.includes('igst has to be applied');
-        const wasGroupSelected = !!payload.tax_group_id && !payload.tax_id;
-        if (isIgstError) {
-          try {
-            // Fetch taxes to pick an IGST tax matching our rate
-            const { taxes } = await (async () => {
-              try { return await getZohoTaxesList(); } catch { return { taxes: [], taxgroups: [] }; }
-            })();
-            const norm = (v) => Number(v);
-            const rateEq = (r, x) => typeof r === 'number' && !Number.isNaN(r) && Math.abs(r - x) < 0.001;
-            const findIgst = (r) => taxes.find((t) => {
-              const tr = norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage);
-              const name = String(t?.tax_name || t?.name || '').toUpperCase();
-              return rateEq(tr, r) && (name.includes('IGST') || name.includes('INTEGRATED'));
-            });
-            const igstTax = findIgst(defaultTaxPercent) || taxes.find((t) => rateEq(norm(t?.tax_percentage ?? t?.rate ?? t?.tax_rate ?? t?.percentage), defaultTaxPercent));
-
-            if (igstTax?.tax_id) {
-              const retryPayload = {
-                ...payload,
-                tax_group_id: undefined,
-                tax_id: igstTax.tax_id,
-                line_items: Array.isArray(payload.line_items)
-                  ? payload.line_items.map((li) => ({ ...li, tax_id: igstTax.tax_id }))
-                  : payload.line_items
-              };
-
-              const retryRes = await fetch(url, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(retryPayload)
-              });
-              const retryText = await retryRes.text();
-              let retryData;
-              try { retryData = retryText ? JSON.parse(retryText) : {}; } catch { retryData = retryText; }
-
-              await apiLogger.logResponse({
-                requestId,
-                statusCode: retryRes.status,
-                responseHeaders: Object.fromEntries(retryRes.headers.entries()),
-                responseBody: retryData,
-                success: retryRes.ok,
-                errorMessage: retryRes.ok ? null : (retryData?.message || `HTTP ${retryRes.status}`)
-              });
-
-              if (retryRes.ok) {
-                return retryData;
-              }
-            }
-          } catch (retryErr) {
-            console.warn('[ZohoBooks] IGST fallback retry failed:', retryErr?.message || retryErr);
-          }
-        }
+        // State-mismatch retry
+        const { taxes, taxgroups } = await getZohoTaxesList();
+        const retryData = await retryZohoDocumentWithCorrectTax({
+          url, headers, payload, taxes, taxgroups, defaultTaxPercent, errMsg
+        });
+        if (retryData) return retryData;
 
         throw new Error(errMsg);
       }
@@ -1102,37 +1165,15 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
     const gstTreatment = estimateDoc?.gst_treatment || "business_gst";
     const zeroTax = !(Number(defaultTaxPercent) > 0);
 
-    // Normalize place_of_supply to valid two-letter Indian state code (e.g., MH, DL)
-    function normalizePlaceOfSupply(raw) {
-      if (!raw || typeof raw !== 'string') return null;
-      let s = raw.trim().toUpperCase();
-      if (s.includes('-')) s = s.split('-').pop();
-      s = s.replace(/[^A-Z]/g, '');
-      // Map names and already-alpha codes
-      const VALID_CODES = new Set([
-        'AN', 'AP', 'AR', 'AS', 'BR', 'CH', 'CT', 'DD', 'DL', 'DN', 'GA', 'GJ', 'HP', 'HR', 'JH', 'JK', 'KA', 'KL', 'LA', 'LD', 'MH', 'ML', 'MN', 'MP', 'MZ', 'NL', 'OD', 'OR', 'PB', 'PY', 'RJ', 'SK', 'TN', 'TR', 'TS', 'UK', 'UP', 'WB'
-      ]);
-      if (VALID_CODES.has(s)) return s === 'OR' ? 'OD' : s;
-      const NAME_TO_CODE = {
-        'ANDAMAN AND NICOBAR': 'AN', 'ANDHRA PRADESH': 'AP', 'ARUNACHAL PRADESH': 'AR', 'ASSAM': 'AS', 'BIHAR': 'BR',
-        'CHANDIGARH': 'CH', 'CHHATTISGARH': 'CT', 'DADRA AND NAGAR HAVELI': 'DN', 'DAMAN AND DIU': 'DD', 'DELHI': 'DL',
-        'GOA': 'GA', 'GUJARAT': 'GJ', 'HARYANA': 'HR', 'HIMACHAL PRADESH': 'HP', 'JAMMU AND KASHMIR': 'JK', 'JHARKHAND': 'JH',
-        'KARNATAKA': 'KA', 'KERALA': 'KL', 'LADAKH': 'LA', 'LAKSHADWEEP': 'LD', 'MADHYA PRADESH': 'MP', 'MAHARASHTRA': 'MH',
-        'MANIPUR': 'MN', 'MEGHALAYA': 'ML', 'MIZORAM': 'MZ', 'NAGALAND': 'NL', 'ODISHA': 'OD', 'UTTARAKHAND': 'UK', 'PUDUCHERRY': 'PY',
-        'PUNJAB': 'PB', 'RAJASTHAN': 'RJ', 'SIKKIM': 'SK', 'TAMIL NADU': 'TN', 'TELANGANA': 'TS', 'TRIPURA': 'TR', 'UTTAR PRADESH': 'UP', 'WEST BENGAL': 'WB'
-      };
-      for (const [name, code] of Object.entries(NAME_TO_CODE)) { if (s.includes(name)) return code; }
-      return null;
-    }
-    const orgStateCode = normalizePlaceOfSupply((estimateDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim());
-    let normalizedPOS = normalizePlaceOfSupply(estimateDoc?.place_of_supply);
-    if (!normalizedPOS && clientDoc) {
-      const til = Array.isArray(clientDoc.taxInfoList) ? clientDoc.taxInfoList : [];
-      const primary = til.find((t) => t.is_primary) || til[0];
-      normalizedPOS = normalizePlaceOfSupply(primary?.place_of_supply)
-        || normalizePlaceOfSupply(clientDoc?.billingAddress?.state_code)
-        || normalizePlaceOfSupply(clientDoc?.billingAddress?.state);
-    }
+    // Normalize state codes for comparison
+    const orgStateRaw = (estimateDoc?.gst_no ? estimateDoc.gst_no.substring(0, 2) : '') || process.env.ZOHO_ORG_STATE_CODE || '';
+    const orgStateCode = normalizeStateToken(orgStateRaw);
+
+    const derivedPlaceOfSupply = estimateDoc?.place_of_supply
+      || normalizeStateToken(clientDoc?.billingAddress?.state_code)
+      || normalizeStateToken(clientDoc?.billingAddress?.state)
+      || '';
+    const posCode = normalizeStateToken(derivedPlaceOfSupply) || orgStateCode;
 
     async function getZohoTaxesList() {
       const authToken = await getValidAccessToken();
@@ -1177,15 +1218,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
     let chosenTax = null;
     if (!zeroTax) {
       const { taxes, taxgroups } = await getZohoTaxesList();
-      let isInterstate;
-      if (orgStateCode && normalizedPOS) {
-        isInterstate = orgStateCode !== normalizedPOS;
-      } else if (!orgStateCode && normalizedPOS) {
-        // If org state unknown but POS known, default to interstate to satisfy Zoho
-        isInterstate = true;
-      } else {
-        isInterstate = false;
-      }
+      const isInterstate = !!(orgStateCode && posCode && orgStateCode !== posCode);
       chosenTax = pickTaxForRate({ taxes, taxgroups }, defaultTaxPercent, isInterstate);
       // Robust fallback like invoice flow
       if (!chosenTax) {
@@ -1201,7 +1234,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
           }
         }
       }
-      try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: normalizedPOS }); } catch (_) { }
+      try { console.log("[ZohoBooks][Estimate] Tax selection:", { defaultTaxPercent, isInterstate, chosenTax, orgStateCode, pos: posCode }); } catch (_) { }
     }
 
     const liFormatted = itemsArray.map((it) => {
@@ -1242,7 +1275,7 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
               .slice(0, 10)}`
           : "Terms & Conditions apply",
       ...(estimateDoc?.gst_treatment ? { gst_treatment: estimateDoc.gst_treatment } : {}),
-      ...(normalizedPOS ? { place_of_supply: normalizedPOS } : {}),
+      ...(posCode ? { place_of_supply: posCode } : {}),
       ...(estimateDoc?.gst_no ? { gst_no: estimateDoc.gst_no } : {}),
       ...(!zeroTax && chosenTax
         ? (chosenTax.kind === "tax" ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
@@ -1288,6 +1321,14 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       if (!response.ok) {
         const errMsg = data?.message || data?.code || `Zoho API error (status ${response.status})`;
         console.error("ZohoBooks:createEstimate error payload:", typeof data === "object" ? JSON.stringify(data, null, 2) : data);
+
+        // State-mismatch retry
+        const { taxes, taxgroups } = await getZohoTaxesList();
+        const retryData = await retryZohoDocumentWithCorrectTax({
+          url, headers, payload, taxes, taxgroups, defaultTaxPercent, errMsg
+        });
+        if (retryData) return retryData;
+
         throw new Error(errMsg);
       }
 
@@ -1327,6 +1368,27 @@ export async function markZohoEstimateAsSent(estimateId) {
     return data;
   } catch (err) {
     console.error("❌ Error marking estimate as sent:", err.message);
+    throw err;
+  }
+}
+
+export async function sendZohoEstimateEmail(estimateId, emailPayload = {}) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/estimates/${estimateId}/email?organization_id=${ORG_ID}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(emailPayload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error (send email)");
+    return data;
+  } catch (err) {
+    console.error("❌ Error sending Zoho Estimate Email:", err.message);
     throw err;
   }
 }

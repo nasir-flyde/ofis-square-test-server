@@ -3,7 +3,7 @@ import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Invoice from "../models/invoiceModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
-import { findOrCreateContactFromClient, createZohoEstimateFromLocal, getZohoEstimate, markZohoEstimateAsSent, createZohoInvoiceFromLocal, sendZohoInvoiceEmail } from "../utils/zohoBooks.js";
+import { findOrCreateContactFromClient, createZohoEstimateFromLocal, getZohoEstimate, markZohoEstimateAsSent, sendZohoEstimateEmail, createZohoInvoiceFromLocal, sendZohoInvoiceEmail, deleteZohoEstimate } from "../utils/zohoBooks.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 
 function computeTotals(payload) {
@@ -56,6 +56,19 @@ export const createProforma = async (req, res) => {
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
     if (contract && !contractDoc) return res.status(404).json({ success: false, message: "Contract not found" });
 
+    // Role-based status enforcement:
+    // Finance Junior (lacks INVOICE_APPROVE and INVOICE_SEND) can only create drafts.
+    // Finance Senior and System Admin may set any status.
+    const callerPerms = Array.isArray(req.userRole?.permissions) ? req.userRole.permissions : [];
+    const callerRoleName = (req.userRole?.roleName || '').trim().toLowerCase();
+    const isSuperAdmin = callerPerms.includes("*:*") || callerRoleName === "system admin";
+    const canApproveOrSend =
+      isSuperAdmin ||
+      callerPerms.includes("invoice:approve") ||
+      callerPerms.includes("invoice:send");
+    // Finance Junior and similar roles without approve/send are restricted to 'draft'
+    const effectiveStatus = canApproveOrSend ? (status || "draft") : "draft";
+
     const totals = computeTotals(body);
 
     const estimateData = {
@@ -87,7 +100,7 @@ export const createProforma = async (req, res) => {
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: body.gst_no || body.gstNo || clientDoc.gstNo || clientDoc.gstNumber,
       reference_number: referenceNumber,
-      status: status || "draft",
+      status: effectiveStatus,
       ...(clientDoc.billingAddress && {
         billing_address: {
           attention: clientDoc.contactPerson,
@@ -108,13 +121,15 @@ export const createProforma = async (req, res) => {
       totalAmount: estimate.total,
     });
 
-    // PUSH TO ZOHO AS DRAFT DIRECTLY
+    // PUSH TO ZOHO (all roles: Finance Junior, Finance Senior, System Admin)
     try {
       if (!clientDoc.zohoBooksContactId) {
         const contactId = await findOrCreateContactFromClient(clientDoc);
         if (contactId) {
           clientDoc.zohoBooksContactId = contactId;
           await clientDoc.save();
+        } else {
+          console.warn(`[Zoho] Could not find or create Zoho contact for client ${clientDoc._id} (role: ${req.userRole?.roleName}). Zoho push skipped.`);
         }
       }
 
@@ -132,11 +147,14 @@ export const createProforma = async (req, res) => {
           estimate.zoho_estimate_id = zId;
           estimate.zoho_estimate_number = zNumber || estimate.zoho_estimate_number;
           estimate.source = "zoho";
+          console.log(`[Zoho] Estimate pushed successfully: zoho_estimate_id=${zId} (role: ${req.userRole?.roleName})`);
+        } else {
+          console.warn(`[Zoho] No estimate_id returned (role: ${req.userRole?.roleName}). Response:`, JSON.stringify(zohoResp));
         }
         await estimate.save();
       }
     } catch (zohoErr) {
-      console.error("Failed to push proforma to Zoho during creation:", zohoErr.message);
+      console.error(`[Zoho] Failed to push proforma to Zoho during creation (role: ${req.userRole?.roleName}):`, zohoErr.message);
       await logErrorActivity(req, zohoErr, "Proforma Creation - Zoho Push");
       // We don't fail the whole request if Zoho push fails, but we log it
     }
@@ -433,18 +451,44 @@ export const approveProforma = async (req, res) => {
     }
 
     estimate.status = 'approved_internal';
+    
+    // SYNC WITH ZOHO
+    if (estimate.zoho_estimate_id) {
+      try {
+        await markZohoEstimateAsSent(estimate.zoho_estimate_id);
+        
+        const client = await Client.findById(estimate.client);
+        if (client?.email) {
+          await sendZohoEstimateEmail(estimate.zoho_estimate_id, {
+            to_mail_ids: [client.email],
+            subject: `Estimate ${estimate.zoho_estimate_number || 'Pro Forma'}`,
+            body: `Dear ${client.contactPerson || 'Customer'},\n\nPlease find attached the Pro Forma estimate for your review.\n\nBest regards,\nOfis Square Team`
+          });
+          estimate.status = 'sent'; // Locally mark as sent if Zoho succeeds
+        } else {
+          console.warn(`[Zoho] No email for client ${estimate.client}; proforma ${estimate._id} marked as sent in Zoho but no email dispatched.`);
+          estimate.status = 'approved_internal';
+        }
+      } catch (zohoErr) {
+        console.error(`[Zoho] Failed to mark as sent or email proforma ${estimate._id}:`, zohoErr.message);
+        await logErrorActivity(req, zohoErr, "Approve Proforma - Zoho Sync");
+      }
+    }
+
     await estimate.save();
 
     await logCRUDActivity(req, "UPDATE", "Estimate", estimate._id, null, {
       previousStatus: "draft",
-      newStatus: "approved_internal",
+      newStatus: estimate.status,
       action: "manual_approval"
     });
 
     return res.json({
       success: true,
       data: estimate,
-      message: "Pro Forma estimate approved internally. It will be sent to the client on the scheduled date."
+      message: estimate.status === 'sent' 
+        ? "Pro Forma estimate approved and sent to client via Zoho Books."
+        : "Pro Forma estimate approved internally. Zoho Books sync failed; please send manually from Zoho."
     });
   } catch (error) {
     await logErrorActivity(req, error, "Approve Proforma");
@@ -487,6 +531,43 @@ export const rejectProforma = async (req, res) => {
     });
   } catch (error) {
     await logErrorActivity(req, error, "Reject Proforma");
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteProforma = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const estimate = await Estimate.findById(id);
+
+    if (!estimate) {
+      return res.status(404).json({ success: false, message: "Estimate not found" });
+    }
+
+    // Attempt to delete from Zoho Books if it exists there
+    if (estimate.zoho_estimate_id) {
+      try {
+        await deleteZohoEstimate(estimate.zoho_estimate_id);
+        console.log(`[Zoho] Estimate ${estimate.zoho_estimate_id} deleted from Zoho Books.`);
+      } catch (zohoErr) {
+        // Log but don't fail the local deletion
+        console.error(`[Zoho] Failed to delete estimate ${estimate.zoho_estimate_id} from Zoho Books:`, zohoErr.message);
+        await logErrorActivity(req, zohoErr, "Delete Proforma - Zoho Sync Failed");
+      }
+    }
+
+    // Delete from local database
+    await Estimate.findByIdAndDelete(id);
+
+    await logCRUDActivity(req, "DELETE", "Estimate", id, estimate.toObject(), {
+      invoiceNumber: estimate.zoho_estimate_number || estimate.estimate_number || estimate.reference_number,
+      clientId: estimate.client,
+      totalAmount: estimate.total,
+    });
+
+    return res.json({ success: true, message: "Pro Forma estimate deleted successfully." });
+  } catch (error) {
+    await logErrorActivity(req, error, "Delete Proforma");
     return res.status(500).json({ success: false, message: error.message });
   }
 };
