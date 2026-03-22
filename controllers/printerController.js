@@ -8,14 +8,11 @@ import { logActivity } from "../utils/activityLogger.js";
 import mongoose from "mongoose";
 import imagekit from "../utils/imageKit.js";
 
-/**
- * Create a new printer request
- */
 export const createPrinterRequest = async (req, res) => {
   try {
     let { clientId, memberId, documentUrl, fileName, buildingId } = req.body || {};
-
-    // Upload file to ImageKit if it exists in the request
+    const finalClientId = req.clientId || clientId;
+    const finalMemberId = req.memberId || memberId;
     const fileToUpload = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
 
     if (fileToUpload) {
@@ -25,7 +22,7 @@ export const createPrinterRequest = async (req, res) => {
             file: fileToUpload.buffer, // required, from multer
             fileName: fileName || fileToUpload.originalname, // required
             folder: '/printer_requests'
-          }, function(error, result) {
+          }, function (error, result) {
             if (error) reject(error);
             else resolve(result);
           });
@@ -40,7 +37,7 @@ export const createPrinterRequest = async (req, res) => {
       }
     }
 
-    if (!clientId || !documentUrl || !fileName || !buildingId) {
+    if (!finalClientId || !documentUrl || !fileName || !buildingId) {
       return res.status(400).json({
         success: false,
         message: "Client ID, Document URL, File Name, and Building ID are required"
@@ -48,8 +45,8 @@ export const createPrinterRequest = async (req, res) => {
     }
 
     const printerRequest = await PrinterRequest.create({
-      client: clientId,
-      member: memberId || null,
+      client: finalClientId,
+      member: finalMemberId || null,
       documentUrl,
       fileName,
       buildingId,
@@ -266,8 +263,14 @@ export const getPrinterRequests = async (req, res) => {
     const { buildingId, clientId, status, page = 1, limit = 20 } = req.query;
     const query = {};
 
+    // If req.memberId is set (from memberMiddleware), restrict to that member
+    if (req.memberId) {
+      query.member = req.memberId;
+    } else if (clientId) {
+      query.client = clientId;
+    }
+
     if (buildingId) query.buildingId = buildingId;
-    if (clientId) query.client = clientId;
     if (status) query.status = status;
 
     const skip = (page - 1) * limit;

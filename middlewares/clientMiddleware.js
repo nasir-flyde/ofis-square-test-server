@@ -21,6 +21,7 @@ const clientMiddleware = (req, res, next) => {
         // Attach minimal role info for downstream handlers
         if (roleName && !req.userRole) req.userRole = { roleName };
         if (decoded?.clientId) req.clientId = decoded.clientId;
+        if (decoded?.memberId) req.memberId = decoded.memberId;
         // Attach a minimal req.user so other middlewares (activity logger) can read userId
         if (!req.user && decoded?.id) {
           req.user = {
@@ -38,7 +39,13 @@ const clientMiddleware = (req, res, next) => {
     if (!roleName) return res.status(401).json({ error: "Unauthorized" });
 
     const name = String(roleName).toLowerCase();
-    if (name === "admin" || name === "client" || name === "System Admin") {
+    const allowedRoles = [
+      "admin", "client", "system admin", "member", 
+      "senior management", "operations senior", "community senior", "finance senior",
+      "contract creator", "approver / finance admin", "billing admin", "operations admin",
+      "sales", "legal team", "operations junior", "community junior"
+    ];
+    if (allowedRoles.includes(name)) {
       return next();
     }
     if (name === "client legal team") {

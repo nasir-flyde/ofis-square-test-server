@@ -1786,12 +1786,21 @@ export const getClientBookings = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token" });
     }
 
-    const { page = 1, limit = 10, status } = req.query;
+    const { page = 1, limit = 10, status, memberId } = req.query;
     const query = { client: clientId };
     if (status) query.status = status;
 
+    // Use memberId from req if user is a member, otherwise from query params
+    const currentUserRole = String(req.user?.roleName || "").toLowerCase();
+    if (currentUserRole === "member") {
+      query.member = req.memberId;
+    } else if (memberId) {
+      query.member = memberId;
+    }
+
     const bookings = await MeetingBooking.find(query)
       .populate('room', 'name capacity')
+      .populate('member', 'firstName lastName email')
       .sort({ createdAt: -1 })
       .limit(Number(limit))
       .skip((Number(page) - 1) * Number(limit));

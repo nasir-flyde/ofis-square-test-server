@@ -903,19 +903,24 @@ export const getMyProfile = async (req, res) => {
           membershipStatus = (typeof member.client?.membershipStatus === 'boolean') ? (member.client.membershipStatus ? 'active' : 'suspended') : (member.client?.membershipStatus || "active");
           companyName = member.client?.companyName || companyName;
 
-          if (member.desk) {
-            cabinNumber = member.desk.cabin?.number;
-            buildingName = member.client?.building?.name;
-            cabinType = member.desk.cabin?.type || null;
-            buildingOpeningTime = member.client?.building?.openingTime || null;
-            buildingClosingTime = member.client?.building?.closingTime || null;
-            buildingId = member.client?.building?._id;
-          } else if (member.client && member.client.building) {
-            // If no desk, fallback to client's building
+          if (member.client && member.client.building) {
             buildingName = member.client.building.name;
             buildingOpeningTime = member.client.building.openingTime || null;
             buildingClosingTime = member.client.building.closingTime || null;
             buildingId = member.client.building._id || member.client.building;
+          }
+
+          // Fetch cabin allocated to this member's client
+          if (member.client?._id) {
+            const cabin = await Cabin.findOne({
+              allocatedTo: member.client._id,
+              status: { $ne: 'released' }
+            });
+
+            if (cabin) {
+              cabinNumber = cabin.number;
+              cabinType = cabin.type || null;
+            }
           }
         }
       }
@@ -1237,16 +1242,23 @@ export const getMyProfile = async (req, res) => {
           membershipStatus = (typeof member.client?.membershipStatus === 'boolean') ? (member.client.membershipStatus ? 'active' : 'suspended') : (member.client?.membershipStatus || "active");
           companyName = member.client?.companyName || companyName;
 
-          if (member.desk) {
-            cabinNumber = member.desk.cabin?.number;
-            buildingName = member.client?.building?.name;
-            cabinType = member.desk.cabin?.type || null;
-            buildingOpeningTime = member.client?.building?.openingTime || null;
-            buildingClosingTime = member.client?.building?.closingTime || null;
-          } else if (member.client && member.client.building) {
+          if (member.client && member.client.building) {
             buildingName = member.client.building.name;
             buildingOpeningTime = member.client.building.openingTime || null;
             buildingClosingTime = member.client.building.closingTime || null;
+          }
+
+          // Fetch cabin allocated to this member's client
+          if (member.client?._id) {
+            const cabin = await Cabin.findOne({
+              allocatedTo: member.client._id,
+              status: { $ne: 'released' }
+            });
+
+            if (cabin) {
+              cabinNumber = cabin.number;
+              cabinType = cabin.type || null;
+            }
           }
         }
       }
