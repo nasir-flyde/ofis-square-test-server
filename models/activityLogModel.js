@@ -51,6 +51,9 @@ const activityLogSchema = new mongoose.Schema(
         "CONTRACT_SENT_FOR_SIGNATURE",
         "SYNC_ZOHO",
         "ERROR",
+        "VIEW",
+        "PUBLISH",
+        "RSVP",
         "CUSTOM"
       ],
     },

@@ -9,6 +9,31 @@ import Event from "../models/eventModel.js";
 import EventCategory from "../models/eventCategoryModel.js";
 import mongoose from "mongoose";
 import { logActivity } from "../utils/activityLogger.js";
+import { sendNotification } from "../utils/notificationHelper.js";
+const sendEventNotification = async (event, createdBy) => {
+  try {
+    await sendNotification({
+      to: { buildingId: event.location.building },
+      templateKey: 'community_event_created',
+      templateVariables: {
+        eventTitle: event.title,
+        startDate: new Date(event.startDate).toLocaleString(),
+        endDate: new Date(event.endDate).toLocaleString(),
+        location: event.location.address || 'Ofis Square'
+      },
+      title: `New Event Created: ${event.title}`,
+      metadata: {
+        category: 'Events',
+        tags: ['event', 'new_event', 'community'],
+        relatedEntity: { entity: 'event', entityId: event._id }
+      },
+      source: 'community_portal',
+      createdBy
+    });
+  } catch (notifErr) {
+    console.error('[sendEventNotification] failed:', notifErr.message);
+  }
+};
 
 export const getCommunityDashboard = async (req, res) => {
   try {
@@ -144,9 +169,10 @@ export const getCommunityDashboard = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'view',
-      resource: 'community_dashboard',
-      resourceId: null,
-      details: { stats: dashboardData.stats },
+      entity: 'community_dashboard',
+      entityId: null,
+      description: 'Viewed community dashboard',
+      metadata: { stats: dashboardData.stats },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -187,12 +213,16 @@ export const publishCommunityEvent = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'publish',
-      resource: 'community_event',
-      resourceId: id,
-      details: { title: event.title },
+      entity: 'community_event',
+      entityId: id,
+      description: `Published community event: ${event.title}`,
+      metadata: { title: event.title },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
+
+    // Send notification when published
+    await sendEventNotification(event, req.userId);
 
     return res.json({ success: true, data: event });
   } catch (err) {
@@ -235,9 +265,10 @@ export const getCommunityClients = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'clients',
-      resourceId: null,
-      details: { count: clients.length },
+      entity: 'clients',
+      entityId: null,
+      description: 'Listed community clients Scan',
+      metadata: { count: clients.length },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -260,9 +291,10 @@ export const getCommunityClientById = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'view',
-      resource: 'client',
-      resourceId: id,
-      details: { clientName: client.companyName },
+      entity: 'client',
+      entityId: id,
+      description: `Viewed community client: ${client.companyName}`,
+      metadata: { clientName: client.companyName },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -296,9 +328,10 @@ export const getCommunityClientMembers = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'client_members',
-      resourceId: id,
-      details: { memberCount: members.length, page, limit },
+      entity: 'client_members',
+      entityId: id,
+      description: `Listed members for client ID: ${id}`,
+      metadata: { memberCount: members.length, page, limit },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -375,9 +408,10 @@ export const getCommunityStats = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'view',
-      resource: 'community_stats',
-      resourceId: null,
-      details: { period: daysBack, ...statsData },
+      entity: 'community_stats',
+      entityId: null,
+      description: `Viewed community stats for ${daysBack} days`,
+      metadata: { period: daysBack, ...statsData },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -436,9 +470,10 @@ export const getCommunityTickets = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'community_tickets',
-      resourceId: buildingId,
-      details: { ticketCount: tickets.length, buildingId, filters: { status, priority, search } },
+      entity: 'community_tickets',
+      entityId: buildingId,
+      description: `Listed community tickets for building ID: ${buildingId}`,
+      metadata: { ticketCount: tickets.length, buildingId, filters: { status, priority, search } },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -510,9 +545,10 @@ export const getCommunityBuildingClients = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'building_clients',
-      resourceId: buildingId,
-      details: { clientCount: clients.length, buildingId, search },
+      entity: 'building_clients',
+      entityId: buildingId,
+      description: `Listed building clients for building ID: ${buildingId}`,
+      metadata: { clientCount: clients.length, buildingId, search },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -573,9 +609,10 @@ export const getCommunityInventory = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'view',
-      resource: 'community_inventory',
-      resourceId: buildingId,
-      details: { buildingId, stats },
+      entity: 'community_inventory',
+      entityId: buildingId,
+      description: `Viewed community inventory for building ID: ${buildingId}`,
+      metadata: { buildingId, stats },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -636,9 +673,10 @@ export const getCommunityEvents = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'community_events',
-      resourceId: buildingId,
-      details: { eventCount: events.length, buildingId, filters: { status, category, search } },
+      entity: 'community_events',
+      entityId: buildingId,
+      description: `Listed community events for building ID: ${buildingId}`,
+      metadata: { eventCount: events.length, buildingId, filters: { status, category, search } },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -664,9 +702,10 @@ export const getCommunityEventCategories = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'list',
-      resource: 'event_categories',
-      resourceId: null,
-      details: { categoryCount: categories.length },
+      entity: 'event_categories',
+      entityId: null,
+      description: 'Listed event categories',
+      metadata: { categoryCount: categories.length },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -707,9 +746,10 @@ export const getCommunityEventById = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'view',
-      resource: 'community_event',
-      resourceId: id,
-      details: { eventTitle: event.title, hasRsvped },
+      entity: 'community_event',
+      entityId: id,
+      description: `Viewed community event: ${event.title}`,
+      metadata: { eventTitle: event.title, hasRsvped },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -759,9 +799,10 @@ export const rsvpToEvent = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'rsvp',
-      resource: 'community_event',
-      resourceId: id,
-      details: { eventTitle: event.title, action: 'join' },
+      entity: 'community_event',
+      entityId: id,
+      description: `RSVPed to community event: ${event.title}`,
+      metadata: { eventTitle: event.title, action: 'join' },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -802,9 +843,10 @@ export const cancelRsvp = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'rsvp',
-      resource: 'community_event',
-      resourceId: id,
-      details: { eventTitle: event.title, action: 'cancel' },
+      entity: 'community_event',
+      entityId: id,
+      description: `Cancelled RSVP to community event: ${event.title}`,
+      metadata: { eventTitle: event.title, action: 'cancel' },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -841,7 +883,13 @@ export const createCommunityEvent = async (req, res) => {
     } = req.body || {};
 
     if (!title || !startDate || !endDate) {
-      return res.status(400).json({ success: false, error: "title, startDate and endDate are required" });
+      return res.status(400).json({ success: false, message: "title, startDate and endDate are required" });
+    }
+
+    // Validation: startDate must not be in the past
+    const now = new Date();
+    if (new Date(startDate) < now) {
+      return res.status(400).json({ success: false, message: "Event start date cannot be in the past" });
     }
 
     const event = await Event.create({
@@ -865,17 +913,23 @@ export const createCommunityEvent = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'create',
-      resource: 'community_event',
-      resourceId: event._id,
-      details: { title: event.title, buildingId },
+      entity: 'community_event',
+      entityId: event._id,
+      description: `Created community event: ${event.title}`,
+      metadata: { title: event.title, buildingId },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
 
+    // Send notification only if status is published
+    if (status === 'published') {
+      await sendEventNotification(event, req.userId);
+    }
+
     return res.json({ success: true, data: event });
   } catch (err) {
     console.error('createCommunityEvent error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to create event' });
+    return res.status(500).json({ success: false, message: 'Failed to create event' });
   }
 };
 
@@ -906,6 +960,7 @@ export const updateCommunityEvent = async (req, res) => {
       status
     } = req.body || {};
 
+    const oldStatus = event.status;
     if (title !== undefined) event.title = title;
     if (description !== undefined) event.description = description;
     if (category !== undefined) event.category = category || undefined;
@@ -928,17 +983,23 @@ export const updateCommunityEvent = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'update',
-      resource: 'community_event',
-      resourceId: id,
-      details: { title: event.title },
+      entity: 'community_event',
+      entityId: id,
+      description: `Updated community event: ${event.title}`,
+      metadata: { title: event.title },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
 
+    // Send notification if status changed to published
+    if (status === 'published' && oldStatus !== 'published') {
+      await sendEventNotification(event, req.userId);
+    }
+
     return res.json({ success: true, data: event });
   } catch (err) {
     console.error('updateCommunityEvent error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to update event' });
+    return res.status(500).json({ success: false, message: 'Failed to update event' });
   }
 };
 
@@ -963,9 +1024,10 @@ export const deleteCommunityEvent = async (req, res) => {
       userId: req.userId,
       userType: req.userType,
       action: 'delete',
-      resource: 'community_event',
-      resourceId: id,
-      details: { title: event.title },
+      entity: 'community_event',
+      entityId: id,
+      description: `Deleted community event: ${event.title}`,
+      metadata: { title: event.title },
       ipAddress: req.ip,
       userAgent: req.get('User-Agent')
     });
@@ -973,6 +1035,6 @@ export const deleteCommunityEvent = async (req, res) => {
     return res.json({ success: true, message: 'Event deleted' });
   } catch (err) {
     console.error('deleteCommunityEvent error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to delete event' });
+    return res.status(500).json({ success: false, message: 'Failed to delete event' });
   }
 };

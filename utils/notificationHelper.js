@@ -84,7 +84,7 @@ export const sendNotification = async (options) => {
       throw new Error('At least one channel must be enabled');
     }
 
-    if (!to || (!to.phone && !to.email && !to.userId && !to.memberId && !to.clientId && !to.roleNames)) {
+    if (!to || (!to.phone && !to.email && !to.userId && !to.memberId && !to.clientId && !to.roleNames && !to.buildingId)) {
       throw new Error('At least one recipient identifier must be provided');
     }
 
@@ -173,7 +173,11 @@ export const sendNotification = async (options) => {
       const roleIds = roles.map(r => r._id);
 
       const [members, users] = await Promise.all([
-        Member.find({ role: { $in: to.roleNames } }).select('_id fcmTokens phone email user'),
+        Member.find({
+          role: { $in: to.roleNames },
+          status: 'active',
+          isDeleted: { $ne: true }
+        }).select('_id fcmTokens phone email user'),
         User.find({ role: { $in: roleIds } }).select('_id phone email')
       ]);
 
@@ -217,6 +221,59 @@ export const sendNotification = async (options) => {
       if (notifications.length > 0) {
         await Notification.insertMany(notifications);
         console.log(`[notificationHelper] Inserted ${notifications.length} role-based notifications with userIds`);
+        if (!scheduledAt || new Date(scheduledAt) <= new Date()) {
+          for (const n of notifications) {
+            dispatchNotification(n, attachments);
+          }
+        }
+        return notifications;
+      }
+      return [];
+    }
+
+    // Check for building-based targeting
+    if (to.buildingId) {
+      const ClientModel = (await import('../models/clientModel.js')).default;
+
+      const clients = await ClientModel.find({ building: to.buildingId }).select('_id');
+      const members = await Member.find({
+        client: { $in: clients.map(c => c._id) },
+        status: 'active',
+        isDeleted: { $ne: true }
+      }).select('_id phone email user fcmTokens');
+
+      const notifications = members.map(m => {
+        const payload = {
+          ...to,
+          memberId: m._id,
+          userId: m.user,
+          phone: m.phone,
+          email: m.email,
+          pushToken: m.fcmTokens?.[0]
+        };
+        return new Notification({
+          type,
+          channels,
+          title,
+          templateKey,
+          templateVariables,
+          content: renderedContent,
+          metadata: { ...metadata },
+          to: payload,
+          categoryId: category || undefined,
+          scheduledAt: scheduledAt ? new Date(scheduledAt) : new Date(),
+          createdBy,
+          source,
+          smsDelivery: channels.sms ? { status: 'pending' } : undefined,
+          emailDelivery: channels.email ? { status: 'pending' } : undefined,
+          pushDelivery: channels.push ? { status: 'pending' } : undefined,
+          inAppDelivery: channels.inApp ? { status: 'pending' } : undefined
+        });
+      });
+
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+        console.log(`[notificationHelper] Inserted ${notifications.length} building-based notifications for building: ${to.buildingId}`);
         if (!scheduledAt || new Date(scheduledAt) <= new Date()) {
           for (const n of notifications) {
             dispatchNotification(n, attachments);
