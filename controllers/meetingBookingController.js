@@ -116,7 +116,7 @@ async function checkAvailability(room, start, end) {
   } = availability;
 
   // Day of week rule — use IST calendar day
-  const istDayOfWeek = new Date(start.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) + 'T00:00:00+05:30').getDay();
+  const istDayOfWeek = new Date(formatYMDIST(start) + 'T12:00:00Z').getUTCDay();
   if (!daysOfWeek.includes(istDayOfWeek)) return { ok: false, reason: "Room not available on this day" };
 
   // Must be same-day booking for now (simplifies hours logic)
@@ -148,8 +148,8 @@ async function checkAvailability(room, start, end) {
   }
 
   // Blackout dates
-  const startDayStr = start.toISOString().substring(0, 10);
-  const isBlackout = (blackoutDates || []).some((d) => new Date(d).toISOString().substring(0, 10) === startDayStr);
+  const startDayStr = formatYMDIST(start);
+  const isBlackout = (blackoutDates || []).some((d) => formatYMDIST(d) === startDayStr);
   if (isBlackout) return { ok: false, reason: "Room is blacked out on this date" };
 
   // Conflict check without buffer
@@ -742,7 +742,7 @@ export const createBooking = async (req, res) => {
                 customer_id: zohoContactId,
                 payment_mode: "Credits",
                 amount: invoice.total,
-                date: new Date().toISOString().slice(0, 10),
+                date: formatYMDIST(new Date()),
                 reference_number: idempotencyKey || `CREDIT-${booking._id}`,
                 description: `Paid via Credits for booking ${booking._id}`,
                 invoices: [{
@@ -1349,7 +1349,7 @@ export const cancelBooking = async (req, res) => {
                 } else {
                   const refundBody = {
                     amount: Number((amountPaise / 100).toFixed(2)),
-                    date: new Date().toISOString().slice(0, 10),
+                    date: formatYMDIST(new Date()),
                     description: `Auto refund for booking ${String(booking._id)} | RZP refund ${rzPay.paymentGatewayRef}`,
                     refund_mode: refundMode,
                     from_account_id: fromAccountId,
