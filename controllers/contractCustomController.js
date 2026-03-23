@@ -794,8 +794,8 @@ export const legalUploadDocument = async (req, res) => {
     contract.legalUploadedBy = req.user?._id || null;
     contract.legalUploadedAt = new Date();
     contract.legalUploadNotes = notes || null;
-    // Optional status transition
-    if (contract.status === "submitted_to_legal") {
+    // Update status to reflect successful upload/re-upload
+    if (contract.status === "submitted_to_legal" || contract.status === "admin_rejected") {
       contract.status = "legal_reviewed";
     }
 
@@ -1071,13 +1071,7 @@ export const adminRejectCustom = async (req, res) => {
     contract.fileUrl = "placeholder";
 
     // Update status to reflect rejection
-    contract.status = "legal_reviewed"; // or something that doesn't block the next stage
-
-    // When admin rejects, we might want to allow Legal to re-upload.
-    // So we don't necessarily clear legalUploadedAt, but adminapproved is false.
-    // The workflow will show it as pending admin approval again once fixed?
-    // Actually, if it's 'admin_rejected', it might need a status change to go back to a previous stage.
-    // For now, let's keep it 'admin_rejected'.
+    contract.status = "admin_rejected";
 
     contract.lastActionBy = req.user?._id || contract.lastActionBy;
     contract.lastActionAt = new Date();
