@@ -863,7 +863,7 @@ export const getMyProfile = async (req, res) => {
       if (isClient) {
         if (req.client) {
           name = req.client.primaryFirstName || req.client.companyName || "Client";
-          membershipStatus = req.client.membershipStatus === true || req.client.membershipStatus === 'active';
+          membershipStatus = (typeof req.client.membershipStatus === 'boolean') ? (req.client.membershipStatus ? 'active' : 'suspended') : (req.client.membershipStatus || "active");
           companyName = req.client.companyName
 
           // Find cabin allocated to this client
@@ -900,7 +900,7 @@ export const getMyProfile = async (req, res) => {
 
         if (member) {
           name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
-          membershipStatus = member.client?.membershipStatus === true || member.client?.membershipStatus === 'active';
+          membershipStatus = (typeof member.client?.membershipStatus === 'boolean') ? (member.client.membershipStatus ? 'active' : 'suspended') : (member.client?.membershipStatus || "active");
           companyName = member.client?.companyName || companyName;
 
           if (member.client && member.client.building) {
@@ -1204,13 +1204,13 @@ export const getMyProfile = async (req, res) => {
 
           cabinNumber = dayPassCount || 0;
           cabinType = "On demand";
-          membershipStatus = guest.kycStatus === 'verified' || guest.kycStatus === 'active';
+          membershipStatus = guest.kycStatus || "active";
           kycPending = guest.kycStatus === 'pending';
         }
       } else if (isClient) {
         if (req.client) {
           name = req.client.primaryFirstName || req.client.companyName || "Client";
-          membershipStatus = req.client.membershipStatus === true || req.client.membershipStatus === 'active';
+          membershipStatus = (typeof req.client.membershipStatus === 'boolean') ? (req.client.membershipStatus ? 'active' : 'suspended') : (req.client.membershipStatus || "active");
           companyName = req.client.companyName
 
           // Find cabin allocated to this client
@@ -1244,7 +1244,7 @@ export const getMyProfile = async (req, res) => {
           name = `${member.firstName || ''} ${member.lastName || ''}`.trim();
           email = member.email || null;
           phone = member.phone || null;
-          membershipStatus = member.client?.membershipStatus === true || member.client?.membershipStatus === 'active';
+          membershipStatus = (typeof member.client?.membershipStatus === 'boolean') ? (member.client.membershipStatus ? 'active' : 'suspended') : (member.client?.membershipStatus || "active");
           companyName = member.client?.companyName || companyName;
 
           if (member.client && member.client.building) {
