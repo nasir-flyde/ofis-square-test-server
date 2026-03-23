@@ -9,6 +9,7 @@ import {
   salesSeniorReject,
   legalUploadDocument,
   adminApproveCustom,
+  adminRejectCustom,
   sendToClientForSignature,
   clientFeedbackAction,
   clientApproveAndSign,
@@ -76,6 +77,15 @@ router.post(
   populateUserRole,
   requirePermission(PERMISSIONS.CONTRACT_ADMIN_APPROVE),
   adminApproveCustom
+);
+
+// System Admin rejects
+router.post(
+  "/:id/admin/reject",
+  authMiddleware,
+  populateUserRole,
+  requirePermission(PERMISSIONS.CONTRACT_ADMIN_APPROVE),
+  adminRejectCustom
 );
 
 // Send to client for signature (Zoho eSign)

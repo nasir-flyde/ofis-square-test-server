@@ -1045,6 +1045,94 @@ export const adminApproveCustom = async (req, res) => {
   }
 };
 
+// System Admin rejects
+export const adminRejectCustom = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    const contract = await Contract.findById(id);
+    if (!contract) return res.status(404).json({ success: false, message: "Contract not found" });
+
+    // Optional hard role gate: System Admin only
+    if (req.user?.role?.roleName !== "System Admin") {
+      return res.status(403).json({ success: false, message: "Only System Admin can reject at this stage" });
+    }
+
+    contract.adminapproved = false;
+    contract.adminRejectedBy = req.user?._id || null;
+    contract.adminRejectedAt = new Date();
+    contract.adminRejectionReason = reason || "Rejected by System Admin";
+
+    // Revert legal upload markers so legal can re-upload correctly
+    contract.legalUploadedAt = null;
+    contract.legalUploadedBy = null;
+    contract.legalUploadNotes = null;
+    contract.fileUrl = "placeholder";
+
+    // Update status to reflect rejection
+    contract.status = "legal_reviewed"; // or something that doesn't block the next stage
+
+    // When admin rejects, we might want to allow Legal to re-upload.
+    // So we don't necessarily clear legalUploadedAt, but adminapproved is false.
+    // The workflow will show it as pending admin approval again once fixed?
+    // Actually, if it's 'admin_rejected', it might need a status change to go back to a previous stage.
+    // For now, let's keep it 'admin_rejected'.
+
+    contract.lastActionBy = req.user?._id || contract.lastActionBy;
+    contract.lastActionAt = new Date();
+
+    await contract.save();
+
+    await logContractActivity(req, "UPDATE", id, contract.client, {
+      action: "admin_rejected",
+      reason,
+    });
+
+    // Notify Legal Team that their upload was rejected by Admin
+    try {
+      const populated = await Contract.findById(id).populate("client", "companyName");
+      const companyName = populated?.client?.companyName || 'Client';
+      const legalRole = await Role.findOne({ roleName: 'Legal Team' }).lean();
+      if (legalRole?._id) {
+        const legalUsers = await User.find({ role: legalRole._id }).select('email _id').lean();
+        for (const u of legalUsers) {
+          const to = { userId: u._id };
+          if (u.email) to.email = u.email;
+          await sendNotification({
+            to,
+            channels: { email: Boolean(to.email), sms: false },
+            templateKey: 'legal_team_contract_upload', // Reuse or use a specific rejection template if exists
+            templateVariables: {
+              companyName: companyName,
+              contractId: String(id),
+              notes: `Rejected by Admin: ${reason || 'No reason provided'}`
+            },
+            title: 'Contract Upload Rejected by Admin',
+            metadata: {
+              category: 'contract',
+              tags: ['admin_rejected'],
+              route: `/contracts/${id}`,
+              deepLink: `ofis://contracts/${id}`,
+              routeParams: { id: String(id) }
+            },
+            source: 'system',
+            type: 'transactional'
+          });
+        }
+      }
+    } catch (notifyErr) {
+      console.warn('adminRejectCustom: failed to notify Legal Team:', notifyErr?.message || notifyErr);
+    }
+
+    return res.json({ success: true, message: "Admin rejected contract" });
+  } catch (err) {
+    console.error("adminRejectCustom error:", err);
+    await logErrorActivity(req, err, "Custom Flow: Admin Reject");
+    return res.status(500).json({ success: false, message: "Failed to reject" });
+  }
+};
+
 // Send to client for signature (Zoho eSign placeholder)
 export const sendToClientForSignature = async (req, res) => {
   try {
