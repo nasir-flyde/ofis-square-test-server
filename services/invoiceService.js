@@ -24,6 +24,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
+        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply",
         populate: { path: "city", select: "name" }
       });
 
@@ -86,8 +87,12 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
     // Handle Add-ons
     if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
       const monthName = new Date(contract.startDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+      // Use full month range for billable check to ensure add-ons active in this month are picked up
+      const fullMonthStart = new Date(startEnd.start.getFullYear(), startEnd.start.getMonth(), 1);
+      const fullMonthEnd = new Date(startEnd.start.getFullYear(), startEnd.start.getMonth() + 1, 0);
+      
       for (const addon of contract.addOns) {
-        if (isAddonBillable(addon, startEnd.start, startEnd.end)) {
+        if (isAddonBillable(addon, fullMonthStart, fullMonthEnd)) {
           const qty = addon.quantity || 1;
           const totalAmount = addon.amount * qty;
           if (totalAmount > 0) {
@@ -290,28 +295,14 @@ function isAddonBillable(addon, periodStart, periodEnd) {
     return true;
   }
 
-  const pStart = new Date(periodStart); pStart.setHours(0, 0, 0, 0);
-  const pEnd = new Date(periodEnd); pEnd.setHours(23, 59, 59, 999);
-
   const addonStart = addon.startDate ? new Date(addon.startDate) : null;
-  if (addonStart) addonStart.setHours(0, 0, 0, 0);
-  
   const addonEnd = addon.endDate ? new Date(addon.endDate) : null;
-  if (addonEnd) addonEnd.setHours(23, 59, 59, 999);
-
-  // console.log(`Checking addon ${addon.description} (${addon._id}): Start: ${addonStart?.toISOString()}, End: ${addonEnd?.toISOString()} VS Period: ${pStart.toISOString()}-${pEnd.toISOString()}`);
 
   // Add-on must have started before or during this period
-  if (addonStart && addonStart > pEnd) {
-    // console.log(`Addon ${addon.description} skipped: starts after period (${addonStart.toISOString()} > ${pEnd.toISOString()})`);
-    return false;
-  }
+  if (addonStart && addonStart > periodEnd) return false;
 
   // Add-on must not have ended before this period
-  if (addonEnd && addonEnd < pStart) {
-    // console.log(`Addon ${addon.description} skipped: ended before period (${addonEnd.toISOString()} < ${pStart.toISOString()})`);
-    return false;
-  }
+  if (addonEnd && addonEnd < periodStart) return false;
 
   return true;
 }
@@ -323,15 +314,16 @@ function formatBankDetails(building, isProForma = false) {
   if (!building) return "";
 
   const bank = building.bankDetails;
-  // If no bank details but we have defaults in schema, they might not be visible in lean() or if not set.
-  // We'll fall back to hardcoded defaults if accountNumber is missing.
-  const accountNo = bank?.accountNumber;
-  const ifsc = bank?.ifscCode;
-  const bankName = bank?.bankName;
-  const branch = bank?.branchName;
-  const holder = bank?.accountHolderName;
+  // If essential bank details are missing, return empty string (don't show the section with undefineds)
+  if (!bank || !bank.accountNumber) return "";
 
-  const cityName = building.city?.name;
+  const accountNo = bank.accountNumber;
+  const ifsc = bank.ifscCode;
+  const bankName = bank.bankName;
+  const branch = bank.branchName;
+  const holder = bank.accountHolderName;
+
+  const cityName = building.city?.name || "Gurugram";
   const disclaimer = isProForma ? "\nThis is not a tax invoice. " : "\n";
 
   return `\n\nCompany's Bank Details\n` +
@@ -553,6 +545,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
+        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply",
         populate: { path: "city", select: "name" }
       });
 
@@ -632,8 +625,12 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
     // Handle Add-ons
     if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
       const monthName = issueDate.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+      // Use full month range for billable check to ensure add-ons active in this month are picked up
+      const fullMonthStart = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1);
+      const fullMonthEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+
       for (const addon of contract.addOns) {
-        if (isAddonBillable(addon, periodStart, periodEnd)) {
+        if (isAddonBillable(addon, fullMonthStart, fullMonthEnd)) {
           const qty = addon.quantity || 1;
           const totalAmount = addon.amount * qty;
           if (totalAmount > 0) {
