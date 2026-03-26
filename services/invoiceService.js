@@ -24,7 +24,6 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
-        select: "name address pricing bankDetails zoho_books_location_id city",
         populate: { path: "city", select: "name" }
       });
 
@@ -150,7 +149,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: "business_gst", // Default for business clients
-      place_of_supply: contract.building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code || "MH",
+      place_of_supply: contract.building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code || "HR",
       // Compute payment terms from issue->due difference
       payment_terms: Math.max(0, Math.round((dueDate - issueDate) / (1000 * 60 * 60 * 24))),
       payment_terms_label: `Net ${Math.max(0, Math.round((dueDate - issueDate) / (1000 * 60 * 60 * 24)))}`,
@@ -252,7 +251,24 @@ function calculateProratedRent(contract, prorate) {
  */
 async function getCabinLabel(contractId, contractLabel) {
   try {
-    const cabins = await Cabin.find({ contract: contractId }).select('number').lean();
+    const contract = await Contract.findById(contractId).select('client building').lean();
+    if (!contract) return contractLabel ? `Contract ${contractLabel}` : "Contract";
+
+    // 1. Try finding by allocated contract
+    let cabins = await Cabin.find({ contract: contractId }).select('number').lean();
+
+    // 2. If not found, try finding by blocks or allocated client in that building
+    if (!cabins || cabins.length === 0) {
+      cabins = await Cabin.find({
+        building: contract.building,
+        $or: [
+          { "blocks.contract": contractId, "blocks.status": "active" },
+          { "blocks.client": contract.client, "blocks.status": "active" },
+          { allocatedTo: contract.client, status: "occupied" }
+        ]
+      }).select('number').lean();
+    }
+
     if (cabins && cabins.length > 0) {
       const numbers = cabins.map(c => c.number).join(', ');
       return `Cabin ${numbers}`;
@@ -274,14 +290,28 @@ function isAddonBillable(addon, periodStart, periodEnd) {
     return true;
   }
 
+  const pStart = new Date(periodStart); pStart.setHours(0, 0, 0, 0);
+  const pEnd = new Date(periodEnd); pEnd.setHours(23, 59, 59, 999);
+
   const addonStart = addon.startDate ? new Date(addon.startDate) : null;
+  if (addonStart) addonStart.setHours(0, 0, 0, 0);
+  
   const addonEnd = addon.endDate ? new Date(addon.endDate) : null;
+  if (addonEnd) addonEnd.setHours(23, 59, 59, 999);
+
+  // console.log(`Checking addon ${addon.description} (${addon._id}): Start: ${addonStart?.toISOString()}, End: ${addonEnd?.toISOString()} VS Period: ${pStart.toISOString()}-${pEnd.toISOString()}`);
 
   // Add-on must have started before or during this period
-  if (addonStart && addonStart > periodEnd) return false;
+  if (addonStart && addonStart > pEnd) {
+    // console.log(`Addon ${addon.description} skipped: starts after period (${addonStart.toISOString()} > ${pEnd.toISOString()})`);
+    return false;
+  }
 
   // Add-on must not have ended before this period
-  if (addonEnd && addonEnd < periodStart) return false;
+  if (addonEnd && addonEnd < pStart) {
+    // console.log(`Addon ${addon.description} skipped: ended before period (${addonEnd.toISOString()} < ${pStart.toISOString()})`);
+    return false;
+  }
 
   return true;
 }
@@ -290,18 +320,26 @@ function isAddonBillable(addon, periodStart, periodEnd) {
  * Format building bank details for invoice notes
  */
 function formatBankDetails(building, isProForma = false) {
-  const bank = building?.bankDetails;
-  if (!bank || !bank.accountNumber) return "";
+  if (!building) return "";
 
-  const cityName = building.city?.name || "Noida";
+  const bank = building.bankDetails;
+  // If no bank details but we have defaults in schema, they might not be visible in lean() or if not set.
+  // We'll fall back to hardcoded defaults if accountNumber is missing.
+  const accountNo = bank?.accountNumber;
+  const ifsc = bank?.ifscCode;
+  const bankName = bank?.bankName;
+  const branch = bank?.branchName;
+  const holder = bank?.accountHolderName;
+
+  const cityName = building.city?.name;
   const disclaimer = isProForma ? "\nThis is not a tax invoice. " : "\n";
 
   return `\n\nCompany's Bank Details\n` +
-    `A/c Holder's Name: ${bank.accountHolderName}\n` +
-    `Bank Name: ${bank.bankName}\n` +
-    `A/c No.: ${bank.accountNumber}\n` +
-    `Branch : ${bank.branchName}\n` +
-    `IFS Code: ${bank.ifscCode}\n` +
+    `A/c Holder's Name: ${holder}\n` +
+    `Bank Name: ${bankName}\n` +
+    `A/c No.: ${accountNo}\n` +
+    `Branch : ${branch}\n` +
+    `IFS Code: ${ifsc}\n` +
     `${disclaimer}Subject to ${cityName} jurisdiction only.`;
 }
 
@@ -420,7 +458,7 @@ export const createCreditPurchaseInvoice = async ({ clientId, credits, options =
       currency_code: 'INR',
       exchange_rate: 1,
       gst_treatment: 'business_gst',
-      place_of_supply: contract.building?.place_of_supply || client.place_of_supply || client.billingAddress?.state_code || 'MH',
+      place_of_supply: contract.building?.place_of_supply || client.place_of_supply || client.billingAddress?.state_code || 'HR',
       payment_terms: 7,
       payment_terms_label: 'Net 7',
 
@@ -515,7 +553,6 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
-        select: "name address draftInvoiceDueDay bankDetails zoho_books_location_id city",
         populate: { path: "city", select: "name" }
       });
 
@@ -654,7 +691,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: "business_gst",
-      place_of_supply: contract.building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code || "MH",
+      place_of_supply: contract.building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code || "HR",
 
       ...(contract.client.billingAddress && {
         billing_address: {
