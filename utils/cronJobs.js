@@ -56,7 +56,7 @@ const scheduleLateFeeJobs = () => {
 
 const scheduleMonthlyInvoices = () => {
   // Run daily; per-building logic inside the service decides whether today is the generation day
-  cron.schedule('15 15 * * *', async () => {
+  cron.schedule('52 18 * * *', async () => {
     try {
       const mode = process.env.BILLING_MODE === 'estimate' ? 'estimate' : 'invoice';
       console.log(`[Billing Pipeline] Running daily maintenance job... (Mode: ${mode})`);

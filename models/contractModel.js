@@ -486,6 +486,43 @@ const contractSchema = new mongoose.Schema(
     rejectionReason: { type: String, trim: true },
     fileUrl: { type: String, trim: true, default: "placeholder" },
     zohoSignRequestId: { type: String, trim: true },
+    addOns: [
+      {
+        addonId: { type: mongoose.Schema.Types.ObjectId, ref: "AddOn" },
+        description: { type: String, required: true, trim: true },
+        amount: { type: Number, required: true, min: 0 },
+        quantity: { type: Number, default: 1, min: 1 },
+        startDate: { type: Date },
+        endDate: { type: Date },
+        billingCycle: { type: String, enum: ["monthly", "one-time"], default: "monthly" },
+        status: { type: String, enum: ["active", "inactive", "billed"], default: "active" },
+        zoho_item_id: { type: String, default: "" },
+        addedAt: { type: Date, default: Date.now },
+        addedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      },
+    ],
+    // Sales metadata fields
+    entityType: {
+      type: String,
+      enum: ["LLP", "Company", "Partnership", "Proprietorship", "Individual", "Other"],
+      default: null,
+    },
+    type: {
+      type: String,
+      enum: ["New", "Shift", "Expansion"],
+      default: null,
+    },
+    billableSeats: { type: Number, default: null, min: 0 },
+    leadOwnerName: { type: String, trim: true, default: null },
+    broker: {
+      isDirect: { type: Boolean, default: true },
+      brokerName: { type: String, trim: true, default: null },
+    },
+    commission: {
+      percentage: { type: Number, default: null, min: 0, max: 100 },
+      paymentType: { type: String, enum: ["one_time", "monthly"], default: null },
+      periodMonths: { type: Number, default: null, min: 0 },
+    },
   },
   {
     timestamps: true,

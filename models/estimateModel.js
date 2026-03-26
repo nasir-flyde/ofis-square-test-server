@@ -64,6 +64,8 @@ const estimateSchema = new mongoose.Schema(
     zoho_status: { type: String },
     zoho_pdf_url: { type: String },
     estimate_url: { type: String },
+    zoho_tax_id: { type: String }, // Building-level tax override
+    zoho_books_location_id: { type: String }, // Building-level location ID
     rejection_note: { type: String, trim: true },
 
     billing_address: {

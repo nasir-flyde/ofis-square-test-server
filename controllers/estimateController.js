@@ -2,6 +2,7 @@ import Estimate from "../models/estimateModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
 import Invoice from "../models/invoiceModel.js";
+import Building from "../models/buildingModel.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import { findOrCreateContactFromClient, createZohoEstimateFromLocal, getZohoEstimate, markZohoEstimateAsSent, sendZohoEstimateEmail, createZohoInvoiceFromLocal, sendZohoInvoiceEmail, deleteZohoEstimate } from "../utils/zohoBooks.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
@@ -59,6 +60,12 @@ export const createProforma = async (req, res) => {
     // Role-based status enforcement:
     // Finance Junior (lacks INVOICE_APPROVE and INVOICE_SEND) can only create drafts.
     // Finance Senior and System Admin may set any status.
+    const buildingId = contractDoc?.building || clientDoc?.building || body.building;
+    let buildingDoc;
+    if (buildingId) {
+      buildingDoc = await Building.findById(buildingId);
+    }
+
     const callerPerms = Array.isArray(req.userRole?.permissions) ? req.userRole.permissions : [];
     const callerRoleName = (req.userRole?.roleName || '').trim().toLowerCase();
     const isSuperAdmin = callerPerms.includes("*:*") || callerRoleName === "system admin";
@@ -96,7 +103,7 @@ export const createProforma = async (req, res) => {
       exchange_rate: 1,
       // GST/tax mapping from client defaults
       gst_treatment: body.gst_treatment || body.gstTreatment || clientDoc.gstTreatment || "business_gst",
-      place_of_supply: body.place_of_supply || body.placeOfSupply || clientDoc?.billingAddress?.state_code || clientDoc?.billingAddress?.state || undefined,
+      place_of_supply: body.place_of_supply || body.placeOfSupply || buildingDoc?.place_of_supply || clientDoc?.billingAddress?.state_code || clientDoc?.billingAddress?.state || undefined,
       customer_id: clientDoc.zohoBooksContactId,
       gst_no: body.gst_no || body.gstNo || clientDoc.gstNo || clientDoc.gstNumber,
       reference_number: referenceNumber,
@@ -139,7 +146,21 @@ export const createProforma = async (req, res) => {
           estimate.customer_id = clientDoc.zohoBooksContactId;
         }
 
-        const zohoResp = await createZohoEstimateFromLocal(estimate.toObject(), clientDoc.toObject());
+        const estObj = estimate.toObject();
+        // Fetch building to get zoho_books_location_id AND place_of_supply
+        if (estimate.building) {
+          const bDoc = await Building.findById(estimate.building);
+          if (bDoc) {
+            if (bDoc.zoho_books_location_id) {
+              estObj.zoho_books_location_id = bDoc.zoho_books_location_id;
+            }
+            if (bDoc.place_of_supply && !estObj.place_of_supply) {
+              estObj.place_of_supply = bDoc.place_of_supply;
+            }
+          }
+        }
+
+        const zohoResp = await createZohoEstimateFromLocal(estObj, clientDoc.toObject());
         const zId = zohoResp?.estimate?.estimate_id || zohoResp?.estimate_id;
         const zNumber = zohoResp?.estimate?.estimate_number || zohoResp?.estimate_number;
         
@@ -239,7 +260,16 @@ export const pushProformaToZoho = async (req, res) => {
         await client.save();
       }
 
-      const zohoResp = await createZohoEstimateFromLocal(estimate.toObject(), client.toObject());
+      const estObj = estimate.toObject();
+      // Fetch building to get zoho_books_location_id
+      if (estimate.building) {
+        const buildingDoc = await Building.findById(estimate.building);
+        if (buildingDoc?.zoho_books_location_id) {
+          estObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+        }
+      }
+
+      const zohoResp = await createZohoEstimateFromLocal(estObj, client.toObject());
       const zId = zohoResp?.estimate?.estimate_id || zohoResp?.estimate?.estimate_id || zohoResp?.estimate_id;
       const zNumber = zohoResp?.estimate?.estimate_number || zohoResp?.estimate_number;
       if (!zId) return res.status(400).json({ success: false, message: "Zoho did not return an estimate_id", details: zohoResp });
@@ -372,7 +402,16 @@ export const convertProformaToInvoice = async (req, res) => {
 
     // Push to Zoho and optionally send
     try {
-      const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
+      const invObj = invoice.toObject();
+      // Fetch building to get zoho_books_location_id
+      if (invoice.building) {
+        const buildingDoc = await Building.findById(invoice.building);
+        if (buildingDoc?.zoho_books_location_id) {
+          invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+        }
+      }
+
+      const zohoResp = await createZohoInvoiceFromLocal(invObj, client.toObject());
       const zohoId = zohoResp?.invoice?.invoice_id;
       const zohoNumber = zohoResp?.invoice?.invoice_number;
       if (!zohoId) {

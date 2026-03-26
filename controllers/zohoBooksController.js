@@ -1,4 +1,4 @@
-import { getZohoTaxes, searchContacts } from "../utils/zohoBooks.js";
+import { getZohoTaxes, searchContacts, getZohoLocations, getZohoChartOfAccounts } from "../utils/zohoBooks.js";
 
 export async function getTaxes(req, res) {
   try {
@@ -22,18 +22,31 @@ export async function searchZohoContacts(req, res) {
     }
 
     const contacts = await searchContacts(searchParams);
-    // Return the first match if specific, or list?
-    // Frontend expects { success: true, contact: { ... } } if a direct match is found.
-    // Let's filter slightly better if email is provided since Zoho search can be fuzzy?
-    // Actually Zoho API 'email' search is usually exact.
-
     const contact = contacts.length > 0 ? contacts[0] : null;
 
     return res.json({
       success: true,
       contact,
-      contacts // Return the full list too just in case
+      contacts
     });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function getLocations(req, res) {
+  try {
+    const locations = await getZohoLocations();
+    return res.json({ success: true, data: locations });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function getChartOfAccounts(req, res) {
+  try {
+    const accounts = await getZohoChartOfAccounts(req.query);
+    return res.json({ success: true, data: accounts });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

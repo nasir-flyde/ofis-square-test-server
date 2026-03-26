@@ -12,6 +12,7 @@ import Member from "../models/memberModel.js";
 import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import CreditTransaction from "../models/creditTransactionModel.js";
+import Building from "../models/buildingModel.js";
 import { issueDayPass, issueDayPassBatch } from "../services/dayPassIssuanceService.js";
 import { provisionAccessForMeetingBooking } from "../services/meetingAccessService.js";
 import { getValidAccessToken } from '../utils/zohoTokenManager.js';
@@ -851,6 +852,43 @@ export const recordCustomerPayment = async (req, res) => {
       reference_number: reference_number || '',
       description: description || `Payment for ${safeInvoices.length} invoice(s)`
     };
+
+    // Determine location_id based on building associated with invoices or client
+    let locationId = undefined;
+    if (dbInvoices && dbInvoices.length > 0) {
+      const firstInvoice = dbInvoices[0];
+      console.log(`[recordCustomerPayment] Checking invoice building: ${firstInvoice.building}`);
+      if (firstInvoice.building) {
+        try {
+          const b = await Building.findById(firstInvoice.building).select('zoho_books_location_id');
+          console.log(`[recordCustomerPayment] Found building for invoice: ${b?._id}, zoho_books_location_id: ${b?.zoho_books_location_id}`);
+          if (b?.zoho_books_location_id) {
+            locationId = b.zoho_books_location_id;
+          }
+        } catch (err) {
+          console.error(`[recordCustomerPayment] Error fetching building for invoice: ${err.message}`);
+        }
+      }
+    }
+    if (!locationId && client.building) {
+      console.log(`[recordCustomerPayment] Falling back to client building: ${client.building}`);
+      try {
+        const b = await Building.findById(client.building).select('zoho_books_location_id');
+        console.log(`[recordCustomerPayment] Found building for client: ${b?._id}, zoho_books_location_id: ${b?.zoho_books_location_id}`);
+        if (b?.zoho_books_location_id) {
+          locationId = b.zoho_books_location_id;
+        }
+      } catch (err) {
+         console.error(`[recordCustomerPayment] Error fetching building for client: ${err.message}`);
+      }
+    }
+
+    if (locationId) {
+      console.log(`[recordCustomerPayment] Setting location_id: ${locationId}`);
+      zohoPayload.location_id = locationId;
+    } else {
+      console.log(`[recordCustomerPayment] No location_id found for this payment.`);
+    }
 
     if (deposit_to_account_id) {
       zohoPayload.deposit_to_account_id = deposit_to_account_id;

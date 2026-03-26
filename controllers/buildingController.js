@@ -98,6 +98,8 @@ export const exportBuildings = async (req, res) => {
         // Integrations
         { id: 'wifiAccess', title: 'WiFi Access Config' },
         { id: 'dayPassPolicy', title: 'Day Pass Matrix Policy' },
+        { id: 'zohoLocationId', title: 'Zoho Location ID' },
+        { id: 'placeOfSupply', title: 'Place of Supply' },
 
         { id: 'photos', title: 'Photos' },
         { id: 'createdAt', title: 'Created At' },
@@ -155,6 +157,8 @@ export const exportBuildings = async (req, res) => {
 
         wifiAccess: JSON.stringify(b.wifiAccess || {}),
         dayPassPolicy: b.dayPassMatrixPolicyId?.name || b.dayPassMatrixPolicyId || '',
+        zohoLocationId: b.zoho_books_location_id || '',
+        placeOfSupply: b.place_of_supply || '',
 
         photos: photoUrls,
         createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : '',
@@ -182,7 +186,7 @@ export const createBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -274,7 +278,14 @@ export const createBuilding = async (req, res) => {
       meetingCancellationGraceMinutes,
       photos: processedPhotos,
       openSpacePricing: req.body.openSpacePricing || 500,
-      businessMapLink
+      businessMapLink,
+      ...(zoho_books_location_id !== undefined && { zoho_books_location_id: zoho_books_location_id || null }),
+      ...(place_of_supply !== undefined && { place_of_supply: place_of_supply || null }),
+      bankDetails: bankDetails || undefined,
+      zohoChartsOfAccounts: zohoChartsOfAccounts || undefined,
+      lateFeePolicy: lateFeePolicy || undefined,
+      zoho_monthly_payment_item_id: zoho_monthly_payment_item_id || "",
+      zoho_tax_id: zoho_tax_id || ""
     };
 
     if (communityDiscountMaxPercent !== undefined) {
@@ -458,7 +469,7 @@ export const updateBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -539,7 +550,14 @@ export const updateBuilding = async (req, res) => {
       status,
       perSeatPricing,
       openSpacePricing,
-      businessMapLink
+      businessMapLink,
+      ...(zoho_books_location_id !== undefined && { zoho_books_location_id: zoho_books_location_id || null }),
+      ...(place_of_supply !== undefined && { place_of_supply: place_of_supply || null }),
+      bankDetails: bankDetails !== undefined ? bankDetails : undefined,
+      zohoChartsOfAccounts: zohoChartsOfAccounts !== undefined ? zohoChartsOfAccounts : undefined,
+      lateFeePolicy: lateFeePolicy !== undefined ? lateFeePolicy : undefined,
+      zoho_monthly_payment_item_id: zoho_monthly_payment_item_id !== undefined ? zoho_monthly_payment_item_id : undefined,
+      zoho_tax_id: zoho_tax_id !== undefined ? zoho_tax_id : undefined
     };
     if (processedPhotos) {
       updatePayload.photos = processedPhotos;

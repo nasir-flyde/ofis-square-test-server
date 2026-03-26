@@ -24,7 +24,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
-        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply",
+        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply zoho_monthly_payment_item_id zoho_tax_id",
         populate: { path: "city", select: "name" }
       });
 
@@ -72,14 +72,18 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
       const cabinLabel = await getCabinLabel(contract._id, contractLabel);
 
-      const displayDescription = rentItem.description.replace("Monthly Rent", "Fixed Monthly Payment").replace("Monthly Subscription", "Fixed Monthly Payment") + ` (${cabinLabel})`;
+      const prorationSuffix = rentItem.description.includes("(prorated")
+        ? rentItem.description.split(" (")[1].replace(")", "")
+        : "";
+      const displayDescription = `${cabinLabel}${prorationSuffix ? ' (' + prorationSuffix + ')' : ''}`;
 
       items.push({
         description: displayDescription,
         quantity: 1,
         unitPrice: rentItem.total,
         amount: rentItem.total,
-        name: displayDescription.split(' (')[0]
+        name: displayDescription.split(' (')[0],
+        item_id: contract.building?.zoho_monthly_payment_item_id || undefined
       });
       subtotal += rentItem.total;
     }
@@ -90,21 +94,24 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       // Use full month range for billable check to ensure add-ons active in this month are picked up
       const fullMonthStart = new Date(startEnd.start.getFullYear(), startEnd.start.getMonth(), 1);
       const fullMonthEnd = new Date(startEnd.start.getFullYear(), startEnd.start.getMonth() + 1, 0);
-      
+
       for (const addon of contract.addOns) {
         if (isAddonBillable(addon, fullMonthStart, fullMonthEnd)) {
           const qty = addon.quantity || 1;
-          const totalAmount = addon.amount * qty;
+          const prorated = calculateProratedAddonAmount(addon, fullMonthStart, fullMonthEnd);
+          const totalAmount = prorated.total * qty;
+          
           if (totalAmount > 0) {
             items.push({
-              description: `${addon.description} - ${monthName}`,
+              description: `${addon.description}${prorated.description ? ' (' + prorated.description + ')' : ''}`,
               quantity: qty,
-              unitPrice: addon.amount,
+              unitPrice: prorated.total,
               amount: totalAmount,
               name: addon.description,
-              rate: addon.amount,
+              rate: prorated.total,
               unit: 'nos',
-              item_total: totalAmount
+              item_total: totalAmount,
+              item_id: addon.zoho_item_id || undefined
             });
             subtotal += totalAmount;
           }
@@ -137,7 +144,8 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
         rate: item.unitPrice,
         unit: "nos",
         item_total: item.amount,
-        tax_percentage: 18
+        tax_percentage: 18,
+        item_id: item.item_id
       })),
 
       sub_total: round2(subtotal),
@@ -149,6 +157,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
       notes: `Auto-created from contract (${issueOn})${formatBankDetails(contract.building, false)}`,
 
       zoho_books_location_id: contract.building?.zoho_books_location_id || undefined,
+      zoho_tax_id: contract.building?.zoho_tax_id || undefined,
 
       // Zoho Books specific fields
       currency_code: "INR",
@@ -305,6 +314,40 @@ function isAddonBillable(addon, periodStart, periodEnd) {
   if (addonEnd && addonEnd < periodStart) return false;
 
   return true;
+}
+
+/**
+ * Calculate prorated amount for an add-on based on active days in billing period
+ */
+function calculateProratedAddonAmount(addon, periodStart, periodEnd) {
+  const amount = Number(addon.amount || 0);
+  if (amount <= 0) return { total: 0, description: "" };
+  if (addon.billingCycle === 'one-time') return { total: amount, description: "one-time" };
+
+  const start = new Date(periodStart);
+  const end = new Date(periodEnd);
+  const totalDaysInMonth = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+
+  const addonStart = addon.startDate ? new Date(addon.startDate) : start;
+  const addonEnd = addon.endDate ? new Date(addon.endDate) : end;
+
+  // Active range within this billing period
+  const activeStart = new Date(Math.max(start.getTime(), addonStart.getTime()));
+  const activeEnd = new Date(Math.min(end.getTime(), addonEnd.getTime()));
+
+  if (activeStart > activeEnd) return { total: 0, description: "inactive" };
+
+  const activeDays = Math.max(0, Math.ceil((activeEnd.getTime() - activeStart.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+  if (activeDays >= totalDaysInMonth) {
+    return { total: amount, description: "" };
+  }
+
+  const proratedAmount = Math.round(((amount * activeDays) / totalDaysInMonth) * 100) / 100;
+  return {
+    total: proratedAmount,
+    description: `prorated ${activeDays}/${totalDaysInMonth} days`
+  };
 }
 
 /**
@@ -545,7 +588,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       .populate("client")
       .populate({
         path: "building",
-        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply",
+        select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply zoho_monthly_payment_item_id zoho_tax_id",
         populate: { path: "city", select: "name" }
       });
 
@@ -607,7 +650,10 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
         baseDescription = rentItem.description;
       }
 
-      const displayDescription = baseDescription.replace("Monthly Rent", "Fixed Monthly Payment").replace("Monthly Subscription", "Fixed Monthly Payment") + ` (${cabinLabel})`;
+      const prorationSuffix = baseDescription.includes("(prorated")
+        ? baseDescription.split(" (")[1].replace(")", "")
+        : "";
+      const displayDescription = `${cabinLabel}${prorationSuffix ? ' (' + prorationSuffix + ')' : ''}`;
 
       items.push({
         description: displayDescription,
@@ -617,7 +663,8 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
         name: displayDescription.split(' (')[0],
         rate: rentTotal,
         unit: "nos",
-        item_total: rentTotal
+        item_total: rentTotal,
+        item_id: contract.building?.zoho_monthly_payment_item_id || undefined
       });
       subtotal += rentTotal;
     }
@@ -632,17 +679,20 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       for (const addon of contract.addOns) {
         if (isAddonBillable(addon, fullMonthStart, fullMonthEnd)) {
           const qty = addon.quantity || 1;
-          const totalAmount = addon.amount * qty;
+          const prorated = calculateProratedAddonAmount(addon, fullMonthStart, fullMonthEnd);
+          const totalAmount = prorated.total * qty;
+
           if (totalAmount > 0) {
             items.push({
-              description: `${addon.description} - ${monthName}`,
+              description: `${addon.description}${prorated.description ? ' (' + prorated.description + ')' : ''}`,
               quantity: qty,
-              unitPrice: addon.amount,
+              unitPrice: prorated.total,
               amount: totalAmount,
               name: addon.description,
-              rate: addon.amount,
+              rate: prorated.total,
               unit: 'nos',
-              item_total: totalAmount
+              item_total: totalAmount,
+              item_id: addon.zoho_item_id || undefined
             });
             subtotal += totalAmount;
           }
@@ -660,6 +710,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
       client: contract.client._id,
       contract: contract._id,
       building: contract.building._id,
+      zoho_tax_id: contract.building?.zoho_tax_id || undefined,
       date: issueDate,
       expiry_date: expiryDate,
       billing_period: { start: periodStart, end: periodEnd },
@@ -673,6 +724,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
         rate: item.unitPrice,
         unit: item.unit || 'nos',
         item_total: item.amount,
+        item_id: item.item_id || undefined,
         tax_percentage: 18
       })),
 

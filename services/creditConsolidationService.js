@@ -330,7 +330,7 @@ async function createCreditInvoice({ client, contract, billingStart, billingEnd,
     currency_code: "INR",
     exchange_rate: 1,
     gst_treatment: "business_gst",
-    place_of_supply: "MH",
+    place_of_supply: building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code || "MH",
     payment_terms: contract.credit_terms_days || 30,
     payment_terms_label: `Net ${contract.credit_terms_days || 30}`,
     is_inclusive_tax: false

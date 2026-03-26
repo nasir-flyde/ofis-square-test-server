@@ -215,6 +215,14 @@ export const createInvoice = async (req, res) => {
           invObj.gst_treatment = 'consumer';
         }
 
+        // Fetch building to get zoho_books_location_id
+        if (invoice.building) {
+          const buildingDoc = await Building.findById(invoice.building);
+          if (buildingDoc?.zoho_books_location_id) {
+            invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+          }
+        }
+
         // Create in Zoho
         const zohoResp = await createZohoInvoiceFromLocal(invObj, clientDoc.toObject());
         const zohoId = zohoResp?.invoice?.invoice_id;
@@ -485,13 +493,31 @@ export const pushInvoiceToZoho = async (req, res) => {
         // Prefer client-provided GST treatment; else infer: if client has gstNo then business_gst else consumer
         const inferredTreatment = client.gstTreatment || (client.gstNo ? 'business_gst' : 'consumer');
         invObj.gst_treatment = invObj.gst_treatment || inferredTreatment;
-        // Place of supply from invoice or client billing address
-        const placeOfSupply = invObj.place_of_supply
+        
+        // Place of supply decision
+        let placeOfSupply = invObj.place_of_supply;
+
+        // Fetch building to get zoho_books_location_id AND place_of_supply
+        if (invoice.building) {
+          const buildingDoc = await Building.findById(invoice.building);
+          if (buildingDoc) {
+            if (buildingDoc.zoho_books_location_id) {
+              invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+            }
+            if (buildingDoc.place_of_supply && !placeOfSupply) {
+              placeOfSupply = buildingDoc.place_of_supply;
+            }
+          }
+        }
+
+        placeOfSupply = placeOfSupply
           || client.place_of_supply
           || client?.billingAddress?.state_code
           || client?.billingAddress?.state
           || undefined;
+
         if (placeOfSupply) invObj.place_of_supply = placeOfSupply;
+
         // GST number
         invObj.gst_no = invObj.gst_no || client.gstNo || undefined;
         // Provide org state code for interstate decision (read from env)
@@ -1214,6 +1240,7 @@ export const consolidateInvoices = async (req, res) => {
             rate: item.rate,
             unit: item.unit || "nos",
             item_total: item.item_total,
+            tax_percentage: item.tax_percentage || 18,
           });
         });
       }
@@ -1252,7 +1279,7 @@ export const consolidateInvoices = async (req, res) => {
       currency_code: "INR",
       exchange_rate: 1,
       gst_treatment: client.gstTreatment || "business_gst",
-      place_of_supply: "MH",
+      place_of_supply: invoicesToConsolidate[0]?.building?.place_of_supply || client.place_of_supply || client.billingAddress?.state_code || "MH",
       payment_terms: 7,
       payment_terms_label: "Net 7",
       customer_id: client.zohoBooksContactId,

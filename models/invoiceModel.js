@@ -104,6 +104,8 @@ const invoiceSchema = new mongoose.Schema(
     zoho_status: { type: String },
     zoho_pdf_url: { type: String },
     invoice_url: { type: String },
+    zoho_tax_id: { type: String }, // Building-level tax override
+    zoho_books_location_id: { type: String }, // Building-level location ID
     // E-Invoice upload (manual or via storage)
     e_invoice_url: { type: String },
     template_id: { type: String },

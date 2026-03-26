@@ -81,6 +81,14 @@ export const createBySales = async (req, res) => {
       freebies,
       payAsYouGo,
       termsAndConditionAcceptance,
+      // New sales metadata fields
+      entityType,
+      type: contractType,
+      billableSeats,
+      leadOwnerName,
+      broker,
+      commission,
+      addOns,
     } = req.body || {};
 
     if (!client || !building || !startDate || !endDate || !capacity) {
@@ -257,11 +265,43 @@ export const createBySales = async (req, res) => {
       ...(gst_no ? { gst_no } : {}),
       ...(gst_treatment ? { gst_treatment } : {}),
       ...(place_of_supply ? { place_of_supply } : {}),
+      // New sales metadata
+      ...(entityType ? { entityType } : {}),
+      ...(contractType ? { type: contractType } : {}),
+      ...(billableSeats !== undefined && billableSeats !== null ? { billableSeats: Number(billableSeats) } : {}),
+      ...(leadOwnerName ? { leadOwnerName } : {}),
+      ...(broker && typeof broker === 'object' ? { broker: {
+        isDirect: broker.isDirect !== undefined ? Boolean(broker.isDirect) : true,
+        brokerName: broker.isDirect ? null : (broker.brokerName || null),
+      }} : {}),
+      ...(commission && typeof commission === 'object' ? { commission: {
+        percentage: commission.percentage !== undefined && commission.percentage !== null ? Number(commission.percentage) : null,
+        paymentType: commission.paymentType || null,
+        periodMonths: commission.periodMonths !== undefined && commission.periodMonths !== null ? Number(commission.periodMonths) : null,
+      }} : {}),
       status: "pushed",
       createdBy: req.user?._id || undefined,
       lastActionBy: req.user?._id || undefined,
       lastActionAt: new Date(),
       ...(kycCount > 0 ? { kycDocumentItems: kycItemsToAttach, iskycuploaded: true } : {}),
+      // Add-ons
+      ...(Array.isArray(addOns) && addOns.length > 0 ? {
+        addOns: addOns
+          .filter(a => a && a.description && a.amount !== undefined)
+          .map(a => ({
+            addonId: a.addonId || null,
+            description: String(a.description).trim(),
+            amount: Number(a.amount) || 0,
+            quantity: Math.max(1, parseInt(a.quantity) || 1),
+            billingCycle: ['monthly', 'one-time'].includes(a.billingCycle) ? a.billingCycle : 'monthly',
+            status: 'active',
+            zoho_item_id: a.zoho_item_id || "",
+            startDate: a.startDate || null,
+            endDate: a.endDate || null,
+            addedAt: new Date(),
+            addedBy: req.user?._id || null,
+          }))
+      } : {}),
     });
 
     // Link existing Security Deposit if provided in payload
@@ -396,6 +436,14 @@ export const salesEditCommercials = async (req, res) => {
       place_of_supply,
       securityDepositId,
       cabin,
+      // New sales metadata fields
+      entityType,
+      type: contractType,
+      billableSeats,
+      leadOwnerName,
+      broker,
+      commission,
+      addOns,
     } = req.body || {};
 
     const contract = await Contract.findById(id);
@@ -459,6 +507,42 @@ export const salesEditCommercials = async (req, res) => {
     if (place_of_supply) contract.place_of_supply = place_of_supply;
     if (securityDepositId) contract.securityDeposit = securityDepositId;
     if (cabin) contract.cabin = cabin;
+    // New sales metadata
+    if (entityType !== undefined) contract.entityType = entityType || null;
+    if (contractType !== undefined) contract.type = contractType || null;
+    if (billableSeats !== undefined && billableSeats !== null) contract.billableSeats = Number(billableSeats);
+    if (leadOwnerName !== undefined) contract.leadOwnerName = leadOwnerName || null;
+    if (broker && typeof broker === 'object') {
+      contract.broker = {
+        isDirect: broker.isDirect !== undefined ? Boolean(broker.isDirect) : (contract.broker?.isDirect ?? true),
+        brokerName: broker.isDirect ? null : (broker.brokerName || null),
+      };
+    }
+    if (commission && typeof commission === 'object') {
+      contract.commission = {
+        percentage: commission.percentage !== undefined && commission.percentage !== null ? Number(commission.percentage) : (contract.commission?.percentage ?? null),
+        paymentType: commission.paymentType || (contract.commission?.paymentType ?? null),
+        periodMonths: commission.periodMonths !== undefined && commission.periodMonths !== null ? Number(commission.periodMonths) : (contract.commission?.periodMonths ?? null),
+      };
+    }
+    // Handle add-ons update: if provided, replace the full list
+    if (Array.isArray(addOns)) {
+      contract.addOns = addOns
+        .filter(a => a && a.description && a.amount !== undefined)
+        .map(a => ({
+          addonId: a.addonId || null,
+          description: String(a.description).trim(),
+          amount: Number(a.amount) || 0,
+          quantity: Math.max(1, parseInt(a.quantity) || 1),
+          billingCycle: ['monthly', 'one-time'].includes(a.billingCycle) ? a.billingCycle : 'monthly',
+          status: a.status || 'active',
+          zoho_item_id: a.zoho_item_id || "",
+          startDate: a.startDate || null,
+          endDate: a.endDate || null,
+          addedAt: a.addedAt || new Date(),
+          addedBy: a.addedBy || req.user?._id || null,
+        }));
+    }
 
     // Recompute duration months if dates provided
     try {

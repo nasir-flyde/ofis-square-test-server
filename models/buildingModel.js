@@ -156,6 +156,23 @@ const BuildingSchema = new Schema(
       },
     },
 
+    bankDetails: {
+      accountHolderName: { type: String, default: 'OFIS SPACES PRIVATE LIMITED' },
+      bankName: { type: String, default: 'HDFC Bank Ltd.' },
+      branchName: { type: String, default: 'MG Road, Gurgaon' },
+      accountType: { type: String, default: 'Current Account' },
+      accountNumber: { type: String, default: '5020 1234 5678' },
+      ifscCode: { type: String, default: 'HDFC0009876' }
+    },
+
+    zoho_books_location_id: { type: String, trim: true, default: null },
+    place_of_supply: { type: String, trim: true, default: null },
+    zohoChartsOfAccounts: {
+      bank_account_id: { type: String, default: null },
+      bank_account_name: { type: String, default: null }
+    },
+    zoho_monthly_payment_item_id: { type: String, default: "" }, // Zoho Books Item ID for monthly rent
+    zoho_tax_id: { type: String, default: "" }, // Unified Zoho Tax ID/Group ID for this building
     status: { type: String, enum: ["draft", "active", "inactive"], default: "draft", index: true },
   },
   {

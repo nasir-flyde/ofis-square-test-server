@@ -68,6 +68,7 @@ import docSupportRoutes from "./docSupportRoutes.js";
 import printerRoutes from "./printer.js";
 import appRequestsRoutes from "./appRequests.js";
 import gstRoutes from "./gstRoutes.js";
+import addOnsRoutes from "./addOns.js";
 
 const router = express.Router();
 
@@ -141,5 +142,6 @@ router.use("/doc-support", docSupportRoutes);
 router.use("/printer", printerRoutes);
 router.use("/app-requests", appRequestsRoutes);
 router.use("/gst", gstRoutes);
+router.use("/addons", addOnsRoutes);
 
 export default router;

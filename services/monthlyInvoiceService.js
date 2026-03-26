@@ -5,6 +5,8 @@ import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
 import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
+import Cabin from "../models/cabinModel.js";
+import City from "../models/cityModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
@@ -27,9 +29,17 @@ export const createMonthlyInvoices = async (refDate = new Date()) => {
         { endDate: null }
       ]
     })
-      .populate("client")
-      // Include building-level invoice scheduling fields
-      .populate("building", "name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy");
+      .populate({
+        path: "client",
+        select: "companyName contactPerson email phone gstNo zohoBooksContactId billingAddress shippingAddress place_of_supply"
+      })
+      // Include building-level invoice scheduling fields, bank details and city for jurisdiction
+      .populate({
+        path: "building",
+        select: "name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy bankDetails place_of_supply zoho_books_location_id city zoho_monthly_payment_item_id zoho_tax_id",
+        populate: { path: "city", select: "name" }
+      })
+      .populate("addOns.addonId");
 
     console.log(`Found ${activeContracts.length} active contracts for monthly billing`);
 
@@ -49,8 +59,8 @@ export const createMonthlyInvoices = async (refDate = new Date()) => {
 
         const currentYear = now.getFullYear();
         const currentMonth = now.getMonth();
-        const billingPeriodStart = new Date(currentYear, currentMonth + 1, 1);
-        const billingPeriodEnd = new Date(currentYear, currentMonth + 2, 0);
+        const billingPeriodStart = new Date(Date.UTC(currentYear, currentMonth + 1, 1));
+        const billingPeriodEnd = new Date(Date.UTC(currentYear, currentMonth + 2, 0));
 
         const inv = await createMonthlyInvoiceForContract(contract, { issueDate, dueDate, billingPeriodStart, billingPeriodEnd, refDate: now });
         if (inv) {
@@ -104,13 +114,13 @@ function getInvoiceScheduleForBuilding(building, now = new Date()) {
   const normalizedIssueDay = Math.min(Math.max(1, issueDayConfigured), lastDayOfCurrentMonth);
   const shouldGenerateToday = now.getDate() === normalizedIssueDay;
 
-  const issueDate = new Date(currentYear, currentMonth, normalizedIssueDay);
+  const issueDate = new Date(Date.UTC(currentYear, currentMonth, normalizedIssueDay));
 
   // Due date on the configured day of the NEXT month
   const nextMonth = currentMonth + 1;
   const lastDayOfNextMonth = new Date(currentYear, nextMonth + 1, 0).getDate();
   const normalizedDueDay = Math.min(Math.max(1, dueDayConfigured), lastDayOfNextMonth);
-  const dueDate = new Date(currentYear, nextMonth, normalizedDueDay);
+  const dueDate = new Date(Date.UTC(currentYear, nextMonth, normalizedDueDay));
 
   return { shouldGenerateToday, issueDate, dueDate };
 }
@@ -126,8 +136,8 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
 
   // Determine billing period: passed args OR default to next month (aligned with shift)
   // If not passed, we default to next month to be safe for manual calls that want "upcoming" billing
-  const periodStart = billingPeriodStart || new Date(currentYear, currentMonth + 1, 1);
-  const periodEnd = billingPeriodEnd || new Date(currentYear, currentMonth + 2, 0);
+  const periodStart = billingPeriodStart || new Date(Date.UTC(currentYear, currentMonth + 1, 1));
+  const periodEnd = billingPeriodEnd || new Date(Date.UTC(currentYear, currentMonth + 2, 0));
 
   // Check if invoice already exists for this period
   const existingInvoice = await Invoice.findOne({
@@ -173,17 +183,45 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
   if (contract.monthlyRent > 0) {
     const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
     const rentAmount = contract.monthlyRent;
+    const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
+    const cabinLabel = await getCabinLabel(contract._id, contractLabel);
     items.push({
-      description: `Monthly Rent - ${monthName}`,
+      description: cabinLabel,
       quantity: 1,
       unitPrice: rentAmount,
       amount: rentAmount,
-      name: `Monthly Rent - ${monthName}`,
+      name: cabinLabel,
       rate: rentAmount,
       unit: "nos",
-      item_total: rentAmount
+      item_total: rentAmount,
+      item_id: contract.building?.zoho_monthly_payment_item_id || undefined
     });
     subtotal += rentAmount;
+  }
+
+  // Handle Add-ons
+  if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
+    const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+    for (const addon of contract.addOns) {
+      if (isAddonBillable(addon, periodStart, periodEnd)) {
+        const qty = addon.quantity || 1; // Fallback for legacy data
+        const totalAmount = addon.amount * qty;
+        if (totalAmount > 0) {
+          items.push({
+            description: addon.description,
+            quantity: qty,
+            unitPrice: addon.amount,
+            amount: totalAmount,
+            name: addon.description,
+            rate: addon.amount,
+            unit: 'nos',
+            item_total: totalAmount,
+            item_id: addon.addonId?.zoho_item_id || undefined
+          });
+          subtotal += totalAmount;
+        }
+      }
+    }
   }
 
 
@@ -216,7 +254,9 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
       name: item.name || item.description,
       rate: item.unitPrice,
       unit: item.unit || "nos",
-      item_total: item.amount
+      item_total: item.amount,
+      tax_percentage: 18,
+      item_id: item.item_id
     })),
 
     sub_total: round2(subtotal),
@@ -225,13 +265,13 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
     amount_paid: 0,
     balance: total,
     status: "draft",
-    notes: `Monthly invoice for ${billingPeriodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`,
+    notes: `Monthly invoice for ${billingPeriodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}${formatBankDetails(contract.building, false)}`,
 
     // Zoho Books specific fields
     currency_code: "INR",
     exchange_rate: 1,
     gst_treatment: "business_gst",
-    place_of_supply: "MH",
+    place_of_supply: contract.building?.place_of_supply || contract.client?.place_of_supply || contract.client?.billingAddress?.state_code,
     payment_terms: paymentTermsDays,
     payment_terms_label: `Net ${paymentTermsDays}`,
 
@@ -248,11 +288,37 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
       }
     }),
 
+    // Client shipping address mapping
+    ...(contract.client.shippingAddress && {
+      shipping_address: {
+        attention: contract.client.contactPerson,
+        address: contract.client.shippingAddress.address,
+        street2: contract.client.shippingAddress.street2,
+        city: contract.client.shippingAddress.city,
+        state: contract.client.shippingAddress.state,
+        zip: contract.client.shippingAddress.zip,
+        country: contract.client.shippingAddress.country || 'IN',
+        phone: contract.client.phone
+      }
+    }),
+
     customer_id: contract.client.zohoBooksContactId,
     gst_no: contract.client.gstNo
   };
 
   const invoice = await Invoice.create(invoiceData);
+
+  // Mark one-time add-ons as billed
+  if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
+    let modified = false;
+    for (const addon of contract.addOns) {
+      if (addon.status === 'active' && addon.billingCycle === 'one-time') {
+        addon.status = 'billed';
+        modified = true;
+      }
+    }
+    if (modified) await contract.save();
+  }
 
   console.log(`Created monthly invoice ${invoice._id} for contract ${contract._id}`);
 
@@ -261,7 +327,14 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
   try {
     if (contract.client.zohoBooksContactId) {
       const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
-      const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), contract.client.toObject());
+      const invObj = invoice.toObject();
+      if (contract.building?.zoho_books_location_id) {
+        invObj.zoho_books_location_id = contract.building.zoho_books_location_id;
+      }
+      if (contract.building?.zoho_tax_id) {
+        invObj.zoho_tax_id = contract.building.zoho_tax_id;
+      }
+      const zohoResponse = await createZohoInvoiceFromLocal(invObj, contract.client.toObject());
       const invoiceData = zohoResponse.invoice || zohoResponse;
 
       if (invoiceData && invoiceData.invoice_id) {
@@ -281,6 +354,64 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
   }
 
   return invoice;
+}
+
+/**
+ * Format building bank details for invoice notes
+ */
+function formatBankDetails(building, isProForma = false) {
+  const bank = building?.bankDetails;
+  if (!bank || !bank.accountNumber) return "";
+
+  const cityName = building.city?.name || "Noida";
+  const disclaimer = isProForma ? "\nThis is not a tax invoice. " : "\n";
+
+  return `\n\nCompany's Bank Details\n` +
+    `A/c Holder's Name: ${bank.accountHolderName}\n` +
+    `Bank Name: ${bank.bankName}\n` +
+    `A/c No.: ${bank.accountNumber}\n` +
+    `Branch : ${bank.branchName}\n` +
+    `IFS Code: ${bank.ifscCode}\n` +
+    `${disclaimer}Subject to ${cityName} jurisdiction only.`;
+}
+
+/**
+ * Check if an add-on is billable within a given period
+ */
+function isAddonBillable(addon, periodStart, periodEnd) {
+  if (addon.status === 'billed') return false;
+  if (addon.status !== 'active') return false;
+
+  if (addon.billingCycle === 'one-time') {
+    return true;
+  }
+
+  const addonStart = addon.startDate ? new Date(addon.startDate) : null;
+  const addonEnd = addon.endDate ? new Date(addon.endDate) : null;
+
+  // Add-on must have started before or during this period
+  if (addonStart && addonStart > periodEnd) return false;
+
+  // Add-on must not have ended before this period
+  if (addonEnd && addonEnd < periodStart) return false;
+
+  return true;
+}
+
+/**
+ * Fetch and format cabin numbers for a contract
+ */
+async function getCabinLabel(contractId, contractLabel) {
+  try {
+    const cabins = await Cabin.find({ contract: contractId }).select('number').lean();
+    if (cabins && cabins.length > 0) {
+      const numbers = cabins.map(c => c.number).join(', ');
+      return `Cabin ${numbers}`;
+    }
+  } catch (err) {
+    console.warn(`Failed to fetch cabins for contract ${contractId}:`, err.message);
+  }
+  return contractLabel ? `Contract ${contractLabel}` : null;
 }
 
 function round2(n) {
@@ -309,8 +440,15 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
         }
       ]
     })
-      .populate('client')
-      .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy');
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone gstNo zohoBooksContactId billingAddress shippingAddress place_of_supply'
+      })
+      .populate({
+        path: 'building',
+        select: 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy bankDetails place_of_supply zoho_books_location_id city zoho_monthly_payment_item_id',
+        populate: { path: 'city', select: 'name' }
+      });
 
     // Group contracts by building+client
     const groups = new Map();
@@ -326,8 +464,8 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
     // Shift to next month for billing
-    const billingPeriodStart = new Date(currentYear, currentMonth + 1, 1);
-    const billingPeriodEnd = new Date(currentYear, currentMonth + 2, 0);
+    const billingPeriodStart = new Date(Date.UTC(currentYear, currentMonth + 1, 1));
+    const billingPeriodEnd = new Date(Date.UTC(currentYear, currentMonth + 2, 0));
 
     for (const [key, group] of groups) {
       const { building, client, contracts } = group;
@@ -369,6 +507,7 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
         // Build consolidated line items (rent + late fees) across all contracts
         const items = [];
         let subtotal = 0;
+        const cabinLabels = [];
         const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
 
         for (const c of contracts) {
@@ -381,19 +520,47 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
             continue;
           }
           const rentAmount = Number(c.monthlyRent || 0);
+          const contractLabel = String(c.contractNumber || c._id).slice(-6);
+          const cabinLabel = await getCabinLabel(c._id, contractLabel);
+          if (cabinLabel) cabinLabels.push(cabinLabel);
           if (rentAmount > 0) {
-            const contractLabel = String(c.contractNumber || c._id).slice(-6);
             items.push({
-              description: `Monthly Subscription - ${monthName} (Contract ${contractLabel})`,
+              description: cabinLabel,
               quantity: 1,
               unitPrice: rentAmount,
               amount: rentAmount,
-              name: `Monthly Subscription - ${monthName}`,
+              name: cabinLabel,
               rate: rentAmount,
               unit: 'nos',
-              item_total: rentAmount
+              item_total: rentAmount,
+              item_id: (contract?.building?.zoho_monthly_payment_item_id || c?.building?.zoho_monthly_payment_item_id || b?.zoho_monthly_payment_item_id)
             });
             subtotal += rentAmount;
+          }
+          // Handle Add-ons
+          if (Array.isArray(c.addOns) && c.addOns.length > 0) {
+            const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+            for (const addon of c.addOns) {
+              if (isAddonBillable(addon, billingPeriodStart, billingPeriodEnd)) {
+                const qty = addon.quantity || 1; // Fallback for legacy data
+                const totalAmount = addon.amount * qty;
+                if (totalAmount > 0) {
+                  items.push({
+                    description: addon.description,
+                    quantity: qty,
+                    unitPrice: addon.amount,
+                    amount: totalAmount,
+                    name: addon.description,
+                    rate: addon.amount,
+                    unit: 'nos',
+                    item_total: totalAmount,
+                    item_id: addon.zoho_item_id || addon.addonId?.zoho_item_id || undefined
+                  });
+                  subtotal += totalAmount;
+                  console.log(`[Consolidated Billing] Added add-on "${addon.description}" (₹${totalAmount}) for Contract ${contractLabel}`);
+                }
+              }
+            }
           }
         }
 
@@ -411,6 +578,7 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
         const invoiceData = {
           invoice_number: invoiceNumber,
           client: client._id,
+          contract: contracts.length === 1 ? contracts[0]._id : null,
           building: building._id,
           date: issueDate,
           due_date: dueDate,
@@ -425,7 +593,9 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
             name: item.name || item.description,
             rate: item.unitPrice,
             unit: item.unit || 'nos',
-            item_total: item.amount
+            item_total: item.amount,
+            tax_percentage: 18,
+            item_id: item.item_id
           })),
           sub_total: round2(subtotal),
           tax_total: taxTotal,
@@ -433,11 +603,11 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
           amount_paid: 0,
           balance: total,
           status: 'draft',
-          notes: `Monthly consolidated invoice for ${billingPeriodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`,
+          notes: `Monthly consolidated invoice for ${billingPeriodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}${formatBankDetails(building, false)}`,
           currency_code: 'INR',
           exchange_rate: 1,
           gst_treatment: 'business_gst',
-          place_of_supply: 'MH',
+          place_of_supply: building?.place_of_supply || client?.place_of_supply || client?.billingAddress?.state_code || 'MH',
           payment_terms: paymentTermsDays,
           payment_terms_label: `Net ${paymentTermsDays}`,
           ...(client.billingAddress && {
@@ -452,24 +622,53 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
             }
           }),
           customer_id: client.zohoBooksContactId,
-          gst_no: client.gstNo
+          gst_no: client.gstNo,
+
+          // Client shipping address mapping
+          ...(client.shippingAddress && {
+            shipping_address: {
+              attention: client.contactPerson,
+              address: client.shippingAddress.address,
+              street2: client.shippingAddress.street2,
+              city: client.shippingAddress.city,
+              state: client.shippingAddress.state,
+              zip: client.shippingAddress.zip,
+              country: client.shippingAddress.country || 'IN',
+              phone: client.phone
+            }
+          })
         };
 
         const invoice = await Invoice.create(invoiceData);
 
+        // Mark one-time add-ons as billed across all contracts in the group
+        for (const c of contracts) {
+          if (Array.isArray(c.addOns) && c.addOns.length > 0) {
+            let modified = false;
+            for (const addon of c.addOns) {
+              if (addon.status === 'active' && addon.billingCycle === 'one-time') {
+                addon.status = 'billed';
+                modified = true;
+              }
+            }
+            if (modified) await c.save();
+          }
+        }
 
-        // Push to Zoho
         try {
           if (client.zohoBooksContactId) {
-            const { createZohoInvoiceFromLocal } = await import('../utils/zohoBooks.js');
-            const zohoResponse = await createZohoInvoiceFromLocal(invoice.toObject(), client.toObject());
+            const { createZohoInvoiceFromLocal } = await import("../utils/zohoBooks.js");
+            const invObj = invoice.toObject();
+            if (building?.zoho_books_location_id) {
+              invObj.zoho_books_location_id = building.zoho_books_location_id;
+            }
+            const zohoResponse = await createZohoInvoiceFromLocal(invObj, client.toObject());
             const inv = zohoResponse.invoice || zohoResponse;
             if (inv && inv.invoice_id) {
               invoice.zoho_invoice_id = inv.invoice_id;
               invoice.zoho_invoice_number = inv.invoice_number;
               invoice.zoho_status = inv.status || inv.status_formatted;
               invoice.zoho_pdf_url = inv.pdf_url;
-              invoice.invoice_url = inv.invoice_url;
               await invoice.save();
             }
           }
@@ -510,8 +709,8 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
     // Shift to next month
-    const periodStart = new Date(currentYear, currentMonth + 1, 1);
-    const periodEnd = new Date(currentYear, currentMonth + 2, 0);
+    const periodStart = new Date(Date.UTC(currentYear, currentMonth + 1, 1));
+    const periodEnd = new Date(Date.UTC(currentYear, currentMonth + 2, 0));
 
     const activeContracts = await Contract.find({
       status: 'active',
@@ -530,8 +729,15 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
         }
       ]
     })
-      .populate('client')
-      .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone gstNo zohoBooksContactId billingAddress shippingAddress place_of_supply'
+      })
+      .populate({
+        path: 'building',
+        select: 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy bankDetails place_of_supply zoho_books_location_id city zoho_monthly_payment_item_id',
+        populate: { path: 'city', select: 'name' }
+      });
 
     for (const contract of activeContracts) {
       try {
@@ -546,7 +752,7 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
 
         // Compare against target billing period (periodStart)
         // If target period < first billable month, skip
-        if (periodStart < new Date(firstBillDate.getFullYear(), firstBillDate.getMonth(), 1)) {
+        if (periodStart < new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1))) {
           results.skipped++; results.details.push({ contractId: contract._id, status: 'skipped', reason: 'Before first billable month' });
           continue;
         }
@@ -583,17 +789,47 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
         if (Number(contract.monthlyRent || 0) > 0) {
           const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
           const rentAmount = Number(contract.monthlyRent);
+          const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
+          const cabinLabel = await getCabinLabel(contract._id, contractLabel);
           items.push({
-            description: `Monthly Subscription - ${monthName}`,
+            description: cabinLabel,
             quantity: 1,
             unitPrice: rentAmount,
             amount: rentAmount,
-            name: `Monthly Subscription - ${monthName}`,
+            name: cabinLabel,
             rate: rentAmount,
             unit: 'nos',
-            item_total: rentAmount
+            item_total: rentAmount,
+            item_id: contract.building?.zoho_monthly_payment_item_id || undefined
           });
           subtotal += rentAmount;
+        }
+
+        // Handle Add-ons
+        if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
+          const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+          for (const addon of contract.addOns) {
+            if (isAddonBillable(addon, periodStart, periodEnd)) {
+              const qty = addon.quantity || 1; // Fallback for legacy data
+              const totalAmount = addon.amount * qty;
+              if (totalAmount > 0) {
+                const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
+                const cabinLabel = await getCabinLabel(contract._id, contractLabel);
+                items.push({
+                  description: addon.description,
+                  quantity: qty,
+                  unitPrice: addon.amount,
+                  amount: totalAmount,
+                  name: addon.description,
+                  rate: addon.amount,
+                  unit: 'nos',
+                  item_total: totalAmount,
+                  item_id: addon.zoho_item_id || addon.addonId?.zoho_item_id || undefined
+                });
+                subtotal += totalAmount;
+              }
+            }
+          }
         }
 
 
@@ -605,6 +841,7 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
           client: contract.client._id,
           contract: contract._id,
           building: building._id,
+          zoho_tax_id: building.zoho_tax_id || undefined,
           date: issueDate,
           expiry_date: dueDate,
           billing_period: { start: periodStart, end: periodEnd },
@@ -616,17 +853,19 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
             name: it.name || it.description,
             rate: it.unitPrice,
             unit: it.unit || 'nos',
-            item_total: it.amount
+            item_total: it.amount,
+            tax_percentage: 18,
+            item_id: it.item_id
           })),
           sub_total: Math.round(subtotal * 100) / 100,
           tax_total: taxTotal,
           total,
           status: 'draft',
-          notes: `Monthly Pro Forma for ${periodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`,
+          notes: `Monthly Pro Forma for ${periodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}${formatBankDetails(contract.building, true)}`,
           currency_code: 'INR',
           exchange_rate: 1,
           gst_treatment: 'business_gst',
-          place_of_supply: 'MH',
+          place_of_supply: contract.building?.place_of_supply || contract.client?.billingAddress?.state_code,
           ...(contract.client.billingAddress && {
             billing_address: {
               attention: contract.client.contactPerson,
@@ -638,16 +877,46 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
               phone: contract.client.phone
             }
           }),
+
+          // Client shipping address mapping
+          ...(contract.client.shippingAddress && {
+            shipping_address: {
+              attention: contract.client.contactPerson,
+              address: contract.client.shippingAddress.address,
+              street2: contract.client.shippingAddress.street2,
+              city: contract.client.shippingAddress.city,
+              state: contract.client.shippingAddress.state,
+              zip: contract.client.shippingAddress.zip,
+              country: contract.client.shippingAddress.country || 'IN',
+              phone: contract.client.phone
+            }
+          }),
+
           customer_id: contract.client.zohoBooksContactId,
           gst_no: contract.client.gstNo
         });
 
+        // Mark one-time add-ons as billed
+        if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
+          let modified = false;
+          for (const addon of contract.addOns) {
+            if (addon.status === 'active' && addon.billingCycle === 'one-time') {
+              addon.status = 'billed';
+              modified = true;
+            }
+          }
+          if (modified) await contract.save();
+        }
 
-        // Push to Zoho as estimate (draft)
+
         try {
           if (contract.client.zohoBooksContactId) {
             const { createZohoEstimateFromLocal, fetchZohoEstimatePdfBinary } = await import('../utils/zohoBooks.js');
-            const zohoResp = await createZohoEstimateFromLocal(estimateDoc.toObject(), contract.client.toObject());
+            const estObj = estimateDoc.toObject();
+            if (building?.zoho_books_location_id) {
+              estObj.zoho_books_location_id = building.zoho_books_location_id;
+            }
+            const zohoResp = await createZohoEstimateFromLocal(estObj, contract.client.toObject());
 
             if (zohoResp?.estimate?.estimate_id) {
               const zId = zohoResp.estimate.estimate_id;
@@ -765,8 +1034,16 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
         }
       ]
     })
-      .populate('client')
-      .populate('building', 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay');
+      .populate({
+        path: 'client',
+        select: 'companyName contactPerson email phone gstNo zohoBooksContactId billingAddress shippingAddress place_of_supply'
+      })
+      .populate({
+        path: 'building',
+        select: 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay place_of_supply zoho_books_location_id bankDetails city zoho_monthly_payment_item_id',
+        populate: { path: 'city', select: 'name' }
+      })
+      .populate('addOns.addonId');
 
     // Group by building+client
     const groups = new Map();
@@ -808,31 +1085,63 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
         // Build line items: one per eligible contract
         const items = [];
         let subtotal = 0;
+        const cabinLabels = [];
         const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
 
         for (const c of contracts) {
           const firstBillDate = c.billingStartDate ? new Date(c.billingStartDate) : new Date(c.startDate);
-          const firstBillMonthStart = new Date(firstBillDate.getFullYear(), firstBillDate.getMonth(), 1);
-          if (periodStart < firstBillMonthStart) continue;
+
+          // Compare against target billing period (periodStart)
+          // If target period < first billable month, skip
+          if (periodStart < new Date(firstBillDate.getFullYear(), firstBillDate.getMonth(), 1)) continue;
+
           const isFirstBillMonth = firstBillDate.getFullYear() === periodStart.getFullYear() &&
             firstBillDate.getMonth() === periodStart.getMonth();
 
           if (isFirstBillMonth && firstBillDate.getDate() !== 1) continue;
 
           const rentAmount = Number(c.monthlyRent || 0);
+          const contractLabel = String(c.contractNumber || c._id).slice(-6);
+          const cabinLabel = await getCabinLabel(c._id, contractLabel);
+          if (cabinLabel) cabinLabels.push(cabinLabel);
           if (rentAmount > 0) {
-            const contractLabel = String(c.contractNumber || c._id).slice(-6);
             items.push({
-              description: `Monthly Subscription - ${monthName} (Contract ${contractLabel})`,
+              description: cabinLabel,
               quantity: 1,
               unitPrice: rentAmount,
               amount: rentAmount,
-              name: `Monthly Subscription - ${monthName}`,
+              name: cabinLabel,
               rate: rentAmount,
               unit: 'nos',
-              item_total: rentAmount
+              item_total: rentAmount,
+              item_id: c.building?.zoho_monthly_payment_item_id || undefined
             });
             subtotal += rentAmount;
+          }
+
+          // Handle Add-ons
+          if (Array.isArray(c.addOns) && c.addOns.length > 0) {
+            for (const addon of c.addOns) {
+              if (isAddonBillable(addon, periodStart, periodEnd)) {
+                const qty = addon.quantity || 1; // Fallback for legacy data
+                const totalAmount = addon.amount * qty;
+                if (totalAmount > 0) {
+                  items.push({
+                    description: addon.description,
+                    quantity: qty,
+                    unitPrice: addon.amount,
+                    amount: totalAmount,
+                    name: addon.description,
+                    rate: addon.amount,
+                    unit: 'nos',
+                    item_total: totalAmount,
+                    item_id: addon.zoho_item_id || addon.addonId?.zoho_item_id || undefined
+                  });
+                  subtotal += totalAmount;
+                  console.log(`[Consolidated Estimate] Added add-on "${addon.description}" (₹${totalAmount}) for Contract ${contractLabel}`);
+                }
+              }
+            }
           }
         }
 
@@ -850,7 +1159,9 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
 
         const estimateDoc = await Estimate.create({
           client: client._id,
+          contract: contracts.length === 1 ? contracts[0]._id : null,
           building: building._id,
+          zoho_tax_id: building.zoho_tax_id || undefined,
           date: issueDate,
           expiry_date: dueDate,
           billing_period: { start: periodStart, end: periodEnd },
@@ -862,17 +1173,19 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
             name: it.name || it.description,
             rate: it.unitPrice,
             unit: it.unit || 'nos',
-            item_total: it.amount
+            item_total: it.amount,
+            tax_percentage: 18,
+            item_id: it.item_id
           })),
           sub_total: Math.round(subtotal * 100) / 100,
           tax_total: taxTotal,
           total,
           status: 'draft',
-          notes: `Monthly Pro Forma (Consolidated) for ${periodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`,
+          notes: `Monthly Pro Forma (Consolidated) for ${periodStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}${formatBankDetails(building, true)}`,
           currency_code: 'INR',
           exchange_rate: 1,
           gst_treatment: 'business_gst',
-          place_of_supply: 'MH',
+          place_of_supply: building?.place_of_supply || client?.building?.place_of_supply || client?.billingAddress?.state_code,
           ...(client.billingAddress && {
             billing_address: {
               attention: client.contactPerson,
@@ -885,17 +1198,47 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
             }
           }),
           customer_id: client.zohoBooksContactId,
-          gst_no: client.gstNo
+          gst_no: client.gstNo,
+          // Client shipping address mapping
+          ...(client.shippingAddress && {
+            shipping_address: {
+              attention: client.contactPerson,
+              address: client.shippingAddress.address,
+              street2: client.shippingAddress.street2,
+              city: client.shippingAddress.city,
+              state: client.shippingAddress.state,
+              zip: client.shippingAddress.zip,
+              country: client.shippingAddress.country || 'IN',
+              phone: client.phone
+            }
+          }),
         });
 
+        // Mark one-time add-ons as billed across all contracts in the group
+        for (const c of contracts) {
+          if (Array.isArray(c.addOns) && c.addOns.length > 0) {
+            let modified = false;
+            for (const addon of c.addOns) {
+              if (addon.status === 'active' && addon.billingCycle === 'one-time') {
+                addon.status = 'billed';
+                modified = true;
+              }
+            }
+            if (modified) await c.save();
+          }
+        }
+
 
         // Push to Zoho (non-blocking)
 
-        // Push to Zoho (non-blocking)
         try {
           if (client.zohoBooksContactId) {
             const { createZohoEstimateFromLocal, fetchZohoEstimatePdfBinary } = await import('../utils/zohoBooks.js');
-            const zohoResp = await createZohoEstimateFromLocal(estimateDoc.toObject(), client.toObject());
+            const estObj = estimateDoc.toObject();
+            if (building?.zoho_books_location_id) {
+              estObj.zoho_books_location_id = building.zoho_books_location_id;
+            }
+            const zohoResp = await createZohoEstimateFromLocal(estObj, client.toObject());
 
             if (zohoResp?.estimate?.estimate_id) {
               const zId = zohoResp.estimate.estimate_id;
@@ -979,6 +1322,7 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
 
         results.created++; results.details.push({ group: key, status: 'created', estimateId: estimateDoc._id });
       } catch (err) {
+        console.error(`[Consolidated Estimate] Failed to create estimate for group ${key}:`, err);
         results.errors++; results.details.push({ group: key, status: 'error', error: err?.message || String(err) });
       }
     }
@@ -1136,7 +1480,13 @@ export const convertSentEstimatesToInvoices = async (refDate = new Date()) => {
           // Push to Zoho (official Invoice)
           try {
             const { createZohoInvoiceFromLocal } = await import('../utils/zohoBooks.js');
-            await createZohoInvoiceFromLocal(invoice.toObject(), estimate.client.toObject());
+            const invObj = invoice.toObject();
+            // Building should be populated or available from building variable in loop
+            const buildingDoc = await Building.findById(invoice.building);
+            if (buildingDoc?.zoho_books_location_id) {
+              invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+            }
+            await createZohoInvoiceFromLocal(invObj, estimate.client.toObject());
           } catch (zohoErr) {
             console.warn(`[Pipeline-Invoice] Failed to push invoice ${invoice._id} to Zoho:`, zohoErr.message);
           }
@@ -1171,15 +1521,6 @@ export const convertSentEstimatesToInvoices = async (refDate = new Date()) => {
     console.error('Error in convertSentEstimatesToInvoices:', error);
     throw error;
   }
-};
-
-export default {
-  createMonthlyInvoices,
-  createMonthlyInvoicesConsolidated,
-  createMonthlyEstimates,
-  createMonthlyEstimatesConsolidated,
-  processApprovedEstimatesForSending,
-  convertSentEstimatesToInvoices
 };
 
 /**

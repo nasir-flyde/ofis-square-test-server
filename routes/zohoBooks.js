@@ -4,7 +4,9 @@ import checkPermission from "../middlewares/checkPermission.js";
 import { PERMISSIONS } from "../constants/permissions.js";
 import {
   getTaxes,
-  searchZohoContacts
+  searchZohoContacts,
+  getLocations,
+  getChartOfAccounts
 } from "../controllers/zohoBooksController.js";
 
 const router = express.Router();
@@ -20,6 +22,18 @@ router.get(
   "/contacts/search",
   authMiddleware,
   searchZohoContacts
+);
+
+// GET /api/zoho-books/locations
+router.get(
+  "/locations",
+  getLocations
+);
+
+// GET /api/zoho-books/chartofaccounts
+router.get(
+  "/chartofaccounts",
+  getChartOfAccounts
 );
 
 export default router;

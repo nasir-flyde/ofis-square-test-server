@@ -15,6 +15,7 @@ import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
 import Building from '../models/buildingModel.js';
+import AddOn from '../models/addOnModel.js';
 import imagekit from '../utils/imageKit.js';
 import ClientCreditWallet from '../models/clientCreditWalletModel.js';
 import {
@@ -2114,13 +2115,14 @@ export const getBulkContractsSampleCSV = async (req, res) => {
             'Monthly Subscription', 'Capacity', 'MR Credits', 'Printer Credits',
             'Legal Expenses', 'Lockin Months', 'Notice Period', 'Escalation Rate %',
             'Deposit Agreed', 'Deposit Paid', 'Deposit Paid Date', 'Payment Type', 'Payment Ref',
-            'Signed Contract', 'GST Number'
+            'Signed Contract', 'GST Number', 'Addon Names', 'Addon Amounts', 'Addon Types', 'Addon Start Dates', 'Addon End Dates'
         ];
 
         const sampleRow = [
             'Acme Corp', 'Bldg-001', '101', '2025-01-01', '2025-12-31',
             '50000', '10', '1000', '500', '2000', '12', '30', '0',
-            '150000', '150000', '2024-12-30', 'Bank Transfer', 'TXN789012', 'https://example.com/contract.pdf', '22AAAAA0000A1Z5'
+            '150000', '150000', '2024-12-30', 'Bank Transfer', 'TXN789012', 'https://example.com/contract.pdf', '22AAAAA0000A1Z5',
+            'High Speed Internet / Tea & Coffee', '2000 / 500', 'monthly / monthly', '2025-01-01 / 2025-01-01', '2025-12-31 / 2025-03-31'
         ];
 
         const csvContent = [headers.join(','), sampleRow.join(',')].join('\n');
@@ -2259,6 +2261,46 @@ export const bulkImportContracts = async (req, res) => {
                     parsedPlaceOfSupply = stateCodeMap[statePrefix] || statePrefix;
                 }
 
+                // --- Add-ons Parsing ---
+                const addonNamesRaw = String(row['Addon Names'] || row.addonnames || row.addonNames || '');
+                const addonAmountsRaw = String(row['Addon Amounts'] || row.addonamounts || row.addonAmounts || '');
+                const addonTypesRaw = String(row['Addon Types'] || row.addontypes || row.addonTypes || '');
+                const addonStartDatesRaw = String(row['Addon Start Dates'] || row.addonstartdates || row.addonStartDates || '');
+                const addonEndDatesRaw = String(row['Addon End Dates'] || row.addonenddates || row.addonEndDates || '');
+
+                const splitAddonNames = addonNamesRaw ? addonNamesRaw.split('/').map(v => v.trim()) : [];
+                const splitAddonAmounts = addonAmountsRaw ? addonAmountsRaw.split('/').map(v => Number(v.trim())) : [];
+                const splitAddonTypes = addonTypesRaw ? addonTypesRaw.split('/').map(v => v.trim().toLowerCase()) : [];
+                const splitAddonStartDates = addonStartDatesRaw ? addonStartDatesRaw.split('/').map(v => v.trim()) : [];
+                const splitAddonEndDates = addonEndDatesRaw ? addonEndDatesRaw.split('/').map(v => v.trim()) : [];
+
+                const contractAddOns = [];
+                const addonMasterList = await AddOn.find({ isActive: true }).lean();
+
+                for (let i = 0; i < splitAddonNames.length; i++) {
+                    const name = splitAddonNames[i];
+                    if (!name) continue;
+
+                    const amount = splitAddonAmounts[i] || 0;
+                    const type = (splitAddonTypes[i] === 'one-time' || splitAddonTypes[i] === 'one_time') ? 'one-time' : 'monthly';
+                    const sDate = parseDate(splitAddonStartDates[i]);
+                    const eDate = parseDate(splitAddonEndDates[i]);
+
+                    const masterAddon = addonMasterList.find(a => a.name.toLowerCase() === name.toLowerCase());
+
+                    contractAddOns.push({
+                        addonId: masterAddon?._id || null,
+                        description: name,
+                        amount: amount,
+                        billingCycle: type,
+                        startDate: sDate || undefined,
+                        endDate: eDate || undefined,
+                        status: 'active',
+                        addedAt: new Date(),
+                        addedBy: req.user?._id
+                    });
+                }
+
                 // --- ACTUAL IMPORT SIMULATION ---
                 let contractIdForSim = "SIMULATED_ID";
                 let contract;
@@ -2297,7 +2339,8 @@ export const bulkImportContracts = async (req, res) => {
                         iscontractstamppaperupload: true,
                         isclientsigned: true,
                         isfinalapproval: true,
-                        salesSeniorApproved: true
+                        salesSeniorApproved: true,
+                        addOns: contractAddOns
                     });
                     contractIdForSim = contract._id;
                 }
@@ -2554,6 +2597,7 @@ export const bulkImportContracts = async (req, res) => {
                             totalPaid: totalPaidToApply,
                             installments: paymentsToCreate.length
                         },
+                        addOns: contractAddOns,
                         cabin: cabin ? `Found (${cabin.number})` : (cabinNumber ? 'Not Found' : 'N/A'),
                         accessPoints: apSim
                     };
