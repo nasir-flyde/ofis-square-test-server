@@ -371,6 +371,7 @@ export const convertProformaToInvoice = async (req, res) => {
         rate: Number(li.rate || li.unitPrice || 0),
         unit: li.unit || 'nos',
         item_total: Number(li.item_total || li.amount || 0),
+        item_id: li.item_id || undefined,
         // Preserve tax percentage from estimate to drive IGST selection downstream
         ...(typeof li.tax_percentage === 'number' ? { tax_percentage: Number(li.tax_percentage) } : {}),
       })),
@@ -403,11 +404,17 @@ export const convertProformaToInvoice = async (req, res) => {
     // Push to Zoho and optionally send
     try {
       const invObj = invoice.toObject();
-      // Fetch building to get zoho_books_location_id
+      // Fetch building to get zoho_books_location_id and zoho_tax_id
       if (invoice.building) {
         const buildingDoc = await Building.findById(invoice.building);
         if (buildingDoc?.zoho_books_location_id) {
           invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+        }
+        if (buildingDoc?.zoho_tax_id) {
+          invObj.zoho_tax_id = buildingDoc.zoho_tax_id;
+        }
+        if (buildingDoc?.place_of_supply && !invObj.place_of_supply) {
+          invObj.place_of_supply = buildingDoc.place_of_supply;
         }
       }
 

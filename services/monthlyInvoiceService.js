@@ -7,6 +7,7 @@ import User from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Cabin from "../models/cabinModel.js";
 import City from "../models/cityModel.js";
+import AddOn from "../models/addOnModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
@@ -737,7 +738,8 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
         path: 'building',
         select: 'name address draftInvoiceGeneration draftInvoiceDay draftInvoiceDueDay lateFeePolicy bankDetails place_of_supply zoho_books_location_id city zoho_monthly_payment_item_id',
         populate: { path: 'city', select: 'name' }
-      });
+      })
+      .populate('addOns.addonId');
 
     for (const contract of activeContracts) {
       try {

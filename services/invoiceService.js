@@ -4,6 +4,7 @@ import Client from "../models/clientModel.js";
 import Building from "../models/buildingModel.js";
 import Estimate from "../models/estimateModel.js";
 import Cabin from "../models/cabinModel.js";
+import AddOn from "../models/addOnModel.js";
 import { generateLocalInvoiceNumber, getInvoicePeriod } from "../utils/invoiceNumberGenerator.js";
 
 /**
@@ -26,7 +27,8 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
         path: "building",
         select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply zoho_monthly_payment_item_id zoho_tax_id",
         populate: { path: "city", select: "name" }
-      });
+      })
+      .populate("addOns.addonId");
 
     if (!contract) {
       throw new Error("Contract not found");
@@ -111,7 +113,7 @@ export const createInvoiceFromContract = async (contractId, options = {}) => {
               rate: prorated.total,
               unit: 'nos',
               item_total: totalAmount,
-              item_id: addon.zoho_item_id || undefined
+              item_id: addon.addonId?.zoho_item_id || addon.zoho_item_id || undefined
             });
             subtotal += totalAmount;
           }
@@ -590,7 +592,8 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
         path: "building",
         select: "name address bankDetails city draftInvoiceDueDay zoho_books_location_id place_of_supply zoho_monthly_payment_item_id zoho_tax_id",
         populate: { path: "city", select: "name" }
-      });
+      })
+      .populate("addOns.addonId");
 
     if (!contract) {
       throw new Error("Contract not found");
@@ -692,7 +695,7 @@ export const createEstimateFromContract = async (contractId, options = {}) => {
               rate: prorated.total,
               unit: 'nos',
               item_total: totalAmount,
-              item_id: addon.zoho_item_id || undefined
+              item_id: addon.addonId?.zoho_item_id || addon.zoho_item_id || undefined
             });
             subtotal += totalAmount;
           }
