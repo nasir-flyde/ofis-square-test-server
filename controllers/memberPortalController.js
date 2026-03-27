@@ -1152,6 +1152,7 @@ export const getAppHomePageData = async (req, res) => {
     let cabinType = null;
     let buildingOpeningTime = null;
     let buildingClosingTime = null;
+    let buildingBankDetails = null;
     let guestProfile = null;
     let kycPending = false;
     let guestPending = false;
@@ -1172,7 +1173,7 @@ export const getAppHomePageData = async (req, res) => {
     if (roleName === 'ondemanduser') {
       let guest = null;
       if (req.guestId) {
-        guest = await Guest.findById(req.guestId).populate('buildingId', 'name openingTime closingTime');
+        guest = await Guest.findById(req.guestId).populate('buildingId', 'name openingTime closingTime bankDetails');
       }
 
       // Fallback lookup by user email/phone if guest not found or guestId missing
@@ -1182,7 +1183,7 @@ export const getAppHomePageData = async (req, res) => {
             ...(req.user.email ? [{ email: req.user.email }] : []),
             ...(req.user.phone ? [{ phone: req.user.phone }] : [])
           ]
-        }).populate('buildingId', 'name openingTime closingTime bankDetails');
+        }).populate('buildingId', 'name openingTime closingTime');
 
         if (guest) req.guestId = guest._id;
       }
@@ -1196,6 +1197,7 @@ export const getAppHomePageData = async (req, res) => {
         buildingName = guest.buildingId?.name;
         buildingOpeningTime = guest.buildingId?.openingTime || null;
         buildingClosingTime = guest.buildingId?.closingTime || null;
+        const buildingBankDetails = guest.buildingId?.bankDetails || null;
 
         // Refined: count "available" day passes (issued) for the user (including upcoming and unscheduled)
         const dayPassCount = await DayPass.countDocuments({
@@ -1222,7 +1224,7 @@ export const getAppHomePageData = async (req, res) => {
         const cabin = await Cabin.findOne({
           allocatedTo: req.client._id,
           status: { $ne: 'released' }
-        }).populate('building', 'name openingTime closingTime');
+        }).populate('building', 'name openingTime closingTime bankDetails');
 
         if (cabin) {
           cabinNumber = cabin.number;
@@ -1256,6 +1258,7 @@ export const getAppHomePageData = async (req, res) => {
           buildingName = member.client.building.name;
           buildingOpeningTime = member.client.building.openingTime || null;
           buildingClosingTime = member.client.building.closingTime || null;
+          buildingBankDetails = member.client.building.bankDetails || null;
         }
 
         // Fetch cabin allocated to this member's client
@@ -1570,6 +1573,7 @@ export const getAppHomePageData = async (req, res) => {
           cabinType,
           buildingOpeningTime,
           buildingClosingTime,
+          bankDetails: typeof buildingBankDetails !== 'undefined' ? buildingBankDetails : null,
           kycPending,
           guestPending
         },
