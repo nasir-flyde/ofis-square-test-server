@@ -5,6 +5,7 @@ import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
 import MatrixDevice from "../models/matrixDeviceModel.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 
 import { buildingMap, amenityMap } from "../utils/cache.js";
 import csv from "csv-parser";
@@ -503,7 +504,8 @@ export const getAvailableRoomsByTime = async (req, res) => {
       capacity,
       floor,
       amenities,
-      limit
+      limit,
+      duration
     } = req.query;
 
     if (!date) {
@@ -517,6 +519,17 @@ export const getAvailableRoomsByTime = async (req, res) => {
     if (finalLimit <= 0) finalLimit = ROOM_QUERY_LIMIT;
 
     const timesProvided = Boolean(startTime && endTime);
+    let requestedDuration = parseInt(duration);
+
+    if (!requestedDuration && timesProvided) {
+      const sS = parse12h(startTime, targetDate);
+      const sE = parse12h(endTime, targetDate);
+      if (!isNaN(sS.getTime()) && !isNaN(sE.getTime())) {
+        requestedDuration = (sE.getTime() - sS.getTime()) / (1000 * 60);
+      }
+    }
+
+    if (!requestedDuration || requestedDuration <= 0) requestedDuration = 30;
 
     // ---- ROBUST DATE PARSE ----
     const targetDate = new Date(date);
@@ -582,6 +595,12 @@ export const getAvailableRoomsByTime = async (req, res) => {
         ? amenities
         : typeof amenities === 'string' ? amenities.split(",") : [];
       if (amenityIds.length) roomFilter.amenities = { $all: amenityIds };
+    }
+
+    // ---- FETCH CLIENT WALLET ----
+    let clientWallet = null;
+    if (req.clientId) {
+      clientWallet = await ClientCreditWallet.findOne({ client: req.clientId, status: 'active' }).lean();
     }
 
     // ---- FETCH ROOMS (LEAN + PROJECTION + LIMIT) ----
@@ -724,7 +743,20 @@ export const getAvailableRoomsByTime = async (req, res) => {
           floor: fLabel ? `${fLabel} floor` : r.floor,
           availableTimeSlots: slots,
           reservedSlots: reservations,
-          bookingStatus: bStatus
+          bookingStatus: bStatus,
+          plan: (() => {
+            const hourlyRate = r.pricing?.hourlyRate || 0;
+            const costInINR = (hourlyRate / 60) * requestedDuration;
+            const creditValue = clientWallet?.creditValue || 500;
+            const creditsRequired = Math.ceil(costInINR / creditValue);
+            return {
+              duration: requestedDuration,
+              creditRequired: creditsRequired,
+              currency: r.pricing?.currency || 'INR',
+              canAfford: (clientWallet?.balance || 0) >= creditsRequired,
+              walletBalance: clientWallet?.balance || 0
+            };
+          })()
         };
       };
 
@@ -785,6 +817,17 @@ export const getAvailableRoomsByTime = async (req, res) => {
           .map(resv => ({ start: parse12h(resv.startTime, targetDate), end: parse12h(resv.endTime, targetDate) }))
           .filter(r => !isNaN(r.start.getTime()) && !isNaN(r.end.getTime()));
         freeSlots = subtractIntervals(freeSlots, reservedIntervals);
+      }
+
+      // ---- DURATION FILTER ----
+      if (requestedDuration > 0) {
+        freeSlots = freeSlots.filter(slot => {
+          const sS = parse12h(slot.startTime, targetDate);
+          const sE = parse12h(slot.endTime, targetDate);
+          if (isNaN(sS.getTime()) || isNaN(sE.getTime())) return false;
+          const slotDur = (sE.getTime() - sS.getTime()) / (1000 * 60);
+          return slotDur >= requestedDuration;
+        });
       }
 
       if (integrityError) {

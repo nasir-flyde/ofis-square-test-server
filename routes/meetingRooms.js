@@ -36,7 +36,7 @@ router.get("/import/sample", downloadSampleCSV);
 router.post("/import", authMiddleware, upload.single('file'), importMeetingRoomsFromCSV);
 
 router.get("/", listRooms);
-router.get("/available-by-time", getAvailableRoomsByTime);
+router.get("/available-by-time", universalMiddleware, getAvailableRoomsByTime);
 router.post("/", authMiddleware, uploadMeetingRoomImages, handleUploadError, createRoom);
 router.get("/:id", getRoomById);
 router.patch("/:id", authMiddleware, uploadMeetingRoomImages, handleUploadError, updateRoom);
