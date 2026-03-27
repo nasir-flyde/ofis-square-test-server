@@ -1156,17 +1156,17 @@ export const getAppHomePageData = async (req, res) => {
     let kycPending = false;
     let guestPending = false;
 
-      // --- 0. Time setup (IST Aware) ---
-      const now = new Date();
-      // Get start of day in IST (Asia/Kolkata)
-      const today = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-      today.setHours(0, 0, 0, 0);
-      
-      const endOfToday = new Date(today);
-      endOfToday.setHours(23, 59, 59, 999);
-      
-      const endOfWeek = new Date(today);
-      endOfWeek.setDate(today.getDate() + 7);
+    // --- 0. Time setup (IST Aware) ---
+    const now = new Date();
+    // Get start of day in IST (Asia/Kolkata)
+    const today = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    today.setHours(0, 0, 0, 0);
+
+    const endOfToday = new Date(today);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + 7);
 
     // --- 1. Identify User & Basic Info ---
     if (roleName === 'ondemanduser') {
@@ -1182,7 +1182,7 @@ export const getAppHomePageData = async (req, res) => {
             ...(req.user.email ? [{ email: req.user.email }] : []),
             ...(req.user.phone ? [{ phone: req.user.phone }] : [])
           ]
-        }).populate('buildingId', 'name openingTime closingTime');
+        }).populate('buildingId', 'name openingTime closingTime bankDetails');
 
         if (guest) req.guestId = guest._id;
       }
