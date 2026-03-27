@@ -8,6 +8,7 @@ import crypto from "crypto";
 import QRCode from "qrcode";
 import imagekit from "../utils/imageKit.js";
 import path from "path";
+import NotificationCategory from "../models/NotificationCategoryModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
@@ -836,6 +837,8 @@ export const checkinVisitor = async (req, res) => {
     try {
       const hostMemberId = visitor.hostMember?._id;
       if (hostMemberId) {
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+
         await sendNotification({
           to: { memberId: hostMemberId },
           channels: { push: true, inApp: true, sms: false, email: true },
@@ -847,6 +850,7 @@ export const checkinVisitor = async (req, res) => {
             companyName: visitor.companyName || 'N/A'
           },
           title: 'Visitor Alert',
+          categoryId: visitorCategory?._id,
           metadata: {
             category: 'visitor',
             tags: ['visitor_checkin_request'],
@@ -866,6 +870,8 @@ export const checkinVisitor = async (req, res) => {
     try {
       const hostEmail = visitor.hostMember?.email;
       if (hostEmail) {
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+
         await sendNotification({
           to: { email: hostEmail, memberId: visitor.hostMember?._id },
           channels: { email: true, sms: false },
@@ -877,6 +883,7 @@ export const checkinVisitor = async (req, res) => {
             guestName: visitor.name
           },
           title: 'Guest Arrived',
+          categoryId: visitorCategory?._id,
           metadata: {
             category: 'visitor',
             tags: ['guest_arrival'],
@@ -1282,6 +1289,9 @@ export const acceptVisitor = async (req, res) => {
           { path: 'hostMember', select: 'firstName lastName' },
           { path: 'building', select: 'name' }
         ]);
+
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+
         await sendNotification({
           to: { phone: visitor.phone, email: visitor.email },
           channels: { sms: !!visitor.phone, email: true },
@@ -1292,6 +1302,11 @@ export const acceptVisitor = async (req, res) => {
             buildingName: visitor.building?.name || 'Ofis Square'
           },
           title: 'Visit Approved',
+          categoryId: visitorCategory?._id,
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_accepted']
+          },
           source: 'system',
           type: 'transactional'
         });
@@ -1338,6 +1353,9 @@ export const declineVisitor = async (req, res) => {
         await visitor.populate([
           { path: 'building', select: 'name' }
         ]);
+
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+
         await sendNotification({
           to: { phone: visitor.phone, email: visitor.email },
           channels: { sms: !!visitor.phone, email: false },
@@ -1348,6 +1366,11 @@ export const declineVisitor = async (req, res) => {
             reason: visitor.cancelReason || 'Declined by host'
           },
           title: 'Visit Declined',
+          categoryId: visitorCategory?._id,
+          metadata: {
+            category: 'visitor',
+            tags: ['visitor_declined']
+          },
           source: 'system',
           type: 'transactional'
         });

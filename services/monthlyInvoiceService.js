@@ -11,10 +11,6 @@ import AddOn from "../models/addOnModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
-/**
- * Create monthly invoices for all active contracts
- * Runs daily; decides per building whether today is the generation day
- */
 export const createMonthlyInvoices = async (refDate = new Date()) => {
   const results = { created: 0, errors: 0, details: [] };
 
