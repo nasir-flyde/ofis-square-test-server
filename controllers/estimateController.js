@@ -352,6 +352,10 @@ export const convertProformaToInvoice = async (req, res) => {
     const issueDate = estimate.date ? new Date(estimate.date) : new Date();
     const dueDate = estimate.expiry_date ? new Date(estimate.expiry_date) : new Date(issueDate.getTime() + 7 * 24 * 60 * 60 * 1000);
 
+    // Fetch building to get place_of_supply and other defaults
+    const buildingId = estimate.building || client.building;
+    const buildingDoc = buildingId ? await Building.findById(buildingId) : null;
+
     const invoiceData = {
       invoice_number: localInvoiceNumber,
       client: client._id,
@@ -372,7 +376,10 @@ export const convertProformaToInvoice = async (req, res) => {
         unit: li.unit || 'nos',
         item_total: Number(li.item_total || li.amount || 0),
         item_id: li.item_id || undefined,
-        // Preserve tax percentage from estimate to drive IGST selection downstream
+        // Preserve tax info from estimate
+        ...(li.tax_id ? { tax_id: li.tax_id } : {}),
+        ...(li.tax_name ? { tax_name: li.tax_name } : {}),
+        ...(li.tax_type ? { tax_type: li.tax_type } : {}),
         ...(typeof li.tax_percentage === 'number' ? { tax_percentage: Number(li.tax_percentage) } : {}),
       })),
       sub_total: Number(estimate.sub_total || 0),
@@ -385,11 +392,13 @@ export const convertProformaToInvoice = async (req, res) => {
       currency_code: estimate.currency_code || 'INR',
       exchange_rate: estimate.exchange_rate || 1,
       gst_treatment: estimate.gst_treatment || client.gstTreatment || 'business_gst',
-      place_of_supply: estimate.place_of_supply || client?.billingAddress?.state_code || client?.billingAddress?.state,
-      // Pass org state code explicitly so IGST can be chosen for interstate
-      organization_state_code: process.env.ZOHO_ORG_STATE_CODE || process.env.ZOHO_BOOKS_ORG_STATE_CODE || undefined,
+      place_of_supply: estimate.place_of_supply || buildingDoc?.place_of_supply || client?.billingAddress?.state_code || client?.billingAddress?.state,
+      // Pass org state code explicitly from building so IGST can be chosen for interstate
+      organization_state_code: buildingDoc?.place_of_supply || process.env.ZOHO_ORG_STATE_CODE || 'HR',
       customer_id: client.zohoBooksContactId,
       gst_no: estimate.gst_no || client.gstNo || client.gstNumber,
+      zoho_tax_id: estimate.zoho_tax_id || undefined,
+      zoho_books_location_id: estimate.zoho_books_location_id || undefined,
     };
 
     const invoice = await Invoice.create(invoiceData);
@@ -407,11 +416,14 @@ export const convertProformaToInvoice = async (req, res) => {
       // Fetch building to get zoho_books_location_id and zoho_tax_id
       if (invoice.building) {
         const buildingDoc = await Building.findById(invoice.building);
-        if (buildingDoc?.zoho_books_location_id) {
+        if (buildingDoc?.zoho_books_location_id && !invObj.zoho_books_location_id) {
           invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
         }
-        if (buildingDoc?.zoho_tax_id) {
+        if (buildingDoc?.zoho_tax_id && !invObj.zoho_tax_id) {
           invObj.zoho_tax_id = buildingDoc.zoho_tax_id;
+        }
+        if (buildingDoc?.place_of_supply && !invObj.place_of_supply) {
+          invObj.place_of_supply = buildingDoc.place_of_supply;
         }
         if (buildingDoc?.place_of_supply && !invObj.place_of_supply) {
           invObj.place_of_supply = buildingDoc.place_of_supply;

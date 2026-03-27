@@ -13,6 +13,7 @@ import {
   getAvailability,
   cancelDayPass,
   provisionAccess,
+  useDayPasses,
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -27,6 +28,7 @@ import hostMiddleware from "../middlewares/hostMiddleware.js";
 const router = express.Router();
 
 router.post("/single", authMiddleware, createSingleDayPass);
+router.post("/use", authMiddleware, useDayPasses);
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
 router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);
 router.post("/:dayPassId/issue", issueDayPassManual);

@@ -1125,7 +1125,7 @@ export const adminApproveCustom = async (req, res) => {
   } catch (err) {
     console.error("adminApproveCustom error:", err);
     await logErrorActivity(req, err, "Custom Flow: Admin Approve");
-    return res.status(500).json({ success: false, message: "Failed to approve" });
+    return res.status(500).json({ success: false, message: err.message || "Failed to approve" });
   }
 };
 

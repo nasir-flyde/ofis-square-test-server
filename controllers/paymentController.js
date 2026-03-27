@@ -582,6 +582,7 @@ async function createInvoiceInZoho(invoice, client) {
     date: invoice.date ? new Date(invoice.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
     due_date: invoice.due_date ? new Date(invoice.due_date).toISOString().split('T')[0] : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     reference_number: invoice.reference_number || '',
+    place_of_supply: invoice.place_of_supply || undefined,
     notes: invoice.notes || '',
     terms: invoice.terms || '',
 
@@ -610,7 +611,9 @@ async function createInvoiceInZoho(invoice, client) {
     shipping_charge: invoice.shipping_charge || 0,
     adjustment: invoice.adjustment || 0,
     adjustment_description: invoice.adjustment_description || '',
-    is_inclusive_tax: invoice.is_inclusive_tax || false
+    is_inclusive_tax: invoice.is_inclusive_tax || false,
+    ...(invoice.zoho_tax_id ? { tax_id: invoice.zoho_tax_id } : {}),
+    ...(invoice.zoho_books_location_id ? { location_id: invoice.zoho_books_location_id } : {}),
   };
 
   // Add billing address if available (sanitized to Zoho limits)
@@ -1786,7 +1789,10 @@ export const handleRazorpaySuccess = async (req, res) => {
                 tax_total: taxAmount,
                 total: finalAmount,
                 status: "draft",
-                due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+                due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                place_of_supply: building?.place_of_supply || (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc?.billingAddress?.state_code : undefined) || "HR",
+                zoho_tax_id: building?.zoho_tax_id || undefined,
+                zoho_books_location_id: building?.zoho_books_location_id || undefined
             });
 
             await invoice.save();

@@ -27,25 +27,25 @@ class LoggedZohoSign {
 
     try {
       const formData = new FormData();
-      
+
       // Prepare file buffer
       let fileBuffer = null;
       let fileName = `contract_${contract._id || 'doc'}.pdf`;
-      
+
       // Use stampPaperUrl if available, otherwise fallback to fileUrl
       const documentUrl = contract.stampPaperUrl || contract.fileUrl;
-      
+
       console.log('Contract stampPaperUrl:', contract.stampPaperUrl);
       console.log('Contract fileUrl:', contract.fileUrl);
       console.log('Using documentUrl:', documentUrl);
       console.log('Contract ID:', contract._id);
       console.log('Contract client:', contract.client?.companyName);
-      
+
       if (documentUrl) {
         console.log('Downloading file from URL:', documentUrl);
         const fileResp = await fetch(documentUrl);
         if (!fileResp.ok) {
-          throw new Error(`Failed to download fileUrl: HTTP ${fileResp.status} - ${fileResp.statusText}`);
+          throw new Error(`Document type is not sendable please upload pdf`);
         }
         fileBuffer = Buffer.from(await fileResp.arrayBuffer());
         console.log('File buffer size:', fileBuffer.length, 'bytes');
@@ -58,13 +58,13 @@ class LoggedZohoSign {
         console.log('PDF validation - First 20 bytes:', fileBuffer.slice(0, 20).toString());
         console.log('PDF validation - Last 20 bytes:', fileBuffer.slice(-20).toString());
         console.log('Is valid PDF:', isPdf);
-        
+
         if (!isPdf) {
           console.warn('The downloaded file does not appear to be a PDF. Zoho Sign requires a valid PDF.');
           console.log('File content preview:', fileBuffer.slice(0, 200).toString());
           throw new Error('Downloaded file is not a valid PDF');
         }
-        
+
         // Check if file is too small (might be an error page)
         if (fileBuffer.length < 1000) {
           console.warn('PDF file seems unusually small:', fileBuffer.length, 'bytes');
@@ -80,7 +80,7 @@ class LoggedZohoSign {
         filename: fileName,
         contentType: 'application/pdf'
       });
-      
+
       // Use the exact JSON structure Zoho Sign expects
       const requestData = {
         requests: {
@@ -91,7 +91,7 @@ class LoggedZohoSign {
           reminder_period: 5
         }
       };
-      
+
       console.log('Request data being sent:', JSON.stringify(requestData, null, 2));
       formData.append('data', JSON.stringify(requestData));
       const accessToken = await getAccessToken();
@@ -159,7 +159,7 @@ class LoggedZohoSign {
         });
         throw err;
       }
-      
+
       if (result?.status !== "success") {
         const msg = result.message || "Zoho Sign API error";
         console.error('Zoho Sign API error details:', {
@@ -351,22 +351,22 @@ class LoggedZohoSign {
    */
   async verifyDocumentExists(requestId, { userId = null, clientId = null } = {}) {
     const maxRetries = 5;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const result = await this.getDocumentStatus(requestId, { userId, clientId });
-        
+
         // Check for OAuth scope issues
         if (result?.code === 9040) {
           const guidance = "Zoho Sign returned 'Invalid Oauth Scope'. Ensure your refresh token has Zoho Sign scopes.";
           throw new Error(guidance);
         }
-        
+
         if (result) {
           console.log(`Document ${requestId} verified on attempt ${attempt}`);
           return result;
         }
-        
+
         if (attempt < maxRetries) {
           await new Promise(r => setTimeout(r, 1000));
         }
@@ -375,7 +375,7 @@ class LoggedZohoSign {
         await new Promise(r => setTimeout(r, 1000));
       }
     }
-    
+
     throw new Error(`Document ${requestId} not available after ${maxRetries} attempts`);
   }
 
@@ -383,12 +383,12 @@ class LoggedZohoSign {
   _getZohoSignBaseUrl() {
     const signDc = process.env.ZOHO_SIGN_DC;
     if (signDc) return `https://${signDc}/api/v1`;
-    
+
     const accountsDc = process.env.ZOHO_DC || "accounts.zoho.in";
     if (accountsDc.endsWith("zoho.in")) return "https://sign.zoho.in/api/v1";
     if (accountsDc.endsWith("zoho.eu")) return "https://sign.zoho.eu/api/v1";
     if (accountsDc.endsWith("zoho.com.cn")) return "https://sign.zoho.com.cn/api/v1";
-    
+
     return "https://sign.zoho.in/api/v1";
   }
 }

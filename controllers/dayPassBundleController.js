@@ -70,9 +70,9 @@ export const createDayPassBundle = async (req, res) => {
       });
     }
 
-    if (splitSelf > 0 && datesSelf.length !== splitSelf) {
+    if (splitSelf > 0 && datesSelf.length > 0 && datesSelf.length !== splitSelf) {
       return res.status(400).json({
-        error: "datesSelf array length must match splitSelf count"
+        error: "datesSelf array length must match splitSelf count if dates are provided"
       });
     }
 
@@ -264,7 +264,7 @@ export const createDayPassBundle = async (req, res) => {
           building: buildingId,
           bundle: bundle._id,
           date: null, // Will be set when invited
-          visitDate: parsedDatesSelf[i],
+          visitDate: parsedDatesSelf[i] || null,
           bookingFor: "self",
           expiresAt: validUntil,
           price: pricePerPass,
@@ -361,7 +361,10 @@ export const createDayPassBundle = async (req, res) => {
           tax_total: taxAmount,
           total: finalAmount,
           status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+          place_of_supply: building?.place_of_supply || (customerType === 'guest' ? customer?.billingAddress?.state_code : undefined) || "HR",
+          zoho_tax_id: building?.zoho_tax_id || undefined,
+          zoho_books_location_id: building?.zoho_books_location_id || undefined
         });
 
         await invoice.save({ session });

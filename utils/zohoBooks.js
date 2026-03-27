@@ -641,7 +641,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     // Only fetch/apply tax when GST treatment is business_gst AND tax rate > 0
     // let chosenTax = null;
     // Normalize org and POS codes up-front for reuse
-    const orgStateRaw = (invoiceDoc?.organization_state_code || process.env.ZOHO_ORG_STATE_CODE || '').trim();
+    const orgStateRaw = (invoiceDoc?.organization_state_code 
+                 || (invoiceDoc?.building && typeof invoiceDoc.building === 'object' ? invoiceDoc.building.place_of_supply : null)
+                 || process.env.ZOHO_ORG_STATE_CODE 
+                 || 'HR').trim();
     const orgStateCode = normalizeStateToken(orgStateRaw);
     const posRaw = (derivedPlaceOfSupply || '').trim();
     let posCode = normalizeStateToken(posRaw);
@@ -711,7 +714,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       }
 
       const perItemRate = typeof it.tax_percentage === 'number' ? Number(it.tax_percentage) : defaultTaxPercent;
-      if (perItemRate > 0) {
+      if (it.tax_id || it.tax_group_id) {
+        if (it.tax_id) li.tax_id = it.tax_id;
+        if (it.tax_group_id) li.tax_group_id = it.tax_group_id;
+      } else if (perItemRate > 0) {
         let itemTax = null;
         if (Math.abs(perItemRate - defaultTaxPercent) < 0.001 && chosenTax) {
           itemTax = chosenTax;
@@ -744,6 +750,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
           ? `Billing Period: ${formatDateToISO(billingPeriod.start)} to ${formatDateToISO(billingPeriod.end)}`
           : "Looking forward for your business.",
       ...(invoiceDoc?.gst_no ? { gst_no: invoiceDoc.gst_no } : (clientDoc?.gstNo ? { gst_no: clientDoc.gstNo } : {})),
+      place_of_supply: placeOfSupplyCode,
       // Apply common tax_id at invoice level so Zoho knows a Tax is set (only when business_gst & non-zero)
       ...(!zeroTax && chosenTax
         ? (chosenTax.kind === 'tax' ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
@@ -1134,7 +1141,10 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
     const zeroTax = !(Number(defaultTaxPercent) > 0);
 
     // Normalize state codes for comparison
-    const orgStateRaw = (estimateDoc?.gst_no ? estimateDoc.gst_no.substring(0, 2) : '') || process.env.ZOHO_ORG_STATE_CODE || '';
+    const orgStateRaw = (estimateDoc?.organization_state_code 
+                 || (estimateDoc?.building && typeof estimateDoc.building === 'object' ? estimateDoc.building.place_of_supply : null)
+                 || process.env.ZOHO_ORG_STATE_CODE 
+                 || 'HR').trim();
     const orgStateCode = normalizeStateToken(orgStateRaw);
 
     const derivedPlaceOfSupply = estimateDoc?.place_of_supply
@@ -1195,7 +1205,10 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
       }
 
       const perItemRate = typeof it.tax_percentage === "number" ? Number(it.tax_percentage) : defaultTaxPercent;
-      if (perItemRate > 0) {
+      if (it.tax_id || it.tax_group_id) {
+        if (it.tax_id) li.tax_id = it.tax_id;
+        if (it.tax_group_id) li.tax_group_id = it.tax_group_id;
+      } else if (perItemRate > 0) {
         let itemTax = null;
         if (Math.abs(perItemRate - defaultTaxPercent) < 0.001 && chosenTax) {
           itemTax = chosenTax;

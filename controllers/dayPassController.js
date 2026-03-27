@@ -114,13 +114,6 @@ export const createSingleDayPass = async (req, res) => {
       });
     }
 
-    // Only require visitDate for "self" bookings
-    if (bookingFor === "self" && !visitDate) {
-      return res.status(400).json({
-        error: "visitDate is required for self bookings"
-      });
-    }
-
     let parsedVisitDate = null;
     if (visitDate) {
       parsedVisitDate = new Date(visitDate);
@@ -130,15 +123,9 @@ export const createSingleDayPass = async (req, res) => {
         });
       }
     }
-
-    // Verify customer exists - could be Guest, Member, or Client
     let customer = null;
     let customerType = 'guest';
-
-    // First try to find as Guest
     customer = await Guest.findById(customerId);
-
-    // If not found as Guest, try as Member
     if (!customer) {
       const Member = (await import('../models/memberModel.js')).default;
       customer = await Member.findById(customerId);
@@ -292,7 +279,7 @@ export const createSingleDayPass = async (req, res) => {
           if (wallet?.creditValue) {
             creditsPerPass = wallet.creditValue;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
       const creditsRequired = paymentMethod === 'credits' ? Math.ceil(totalAmount / creditsPerPass) : 0;
       const creditSuffix = creditsRequired > 0 ? ` (${creditsRequired} Credits)` : '';
@@ -317,7 +304,10 @@ export const createSingleDayPass = async (req, res) => {
           tax_total: taxAmount,
           total: totalAmount,
           status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+          place_of_supply: building?.place_of_supply || (customerType === 'guest' ? customer?.billingAddress?.state_code : undefined) || "HR",
+          zoho_tax_id: building?.zoho_tax_id || undefined,
+          zoho_books_location_id: building?.zoho_books_location_id || undefined
         });
 
         await invoice.save({ session });
@@ -353,9 +343,9 @@ export const createSingleDayPass = async (req, res) => {
         } catch (zohoErr) {
           console.error('[DayPass] Zoho invoice push failed:', zohoErr?.message);
           // Throw error to notify user that creation failed due to Zoho push failure
-          return res.status(500).json({ 
+          return res.status(500).json({
             error: "Failed to create Zoho invoice. Creation cancelled.",
-            details: zohoErr.message 
+            details: zohoErr.message
           });
         }
       }
@@ -414,7 +404,7 @@ export const createSingleDayPass = async (req, res) => {
       if (invoice) {
         responseData.invoice = invoice;
       }
-      
+
       // We no longer create Razorpay orders automatically here. 
       // The frontend should call /api/payments/razorpay/create-order explicitly 
       // using the dayPassId returned in this response.
@@ -1351,5 +1341,133 @@ export const provisionAccess = async (req, res) => {
       error: "Failed to provision building access",
       message: error.message
     });
+  }
+};
+
+// Bulk assign dates to available "self" day passes
+export const useDayPasses = async (req, res) => {
+  try {
+    const { dates, buildingId } = req.body;
+    if (!dates || !Array.isArray(dates) || dates.length === 0) {
+      return res.status(400).json({ error: "Dates array is required and must not be empty" });
+    }
+
+    let customerId;
+    if (req.user) {
+      if (req.user.guestId) customerId = req.user.guestId;
+      else if (req.user.memberId) customerId = req.user.memberId;
+    }
+    
+    if (!customerId) {
+        return res.status(401).json({ error: "Unauthorized user" });
+    }
+
+    // Convert dates to valid Date objects
+    const parsedDates = dates.map(d => {
+      const p = new Date(d);
+      if (isNaN(p.getTime())) throw new Error(`Invalid date format: ${d}`);
+      p.setHours(0, 0, 0, 0);
+      return p;
+    });
+
+    // Query for available passes for self
+    const query = {
+      customer: customerId,
+      visitDate: null,
+      status: 'issued',
+      bookingFor: 'self'
+    };
+    if (buildingId) {
+      query.building = buildingId;
+    }
+
+    const availablePasses = await DayPass.find(query).populate('customer').limit(parsedDates.length);
+    
+    if (availablePasses.length < parsedDates.length) {
+      return res.status(400).json({ 
+        error: `Not enough available 'self' day passes. Requested: ${parsedDates.length}, Available: ${availablePasses.length}. NOTE: Passes must be paid (issued) in order to be used.` 
+      });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const usedPassData = [];
+      for (let i = 0; i < parsedDates.length; i++) {
+        const passDate = parsedDates[i];
+        const dayPass = availablePasses[i];
+        
+        const building = await Building.findById(dayPass.building).session(session);
+        if (!building) throw new Error("Building not found for pass");
+
+        const existingUsages = await DayPassDailyUsage.find({ building: building._id, date: passDate })
+          .select('seats bookedCount dayPass')
+          .session(session)
+          .lean();
+        const existingForThisPass = (existingUsages || []).find(u => String(u.dayPass) === String(dayPass._id));
+        const totalBookedRaw = (existingUsages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
+        const alreadyBooked = totalBookedRaw - (existingForThisPass ? (Number(existingForThisPass.seats) || 0) : 0);
+        const totalCapacity = Number(building.dayPassDailyCapacity || 0);
+        
+        if (totalCapacity > 0 && (alreadyBooked + 1) > totalCapacity) {
+          const err = new Error(`No availability for ${passDate.toISOString().slice(0, 10)} at the building`);
+          err.status = 409;
+          throw err;
+        }
+
+        await DayPassDailyUsage.findOneAndUpdate(
+          { building: building._id, date: passDate, dayPass: dayPass._id },
+          { $set: { seats: 1 } },
+          { upsert: true, new: true, setDefaultsOnInsert: true, session }
+        );
+
+        // Update dayPass
+        dayPass.date = passDate;
+        dayPass.visitDate = passDate;
+        dayPass.status = 'invited';
+        
+        const customerName = dayPass.customer?.name || 'Self';
+        const qrData = {
+          passId: dayPass._id,
+          visitorName: customerName,
+          date: passDate.toISOString(),
+          buildingId: dayPass.building._id,
+          type: 'day_pass'
+        };
+
+        dayPass.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
+        const qrExpiry = new Date(passDate);
+        qrExpiry.setHours(23, 59, 59, 999);
+        dayPass.qrExpiresAt = qrExpiry;
+
+        await dayPass.save({ session });
+        
+        usedPassData.push({
+          passId: dayPass._id,
+          date: passDate,
+          qrCode: dayPass.qrCode,
+          qrUrl: `${req.protocol}://${req.get('host')}/day-passes/scan?qr=${dayPass.qrCode}`
+        });
+      }
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.status(200).json({
+        success: true,
+        message: `Successfully assigned ${parsedDates.length} passes`,
+        passes: usedPassData
+      });
+
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
+    }
+  } catch (error) {
+    console.error("useDayPasses error:", error);
+    const statusCode = error.status || 400;
+    res.status(statusCode).json({ error: error.message || "Internal Server Error" });
   }
 };

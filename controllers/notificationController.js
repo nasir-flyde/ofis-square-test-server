@@ -1422,3 +1422,167 @@ export const getCommunityNotifications = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch community notifications', error: error.message });
   }
 };
+
+// ─── Community Team Custom Notifications ──────────────────────────────────────
+// POST /api/community/notifications/send
+// Audience options:
+//   audienceType = "all_members"  → every member in the community's building
+//   audienceType = "clients"      → users whose client.building === buildingId
+//   audienceType = "specific"     → single memberId; must belong to building
+// Channels: email, sms, inApp (any combination)
+export const sendCommunityCustomNotification = async (req, res) => {
+  try {
+    const buildingId = req.buildingId;
+    if (!buildingId) {
+      return res.status(400).json({ success: false, message: 'No building context found on token' });
+    }
+
+    const {
+      title,
+      message,          // plain-text body used for SMS + inApp
+      emailSubject,     // optional: falls back to title
+      emailHtml,        // optional: falls back to <p>message</p>
+      audienceType,     // 'all_members' | 'clients' | 'specific'
+      memberId,         // required when audienceType === 'specific'
+      channels = {}     // { email, sms, inApp }
+    } = req.body;
+
+    // ── Validation ────────────────────────────────────────────────────────────
+    if (!title) return res.status(400).json({ success: false, message: 'title is required' });
+    if (!message) return res.status(400).json({ success: false, message: 'message is required' });
+
+    const enabledChannels = {
+      sms: !!channels.sms,
+      email: !!channels.email,
+      inApp: !!channels.inApp,
+      push: false
+    };
+
+    if (!enabledChannels.sms && !enabledChannels.email && !enabledChannels.inApp) {
+      return res.status(400).json({ success: false, message: 'At least one channel (sms, email, inApp) must be enabled' });
+    }
+
+    if (enabledChannels.sms && !message) {
+      return res.status(400).json({ success: false, message: 'message (SMS text) is required when SMS is enabled' });
+    }
+
+    if (enabledChannels.email) {
+      const subj = emailSubject || title;
+      const html = emailHtml || `<p>${message}</p>`;
+      if (!subj || !html) {
+        return res.status(400).json({ success: false, message: 'emailSubject and emailHtml are required when email is enabled' });
+      }
+    }
+
+    const validTypes = ['all_members', 'clients', 'specific'];
+    if (!audienceType || !validTypes.includes(audienceType)) {
+      return res.status(400).json({ success: false, message: `audienceType must be one of: ${validTypes.join(', ')}` });
+    }
+
+    if (audienceType === 'specific' && !memberId) {
+      return res.status(400).json({ success: false, message: 'memberId is required for specific audience' });
+    }
+
+    // ── Dynamically import models (avoid circular dep issues) ─────────────────
+    const ClientModel = (await import('../models/clientModel.js')).default;
+    const MemberModel = (await import('../models/memberModel.js')).default;
+
+    // Build content object (shared across all recipients)
+    const content = {
+      smsText: enabledChannels.sms ? message : undefined,
+      emailSubject: enabledChannels.email ? (emailSubject || title) : undefined,
+      emailHtml: enabledChannels.email ? (emailHtml || `<p>${message}</p>`) : undefined,
+      emailText: enabledChannels.email ? message : undefined,
+      inAppTitle: enabledChannels.inApp ? title : undefined,
+      inAppBody: enabledChannels.inApp ? message : undefined
+    };
+
+    // ── Resolve recipients ────────────────────────────────────────────────────
+    let recipientDocs = [];
+
+    if (audienceType === 'all_members') {
+      // All members whose associated client belongs to this building
+      const clients = await ClientModel.find({ building: buildingId }).select('_id');
+      const clientIds = clients.map(c => c._id);
+
+      recipientDocs = await MemberModel.find({ client: { $in: clientIds } })
+        .select('_id user phone email fcmTokens');
+
+    } else if (audienceType === 'clients') {
+      // The primary contact (user) of each client in this building
+      // We target the Client document's email / phone directly
+      const clients = await ClientModel.find({ building: buildingId })
+        .select('_id email phone contactPerson user');
+
+      // Map clients → pseudo-recipient objects
+      recipientDocs = clients.map(cl => ({
+        _id: null,
+        user: cl.user || null,
+        phone: cl.phone,
+        email: cl.email,
+        // store clientId for DB record
+        _clientId: cl._id
+      }));
+
+    } else if (audienceType === 'specific') {
+      // Validate that this member belongs to the building
+      const clients = await ClientModel.find({ building: buildingId }).select('_id');
+      const clientIds = clients.map(c => String(c._id));
+
+      const m = await MemberModel.findById(memberId).select('_id user phone email fcmTokens client');
+      if (!m) return res.status(404).json({ success: false, message: 'Member not found' });
+
+      if (!clientIds.includes(String(m.client))) {
+        return res.status(403).json({ success: false, message: 'Member does not belong to your building' });
+      }
+      recipientDocs = [m];
+    }
+
+    if (recipientDocs.length === 0) {
+      return res.status(200).json({ success: true, count: 0, message: 'No recipients found for the specified audience' });
+    }
+
+    // ── Create Notification documents ─────────────────────────────────────────
+    const notifications = recipientDocs.map(r => {
+      const toPayload = {};
+      if (r._id) toPayload.memberId = r._id;
+      if (r._clientId) toPayload.clientId = r._clientId;
+      if (r.user) toPayload.userId = r.user;
+      if (r.email) toPayload.email = r.email;
+      if (r.phone) toPayload.phone = r.phone;
+
+      return new Notification({
+        type: 'system',
+        channels: enabledChannels,
+        title,
+        content,
+        to: toPayload,
+        source: 'community_portal',
+        createdBy: req.user?._id || req.userId,
+        scheduledAt: new Date(),
+        maxRetries: 3,
+        smsDelivery: enabledChannels.sms ? { status: 'pending' } : undefined,
+        emailDelivery: enabledChannels.email ? { status: 'pending' } : undefined,
+        inAppDelivery: enabledChannels.inApp ? { status: 'pending' } : undefined,
+        pushDelivery: undefined
+      });
+    });
+
+    await Notification.insertMany(notifications);
+
+    // Dispatch immediately (fire-and-forget)
+    for (const n of notifications) {
+      dispatchNotification(n);
+    }
+
+    return res.status(201).json({
+      success: true,
+      count: notifications.length,
+      message: `${notifications.length} notification(s) queued successfully`
+    });
+
+  } catch (error) {
+    console.error('[sendCommunityCustomNotification] Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to send notification', error: error.message });
+  }
+};

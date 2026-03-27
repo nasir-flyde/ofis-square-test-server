@@ -113,7 +113,7 @@ const notificationSchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   source: {
     type: String,
-    enum: ['admin_panel', 'system', 'api', 'webhook'],
+    enum: ['admin_panel', 'system', 'api', 'webhook', 'community_portal'],
     default: 'system'
   },
   relatedEntity: {

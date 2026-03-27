@@ -1,6 +1,6 @@
 import express from "express";
 import clientMiddleware from "../middlewares/clientMiddleware.js";
-import { kycUploads } from "../middlewares/multer.js";
+import upload, { kycUploads } from "../middlewares/multer.js";
 import {
   createClient,
   upsertBasicDetails,
@@ -41,7 +41,9 @@ import {
   sendContractToLegalTeam,
   syncClientToZoho,
   exportClients,
-  searchClient
+  searchClient,
+  downloadClientMemberSampleCSV,
+  bulkImportClientMembers
 } from "../controllers/clientController.js";
 import { getClientPayments } from "../controllers/paymentController.js";
 import { checkUniqueness as checkMemberUniqueness } from "../controllers/memberController.js";
@@ -85,6 +87,8 @@ router.post("/members", clientMiddleware, createClientMember);
 router.get("/members/check-uniqueness", clientMiddleware, checkMemberUniqueness);
 router.put("/members/:id", clientMiddleware, updateClientMember);
 router.delete("/members/:id", clientMiddleware, deleteClientMember);
+router.get("/members/bulk-import/sample-csv", clientMiddleware, downloadClientMemberSampleCSV);
+router.post("/members/bulk-import", clientMiddleware, upload.single("file"), bulkImportClientMembers);
 router.get("/rfid-cards", clientMiddleware, getClientRfidCards);
 
 router.get("/desks", clientMiddleware, getClientAvailableDesks); // Desk allocation

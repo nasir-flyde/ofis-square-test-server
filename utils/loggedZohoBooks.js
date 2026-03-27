@@ -518,8 +518,26 @@ export async function pushInvoiceToZoho(invoiceDoc, clientDoc, opts = {}) {
   }
 
   try {
+    const invObj = invoiceDoc.toObject();
+    
+    // Fetch building to get place_of_supply for organization_state_code
+    if (invObj.building) {
+      const buildingId = invObj.building?._id || invObj.building;
+      const { default: Building } = await import('../models/buildingModel.js');
+      const buildingDoc = await Building.findById(buildingId);
+      if (buildingDoc) {
+        if (!invObj.organization_state_code) {
+          invObj.organization_state_code = buildingDoc.place_of_supply || process.env.ZOHO_ORG_STATE_CODE || 'HR';
+        }
+        if (buildingDoc.zoho_books_location_id && !invObj.zoho_books_location_id) {
+          invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+        }
+      }
+    }
+
     // Leverage the robust GST and tax calculation logic already built in zohoBooks.js
-    const zohoInvoice = await createZohoInvoiceFromLocal(invoiceDoc, clientDoc);
+    const zohoInvoice = await createZohoInvoiceFromLocal(invObj, clientDoc);
+    const { createZohoInvoiceFromLocal } = await import('./zohoBooks.js'); // Ensure it's available if needed, but it's already imported at top
 
     if (zohoInvoice?.invoice?.invoice_id) {
       invoiceDoc.zoho_invoice_id = zohoInvoice.invoice.invoice_id;

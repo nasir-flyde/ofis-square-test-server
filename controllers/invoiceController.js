@@ -35,9 +35,10 @@ function computeTotals(payload) {
     const quantity = Number(it.quantity || 0);
     const unitPrice = Number(it.unitPrice || it.rate || 0);
     const amount = Math.round(quantity * unitPrice * 100) / 100;
-    // Preserve tax_percentage if available
+    // Preserve tax_percentage and item_id if available
     const tax_percentage = it.tax_percentage !== undefined ? Number(it.tax_percentage) : undefined;
-    return { description: it.description, quantity, unitPrice, amount, tax_percentage };
+    const item_id = it.item_id || undefined;
+    return { description: it.description, quantity, unitPrice, amount, tax_percentage, item_id };
   });
   const subtotal = Math.round(items.reduce((sum, i) => sum + Number(i.amount || 0), 0) * 100) / 100;
 
@@ -112,11 +113,13 @@ export const createInvoice = async (req, res) => {
     else if (clientDoc?.building) buildingId = clientDoc.building;
     else if (body.building) buildingId = body.building;
 
+    const buildingDoc = buildingId ? await Building.findById(buildingId) : null;
+
     // Resolve GST/tax info from request body or client's taxInfoList/client fields
     const taxList = Array.isArray(clientDoc?.taxInfoList) ? clientDoc.taxInfoList : [];
     const primaryTax = taxList.find((t) => t?.is_primary) || taxList[0] || null;
     const resolvedGSTNo = body.gst_no || body.gstNo || primaryTax?.tax_registration_no || clientDoc.gstNo || clientDoc.gstNumber || undefined;
-    const resolvedPlaceOfSupply = body.place_of_supply || body.placeOfSupply || primaryTax?.place_of_supply || clientDoc?.billingAddress?.state_code || clientDoc?.billingAddress?.state || undefined;
+    const resolvedPlaceOfSupply = body.place_of_supply || body.placeOfSupply || buildingDoc?.place_of_supply || primaryTax?.place_of_supply || clientDoc?.billingAddress?.state_code || clientDoc?.billingAddress?.state || undefined;
     const resolvedGstTreatment = body.gst_treatment || body.gstTreatment || clientDoc.gstTreatment || "business_gst";
 
     // Create invoice data using same structure as createInvoiceFromContract
@@ -141,7 +144,8 @@ export const createInvoice = async (req, res) => {
         rate: item.unitPrice,
         unit: "nos",
         item_total: item.amount,
-        tax_percentage: item.tax_percentage, // Pass this to the invoice document
+        tax_percentage: item.tax_percentage,
+        item_id: item.item_id, // Zoho Books Item ID
       })),
 
       sub_total: totals.subtotal,
@@ -209,17 +213,22 @@ export const createInvoice = async (req, res) => {
           || undefined;
         if (placeOfSupply) invObj.place_of_supply = placeOfSupply;
         invObj.gst_no = invObj.gst_no || clientDoc.gstNo || undefined;
-        invObj.organization_state_code = process.env.ZOHO_ORG_STATE_CODE || process.env.ZOHO_BOOKS_ORG_STATE_CODE || undefined;
+        // invObj.organization_state_code set after building fetch below
 
         if (hasZeroTax && invObj.gst_treatment === 'business_gst' && !process.env.ZOHO_TAX_EXEMPTION_ID) {
           invObj.gst_treatment = 'consumer';
         }
 
-        // Fetch building to get zoho_books_location_id
+        // Fetch building to get zoho_books_location_id and place_of_supply for org_state
         if (invoice.building) {
           const buildingDoc = await Building.findById(invoice.building);
-          if (buildingDoc?.zoho_books_location_id) {
-            invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+          if (buildingDoc) {
+            if (buildingDoc.zoho_books_location_id) {
+              invObj.zoho_books_location_id = buildingDoc.zoho_books_location_id;
+            }
+            if (!invObj.organization_state_code) {
+              invObj.organization_state_code = buildingDoc.place_of_supply || process.env.ZOHO_ORG_STATE_CODE || 'HR';
+            }
           }
         }
 
@@ -497,7 +506,7 @@ export const pushInvoiceToZoho = async (req, res) => {
         // Place of supply decision
         let placeOfSupply = invObj.place_of_supply;
 
-        // Fetch building to get zoho_books_location_id AND place_of_supply
+        // Fetch building to get zoho_books_location_id AND place_of_supply for org_state
         if (invoice.building) {
           const buildingDoc = await Building.findById(invoice.building);
           if (buildingDoc) {
@@ -507,6 +516,7 @@ export const pushInvoiceToZoho = async (req, res) => {
             if (buildingDoc.place_of_supply && !placeOfSupply) {
               placeOfSupply = buildingDoc.place_of_supply;
             }
+            invObj.organization_state_code = buildingDoc.place_of_supply || process.env.ZOHO_ORG_STATE_CODE || 'HR';
           }
         }
 
@@ -520,8 +530,7 @@ export const pushInvoiceToZoho = async (req, res) => {
 
         // GST number
         invObj.gst_no = invObj.gst_no || client.gstNo || undefined;
-        // Provide org state code for interstate decision (read from env)
-        invObj.organization_state_code = process.env.ZOHO_ORG_STATE_CODE || process.env.ZOHO_BOOKS_ORG_STATE_CODE || undefined;
+        // organization_state_code set in building check above
         // If zero-tax and no exemption configured, relax to consumer to avoid IGST enforcement
         if (hasZeroTax && invObj.gst_treatment === 'business_gst' && !process.env.ZOHO_TAX_EXEMPTION_ID) {
           invObj.gst_treatment = 'consumer';

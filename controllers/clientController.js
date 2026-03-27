@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import { createObjectCsvStringifier } from 'csv-writer';
+import csv from "csv-parser";
+import { Readable } from "stream";
 import Client from "../models/clientModel.js";
 import imagekit from "../utils/imageKit.js";
 import Contract from "../models/contractModel.js";
@@ -1835,13 +1837,13 @@ export const getClientInvoices = async (req, res) => {
 
     const { page = 1, limit = 10, status, type } = req.query;
     const query = { client: clientId };
-    
+
     if (type) {
       query.type = type;
     } else {
       query.type = { $ne: "security_deposit" };
     }
-    
+
     if (status) query.status = status;
 
     const invoices = await Invoice.find(query)
@@ -3325,5 +3327,415 @@ export const approveOnboarding = async (req, res) => {
   } catch (error) {
     console.error("approveOnboarding error:", error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+export const downloadClientMemberSampleCSV = async (req, res) => {
+  try {
+    const clientId = req.clientId || req.user?.clientId;
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "Client context not found" });
+    }
+
+    // Fetch available (unassigned to members) RFID cards belonging to this client
+    const availableCards = await RFIDCard.find({
+      clientId,
+      currentMemberId: null,
+      status: { $in: ["ISSUED", "ACTIVE"] },
+    })
+      .select("cardUid")
+      .limit(50)
+      .lean();
+
+    const rfidUids = availableCards.map((c) => c.cardUid);
+
+    const headers = ["firstName", "lastName", "email", "phone", "role", "gender", "rfid"];
+
+    // Build sample rows – fill rfid column from available cards, provide example rows
+    const sampleRows = [
+      [
+        "John",
+        "Doe",
+        "john.doe@example.com",
+        "9876543210",
+        "employee",
+        "male",
+        rfidUids[0] || "CARD_UID_HERE",
+      ],
+      [
+        "Jane",
+        "Smith",
+        "jane.smith@example.com",
+        "9123456780",
+        "manager",
+        "female",
+        rfidUids[1] || "",
+      ],
+    ];
+
+    const lines = [
+      headers.join(","),
+      ...sampleRows.map((r) => r.join(",")),
+    ].join("\n");
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=client-members-import-sample.csv"
+    );
+    return res.status(200).send(lines);
+  } catch (err) {
+    console.error("downloadClientMemberSampleCSV error:", err);
+    return res.status(500).json({ success: false, message: "Failed to generate sample CSV" });
+  }
+};
+
+/**
+ * POST /api/clients/bulk-members/import
+ * Accepts a multipart/form-data CSV file (field: `file`).
+ * For each row:
+ *   - Validates required fields
+ *   - Checks for duplicate email
+ *   - If rfid provided, validates it belongs to this client and is unassigned
+ *   - Creates User + Member records
+ *   - Assigns RFID card to member (ACTIVE status)
+ *   - Enqueues Matrix & Bhaifi provisioning jobs
+ *   - Sends welcome notification (best-effort)
+ */
+export const bulkImportClientMembers = async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({
+        success: false,
+        message: "CSV file is required (field name: file)",
+      });
+    }
+
+    const clientId = req.clientId || req.user?.clientId;
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "Client context not found" });
+    }
+
+    // Parse rows from the uploaded CSV buffer
+    const rows = await new Promise((resolve, reject) => {
+      const out = [];
+      let idx = 0;
+      const stream = Readable.from([req.file.buffer]);
+      stream
+        .pipe(csv())
+        .on("data", (data) => {
+          idx += 1;
+          out.push({ __line: idx, ...data });
+        })
+        .on("end", () => resolve(out))
+        .on("error", reject);
+    });
+
+    if (!rows.length) {
+      return res.status(400).json({ success: false, message: "CSV appears to be empty" });
+    }
+
+    // Fetch client once for building context
+    const client = await Client.findById(clientId).select("building companyName").lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+
+    // Pre-fetch member role
+    let memberRole = await Role.findOne({ roleName: "member" });
+    if (!memberRole) {
+      memberRole = await Role.create({
+        roleName: "member",
+        description: "Default member role with basic access",
+        canLogin: true,
+        permissions: ["member:read", "member:profile"],
+      });
+    }
+
+    const defaultPassword = "123456";
+    const results = [];
+    let createdCount = 0;
+    let skippedCount = 0;
+
+    for (const row of rows) {
+      const lineNo = row.__line;
+
+      const firstName = (row.firstName || row.first_name || "").trim();
+      const lastName = (row.lastName || row.last_name || "").trim();
+      const email = (row.email || "").trim().toLowerCase();
+      const phone = (row.phone || "").trim();
+      const role = (row.role || "employee").trim();
+      const gender = (row.gender || "").trim().toLowerCase();
+      const rfidUid = (row.rfid || row.rfidUid || row.cardUid || "").trim();
+
+      // Validate required fields
+      if (!firstName) {
+        results.push({ line: lineNo, success: false, reason: "firstName is required" });
+        skippedCount++;
+        continue;
+      }
+
+      // Check email uniqueness
+      if (email) {
+        const existingUser = await User.findOne({ email }).select("_id").lean();
+        if (existingUser) {
+          results.push({ line: lineNo, success: false, reason: `Email already exists: ${email}` });
+          skippedCount++;
+          continue;
+        }
+        const existingMember = await Member.findOne({ email }).select("_id").lean();
+        if (existingMember) {
+          results.push({ line: lineNo, success: false, reason: `Member already exists with email: ${email}` });
+          skippedCount++;
+          continue;
+        }
+      }
+
+      // Validate RFID card if provided
+      let rfidCard = null;
+      if (rfidUid) {
+        rfidCard = await RFIDCard.findOne({ cardUid: rfidUid }).lean();
+        if (!rfidCard) {
+          results.push({ line: lineNo, success: false, reason: `RFID card not found: ${rfidUid}` });
+          skippedCount++;
+          continue;
+        }
+        if (String(rfidCard.clientId) !== String(clientId)) {
+          results.push({ line: lineNo, success: false, reason: `RFID card '${rfidUid}' is not assigned to this client` });
+          skippedCount++;
+          continue;
+        }
+        if (rfidCard.currentMemberId) {
+          results.push({ line: lineNo, success: false, reason: `RFID card '${rfidUid}' is already assigned to another member` });
+          skippedCount++;
+          continue;
+        }
+      }
+
+      // --- Create User ---
+      let createdUserId = null;
+      if (email) {
+        try {
+          const newUser = await User.create({
+            name: `${firstName} ${lastName}`.trim(),
+            email,
+            phone: phone || `temp_${Date.now()}`,
+            password: defaultPassword,
+            role: memberRole._id,
+            clientId,
+          });
+          createdUserId = newUser._id;
+        } catch (userErr) {
+          console.warn("bulkImportClientMembers: failed to create user:", userErr.message);
+        }
+      }
+
+      // --- Create Member ---
+      let member;
+      try {
+        member = await Member.create({
+          firstName,
+          lastName,
+          email: email || undefined,
+          phone: phone || undefined,
+          role,
+          client: clientId,
+          status: "active",
+          user: createdUserId,
+        });
+      } catch (memberErr) {
+        // Rollback user if member creation fails
+        if (createdUserId) {
+          try { await User.findByIdAndDelete(createdUserId); } catch { }
+        }
+        results.push({ line: lineNo, success: false, reason: memberErr.message });
+        skippedCount++;
+        continue;
+      }
+
+      // --- Matrix COSEC Provisioning (best-effort) ---
+      try {
+        let matrixUserId = null;
+        if (phone) {
+          let p = String(phone).replace(/\D/g, "");
+          p = p.replace(/^0+/, "");
+          const last10 = p.length > 10 ? p.slice(-10) : p;
+          if (last10.length === 10) matrixUserId = `91${last10}`;
+        }
+        if (!matrixUserId) {
+          matrixUserId = `MEM${Math.floor(100000 + Math.random() * 900000)}`;
+        }
+
+        try {
+          await matrixApi.createUser({
+            id: matrixUserId,
+            name: `${firstName} ${lastName}`.trim() || undefined,
+            email: email || undefined,
+            phone: phone || undefined,
+            status: "active",
+          });
+        } catch { }
+
+        const muDoc = await MatrixUser.findOneAndUpdate(
+          { externalUserId: matrixUserId },
+          {
+            $setOnInsert: {
+              externalUserId: matrixUserId,
+              name: `${firstName} ${lastName}`.trim() || email || phone || "Unnamed",
+              email: email || undefined,
+              phone: phone || undefined,
+              status: "active",
+            },
+            $set: {
+              buildingId: client.building || undefined,
+              clientId,
+              memberId: member._id,
+            },
+          },
+          { upsert: true, new: true }
+        );
+
+        if (muDoc?._id) {
+          await Member.findByIdAndUpdate(member._id, {
+            $set: { matrixUser: muDoc._id, matrixExternalUserId: muDoc.externalUserId },
+          });
+        }
+
+        await ProvisioningJob.create({
+          vendor: "MATRIX_COSEC",
+          jobType: "UPSERT_USER",
+          buildingId: client.building || null,
+          memberId: member._id,
+          payload: {
+            externalUserId: matrixUserId,
+            name: `${firstName} ${lastName}`.trim() || undefined,
+            email: email || undefined,
+            phone: phone || undefined,
+            status: "active",
+            source: "BULK_CLIENT_IMPORT",
+          },
+        });
+      } catch (matrixErr) {
+        console.warn("bulkImportClientMembers: Matrix provisioning failed for member", String(member._id), matrixErr.message);
+      }
+
+      // --- Assign RFID Card (best-effort) ---
+      if (rfidCard) {
+        try {
+          const muForCard = await MatrixUser.findOne({ memberId: member._id }).select("_id externalUserId").lean();
+
+          await RFIDCard.findByIdAndUpdate(rfidCard._id, {
+            $set: {
+              currentMemberId: member._id,
+              status: "ACTIVE",
+              activatedAt: new Date(),
+            },
+          });
+
+          if (muForCard) {
+            await MatrixUser.findByIdAndUpdate(muForCard._id, {
+              $addToSet: { cards: rfidCard._id },
+              $set: { isCardCredentialVerified: true },
+            });
+
+            try {
+              await matrixApi.setCardCredential({
+                externalUserId: muForCard.externalUserId,
+                data: rfidCard.cardUid,
+              });
+            } catch { }
+
+            await ProvisioningJob.create({
+              vendor: "MATRIX_COSEC",
+              jobType: "ASSIGN_CARD",
+              memberId: member._id,
+              cardId: rfidCard._id,
+              payload: { cardUid: rfidCard.cardUid, memberId: member._id },
+            });
+          }
+        } catch (rfidErr) {
+          console.warn("bulkImportClientMembers: RFID assignment failed for member", String(member._id), rfidErr.message);
+        }
+      }
+
+      // --- Bhaifi WiFi Provisioning (best-effort) ---
+      try {
+        const activeContract = await mongoose
+          .model("Contract")
+          .findOne({ client: clientId, status: "active" })
+          .sort({ createdAt: -1 })
+          .select("_id")
+          .lean();
+
+        const bhaifiDoc = await ensureBhaifiForMember({
+          memberId: member._id,
+          contractId: activeContract?._id,
+        });
+
+        if (bhaifiDoc?._id) {
+          await Member.findByIdAndUpdate(member._id, {
+            $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
+          });
+        }
+      } catch (bhaifiErr) {
+        console.warn("bulkImportClientMembers: Bhaifi provisioning failed for member", String(member._id), bhaifiErr.message);
+      }
+
+      // --- Welcome Notification (best-effort) ---
+      if (email && createdUserId) {
+        try {
+          await sendNotification({
+            to: { email, userId: createdUserId },
+            channels: { email: true, sms: false },
+            templateKey: "platform_access_welcome",
+            templateVariables: {
+              greeting: "Ofis Square",
+              memberName: `${firstName} ${lastName}`.trim(),
+              companyName: client.companyName || "Ofis Square",
+              loginId: email,
+              password: defaultPassword,
+              portalLink: process.env.PORTAL_URL || "https://portal.ofissquare.com",
+            },
+            title: "Welcome to Ofis Square Portal",
+            metadata: { category: "onboarding", tags: ["platform_access", "welcome"] },
+            source: "system",
+            type: "transactional",
+          });
+        } catch (notifyErr) {
+          console.warn("bulkImportClientMembers: welcome notification failed:", notifyErr?.message);
+        }
+      }
+
+      results.push({
+        line: lineNo,
+        success: true,
+        memberId: member._id,
+        email: email || null,
+        name: `${firstName} ${lastName}`.trim(),
+        rfid: rfidCard ? rfidCard.cardUid : null,
+      });
+      createdCount++;
+    }
+
+    try {
+      await logCRUDActivity(req, "BULK_IMPORT", "Member", null, null, {
+        totalRows: rows.length,
+        createdCount,
+        skippedCount,
+        clientId,
+      });
+    } catch { }
+
+    return res.json({
+      success: true,
+      summary: {
+        totalRows: rows.length,
+        createdCount,
+        skippedCount,
+      },
+      results,
+    });
+  } catch (err) {
+    console.error("bulkImportClientMembers error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to import members" });
   }
 };
