@@ -997,6 +997,7 @@ export const getMemberOnlyNotifications = async (req, res) => {
         .populate('to.memberId', 'firstName lastName email')
         .populate('to.userId', 'name email phone')
         .populate('createdBy', 'name email')
+        .populate('categoryId', 'name')
         .sort(sort)
         .skip(skip)
         .limit(parseInt(limit)),
