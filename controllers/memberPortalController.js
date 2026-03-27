@@ -1183,7 +1183,7 @@ export const getAppHomePageData = async (req, res) => {
             ...(req.user.email ? [{ email: req.user.email }] : []),
             ...(req.user.phone ? [{ phone: req.user.phone }] : [])
           ]
-        }).populate('buildingId', 'name openingTime closingTime');
+        }).populate('buildingId', 'name openingTime closingTime bankDetails');
 
         if (guest) req.guestId = guest._id;
       }
@@ -1232,6 +1232,7 @@ export const getAppHomePageData = async (req, res) => {
           cabinType = cabin.type || null;
           buildingOpeningTime = cabin.building?.openingTime || null;
           buildingClosingTime = cabin.building?.closingTime || null;
+          buildingBankDetails = cabin.building?.bankDetails || null;
         }
       }
     } else {
