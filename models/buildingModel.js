@@ -62,6 +62,11 @@ const BuildingSchema = new Schema(
       max: 100,
       default: 0
     },
+    printerCreditValue: {
+      type: Number,
+      min: 0,
+      default: 1
+    },
     draftInvoiceGeneration: {
       type: Boolean,
       default: false,

@@ -189,7 +189,7 @@ export const createBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes, wifiAccess, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, openSpacePricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, printerCreditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, estimateSendDay, invoiceSendDay, securityDepositThreshold, meetingCancellationGraceMinutes, wifiAccess, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem, meetingItem, dayPassItem } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -280,7 +280,7 @@ export const createBuilding = async (req, res) => {
       perSeatPricing,
       meetingCancellationGraceMinutes,
       photos: processedPhotos,
-      openSpacePricing: req.body.openSpacePricing || 500,
+      openSpacePricing: openSpacePricing || 500,
       businessMapLink,
       ...(zoho_books_location_id !== undefined && { zoho_books_location_id: zoho_books_location_id || null }),
       ...(place_of_supply !== undefined && { place_of_supply: place_of_supply || null }),
@@ -290,6 +290,8 @@ export const createBuilding = async (req, res) => {
       zoho_monthly_payment_item_id: zoho_monthly_payment_item_id || "",
       zoho_tax_id: zoho_tax_id || "",
       lateFeeItem: lateFeeItem || undefined,
+      meetingItem: meetingItem || undefined,
+      dayPassItem: dayPassItem || undefined,
       wifiAccess: wifiAccess || undefined
     };
 
@@ -409,12 +411,36 @@ export const createBuilding = async (req, res) => {
       buildingData.draftInvoiceDueDay = ddd;
     }
 
+    if (printerCreditValue !== undefined) {
+      const pcv = Number(printerCreditValue);
+      if (!Number.isFinite(pcv) || pcv < 0) {
+        return res.status(400).json({ success: false, message: "printerCreditValue must be a non-negative number" });
+      }
+      buildingData.printerCreditValue = pcv;
+    }
+
     if (securityDepositThreshold !== undefined) {
       const sdt = Number(securityDepositThreshold);
       if (!Number.isFinite(sdt) || sdt < 0) {
         return res.status(400).json({ success: false, message: "securityDepositThreshold must be a non-negative number" });
       }
       buildingData.securityDepositThreshold = sdt;
+    }
+
+    if (estimateSendDay !== undefined) {
+      const esd = Number(estimateSendDay);
+      if (!Number.isFinite(esd) || esd < 1 || esd > 31) {
+        return res.status(400).json({ success: false, message: "estimateSendDay must be between 1 and 31" });
+      }
+      buildingData.estimateSendDay = esd;
+    }
+
+    if (invoiceSendDay !== undefined) {
+      const isd = Number(invoiceSendDay);
+      if (!Number.isFinite(isd) || isd < 1 || isd > 31) {
+        return res.status(400).json({ success: false, message: "invoiceSendDay must be between 1 and 31" });
+      }
+      buildingData.invoiceSendDay = isd;
     }
 
     const building = await Building.create(buildingData);
@@ -476,7 +502,7 @@ export const updateBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, openSpacePricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, printerCreditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, estimateSendDay, invoiceSendDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem, meetingItem, dayPassItem } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -565,7 +591,9 @@ export const updateBuilding = async (req, res) => {
       lateFeePolicy: lateFeePolicy !== undefined ? lateFeePolicy : undefined,
       zoho_monthly_payment_item_id: zoho_monthly_payment_item_id !== undefined ? zoho_monthly_payment_item_id : undefined,
       zoho_tax_id: zoho_tax_id !== undefined ? zoho_tax_id : undefined,
-      lateFeeItem: lateFeeItem !== undefined ? lateFeeItem : undefined
+      lateFeeItem: lateFeeItem !== undefined ? lateFeeItem : undefined,
+      meetingItem: meetingItem !== undefined ? meetingItem : undefined,
+      dayPassItem: dayPassItem !== undefined ? dayPassItem : undefined,
     };
     if (processedPhotos) {
       updatePayload.photos = processedPhotos;
@@ -627,12 +655,36 @@ export const updateBuilding = async (req, res) => {
       updatePayload.draftInvoiceDueDay = ddd;
     }
 
+    if (estimateSendDay !== undefined) {
+      const esd = Number(estimateSendDay);
+      if (!Number.isFinite(esd) || esd < 1 || esd > 31) {
+        return res.status(400).json({ success: false, message: "estimateSendDay must be between 1 and 31" });
+      }
+      updatePayload.estimateSendDay = esd;
+    }
+
+    if (invoiceSendDay !== undefined) {
+      const isd = Number(invoiceSendDay);
+      if (!Number.isFinite(isd) || isd < 1 || isd > 31) {
+        return res.status(400).json({ success: false, message: "invoiceSendDay must be between 1 and 31" });
+      }
+      updatePayload.invoiceSendDay = isd;
+    }
+
     if (securityDepositThreshold !== undefined) {
       const sdt = Number(securityDepositThreshold);
       if (!Number.isFinite(sdt) || sdt < 0) {
         return res.status(400).json({ success: false, message: "securityDepositThreshold must be a non-negative number" });
       }
       updatePayload.securityDepositThreshold = sdt;
+    }
+
+    if (printerCreditValue !== undefined) {
+      const pcv = Number(printerCreditValue);
+      if (!Number.isFinite(pcv) || pcv < 0) {
+        return res.status(400).json({ success: false, message: "printerCreditValue must be a non-negative number" });
+      }
+      updatePayload.printerCreditValue = pcv;
     }
 
     if (meetingCancellationGraceMinutes !== undefined) {

@@ -1715,13 +1715,8 @@ export const handleRazorpaySuccess = async (req, res) => {
         if (customerDoc?.client) customerDoc = customerDoc.client;
       }
     }
-
-    // Derive building-specific Zoho account ID
     let finalDepositAccountId = null;
     try {
-      // Resolve building ID across all booking types:
-      // - MeetingBooking: item.room.building
-      // - DayPass/Bundle: item.building
       let buildingId =
         item.room?.building?._id || item.room?.building ||
         item.building?._id || item.building;
