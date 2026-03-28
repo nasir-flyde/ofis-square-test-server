@@ -395,7 +395,7 @@ export const getPaymentById = async (req, res) => {
       payment = await DraftPayment.findById(id)
         .populate("invoice", "invoice_number total amount_paid balance due_date status")
         .populate("client", "companyName contactPerson phone email");
-      
+
       if (payment) {
         // synthesize some fields for frontend compatibility if needed
         const p = payment.toObject();
@@ -858,45 +858,49 @@ export const recordCustomerPayment = async (req, res) => {
       description: description || `Payment for ${safeInvoices.length} invoice(s)`
     };
 
-    // Determine location_id based on building associated with invoices or client
+    // Determine location_id and deposit_to_account_id based on building associated with invoices
     let locationId = undefined;
+    let finalDepositAccountId = deposit_to_account_id;
+
     if (dbInvoices && dbInvoices.length > 0) {
       const firstInvoice = dbInvoices[0];
-      console.log(`[recordCustomerPayment] Checking invoice building: ${firstInvoice.building}`);
       if (firstInvoice.building) {
         try {
-          const b = await Building.findById(firstInvoice.building).select('zoho_books_location_id');
-          console.log(`[recordCustomerPayment] Found building for invoice: ${b?._id}, zoho_books_location_id: ${b?.zoho_books_location_id}`);
-          if (b?.zoho_books_location_id) {
-            locationId = b.zoho_books_location_id;
+          const b = await Building.findById(firstInvoice.building).select('zoho_books_location_id zohoChartsOfAccounts');
+          if (b) {
+            console.log(`[recordCustomerPayment] Found building ${b._id} for invoice. Location: ${b.zoho_books_location_id}, Account: ${b.zohoChartsOfAccounts?.bank_account_id}`);
+            if (b.zoho_books_location_id) locationId = b.zoho_books_location_id;
+            if (!finalDepositAccountId && b.zohoChartsOfAccounts?.bank_account_id) {
+              finalDepositAccountId = b.zohoChartsOfAccounts.bank_account_id;
+            }
           }
         } catch (err) {
           console.error(`[recordCustomerPayment] Error fetching building for invoice: ${err.message}`);
         }
       }
     }
-    if (!locationId && client.building) {
-      console.log(`[recordCustomerPayment] Falling back to client building: ${client.building}`);
+
+    // Fallback to client's building if still missing
+    if ((!locationId || !finalDepositAccountId) && client.building) {
       try {
-        const b = await Building.findById(client.building).select('zoho_books_location_id');
-        console.log(`[recordCustomerPayment] Found building for client: ${b?._id}, zoho_books_location_id: ${b?.zoho_books_location_id}`);
-        if (b?.zoho_books_location_id) {
-          locationId = b.zoho_books_location_id;
+        const b = await Building.findById(client.building).select('zoho_books_location_id zohoChartsOfAccounts');
+        if (b) {
+          if (!locationId && b.zoho_books_location_id) locationId = b.zoho_books_location_id;
+          if (!finalDepositAccountId && b.zohoChartsOfAccounts?.bank_account_id) {
+            finalDepositAccountId = b.zohoChartsOfAccounts.bank_account_id;
+          }
         }
       } catch (err) {
-         console.error(`[recordCustomerPayment] Error fetching building for client: ${err.message}`);
+        console.error(`[recordCustomerPayment] Error fetching building for client: ${err.message}`);
       }
     }
 
     if (locationId) {
-      console.log(`[recordCustomerPayment] Setting location_id: ${locationId}`);
-      zohoPayload.location_id = locationId;
-    } else {
-      console.log(`[recordCustomerPayment] No location_id found for this payment.`);
+      // Note: Zoho Books API for /customerpayments does NOT support location_id.
+      // We keep it locally in case other systems need it, but it should not be in the Zoho payload.
     }
-
-    if (deposit_to_account_id) {
-      zohoPayload.deposit_to_account_id = deposit_to_account_id;
+    if (finalDepositAccountId) {
+      zohoPayload.account_id = finalDepositAccountId; // Zoho Books API uses 'account_id'
     }
 
     try {
@@ -958,7 +962,7 @@ export const recordCustomerPayment = async (req, res) => {
       zoho_payment_id: zohoData.payment?.payment_id,
       payment_number: zohoData.payment?.payment_number,
       zoho_status: zohoData.payment?.status,
-      deposit_to_account_id,
+      deposit_to_account_id: finalDepositAccountId,
 
       // Audit fields
       idempotency_key: idempotencyKey,
@@ -1644,7 +1648,8 @@ export const handleRazorpaySuccess = async (req, res) => {
       const dayPass = await DayPass.findById(dayPassId)
         .populate('invoice')
         .populate('member')
-        .populate('customer');
+        .populate('customer')
+        .populate('building');
 
       if (!dayPass) {
         return res.status(404).json({ error: "Day pass not found" });
@@ -1659,7 +1664,8 @@ export const handleRazorpaySuccess = async (req, res) => {
       const bundle = await DayPassBundle.findById(bundleId)
         .populate('invoice')
         .populate('member')
-        .populate('customer');
+        .populate('customer')
+        .populate('building');
 
       if (!bundle) {
         return res.status(404).json({ error: "Bundle not found" });
@@ -1710,6 +1716,49 @@ export const handleRazorpaySuccess = async (req, res) => {
       }
     }
 
+    // Derive building-specific Zoho account ID
+    let finalDepositAccountId = null;
+    try {
+      // Resolve building ID across all booking types:
+      // - MeetingBooking: item.room.building
+      // - DayPass/Bundle: item.building
+      let buildingId =
+        item.room?.building?._id || item.room?.building ||
+        item.building?._id || item.building;
+
+      console.log(`[handleRazorpaySuccess][AccountLookup] Type: ${meetingBookingId ? 'meeting' : (bundleId ? 'bundle' : 'daypass')}, buildingId resolved: ${buildingId}, item.room?.building:`, item.room?.building, `, item.building:`, item.building);
+
+      if (!buildingId && (dayPassId || bundleId)) {
+        // Fallback: fetch from DB directly if building wasn't populated
+        const Model = dayPassId ? DayPass : DayPassBundle;
+        const raw = await Model.findById(dayPassId || bundleId).select('building').lean();
+        buildingId = raw?.building;
+        console.log(`[handleRazorpaySuccess][AccountLookup] Fallback DB buildingId: ${buildingId}`);
+      }
+
+      if (!buildingId && meetingBookingId) {
+        // Fallback for meeting: fetch room's building ID directly
+        const bookingRaw = await MeetingBooking.findById(meetingBookingId).select('room').populate({ path: 'room', select: 'building' }).lean();
+        buildingId = bookingRaw?.room?.building;
+        console.log(`[handleRazorpaySuccess][AccountLookup] Meeting fallback buildingId: ${buildingId}`);
+      }
+
+      if (buildingId) {
+        const b = await Building.findById(buildingId).select('zohoChartsOfAccounts');
+        console.log(`[handleRazorpaySuccess][AccountLookup] zohoChartsOfAccounts:`, JSON.stringify(b?.zohoChartsOfAccounts));
+        if (b?.zohoChartsOfAccounts?.bank_account_id) {
+          finalDepositAccountId = b.zohoChartsOfAccounts.bank_account_id;
+          console.log(`[handleRazorpaySuccess] ✅ Derived building-level account_id: ${finalDepositAccountId} for building ${buildingId}`);
+        } else {
+          console.warn(`[handleRazorpaySuccess] ⚠️ Building ${buildingId} has no zohoChartsOfAccounts.bank_account_id set`);
+        }
+      } else {
+        console.warn(`[handleRazorpaySuccess] ⚠️ Could not resolve buildingId for this payment`);
+      }
+    } catch (err) {
+      console.warn(`[handleRazorpaySuccess] Failed to derive building-level account_id: ${err.message}`);
+    }
+
     // Define paymentData for use in deferred invoice and payment record
     const paymentData = {
       invoice: invoice?._id,
@@ -1723,116 +1772,117 @@ export const handleRazorpaySuccess = async (req, res) => {
       currency: "INR",
       notes: paymentNotes,
       source: "webhook",
-      status: "completed"
+      status: "completed",
+      deposit_to_account_id: finalDepositAccountId
     };
 
     // --- Deferred Invoice Creation Logic ---
     if (!invoice && (dayPassId || bundleId || meetingBookingId)) {
-        console.log(`[Payment] Invoice missing for ${dayPassId ? 'Day Pass' : (bundleId ? 'Bundle' : 'Booking')}. Creating deferred invoice.`);
-        
-        try {
-            const buildingId = item.building?._id || (item.room?.building?._id || item.building);
-            const { default: Building } = await import('../models/buildingModel.js');
-            const building = await Building.findById(buildingId);
-            
-            const clientIdForInvoice = clientId || (customerDoc?.constructor?.modelName === 'Client' ? customerDoc._id : null);
-            const guestIdForInvoice = !clientIdForInvoice ? (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc._id : null) : null;
+      console.log(`[Payment] Invoice missing for ${dayPassId ? 'Day Pass' : (bundleId ? 'Bundle' : 'Booking')}. Creating deferred invoice.`);
 
-            let lineItems = [];
-            let baseAmount = 0;
-            let taxAmount = 0;
-            let finalAmount = paymentData.amount;
-            let gstRate = 18;
+      try {
+        const buildingId = item.building?._id || (item.room?.building?._id || item.building);
+        const { default: Building } = await import('../models/buildingModel.js');
+        const building = await Building.findById(buildingId);
 
-            let resolvedItem = null;
-            const dayPassItem = building?.dayPassItem ? await Item.findById(building.dayPassItem) : null;
-            const meetingItem = building?.meetingItem ? await Item.findById(building.meetingItem) : null;
+        const clientIdForInvoice = clientId || (customerDoc?.constructor?.modelName === 'Client' ? customerDoc._id : null);
+        const guestIdForInvoice = !clientIdForInvoice ? (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc._id : null) : null;
 
-            if (dayPassId) {
-                resolvedItem = dayPassItem;
-                baseAmount = item.price;
-                taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
-                lineItems = [{
-                    description: `Day Pass - ${building?.name || 'Workspace'}`,
-                    quantity: 1,
-                    unitPrice: baseAmount,
-                    amount: baseAmount,
-                    rate: baseAmount,
-                    tax_percentage: gstRate,
-                    item_id: resolvedItem?.zoho_item_id || undefined
-                }];
-            } else if (bundleId) {
-                resolvedItem = dayPassItem;
-                baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
-                taxAmount = finalAmount - baseAmount;
-                lineItems = [{
-                    description: `Day Pass Bundle - ${building?.name || 'Workspace'} (${item.no_of_dayPasses} passes)`,
-                    quantity: item.no_of_dayPasses,
-                    unitPrice: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
-                    amount: baseAmount,
-                    rate: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
-                    tax_percentage: gstRate,
-                    item_id: resolvedItem?.zoho_item_id || undefined
-                }];
-            } else if (meetingBookingId) {
-                resolvedItem = meetingItem;
-                baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
-                taxAmount = finalAmount - baseAmount;
-                lineItems = [{
-                    description: `Meeting Room Booking - ${item.room?.name || 'Room'}`,
-                    quantity: 1,
-                    unitPrice: baseAmount,
-                    amount: baseAmount,
-                    rate: baseAmount,
-                    tax_percentage: gstRate,
-                    item_id: resolvedItem?.zoho_item_id || undefined
-                }];
-            }
+        let lineItems = [];
+        let baseAmount = 0;
+        let taxAmount = 0;
+        let finalAmount = paymentData.amount;
+        let gstRate = 18;
 
-            invoice = new Invoice({
-                client: clientIdForInvoice,
-                guest: guestIdForInvoice,
-                building: buildingId,
-                type: "regular",
-                category: dayPassId ? "day_pass" : (bundleId ? "day_pass" : "meeting_room"),
-                invoice_number: `${dayPassId ? 'DP' : (bundleId ? 'DPB' : 'MR')}-${Date.now()}`,
-                line_items: lineItems,
-                sub_total: baseAmount,
-                tax_total: taxAmount,
-                total: finalAmount,
-                status: "draft",
-                due_date: (() => {
-                    const now = new Date();
-                    const dueDayConfig = building?.draftInvoiceDueDay || 7;
-                    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-                    const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
-                    const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
-                    return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
-                })(),
-                place_of_supply: building?.place_of_supply || (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc?.billingAddress?.state_code : undefined) || "HR",
-                zoho_tax_id: building?.zoho_tax_id || undefined,
-                zoho_books_location_id: building?.zoho_books_location_id || undefined
-            });
+        let resolvedItem = null;
+        const dayPassItem = building?.dayPassItem ? await Item.findById(building.dayPassItem) : null;
+        const meetingItem = building?.meetingItem ? await Item.findById(building.meetingItem) : null;
 
-            await invoice.save();
-            item.invoice = invoice._id;
-            await item.save();
-
-            // Sync with Zoho immediately for deferred invoices
-            if (clientIdForInvoice) {
-                const clientDocForSync = await Client.findById(clientIdForInvoice);
-                if (clientDocForSync) {
-                    await pushInvoiceToZoho(invoice, clientDocForSync, { blocking: false });
-                }
-            }
-            
-            paymentData.invoice = invoice._id;
-            console.log(`[Payment] Deferred invoice created: ${invoice.invoice_number}`);
-
-        } catch (invErr) {
-            console.error('[Payment] Failed to create deferred invoice:', invErr.message);
-            // Non-blocking but serious
+        if (dayPassId) {
+          resolvedItem = dayPassItem;
+          baseAmount = item.price;
+          taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
+          lineItems = [{
+            description: `Day Pass - ${building?.name || 'Workspace'}`,
+            quantity: 1,
+            unitPrice: baseAmount,
+            amount: baseAmount,
+            rate: baseAmount,
+            tax_percentage: gstRate,
+            item_id: resolvedItem?.zoho_item_id || undefined
+          }];
+        } else if (bundleId) {
+          resolvedItem = dayPassItem;
+          baseAmount = Math.round((finalAmount / (1 + gstRate / 100)) * 100) / 100;
+          taxAmount = finalAmount - baseAmount;
+          lineItems = [{
+            description: `Day Pass Bundle - ${building?.name || 'Workspace'} (${item.no_of_dayPasses} passes)`,
+            quantity: item.no_of_dayPasses,
+            unitPrice: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
+            amount: baseAmount,
+            rate: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
+            tax_percentage: gstRate,
+            item_id: resolvedItem?.zoho_item_id || undefined
+          }];
+        } else if (meetingBookingId) {
+          resolvedItem = meetingItem;
+          baseAmount = Math.round((finalAmount / (1 + gstRate / 100)) * 100) / 100;
+          taxAmount = finalAmount - baseAmount;
+          lineItems = [{
+            description: `Meeting Room Booking - ${item.room?.name || 'Room'}`,
+            quantity: 1,
+            unitPrice: baseAmount,
+            amount: baseAmount,
+            rate: baseAmount,
+            tax_percentage: gstRate,
+            item_id: resolvedItem?.zoho_item_id || undefined
+          }];
         }
+
+        invoice = new Invoice({
+          client: clientIdForInvoice,
+          guest: guestIdForInvoice,
+          building: buildingId,
+          type: "regular",
+          category: dayPassId ? "day_pass" : (bundleId ? "day_pass" : "meeting_room"),
+          invoice_number: `${dayPassId ? 'DP' : (bundleId ? 'DPB' : 'MR')}-${Date.now()}`,
+          line_items: lineItems,
+          sub_total: baseAmount,
+          tax_total: taxAmount,
+          total: finalAmount,
+          status: "draft",
+          due_date: (() => {
+            const now = new Date();
+            const dueDayConfig = building?.draftInvoiceDueDay || 7;
+            const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+            const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
+            return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
+          })(),
+          place_of_supply: building?.place_of_supply || (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc?.billingAddress?.state_code : undefined) || "HR",
+          zoho_tax_id: building?.zoho_tax_id || undefined,
+          zoho_books_location_id: building?.zoho_books_location_id || undefined
+        });
+
+        await invoice.save();
+        item.invoice = invoice._id;
+        await item.save();
+
+        // Sync with Zoho immediately for deferred invoices
+        if (clientIdForInvoice) {
+          const clientDocForSync = await Client.findById(clientIdForInvoice);
+          if (clientDocForSync) {
+            await pushInvoiceToZoho(invoice, clientDocForSync, { blocking: false });
+          }
+        }
+
+        paymentData.invoice = invoice._id;
+        console.log(`[Payment] Deferred invoice created: ${invoice.invoice_number}`);
+
+      } catch (invErr) {
+        console.error('[Payment] Failed to create deferred invoice:', invErr.message);
+        // Non-blocking but serious
+      }
     }
 
     // Idempotency: Create payment record only if it doesn't already exist for this Razorpay ID
@@ -2054,7 +2104,8 @@ export const handleRazorpaySuccess = async (req, res) => {
                 date: new Date().toISOString().slice(0, 10),
                 invoices: [{ invoice_id: invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
                 reference_number: razorpay_payment_id,
-                description: paymentNotes
+                description: paymentNotes,
+                ...(finalDepositAccountId && { account_id: finalDepositAccountId })
               };
 
               const zohoData = await recordZohoPayment(invoice.zoho_invoice_id, zohoPayload);
@@ -2191,14 +2242,14 @@ export const handleRazorpaySuccess = async (req, res) => {
 
           // Create invoice in Zoho if linked client exists and no zoho invoice yet
           if (clientForZoho && itemForZoho?.invoice && !itemForZoho.invoice.zoho_invoice_id) {
-             console.log(`[ZohoPush] Pushing invoice ${itemForZoho.invoice._id} to Zoho for client ${clientForZoho._id}`);
-             const { pushInvoiceToZoho: pushToZoho } = await import('../utils/loggedZohoBooks.js');
-             const zohoInvoice = await pushToZoho(itemForZoho.invoice, clientForZoho, { userId: req.user?._id, blocking: true });
-             if (zohoInvoice?.invoice) {
-                 console.log(`[ZohoPush] ✅ Invoice synced to Zoho: ${zohoInvoice.invoice.invoice_number}`);
-             }
-             // Reload invoice to get zoho_invoice_id
-             itemForZoho.invoice = await Invoice.findById(itemForZoho.invoice._id);
+            console.log(`[ZohoPush] Pushing invoice ${itemForZoho.invoice._id} to Zoho for client ${clientForZoho._id}`);
+            const { pushInvoiceToZoho: pushToZoho } = await import('../utils/loggedZohoBooks.js');
+            const zohoInvoice = await pushToZoho(itemForZoho.invoice, clientForZoho, { userId: req.user?._id, blocking: true });
+            if (zohoInvoice?.invoice) {
+              console.log(`[ZohoPush] ✅ Invoice synced to Zoho: ${zohoInvoice.invoice.invoice_number}`);
+            }
+            // Reload invoice to get zoho_invoice_id
+            itemForZoho.invoice = await Invoice.findById(itemForZoho.invoice._id);
           }
 
 
@@ -2215,7 +2266,8 @@ export const handleRazorpaySuccess = async (req, res) => {
               date: new Date().toISOString().slice(0, 10),
               invoices: [{ invoice_id: itemForZoho.invoice.zoho_invoice_id, amount_applied: paymentInrFloor }],
               reference_number: razorpay_payment_id,
-              description: paymentNotes
+              description: paymentNotes,
+              ...(finalDepositAccountId && { account_id: finalDepositAccountId })
             };
 
             console.log(`[ZohoPush] Recording payment of ₹${paymentInrFloor} for Zoho invoice ${itemForZoho.invoice.zoho_invoice_id}`);
@@ -2227,7 +2279,7 @@ export const handleRazorpaySuccess = async (req, res) => {
               },
               body: JSON.stringify(zohoPayload)
             });
- 
+
             const zohoData = await zohoResp.json();
             if (zohoResp.ok) {
               console.log(`[ZohoPush] ✅ Payment recorded in Zoho: ${zohoData.payment?.payment_number}`);
@@ -2814,7 +2866,7 @@ export const payWithCredits = async (req, res) => {
               }
             }
           }
-          
+
           // Apply locally
           await applyInvoicePayment(inv._id, totalAmount);
         }

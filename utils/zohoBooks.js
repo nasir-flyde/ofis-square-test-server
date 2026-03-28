@@ -805,7 +805,6 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       ...(!zeroTax && chosenTax
         ? (chosenTax.kind === 'tax' ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
         : {}),
-      ...(invoiceDoc.zoho_books_location_id ? { location_id: invoiceDoc.zoho_books_location_id } : {}),
       // No automatic tax_exemption_id — enforce GST application as per user's policy
     };
 
@@ -1039,13 +1038,18 @@ export async function recordZohoPayment(invoiceId, paymentData) {
     console.log("🔗 Zoho Payment URL:", url);
     console.log("📤 Payment payload:", JSON.stringify(paymentData, null, 2));
 
+    // Sanitize paymentData to remove unsupported fields like location_id
+    const payload = { ...paymentData };
+    delete payload.location_id;
+    delete payload.zoho_books_location_id;
+
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Zoho-oauthtoken ${authToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(paymentData),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
 
