@@ -97,6 +97,7 @@ export const exportBuildings = async (req, res) => {
 
         // Integrations
         { id: 'wifiAccess', title: 'WiFi Access Config' },
+        { id: 'wifiName', title: 'WiFi Name' },
         { id: 'dayPassPolicy', title: 'Day Pass Matrix Policy' },
         { id: 'zohoLocationId', title: 'Zoho Location ID' },
         { id: 'placeOfSupply', title: 'Place of Supply' },
@@ -156,9 +157,11 @@ export const exportBuildings = async (req, res) => {
         sdSettings: JSON.stringify(b.sdNoteSettings || {}),
 
         wifiAccess: JSON.stringify(b.wifiAccess || {}),
+        wifiName: b.wifiAccess?.enterpriseLevel?.wifiName || '',
         dayPassPolicy: b.dayPassMatrixPolicyId?.name || b.dayPassMatrixPolicyId || '',
         zohoLocationId: b.zoho_books_location_id || '',
         placeOfSupply: b.place_of_supply || '',
+        lateFeeItem: b.lateFeeItem?.name || b.lateFeeItem || '',
 
         photos: photoUrls,
         createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : '',
@@ -186,7 +189,7 @@ export const createBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, meetingCancellationGraceMinutes, wifiAccess, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem } = req.body || {};
 
     if (!name || !address || !city) {
       return res.status(400).json({ success: false, message: "name, address and city are required" });
@@ -285,7 +288,9 @@ export const createBuilding = async (req, res) => {
       zohoChartsOfAccounts: zohoChartsOfAccounts || undefined,
       lateFeePolicy: lateFeePolicy || undefined,
       zoho_monthly_payment_item_id: zoho_monthly_payment_item_id || "",
-      zoho_tax_id: zoho_tax_id || ""
+      zoho_tax_id: zoho_tax_id || "",
+      lateFeeItem: lateFeeItem || undefined,
+      wifiAccess: wifiAccess || undefined
     };
 
     if (communityDiscountMaxPercent !== undefined) {
@@ -436,6 +441,7 @@ export const getBuildings = async (req, res) => {
 
     const buildings = await Building.find(filter)
       .populate('city', 'name state')
+      .populate('lateFeeItem', 'name zoho_item_id')
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: buildings });
@@ -448,7 +454,8 @@ export const getBuildingById = async (req, res) => {
   try {
     const { id } = req.params;
     const building = await Building.findById(id)
-      .populate('city', 'name state');
+      .populate('city', 'name state')
+      .populate('lateFeeItem', 'name zoho_item_id');
 
     if (!building) {
       return res.status(404).json({ success: false, message: "Building not found" });
@@ -469,7 +476,7 @@ export const updateBuilding = async (req, res) => {
       req.body = normalizeNestedBody(req.body);
     }
 
-    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id } = req.body || {};
+    const { name, address, city, state, country, pincode, totalFloors, amenities, status, perSeatPricing, photos, openSpacePricing, latitude, longitude, businessMapLink, tdsSettings, communityDiscountMaxPercent, openingTime, closingTime, dayPassDailyCapacity, creditValue, draftInvoiceGeneration, draftInvoiceDay, draftInvoiceDueDay, securityDepositThreshold, wifiAccess, meetingCancellationGraceMinutes, zoho_books_location_id, place_of_supply, bankDetails, zohoChartsOfAccounts, lateFeePolicy, zoho_monthly_payment_item_id, zoho_tax_id, lateFeeItem } = req.body || {};
 
     const oldBuilding = await Building.findById(id);
 
@@ -557,7 +564,8 @@ export const updateBuilding = async (req, res) => {
       zohoChartsOfAccounts: zohoChartsOfAccounts !== undefined ? zohoChartsOfAccounts : undefined,
       lateFeePolicy: lateFeePolicy !== undefined ? lateFeePolicy : undefined,
       zoho_monthly_payment_item_id: zoho_monthly_payment_item_id !== undefined ? zoho_monthly_payment_item_id : undefined,
-      zoho_tax_id: zoho_tax_id !== undefined ? zoho_tax_id : undefined
+      zoho_tax_id: zoho_tax_id !== undefined ? zoho_tax_id : undefined,
+      lateFeeItem: lateFeeItem !== undefined ? lateFeeItem : undefined
     };
     if (processedPhotos) {
       updatePayload.photos = processedPhotos;
@@ -679,6 +687,9 @@ export const updateBuilding = async (req, res) => {
         }
         if (typeof wifiAccess.enterpriseLevel.defaultProfile === 'string') {
           sanitized.enterpriseLevel.defaultProfile = wifiAccess.enterpriseLevel.defaultProfile;
+        }
+        if (typeof wifiAccess.enterpriseLevel.wifiName === 'string') {
+          sanitized.enterpriseLevel.wifiName = wifiAccess.enterpriseLevel.wifiName;
         }
         if (wifiAccess.enterpriseLevel.defaultValidityDays !== undefined) {
           const d = Number(wifiAccess.enterpriseLevel.defaultValidityDays);

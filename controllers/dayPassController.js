@@ -18,6 +18,9 @@ import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import { recordCancellation } from "./cancelledBookingController.js";
 import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
+import Item from "../models/itemModel.js";
+import WalletService from "../services/walletService.js";
+import { recordZohoPayment } from "../utils/zohoBooks.js";
 
 // Helper: convert any date-like to IST Date object (ending in Z for wall-time)
 function toIST(date) {
@@ -181,7 +184,7 @@ export const createSingleDayPass = async (req, res) => {
     }
 
     // Verify building exists and get pricing
-    const building = await Building.findById(buildingId);
+    const building = await Building.findById(buildingId).populate('dayPassItem');
     if (!building) {
       return res.status(404).json({ error: "Building not found" });
     }
@@ -190,6 +193,16 @@ export const createSingleDayPass = async (req, res) => {
       return res.status(400).json({
         error: "Day pass pricing/inventory not configured for this building"
       });
+    }
+
+    // Resolve item for Zoho
+    const { itemId } = req.body;
+    let resolvedItem = null;
+    if (itemId) {
+      resolvedItem = await Item.findById(itemId);
+    } else if (building.dayPassItem) {
+      // already populated
+      resolvedItem = building.dayPassItem;
     }
 
     // Resolve price: prefer selected inventory's price if provided
@@ -252,11 +265,8 @@ export const createSingleDayPass = async (req, res) => {
         inventoryId: inventoryId ? String(inventoryId) : undefined,
       });
 
-      await dayPass.save({ session });
-
-      let invoice = null;
-      let clientIdForInvoice = req.clientId || null;
-
+      // Resolve client ID for invoice/credits
+      let clientIdForInvoice = req.user?.clientId || null;
       if (!clientIdForInvoice) {
         const memberLookupId = customerType === 'member' ? customerId : (memberId || null);
         if (memberLookupId) {
@@ -272,19 +282,67 @@ export const createSingleDayPass = async (req, res) => {
 
       const paymentMethod = (req.body?.paymentMethod || "").toLowerCase();
       const isOnlinePayment = paymentMethod === "online" || paymentMethod === "razorpay";
-      let creditsPerPass = building.creditValue || 500;
-      if (clientIdForInvoice) {
+      const idempotencyKey = req.body?.idempotencyKey || req.body?.idempotency_key;
+
+      let WalletResult = null;
+      if (paymentMethod === 'credits') {
+        if (!idempotencyKey) {
+          return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
+        }
+        
+        // Calculate credits required
+        let creditsPerPass = building.creditValue || 500;
+        if (clientIdForInvoice) {
+          try {
+            const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
+            if (wallet?.creditValue) creditsPerPass = wallet.creditValue;
+          } catch (_) { }
+        }
+        const requiredCredits = Math.ceil(totalAmount / creditsPerPass);
+
+        // Check balance first
+        const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
+        const currentBalance = wallet?.balance || 0;
+        if (currentBalance < requiredCredits) {
+          return res.status(400).json({
+            success: false,
+            code: "INSUFFICIENT_CREDITS",
+            message: `Insufficient credits. Required: ${requiredCredits}, Available: ${currentBalance}.`,
+            required: requiredCredits,
+            available: currentBalance
+          });
+        }
+
+        // Consume credits
         try {
-          const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
-          if (wallet?.creditValue) {
-            creditsPerPass = wallet.creditValue;
+          WalletResult = await WalletService.consumeCreditsWithOverdraft({
+            clientId: clientIdForInvoice,
+            memberId: (customerType === 'member' ? customerId : memberId) || null,
+            requiredCredits,
+            idempotencyKey,
+            refType: "day_pass",
+            refId: dayPass._id,
+            meta: { title: "Day Pass Booking" }
+          });
+          
+          // If successful, update dayPass status
+          dayPass.status = "issued";
+        } catch (walletErr) {
+          if (walletErr.message === "Transaction already processed") {
+             // Handle idempotency gracefully if needed, for now just throw
           }
-        } catch (_) { }
+          throw walletErr;
+        }
       }
-      const creditsRequired = paymentMethod === 'credits' ? Math.ceil(totalAmount / creditsPerPass) : 0;
+
+      await dayPass.save({ session });
+
+      let invoice = null;
+
+      const creditsRequired = WalletResult?.coveredCredits || (paymentMethod === 'credits' ? Math.ceil(totalAmount / (building.creditValue || 500)) : 0);
       const creditSuffix = creditsRequired > 0 ? ` (${creditsRequired} Credits)` : '';
 
-      if (!isOnlinePayment) {
+      if (!isOnlinePayment && paymentMethod !== 'credits') {
         invoice = new Invoice({
           client: clientIdForInvoice,
           guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
@@ -293,18 +351,28 @@ export const createSingleDayPass = async (req, res) => {
           category: "day_pass",
           invoice_number: `DP-${Date.now()}`,
           line_items: [{
-            description: `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
+            description: resolvedItem?.description || `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
+            //name: resolvedItem?.name || `Day Pass - ${building.name}`,
             quantity: 1,
             unitPrice: price,
             amount: price,
             rate: price,
-            tax_percentage: gstRate
+            tax_percentage: gstRate,
+            item_id: resolvedItem?.zoho_item_id || undefined
           }],
           sub_total: price,
           tax_total: taxAmount,
           total: totalAmount,
           status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+          amount_paid: 0,
+          due_date: (() => {
+            const now = new Date();
+            const dueDayConfig = building?.draftInvoiceDueDay || 7;
+            const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+            const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
+            return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
+          })(),
           place_of_supply: building?.place_of_supply || (customerType === 'guest' ? customer?.billingAddress?.state_code : undefined) || "HR",
           zoho_tax_id: building?.zoho_tax_id || undefined,
           zoho_books_location_id: building?.zoho_books_location_id || undefined
@@ -314,41 +382,30 @@ export const createSingleDayPass = async (req, res) => {
 
         dayPass.invoice = invoice._id;
         await dayPass.save({ session });
+
+        // Push invoice to Zoho Books (blocking if it was created)
+        // Resolve client for Zoho
+        let clientForZoho = null;
+        if (clientIdForInvoice) {
+          const { default: Client } = await import('../models/clientModel.js');
+          clientForZoho = await Client.findById(clientIdForInvoice);
+        } else if (customerType === 'member') {
+          const memberDoc = await Member.findById(customerId).populate('client');
+          if (memberDoc?.client) {
+            const { default: Client } = await import('../models/clientModel.js');
+            clientForZoho = await Client.findById(memberDoc.client);
+          }
+        } else if (customerType === 'guest') {
+          clientForZoho = await Guest.findById(customerId);
+        }
+
+        if (clientForZoho) {
+          // Making this blocking as per requirement: if Zoho fails, transaction aborts in outer catch
+          await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
+        }
       }
 
       await session.commitTransaction();
-
-      // Push invoice to Zoho Books (blocking if it was created)
-      if (invoice) {
-        try {
-          // Resolve client for Zoho
-          let clientForZoho = null;
-          if (clientIdForInvoice) {
-            const { default: Client } = await import('../models/clientModel.js');
-            clientForZoho = await Client.findById(clientIdForInvoice);
-          } else if (customerType === 'member') {
-            const memberDoc = await Member.findById(customerId).populate('client');
-            if (memberDoc?.client) {
-              const { default: Client } = await import('../models/clientModel.js');
-              clientForZoho = await Client.findById(memberDoc.client);
-            }
-          } else if (customerType === 'guest') {
-            clientForZoho = await Guest.findById(customerId);
-          }
-
-          if (clientForZoho) {
-            // Making this blocking as per requirement
-            await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
-          }
-        } catch (zohoErr) {
-          console.error('[DayPass] Zoho invoice push failed:', zohoErr?.message);
-          // Throw error to notify user that creation failed due to Zoho push failure
-          return res.status(500).json({
-            error: "Failed to create Zoho invoice. Creation cancelled.",
-            details: zohoErr.message
-          });
-        }
-      }
 
       await dayPass.populate([
         { path: 'customer', select: 'name email phone' },
@@ -1357,9 +1414,9 @@ export const useDayPasses = async (req, res) => {
       if (req.user.guestId) customerId = req.user.guestId;
       else if (req.user.memberId) customerId = req.user.memberId;
     }
-    
+
     if (!customerId) {
-        return res.status(401).json({ error: "Unauthorized user" });
+      return res.status(401).json({ error: "Unauthorized user" });
     }
 
     // Convert dates to valid Date objects
@@ -1382,10 +1439,10 @@ export const useDayPasses = async (req, res) => {
     }
 
     const availablePasses = await DayPass.find(query).populate('customer').limit(parsedDates.length);
-    
+
     if (availablePasses.length < parsedDates.length) {
-      return res.status(400).json({ 
-        error: `Not enough available 'self' day passes. Requested: ${parsedDates.length}, Available: ${availablePasses.length}. NOTE: Passes must be paid (issued) in order to be used.` 
+      return res.status(400).json({
+        error: `Not enough available 'self' day passes. Requested: ${parsedDates.length}, Available: ${availablePasses.length}. NOTE: Passes must be paid (issued) in order to be used.`
       });
     }
 
@@ -1397,7 +1454,7 @@ export const useDayPasses = async (req, res) => {
       for (let i = 0; i < parsedDates.length; i++) {
         const passDate = parsedDates[i];
         const dayPass = availablePasses[i];
-        
+
         const building = await Building.findById(dayPass.building).session(session);
         if (!building) throw new Error("Building not found for pass");
 
@@ -1409,7 +1466,7 @@ export const useDayPasses = async (req, res) => {
         const totalBookedRaw = (existingUsages || []).reduce((sum, u) => sum + (Number(u.seats) || 0) + (Number(u.bookedCount) || 0), 0);
         const alreadyBooked = totalBookedRaw - (existingForThisPass ? (Number(existingForThisPass.seats) || 0) : 0);
         const totalCapacity = Number(building.dayPassDailyCapacity || 0);
-        
+
         if (totalCapacity > 0 && (alreadyBooked + 1) > totalCapacity) {
           const err = new Error(`No availability for ${passDate.toISOString().slice(0, 10)} at the building`);
           err.status = 409;
@@ -1426,7 +1483,7 @@ export const useDayPasses = async (req, res) => {
         dayPass.date = passDate;
         dayPass.visitDate = passDate;
         dayPass.status = 'invited';
-        
+
         const customerName = dayPass.customer?.name || 'Self';
         const qrData = {
           passId: dayPass._id,
@@ -1442,7 +1499,7 @@ export const useDayPasses = async (req, res) => {
         dayPass.qrExpiresAt = qrExpiry;
 
         await dayPass.save({ session });
-        
+
         usedPassData.push({
           passId: dayPass._id,
           date: passDate,

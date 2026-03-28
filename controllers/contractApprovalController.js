@@ -639,6 +639,10 @@ export const finalApprove = async (req, res) => {
 
         // WiFi provisioning (Bhaifi) for all active members of this client
         try {
+          // Fetch client to get buildingId for autoSetBhaifiPassword once
+          const cliForWifi = await Client.findById(contract.client).select('building').lean();
+          const targetBuildingId = cliForWifi?.building || null;
+
           const wifiProvisioned = [];
           for (const m of membersForJobs || []) {
             try {
@@ -653,7 +657,7 @@ export const finalApprove = async (req, res) => {
                   await Member.findByIdAndUpdate(m._id, {
                     $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
                   });
-                  await autoSetBhaifiPassword({ bhaifiDoc, buildingId: contract.client?.building || client?.building });
+                  await autoSetBhaifiPassword({ bhaifiDoc, buildingId: targetBuildingId });
                 }
               } catch (e) {
                 console.warn(
@@ -674,10 +678,9 @@ export const finalApprove = async (req, res) => {
           console.warn('Bhaifi auto-provisioning failed:', wifiErr?.message);
         }
 
-        // Enterprise-level WiFi access: whitelist all active members across building's enterprise NAS
-        try {
-          const cliForWifi = await Client.findById(contract.client).select('building').lean();
-          const buildingId = cliForWifi?.building || null;
+          // Enterprise-level WiFi access: whitelist all active members across building's enterprise NAS
+          try {
+            const buildingId = targetBuildingId;
           if (buildingId) {
             const bld = await Building.findById(buildingId).select('wifiAccess').lean();
             const enterprise = bld?.wifiAccess?.enterpriseLevel || {};

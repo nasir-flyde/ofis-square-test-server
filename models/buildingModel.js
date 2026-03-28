@@ -146,6 +146,7 @@ const BuildingSchema = new Schema(
     wifiAccess: {
       enterpriseLevel: {
         enabled: { type: Boolean, default: false },
+        wifiName: { type: String, default: undefined },
         nasRefs: [{ type: Schema.Types.ObjectId, ref: "BhaifiNas", index: true }],
         defaultProfile: { type: String, default: undefined },
         defaultValidityDays: { type: Number, default: undefined },
@@ -172,6 +173,18 @@ const BuildingSchema = new Schema(
       bank_account_name: { type: String, default: null }
     },
     zoho_monthly_payment_item_id: { type: String, default: "" }, // Zoho Books Item ID for monthly rent
+    dayPassItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Item'
+    },
+    meetingItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Item'
+    },
+    lateFeeItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Item'
+    },
     zoho_tax_id: { type: String, default: "" }, // Unified Zoho Tax ID/Group ID for this building
     status: { type: String, enum: ["draft", "active", "inactive"], default: "draft", index: true },
   },

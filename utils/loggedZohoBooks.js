@@ -537,7 +537,6 @@ export async function pushInvoiceToZoho(invoiceDoc, clientDoc, opts = {}) {
 
     // Leverage the robust GST and tax calculation logic already built in zohoBooks.js
     const zohoInvoice = await createZohoInvoiceFromLocal(invObj, clientDoc);
-    const { createZohoInvoiceFromLocal } = await import('./zohoBooks.js'); // Ensure it's available if needed, but it's already imported at top
 
     if (zohoInvoice?.invoice?.invoice_id) {
       invoiceDoc.zoho_invoice_id = zohoInvoice.invoice.invoice_id;

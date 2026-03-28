@@ -1,4 +1,5 @@
-import { getZohoTaxes, searchContacts, getZohoLocations, getZohoChartOfAccounts } from "../utils/zohoBooks.js";
+import { getZohoTaxes, searchContacts, getZohoLocations, getZohoChartOfAccounts, getZohoItems } from "../utils/zohoBooks.js";
+import Item from "../models/itemModel.js";
 
 export async function getTaxes(req, res) {
   try {
@@ -48,6 +49,50 @@ export async function getChartOfAccounts(req, res) {
     const accounts = await getZohoChartOfAccounts(req.query);
     return res.json({ success: true, data: accounts });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function syncItems(req, res) {
+  try {
+    const zohoItems = await getZohoItems();
+    let created = 0;
+    let updated = 0;
+
+    for (const item of zohoItems) {
+      const mappedData = {
+        name: item.name,
+        description: item.description || "",
+        rate: parseFloat(item.rate || 0),
+        zoho_item_id: item.item_id,
+        sku: item.sku || "",
+        isActive: item.status === "active"
+      };
+
+      const result = await Item.findOneAndUpdate(
+        { zoho_item_id: item.item_id },
+        { $set: mappedData },
+        { upsert: true, new: false } // returns the doc before update
+      );
+
+      if (result) {
+        updated++;
+      } else {
+        created++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: "Items synchronized successfully",
+      summary: {
+        total: zohoItems.length,
+        created,
+        updated
+      }
+    });
+  } catch (error) {
+    console.error("❌ Sync Items Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 }

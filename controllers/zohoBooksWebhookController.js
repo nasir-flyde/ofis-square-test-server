@@ -10,6 +10,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import apiLogger from "../utils/apiLogger.js";
 import { enforceAccessByInvoices } from "../services/accessService.js";
+import Item from "../models/itemModel.js";
 
 // Handle Zoho Books customer creation webhook
 export const handleZohoBooksWebhook = async (req, res) => {
@@ -178,8 +179,14 @@ async function processZohoBooksEvent(payload) {
     has_contact: !!payload?.contact,
     has_customer: !!payload?.customer,
     has_invoice: !!payload?.invoice,
-    has_payment: !!payload?.payment
+    has_payment: !!payload?.payment,
+    has_item: !!payload?.item
   });
+
+  // Handle item events
+  if (eventType?.startsWith("item_") || payload?.item) {
+    return await handleItemEvent(data?.item || data || payload?.item, eventType);
+  }
 
   // Handle customer creation events with explicit event type
   if (eventType === "customer_created" || eventType === "CustomerCreated") {
@@ -260,8 +267,64 @@ async function processZohoBooksEvent(payload) {
     has_contact: !!payload?.contact,
     has_customer: !!payload?.customer,
     has_invoice: !!payload?.invoice,
-    has_payment: !!payload?.payment
+    has_payment: !!payload?.payment,
+    has_item: !!payload?.item
   };
+}
+
+async function handleItemEvent(itemData, eventType) {
+  try {
+    const item_id = itemData.item_id;
+    if (!item_id) {
+      console.warn("No item_id found in item webhook payload");
+      return { status: "ignored", reason: "No item_id" };
+    }
+
+    console.log(`Processing item event: ${eventType || 'direct_payload'} for Item: ${itemData.name} (${item_id})`);
+
+    if (eventType === "item_deleted") {
+      const deletedItem = await Item.findOneAndUpdate(
+        { zoho_item_id: item_id },
+        { $set: { isActive: false } },
+        { new: true }
+      );
+      if (deletedItem) {
+        console.log(`Marked item ${item_id} as inactive`);
+        return { status: "deleted", item_id };
+      }
+      return { status: "not_found", item_id };
+    }
+
+    // Map item data
+    const mappedItemData = {
+      name: itemData.name,
+      description: itemData.description || "",
+      rate: parseFloat(itemData.rate || 0),
+      zoho_item_id: item_id,
+      sku: itemData.sku || "",
+      isActive: itemData.status === "active"
+    };
+
+    // Upsert item
+    const updatedItem = await Item.findOneAndUpdate(
+      { zoho_item_id: item_id },
+      { $set: mappedItemData },
+      { upsert: true, new: true }
+    );
+
+    console.log(`Synchronized item ${item_id} (${updatedItem._id}) - Status: ${updatedItem.isActive ? 'active' : 'inactive'}`);
+
+    return {
+      status: "synchronized",
+      item_id,
+      local_id: updatedItem._id,
+      action: updatedItem.wasNew ? "created" : "updated"
+    };
+
+  } catch (error) {
+    console.error("Error processing item webhook:", error);
+    throw error;
+  }
 }
 
 // Handle customer creation (primary function for Zoho Books)

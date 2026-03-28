@@ -872,7 +872,7 @@ export const getHomePageData = async (req, res) => {
         const cabin = await Cabin.findOne({
           allocatedTo: req.client._id,
           status: { $ne: 'released' } // simple check
-        }).populate('building', 'name openingTime closingTime');
+        }).populate('building', 'name openingTime closingTime wifiAccess');
 
         if (cabin) {
           cabinNumber = cabin.number;
@@ -895,7 +895,7 @@ export const getHomePageData = async (req, res) => {
         .populate({
           path: 'client',
           select: 'membershipStatus building companyName',
-          populate: { path: 'building', select: 'name openingTime closingTime' }
+          populate: { path: 'building', select: 'name openingTime closingTime wifiAccess' }
         });
 
       if (member) {
@@ -1096,6 +1096,39 @@ export const getHomePageData = async (req, res) => {
       console.warn('getHomePageData: failed to fetch todays bookings', e?.message || e);
     }
 
+    // --- Wi-Fi Info ---
+    let wifiName = null;
+    let wifiPassword = null;
+
+    // Determine building to pull wifiName from
+    let targetBuilding = null;
+    if (isClient && buildingId) {
+      targetBuilding = await Building.findById(buildingId).select('wifiAccess').lean();
+    } else if (req.memberId) {
+      const member = await Member.findById(req.memberId)
+        .populate({
+          path: 'client',
+          populate: { path: 'building', select: 'wifiAccess' }
+        });
+      if (member?.client?.building) targetBuilding = member.client.building;
+    }
+
+    if (targetBuilding) {
+      wifiName = targetBuilding.wifiAccess?.enterpriseLevel?.wifiName || null;
+    }
+
+    // Fetch BhaifiUser password
+    const bhaifiUser = await BhaifiUser.findOne({
+      $or: [
+        ...(req.memberId ? [{ member: req.memberId }] : []),
+        ...(req.clientId ? [{ client: req.clientId }] : [])
+      ]
+    }).select('password');
+
+    if (bhaifiUser) {
+      wifiPassword = bhaifiUser.password;
+    }
+
     // Map 'cabin' to 'Private' (case-insensitive) for display
     if (typeof cabinType === 'string' && cabinType.toLowerCase() === 'cabin') {
       cabinType = 'Private';
@@ -1116,7 +1149,9 @@ export const getHomePageData = async (req, res) => {
           cabinType,
           buildingOpeningTime,
           buildingClosingTime,
-          buildingId
+          buildingId,
+          wifiName,
+          wifiPassword
         },
         events: {
           today: todaysEvents,

@@ -100,6 +100,25 @@ const evaluateDailyLateFee = (invoice, policy) => {
     return Math.round(dailyAmount * 100) / 100;
 };
 
+/**
+ * Format building bank details for invoice notes
+ */
+function formatBankDetails(building, isProForma = false) {
+    const bank = building?.bankDetails;
+    if (!bank || !bank.accountNumber) return "";
+
+    const cityName = building.city?.name || "Noida";
+    const disclaimer = isProForma ? "\nThis is not a tax invoice. " : "\n";
+
+    return `\n\nCompany's Bank Details\n` +
+        `A/c Holder's Name: ${bank.accountHolderName}\n` +
+        `Bank Name: ${bank.bankName}\n` +
+        `A/c No.: ${bank.accountNumber}\n` +
+        `Branch : ${bank.branchName}\n` +
+        `IFS Code: ${bank.ifscCode}\n` +
+        `${disclaimer}Subject to ${cityName} jurisdiction only.`;
+}
+
 // 1. Record Daily Late Fees
 export const recordDailyLateFees = async () => {
     console.log('[Cron] Starting Daily Late Fee Recording...');
@@ -201,7 +220,7 @@ export const generateMonthlyLateFeeEstimates = async () => {
         const buildings = await Building.find({
             draftInvoiceGeneration: true,
             draftInvoiceDay: currentDay
-        });
+        }).populate('lateFeeItem');
 
         for (const building of buildings) {
             // Find all PENDING late fees for this building
@@ -211,9 +230,6 @@ export const generateMonthlyLateFeeEstimates = async () => {
             }).populate('client');
 
             if (pendingFees.length === 0) continue;
-
-            // Group by Client (and Contract if needed, but per-client consolidated is typical)
-            // Usually we want one estimate per client containing all their late fees.
 
             const feesByClient = new Map();
 
@@ -225,22 +241,15 @@ export const generateMonthlyLateFeeEstimates = async () => {
                 feesByClient.get(clientId).fees.push(fee);
             }
 
-            // Process each client
             for (const [clientId, data] of feesByClient.entries()) {
                 try {
                     const { client, fees } = data;
 
-                    // Generate One Estimate for this Client
                     const totalAmount = fees.reduce((sum, f) => sum + f.amount, 0);
 
-                    // Create Line Items
-                    // Option A: Detailed (one line per day per invoice) - Can gets long
-                    // Option B: Summary per invoice (e.g. "Late Fees for Inv #123 (5 days)")
-
-                    // Let's do Option B for cleanliness
                     const feesByInvoice = new Map();
                     for (const fee of fees) {
-                        const invId = String(fee.original_invoice); // Store ID
+                        const invId = String(fee.original_invoice);
                         if (!feesByInvoice.has(invId)) {
                             feesByInvoice.set(invId, { count: 0, total: 0, ids: [] });
                         }
@@ -254,8 +263,6 @@ export const generateMonthlyLateFeeEstimates = async () => {
                     const allFeeIds = [];
 
                     for (const [invId, stat] of feesByInvoice.entries()) {
-                        // We need the invoice number for description, might need to fetch or populate earlier.
-                        // For efficiency, let's fetch basic details of all unique invoices involved.
                         const invDetails = await Invoice.findById(invId).select('invoice_number');
                         const invNum = invDetails ? invDetails.invoice_number : 'Unknown';
 
@@ -267,38 +274,38 @@ export const generateMonthlyLateFeeEstimates = async () => {
                             name: 'Late Fee',
                             rate: stat.total,
                             unit: 'nos',
-                            item_total: stat.total
+                            item_total: stat.total,
+                            item_id: building.lateFeeItem?.zoho_item_id || undefined
                         });
 
                         allFeeIds.push(...stat.ids);
                     }
 
-                    // Calculate Tax (18% GST usually on fees)
                     const taxRate = 18;
                     const taxTotal = Math.round(totalAmount * (taxRate / 100) * 100) / 100;
                     const finalTotal = Math.round((totalAmount + taxTotal) * 100) / 100;
 
-                    const billingPeriodStart = new Date(today.getFullYear(), today.getMonth(), 1); // Current month start
-                    const billingPeriodEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0); // Current month end
+                    const billingPeriodStart = new Date(today.getFullYear(), today.getMonth(), 1);
+                    const billingPeriodEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-                    // Create Estimate
                     const estimate = await Estimate.create({
                         client: client._id,
                         building: building._id,
                         date: today,
-                        expiry_date: new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000), // 7 days valid
+                        expiry_date: new Date(today.getFullYear(), today.getMonth() + 1, building.draftInvoiceDueDay || 7),
                         billing_period: { start: billingPeriodStart, end: billingPeriodEnd },
                         line_items: lineItems,
                         sub_total: Math.round(totalAmount * 100) / 100,
                         tax_total: taxTotal,
                         total: finalTotal,
                         status: 'draft',
-                        notes: `Consolidated Last Minute Fees / Overdue Charges`,
+                        notes: `Consolidated Last Minute Fees / Overdue Charges${formatBankDetails(building)}`,
+                        zoho_tax_id: building.zoho_tax_id,
+                        zoho_books_location_id: building.zoho_books_location_id,
                         currency_code: 'INR',
                         exchange_rate: 1,
                         gst_treatment: 'business_gst',
-                        place_of_supply: 'MH', // Default
-                        // Add billing address if available
+                        place_of_supply: building?.place_of_supply || 'MH',
                         ...(client.billingAddress && {
                             billing_address: {
                                 attention: client.contactPerson,
@@ -314,7 +321,6 @@ export const generateMonthlyLateFeeEstimates = async () => {
                         gst_no: client.gstNo
                     });
 
-                    // Mark fees as billed
                     await LateFee.updateMany(
                         { _id: { $in: allFeeIds } },
                         {
@@ -328,11 +334,14 @@ export const generateMonthlyLateFeeEstimates = async () => {
 
                     results.created++;
 
-                    // Push to Zoho (non-blocking)
-                    try {
-                        if (client.zohoBooksContactId) {
+                    if (client.zohoBooksContactId) {
+                        try {
                             const { createZohoEstimateFromLocal } = await import('../utils/zohoBooks.js');
-                            const zohoResp = await createZohoEstimateFromLocal(estimate.toObject(), client.toObject());
+                            const estObj = estimate.toObject();
+                            if (building.zoho_books_location_id) estObj.zoho_books_location_id = building.zoho_books_location_id;
+                            if (building.zoho_tax_id) estObj.zoho_tax_id = building.zoho_tax_id;
+                            
+                            const zohoResp = await createZohoEstimateFromLocal(estObj, client.toObject());
 
                             if (zohoResp?.estimate?.estimate_id) {
                                 estimate.zoho_estimate_id = zohoResp.estimate.estimate_id;
@@ -340,9 +349,9 @@ export const generateMonthlyLateFeeEstimates = async () => {
                                 await estimate.save();
                                 console.log(`[LateFeeEstimate] Pushed to Zoho: ${zohoResp.estimate.estimate_number}`);
                             }
+                        } catch (zohoErr) {
+                            console.error(`[LateFeeEstimate] Zoho push error for client ${clientId}:`, zohoErr?.message || zohoErr);
                         }
-                    } catch (zohoErr) {
-                        console.error(`[LateFeeEstimate] Zoho push error for client ${clientId}:`, zohoErr?.message || zohoErr);
                     }
 
                 } catch (clientErr) {

@@ -23,6 +23,8 @@ import apiLogger from "../utils/apiLogger.js";
 import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
 import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment, deleteZohoPayment } from "../utils/zohoBooks.js";
+import Item from "../models/itemModel.js";
+import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
 // Helper: update invoice aggregates after a payment change
@@ -1742,7 +1744,12 @@ export const handleRazorpaySuccess = async (req, res) => {
             let finalAmount = paymentData.amount;
             let gstRate = 18;
 
+            let resolvedItem = null;
+            const dayPassItem = building?.dayPassItem ? await Item.findById(building.dayPassItem) : null;
+            const meetingItem = building?.meetingItem ? await Item.findById(building.meetingItem) : null;
+
             if (dayPassId) {
+                resolvedItem = dayPassItem;
                 baseAmount = item.price;
                 taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
                 lineItems = [{
@@ -1751,9 +1758,11 @@ export const handleRazorpaySuccess = async (req, res) => {
                     unitPrice: baseAmount,
                     amount: baseAmount,
                     rate: baseAmount,
-                    tax_percentage: gstRate
+                    tax_percentage: gstRate,
+                    item_id: resolvedItem?.zoho_item_id || undefined
                 }];
             } else if (bundleId) {
+                resolvedItem = dayPassItem;
                 baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
                 taxAmount = finalAmount - baseAmount;
                 lineItems = [{
@@ -1762,9 +1771,11 @@ export const handleRazorpaySuccess = async (req, res) => {
                     unitPrice: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
                     amount: baseAmount,
                     rate: item.pricePerPass || (baseAmount / item.no_of_dayPasses),
-                    tax_percentage: gstRate
+                    tax_percentage: gstRate,
+                    item_id: resolvedItem?.zoho_item_id || undefined
                 }];
             } else if (meetingBookingId) {
+                resolvedItem = meetingItem;
                 baseAmount = Math.round((finalAmount / (1 + gstRate/100)) * 100) / 100;
                 taxAmount = finalAmount - baseAmount;
                 lineItems = [{
@@ -1773,7 +1784,8 @@ export const handleRazorpaySuccess = async (req, res) => {
                     unitPrice: baseAmount,
                     amount: baseAmount,
                     rate: baseAmount,
-                    tax_percentage: gstRate
+                    tax_percentage: gstRate,
+                    item_id: resolvedItem?.zoho_item_id || undefined
                 }];
             }
 
@@ -1789,7 +1801,14 @@ export const handleRazorpaySuccess = async (req, res) => {
                 tax_total: taxAmount,
                 total: finalAmount,
                 status: "draft",
-                due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                due_date: (() => {
+                    const now = new Date();
+                    const dueDayConfig = building?.draftInvoiceDueDay || 7;
+                    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+                    const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+                    const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
+                    return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
+                })(),
                 place_of_supply: building?.place_of_supply || (customerDoc?.constructor?.modelName === 'Guest' ? customerDoc?.billingAddress?.state_code : undefined) || "HR",
                 zoho_tax_id: building?.zoho_tax_id || undefined,
                 zoho_books_location_id: building?.zoho_books_location_id || undefined
@@ -1798,6 +1817,14 @@ export const handleRazorpaySuccess = async (req, res) => {
             await invoice.save();
             item.invoice = invoice._id;
             await item.save();
+
+            // Sync with Zoho immediately for deferred invoices
+            if (clientIdForInvoice) {
+                const clientDocForSync = await Client.findById(clientIdForInvoice);
+                if (clientDocForSync) {
+                    await pushInvoiceToZoho(invoice, clientDocForSync, { blocking: false });
+                }
+            }
             
             paymentData.invoice = invoice._id;
             console.log(`[Payment] Deferred invoice created: ${invoice.invoice_number}`);

@@ -6,7 +6,8 @@ import {
   getTaxes,
   searchZohoContacts,
   getLocations,
-  getChartOfAccounts
+  getChartOfAccounts,
+  syncItems
 } from "../controllers/zohoBooksController.js";
 
 const router = express.Router();
@@ -34,6 +35,13 @@ router.get(
 router.get(
   "/chartofaccounts",
   getChartOfAccounts
+);
+
+// POST /api/zoho-books/items/sync
+router.post(
+  "/items/sync",
+  authMiddleware,
+  syncItems
 );
 
 export default router;

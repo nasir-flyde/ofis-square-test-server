@@ -17,6 +17,8 @@ import { getValidAccessToken } from "../utils/zohoTokenManager.js";
 import Contract from "../models/contractModel.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { createZohoInvoiceFromLocal, fetchZohoInvoicePdfBinary, recordZohoPayment } from "../utils/zohoBooks.js";
+import Item from "../models/itemModel.js";
+import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
 
 // Convert a UTC Date to IST time string HH:MM
 function toHHMM(date) {
@@ -167,11 +169,27 @@ async function checkAvailability(room, start, end) {
 
 // Helper: parse body-provided datetime treating input as IST wall time, returning true UTC Date
 function parseISTDateTime(input) {
-  if (input instanceof Date) return input; // assume already UTC
+  if (input instanceof Date) return input;
   if (typeof input === 'number') return new Date(input);
   if (typeof input !== 'string') return new Date(NaN);
 
-  const trimmed = input.trim();
+  let trimmed = input.trim();
+
+  // Handle "11:00 AM" or "11:00PM" style suffixes
+  const ampmMatch = trimmed.match(/(.*)\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    const ampm = ampmMatch[2].toUpperCase();
+    let base = ampmMatch[1].trim();
+    const parts = base.split(/\s+|T/);
+    if (parts.length === 2) {
+      const datePart = parts[0];
+      const timePart = parts[1];
+      let [hh, mm] = timePart.split(':').map(Number);
+      if (ampm === 'PM' && hh < 12) hh += 12;
+      if (ampm === 'AM' && hh === 12) hh = 0;
+      trimmed = `${datePart} ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    }
+  }
 
   // Normalise "YYYY-MM-DD HH:mm" or "YYYY-MM-DDTHH:mm" (no offset) → treat as IST
   let iso = trimmed.replace(' ', 'T');
@@ -205,6 +223,8 @@ export const createBooking = async (req, res) => {
   let hourlyRate;
   let guestId = null;
   let memberDoc = null;
+  let resolvedItem = null;
+  let dueDate = null;
 
   try {
     const body = req.body || {};
@@ -322,8 +342,32 @@ export const createBooking = async (req, res) => {
       }
     }
 
-    const room = await MeetingRoom.findById(roomId).populate('building');
+    const room = await MeetingRoom.findById(roomId).populate({
+      path: 'building',
+      populate: { path: 'meetingItem' }
+    });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+
+    const building = room.building;
+
+    // Resolve Zoho Item
+    const bodyItemId = body.itemId || body.item_id;
+    if (bodyItemId) {
+      resolvedItem = await Item.findById(bodyItemId);
+    }
+    if (!resolvedItem && building?.meetingItem) {
+      resolvedItem = building.meetingItem;
+    }
+
+    // Calculate Building-based Due Date
+    dueDate = (() => {
+      const now = new Date();
+      const dueDayConfig = building?.draftInvoiceDueDay || 7;
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+      const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
+      return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
+    })();
 
     // Validate availability constraints (hours, blackout dates, etc)
     // Note: checkAvailability still checks basic rules, but the actual atomic conflict
@@ -491,37 +535,7 @@ export const createBooking = async (req, res) => {
         idempotencyKey
       };
 
-      // Create paid invoice for credit payment to allow attachment
-      if (clientId) {
-        const invoiceId = new mongoose.Types.ObjectId();
-        invoice = new Invoice({
-          _id: invoiceId,
-          client: clientId,
-          type: "regular",
-          category: "meeting_room",
-          invoice_number: `MR-${Date.now()}`,
-          line_items: [{
-            description: `Meeting Room - ${room.name} (Hourly)`,
-            quantity: Math.round(durationHours * 100) / 100,
-            unitPrice: hourlyRate,
-            amount: Number((hourlyRate * durationHours).toFixed(2)),
-            rate: hourlyRate
-          }],
-          sub_total: totalsForCredits.sub_total,
-          discount: totalsForCredits.discountAmount || 0,
-          tax_total: totalsForCredits.tax_total,
-          total: totalsForCredits.total,
-          amount_paid: totalsForCredits.total,
-          balance: 0,
-          status: "paid",
-          paid_at: new Date(),
-          due_date: new Date()
-        });
-        await invoice.save();
-
-        // Update wallet transaction to link this invoice (if possible/needed)
-        // Note: WalletService transaction creation happened above, might need update if we want strict linking
-      }
+      // Credit payment handled via WalletService, no local invoice/payment record created here as per user request
 
     } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay" || paymentMethod === "online") {
       // Cash/Card payment - create invoice and set payment_pending status for Razorpay create-order flow
@@ -545,7 +559,8 @@ export const createBooking = async (req, res) => {
               quantity: Math.round(durationHours * 100) / 100,
               unitPrice: hourlyRate,
               amount: Number((hourlyRate * durationHours).toFixed(2)),
-              rate: hourlyRate
+              rate: hourlyRate,
+              item_id: resolvedItem?.zoho_item_id || undefined
             }],
             sub_total: totals.sub_total,
             discount: totals.discountAmount || 0,
@@ -553,10 +568,13 @@ export const createBooking = async (req, res) => {
             total: totals.total,
             status: "sent",
             sent_at: new Date(),
-            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+            due_date: dueDate,
+            zoho_books_location_id: building?.zoho_books_location_id || undefined,
+            zoho_tax_id: building?.zoho_tax_id || undefined,
+            place_of_supply: building?.place_of_supply || (guestId ? customerDoc?.billingAddress?.state_code : undefined) || "HR"
           });
 
-          await invoice.save();
+          // Save handled inside transaction block
         }
 
         paymentDetails = {
@@ -633,6 +651,26 @@ export const createBooking = async (req, res) => {
         // Create the booking atomically
         const [created] = await MeetingBooking.create([bookingData], { session });
         booking = created;
+
+        // If invoice was prepared, save and push atomically
+        if (invoice) {
+          await invoice.save({ session });
+          
+          // Atomic Zoho Push
+          const clientDoc = clientId ? await Client.findById(clientId).session(session) : null;
+          if (clientDoc) {
+            console.log(`[createBooking] Pushing meeting invoice to Zoho atomically...`);
+            // Use pushInvoiceToZoho which handles blocking and error propagation
+            const zohoResult = await pushInvoiceToZoho(invoice, clientDoc, { blocking: true });
+            
+            if (zohoResult?.invoice_id) {
+              invoice.zoho_invoice_id = zohoResult.invoice_id;
+              invoice.zoho_invoice_number = zohoResult.invoice_number;
+              invoice.zoho_status = zohoResult.status;
+              // No need to save again yet, it's already in session
+            }
+          }
+        }
       });
     } catch (err) {
       // ROLLBACK CREDITS IF BOOKING FAILED
@@ -713,58 +751,6 @@ export const createBooking = async (req, res) => {
 
     if (invoice) {
       try {
-        if (!invoice.zoho_invoice_id && invoice.client) {
-          const clientDoc = await Client.findById(invoice.client);
-          if (clientDoc) {
-            const zohoInv = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
-            if (zohoInv?.invoice?.invoice_id) {
-              invoice.zoho_invoice_id = zohoInv.invoice.invoice_id;
-              invoice.zoho_invoice_number = zohoInv.invoice.invoice_number;
-              await invoice.save();
-              console.log(`[createBooking] Pushed invoice ${invoice._id} to Zoho: ${invoice.zoho_invoice_id}`);
-            } else if (paymentMethod === 'credits') {
-              throw new Error("Zoho Invoice Push Failed (no ID returned)");
-            }
-          } else if (paymentMethod === 'credits') {
-            throw new Error("Client document not found for Zoho sync");
-          }
-        }
-        if (invoice.zoho_invoice_id && paymentMethod === 'credits' && invoice.status === 'paid') {
-          try {
-            let zohoContactId = null;
-            if (invoice.client) {
-              const cDoc = await Client.findById(invoice.client).select('zohoBooksContactId');
-              zohoContactId = cDoc?.zohoBooksContactId;
-            }
-
-            if (zohoContactId) {
-              await recordZohoPayment(invoice.zoho_invoice_id, {
-                customer_id: zohoContactId,
-                payment_mode: "Credits",
-                amount: invoice.total,
-                date: formatYMDIST(new Date()),
-                reference_number: idempotencyKey || `CREDIT-${booking._id}`,
-                description: `Paid via Credits for booking ${booking._id}`,
-                invoices: [{
-                  invoice_id: invoice.zoho_invoice_id,
-                  amount_applied: invoice.total
-                }]
-              });
-              console.log(`[createBooking] Recorded credit payment in Zoho for invoice ${invoice.zoho_invoice_id}`);
-            } else {
-              console.warn(`[createBooking] Skipping Zoho payment recording: No zohoBooksContactId found for client ${invoice.client}`);
-              if (paymentMethod === 'credits') {
-                throw new Error("Missing Zoho Contact ID for credit payment sync");
-              }
-            }
-          } catch (payErr) {
-            console.warn(`[createBooking] Failed to record credit payment in Zoho:`, payErr.message);
-            if (paymentMethod === 'credits') {
-              throw new Error(`Zoho Payment Record Failed: ${payErr.message}`);
-            }
-          }
-        }
-
         // 3. Fetch PDF binary
         if (invoice.zoho_invoice_id) {
           try {

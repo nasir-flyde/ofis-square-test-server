@@ -12,6 +12,10 @@ import DayPassDailyUsage from "../models/dayPassDailyUsageModel.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import DiscountBundle from "../models/discountBundleModel.js";
 import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
+import Item from "../models/itemModel.js";
+import WalletService from "../services/walletService.js";
+import ClientCreditWallet from "../models/clientCreditWalletModel.js";
+import { recordZohoPayment } from "../utils/zohoBooks.js";
 
 
 // Create a new day pass bundle
@@ -130,9 +134,19 @@ export const createDayPassBundle = async (req, res) => {
     }
 
     // Verify building exists and get pricing
-    const building = await Building.findById(buildingId);
+    const building = await Building.findById(buildingId).populate('dayPassItem');
     if (!building) {
       return res.status(404).json({ error: "Building not found" });
+    }
+
+    // Resolve item for Zoho
+    const { itemId } = req.body;
+    let resolvedItem = null;
+    if (itemId) {
+      resolvedItem = await Item.findById(itemId);
+    } else if (building.dayPassItem) {
+      // already populated
+      resolvedItem = building.dayPassItem;
     }
 
     // Resolve price per pass from building (single-key capacity model)
@@ -251,6 +265,61 @@ export const createDayPassBundle = async (req, res) => {
         notes
       });
 
+      // Resolve client ID for invoice/credits
+      const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
+
+      const paymentMethod = (req.body?.paymentMethod || "").toLowerCase();
+      const idempotencyKey = req.body?.idempotencyKey || req.body?.idempotency_key;
+
+      let WalletResult = null;
+      if (paymentMethod === 'credits') {
+        if (!idempotencyKey) {
+          return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
+        }
+
+        // Calculate credits required
+        let creditsPerPass = building.creditValue || 500;
+        const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
+        if (clientIdForInvoice) {
+          try {
+            const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
+            if (wallet?.creditValue) creditsPerPass = wallet.creditValue;
+          } catch (_) { }
+        }
+        const requiredCredits = Math.ceil(finalAmount / creditsPerPass);
+
+        // Check balance
+        const wallet = await ClientCreditWallet.findOne({ client: clientIdForInvoice });
+        const currentBalance = wallet?.balance || 0;
+        if (currentBalance < requiredCredits) {
+          return res.status(400).json({
+            success: false,
+            code: "INSUFFICIENT_CREDITS",
+            message: `Insufficient credits. Required: ${requiredCredits}, Available: ${currentBalance}.`,
+            required: requiredCredits,
+            available: currentBalance
+          });
+        }
+
+        // Consume credits
+        try {
+          WalletResult = await WalletService.consumeCreditsWithOverdraft({
+            clientId: clientIdForInvoice,
+            memberId: memberId || null,
+            requiredCredits,
+            idempotencyKey,
+            refType: "day_pass_bundle",
+            refId: bundle._id,
+            meta: { title: "Day Pass Bundle Booking" }
+          });
+          
+          // If successful, update bundle status
+          bundle.status = "issued";
+        } catch (walletErr) {
+          throw walletErr;
+        }
+      }
+
       await bundle.save({ session });
 
       // Create individual day pass records (status: pending)
@@ -269,7 +338,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           totalAmount: pricePerPass * 1.18, // GST fallback
-          status: "payment_pending",
+          status: paymentMethod === 'credits' ? "issued" : "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
@@ -289,7 +358,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           totalAmount: pricePerPass * 1.18, // GST fallback
-          status: "payment_pending",
+          status: paymentMethod === 'credits' ? "issued" : "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
@@ -334,14 +403,12 @@ export const createDayPassBundle = async (req, res) => {
           );
         }
       }
-      const paymentMethod = (req.body?.paymentMethod || "").toLowerCase();
       const isOnlinePayment = paymentMethod === "online" || paymentMethod === "razorpay";
       let invoice = null;
 
       // Defer invoice creation for online/razorpay payments
-      if (!isOnlinePayment) {
+      if (!isOnlinePayment && paymentMethod !== 'credits') {
         // Create invoice (schema: invoiceModel.js)
-        const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
         invoice = new Invoice({
           client: clientIdForInvoice,
           guest: clientIdForInvoice ? null : (customerType !== 'client' ? customerId : null),
@@ -350,18 +417,28 @@ export const createDayPassBundle = async (req, res) => {
           category: "day_pass",
           invoice_number: `DPB-${Date.now()}`,
           line_items: [{
-            description: `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
+            description: resolvedItem?.description || `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
+            name: resolvedItem?.name || `Day Pass Bundle - ${building.name}`,
             quantity: no_of_dayPasses,
             unitPrice: pricePerPass,
             amount: baseAmount,
             rate: pricePerPass,
-            tax_percentage: gstRate
+            tax_percentage: gstRate,
+            item_id: resolvedItem?.zoho_item_id || undefined
           }],
           sub_total: baseAmount,
           tax_total: taxAmount,
           total: finalAmount,
           status: "draft",
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+          amount_paid: 0,
+          due_date: (() => {
+            const now = new Date();
+            const dueDayConfig = building?.draftInvoiceDueDay || 7;
+            const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            const daysInNextMonth = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+            const finalDueDay = Math.min(Math.max(1, dueDayConfig), daysInNextMonth);
+            return new Date(nextMonth.getFullYear(), nextMonth.getMonth(), finalDueDay);
+          })(),
           place_of_supply: building?.place_of_supply || (customerType === 'guest' ? customer?.billingAddress?.state_code : undefined) || "HR",
           zoho_tax_id: building?.zoho_tax_id || undefined,
           zoho_books_location_id: building?.zoho_books_location_id || undefined
@@ -372,42 +449,30 @@ export const createDayPassBundle = async (req, res) => {
         // Link invoice to bundle
         bundle.invoice = invoice._id;
         await bundle.save({ session });
+
+        // Push invoice to Zoho Books (blocking if it was created)
+        let clientForZoho = null;
+
+        if (clientIdForInvoice) {
+          const { default: Client } = await import('../models/clientModel.js');
+          clientForZoho = await Client.findById(clientIdForInvoice);
+        } else if (customerType === 'member') {
+          const memberDoc = await Member.findById(customerId).populate('client');
+          if (memberDoc?.client) {
+            const { default: Client } = await import('../models/clientModel.js');
+            clientForZoho = await Client.findById(memberDoc.client);
+          }
+        } else if (customerType === 'guest') {
+          clientForZoho = await Guest.findById(customerId);
+        }
+
+        if (clientForZoho) {
+          // Making this blocking as per requirement: if Zoho fails, transaction aborts in outer catch
+          await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
+        }
       }
 
       await session.commitTransaction();
-
-      // Push invoice to Zoho Books (blocking if it was created)
-      if (invoice) {
-        try {
-          let clientForZoho = null;
-          const clientIdForInvoice = req.user?.clientId || (customerType === 'client' ? customerId : null);
-          
-          if (clientIdForInvoice) {
-            const { default: Client } = await import('../models/clientModel.js');
-            clientForZoho = await Client.findById(clientIdForInvoice);
-          } else if (customerType === 'member') {
-            const memberDoc = await Member.findById(customerId).populate('client');
-            if (memberDoc?.client) {
-              const { default: Client } = await import('../models/clientModel.js');
-              clientForZoho = await Client.findById(memberDoc.client);
-            }
-          } else if (customerType === 'guest') {
-            clientForZoho = await Guest.findById(customerId);
-          }
-
-          if (clientForZoho) {
-            // Making this blocking as per requirement
-            await pushInvoiceToZoho(invoice, clientForZoho, { userId: req.user?._id, blocking: true });
-          }
-        } catch (zohoErr) {
-          console.error('[DayPassBundle] Zoho invoice push failed:', zohoErr?.message);
-          // Throw error to notify user that creation failed due to Zoho push failure
-          return res.status(500).json({ 
-            error: "Failed to create Zoho invoice. Creation cancelled.",
-            details: zohoErr.message 
-          });
-        }
-      }
 
       // Populate response data
       await bundle.populate([

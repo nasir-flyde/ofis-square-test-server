@@ -10,6 +10,7 @@ import Contract from "../models/contractModel.js";
 import matrixApi from "../utils/matrixApi.js";
 import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
+import { autoSetBhaifiPassword } from "./bhaifiController.js";
 
 // ---------------------- Helpers ----------------------
 const pickMemberIdentity = (m, overrides = {}) => {
@@ -395,8 +396,11 @@ export const createBhaifiForMember = async (req, res) => {
       contract: contractId || null,
       email, name, userName, idType, nasId,
       bhaifiUserId: apiRes?.data?.id || apiRes?.data?.userId || null,
-      status: 'active', lastSyncAt: new Date(), meta: { request: apiRes?.payload, response: apiRes?.data },
+      meta: { request: apiRes?.payload, response: apiRes?.data },
     });
+
+    // Ensure password is set (auto-generates if missing)
+    await autoSetBhaifiPassword({ bhaifiDoc: doc, buildingId: member.client?.building?._id || member.client?.building });
 
     // Optional auto-whitelist by contract endDate
     if (contractId) {

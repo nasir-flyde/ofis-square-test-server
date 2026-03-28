@@ -159,6 +159,35 @@ export async function getContacts() {
   }
 }
 
+export async function getZohoItems() {
+  try {
+    const authToken = await getValidAccessToken();
+    let items = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const url = `${BASE_URL}/items?organization_id=${ORG_ID}&page=${page}&per_page=200`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Zoho API error fetching items");
+
+      items = items.concat(data.items || []);
+      hasMore = data.page_context?.has_more_page || false;
+      page++;
+    }
+
+    return items;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho items:", err.message);
+    throw err;
+  }
+}
+
 export async function searchContacts(searchParams) {
   try {
     const authToken = await getValidAccessToken();
@@ -562,7 +591,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     console.log("🔗 Zoho Payment URL:", url);
     console.log("📤 Payment payload:", JSON.stringify(invoiceDoc, null, 2));
 
-    const {
+    let {
       invoiceNumber,
       issueDate,
       dueDate,
@@ -570,7 +599,28 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       discount = {},
       notes = "",
       billingPeriod,
+      building: buildingRef
     } = invoiceDoc || {};
+
+    // Fetch building to get bank details if not fully populated
+    let buildingDoc = (buildingRef && typeof buildingRef === 'object' && buildingRef.bankDetails) ? buildingRef : null;
+    if (buildingRef && !buildingDoc) {
+      try {
+        const { default: BuildingModel } = await import('../models/buildingModel.js');
+        buildingDoc = await BuildingModel.findById(buildingRef?._id || buildingRef);
+      } catch (e) {
+        console.warn('[ZohoBooks] Failed to fetch building for notes:', e.message);
+      }
+    }
+
+    // Append building bank details to notes
+    if (buildingDoc?.bankDetails) {
+      const bd = buildingDoc.bankDetails;
+      const bankNote = `\n\nBank Details:\nAccount Name: ${bd.accountHolderName}\nBank: ${bd.bankName}\nAccount No: ${bd.accountNumber}\nIFSC: ${bd.ifscCode}\nBranch: ${bd.branchName}`;
+      notes = (invoiceDoc.notes || notes || "") + bankNote;
+    } else {
+      notes = invoiceDoc.notes || notes || "Looking forward for your business.";
+    }
 
     // Use the correct field names from the invoice document
     const actualIssueDate = invoiceDoc.date || issueDate;
@@ -641,10 +691,10 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
     // Only fetch/apply tax when GST treatment is business_gst AND tax rate > 0
     // let chosenTax = null;
     // Normalize org and POS codes up-front for reuse
-    const orgStateRaw = (invoiceDoc?.organization_state_code 
-                 || (invoiceDoc?.building && typeof invoiceDoc.building === 'object' ? invoiceDoc.building.place_of_supply : null)
-                 || process.env.ZOHO_ORG_STATE_CODE 
-                 || 'HR').trim();
+    const orgStateRaw = (invoiceDoc?.organization_state_code
+      || (invoiceDoc?.building && typeof invoiceDoc.building === 'object' ? invoiceDoc.building.place_of_supply : null)
+      || process.env.ZOHO_ORG_STATE_CODE
+      || 'HR').trim();
     const orgStateCode = normalizeStateToken(orgStateRaw);
     const posRaw = (derivedPlaceOfSupply || '').trim();
     let posCode = normalizeStateToken(posRaw);
@@ -744,7 +794,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
         ? { due_date: formatDateToISO(actualDueDate) }
         : {}),
       line_items,
-      notes: invoiceDoc.notes || notes || "Looking forward for your business.",
+      notes: notes,
       terms:
         billingPeriod && billingPeriod.start && billingPeriod.end
           ? `Billing Period: ${formatDateToISO(billingPeriod.start)} to ${formatDateToISO(billingPeriod.end)}`
@@ -755,6 +805,7 @@ export async function createZohoInvoiceFromLocal(invoiceDoc, clientDoc) {
       ...(!zeroTax && chosenTax
         ? (chosenTax.kind === 'tax' ? { tax_id: chosenTax.id } : { tax_group_id: chosenTax.id })
         : {}),
+      ...(invoiceDoc.zoho_books_location_id ? { location_id: invoiceDoc.zoho_books_location_id } : {}),
       // No automatic tax_exemption_id — enforce GST application as per user's policy
     };
 
@@ -1141,10 +1192,10 @@ export async function createZohoEstimateFromLocal(estimateDoc, clientDoc) {
     const zeroTax = !(Number(defaultTaxPercent) > 0);
 
     // Normalize state codes for comparison
-    const orgStateRaw = (estimateDoc?.organization_state_code 
-                 || (estimateDoc?.building && typeof estimateDoc.building === 'object' ? estimateDoc.building.place_of_supply : null)
-                 || process.env.ZOHO_ORG_STATE_CODE 
-                 || 'HR').trim();
+    const orgStateRaw = (estimateDoc?.organization_state_code
+      || (estimateDoc?.building && typeof estimateDoc.building === 'object' ? estimateDoc.building.place_of_supply : null)
+      || process.env.ZOHO_ORG_STATE_CODE
+      || 'HR').trim();
     const orgStateCode = normalizeStateToken(orgStateRaw);
 
     const derivedPlaceOfSupply = estimateDoc?.place_of_supply
