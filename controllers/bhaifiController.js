@@ -4,7 +4,8 @@ import Contract from "../models/contractModel.js";
 import DayPass from "../models/dayPassModel.js";
 import Building from "../models/buildingModel.js";
 import BhaifiNas from "../models/bhaifiNasModel.js";
-import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist } from "../services/bhaifiService.js";
+import Guest from "../models/guestModel.js";
+import { bhaifiCreateUser, bhaifiWhitelist, bhaifiDewhitelist, bhaifiUpdatePassword } from "../services/bhaifiService.js";
 
 const getEnvNasId = () => process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1";
 
@@ -71,40 +72,63 @@ export const normalizeToDateTimeString = (input) => {
 
 export const createBhaifiUser = async (req, res) => {
   try {
-    const { memberId, contractId } = req.body || {};
-    if (!memberId) return res.status(400).json({ success: false, message: "memberId is required" });
+    const { userType, memberId, guestId, password, startDate, endDate, contractId } = req.body || {};
 
-    const member = await Member.findById(memberId).populate([
-      { path: "client", populate: { path: "building" } }
-    ]);
-    if (!member) return res.status(404).json({ success: false, message: "Member not found" });
+    let userBase = null;
+    let name = "";
+    let email = "";
+    let phone = "";
+    let building = null;
+    let clientRef = null;
+    let memberRef = null;
+    let guestRef = null;
 
-    const name = [member.firstName, member.lastName].filter(Boolean).join(" ") || member.companyName || "Member";
-    const email = member.email;
-    const userName = normalizePhoneToUserName(member.phone);
+    if (userType === 'ondemand' || guestId) {
+      if (!guestId) return res.status(400).json({ success: false, message: "guestId is required for ondemand user" });
+      userBase = await Guest.findById(guestId).populate('buildingId');
+      if (!userBase) return res.status(404).json({ success: false, message: "Guest not found" });
+
+      name = userBase.name || "Guest";
+      email = userBase.email;
+      phone = userBase.phone;
+      building = userBase.buildingId;
+      guestRef = userBase._id;
+    } else {
+      if (!memberId) return res.status(400).json({ success: false, message: "memberId is required" });
+      userBase = await Member.findById(memberId).populate([
+        { path: "client", populate: { path: "building" } }
+      ]);
+      if (!userBase) return res.status(404).json({ success: false, message: "Member not found" });
+
+      name = [userBase.firstName, userBase.lastName].filter(Boolean).join(" ") || userBase.companyName || "Member";
+      email = userBase.email;
+      phone = userBase.phone;
+      building = userBase.client?.building || null;
+      clientRef = userBase.client?._id || null;
+      memberRef = userBase._id;
+    }
+
+    const userName = normalizePhoneToUserName(phone);
 
     if (!email) {
-      console.warn("[BHAIFI] Missing member email", { memberId: String(member._id), phone: member.phone, name });
-      return res.status(400).json({ success: false, message: "Member email is required" });
+      console.warn("[BHAIFI] Missing user email", { userId: String(userBase._id), phone, name });
+      return res.status(400).json({ success: false, message: "Email is required" });
     }
     if (!userName) {
-      console.warn("[BHAIFI] Invalid member phone for username normalization", { memberId: String(member._id), rawPhone: member.phone });
-      return res.status(400).json({ success: false, message: "Valid member phone is required (10 digits)" });
+      console.warn("[BHAIFI] Invalid phone for username normalization", { userId: String(userBase._id), rawPhone: phone });
+      return res.status(400).json({ success: false, message: "Valid phone is required (10 digits)" });
     }
 
-    // Idempotency: check existing
-    let existing = await BhaifiUser.findOne({ member: member._id, userName });
-    if (existing) {
-      return res.json({ success: true, message: "Bhaifi user already exists locally", data: existing });
-    }
+    let existingQuery = { userName };
+    if (memberRef) existingQuery.member = memberRef;
+    if (guestRef) existingQuery.guest = guestRef;
+
+    let doc = await BhaifiUser.findOne(existingQuery);
 
     let nasId = getEnvNasId();
-    const building = member.client?.building;
-
     if (building?.wifiAccess?.enterpriseLevel?.enabled &&
-      Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
-      building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
-
+        Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+        building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
       const nasDocs = await BhaifiNas.find({
         _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
         isActive: true
@@ -112,99 +136,102 @@ export const createBhaifiUser = async (req, res) => {
 
       if (nasDocs.length > 0) {
         nasId = nasDocs[0].nasId;
-        console.log(`[BHAIFI] Using building NAS mapping for member ${member._id}:`, { nasId, buildingId: building._id });
       }
-    } else {
-      console.log(`[BHAIFI] Using default NAS ID for member ${member._id} (no active building mapping found)`, { nasId });
     }
 
     const idType = 1;
-    let apiUserId = null;
-    let apiResponseData = null;
-    let apiRequestPayload = null;
 
-    console.log("[BHAIFI] Creating user for member", {
-      memberId: String(member._id),
-      payload: { email, idType, name, nasId, userName }
-    });
+    if (!doc) {
+      let apiUserId = null;
+      let apiResponseData = null;
+      let apiRequestPayload = null;
 
-    try {
-      const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
-      apiUserId = apiRes?.data?.id || apiRes?.data?.userId || null;
-      apiResponseData = apiRes?.data;
-      apiRequestPayload = apiRes?.payload;
-      console.log("[BHAIFI] Create user API success", { memberId: String(member._id), responseKeys: Object.keys(apiRes?.data || {}) });
-    } catch (e) {
-      const status = e?.response?.status;
-      const data = e?.response?.data || {};
-      const msg = (data?.message || e?.message || '').toLowerCase();
-      const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
-      const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate');
+      try {
+        const apiRes = await bhaifiCreateUser({ email, idType, name, nasId, userName });
+        apiUserId = apiRes?.data?.id || apiRes?.data?.userId || null;
+        apiResponseData = apiRes?.data;
+        apiRequestPayload = apiRes?.payload;
+      } catch (e) {
+        const status = e?.response?.status;
+        const data = e?.response?.data || {};
+        const msg = (data?.message || e?.message || '').toLowerCase();
+        const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
+        const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate') || String(data?.code) === '102' || msg.includes('user already exists');
 
-      if (isAlreadyExists) {
-        console.warn("[BHAIFI] createBhaifiUser: User already exists on Bhaifi, creating local record only.", { memberId: String(member._id), userName });
-        apiRequestPayload = { email, idType, name, nasId, userName };
-      } else {
-        console.error("[BHAIFI] createBhaifiUser failed", { memberId: String(member._id), error: msg, status });
-        throw e;
+        if (isAlreadyExists) {
+          apiRequestPayload = { email, idType, name, nasId, userName };
+        } else {
+          console.error("[BHAIFI] createBhaifiUser failed", { userId: String(userBase._id), error: msg, status });
+          throw e;
+        }
       }
+
+      doc = await BhaifiUser.create({
+        member: memberRef || null,
+        guest: guestRef || null,
+        client: clientRef || null,
+        contract: contractId || null,
+        email,
+        name,
+        userName,
+        idType,
+        nasId,
+        bhaifiUserId: apiUserId,
+        status: "active",
+        lastSyncAt: new Date(),
+        meta: { request: apiRequestPayload, response: apiResponseData },
+      });
     }
 
-    const doc = await BhaifiUser.create({
-      member: member._id,
-      client: member.client || null,
-      contract: contractId || null,
-      email,
-      name,
-      userName,
-      idType,
-      nasId,
-      bhaifiUserId: apiUserId,
-      status: "active",
-      lastSyncAt: new Date(),
-      meta: { request: apiRequestPayload, response: apiResponseData },
-    });
+    // Set or auto-set password
+    if (password) {
+      await autoSetBhaifiPassword({ bhaifiDoc: doc, buildingId: building?._id || building, explicitPassword: password });
+    }
 
-    // Immediately whitelist if contractId provided and contract has endDate
-    if (contractId) {
-      try {
+    // Determine Whitelist dates
+    let finalStartDate = startDate;
+    let finalEndDate = endDate;
+
+    if (!finalStartDate || !finalEndDate) {
+      if (contractId) {
         const contract = await Contract.findById(contractId).select('endDate');
         if (contract?.endDate) {
-          const startDate = formatDateTime(new Date());
-          const endDate = endOfDayString(new Date(contract.endDate));
-          console.log('[BHAIFI] Whitelisting after creation', { memberId: String(member._id), startDate, endDate, userName, nasId });
-          await bhaifiWhitelist({ nasId, startDate, endDate, userName });
-          // Persist whitelist record
-          const startAt = new Date(startDate.replace(' ', 'T'));
-          const endAt = new Date(endDate.replace(' ', 'T'));
-          doc.lastWhitelistedAt = new Date();
-          doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
-          doc.lastSyncAt = new Date();
-          doc.status = "active";
-          doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate, endDate } };
-          doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
-          doc.whitelistHistory.push({
-            startDateString: startDate,
-            endDateString: endDate,
-            startAt: isNaN(startAt.getTime()) ? undefined : startAt,
-            endAt: isNaN(endAt.getTime()) ? undefined : endAt,
-            requestedBy: (req.user && req.user._id) ? req.user._id : null,
-            source: 'manual',
-            response: undefined,
-          });
-          await doc.save();
-        } else {
-          console.warn('[BHAIFI] Skipping whitelist: contract has no endDate', { contractId });
+          if (!finalStartDate) finalStartDate = formatDateTime(new Date());
+          if (!finalEndDate) finalEndDate = endOfDayString(new Date(contract.endDate));
         }
-      } catch (wErr) {
-        console.warn('[BHAIFI] Whitelist after creation failed', { message: wErr?.message, status: wErr?.response?.status, data: wErr?.response?.data });
       }
     }
 
-    return res.json({ success: true, message: "Bhaifi user created", data: doc });
+    if (finalStartDate && finalEndDate) {
+      try {
+        await bhaifiWhitelist({ nasId, startDate: finalStartDate, endDate: finalEndDate, userName });
+        const startAt = new Date(finalStartDate.replace(' ', 'T'));
+        const endAt = new Date(finalEndDate.replace(' ', 'T'));
+        doc.lastWhitelistedAt = new Date();
+        doc.whitelistActiveUntil = isNaN(endAt.getTime()) ? undefined : endAt;
+        doc.lastSyncAt = new Date();
+        doc.status = "active";
+        doc.meta = { ...(doc.meta || {}), lastWhitelist: { startDate: finalStartDate, endDate: finalEndDate } };
+        doc.whitelistHistory = Array.isArray(doc.whitelistHistory) ? doc.whitelistHistory : [];
+        doc.whitelistHistory.push({
+          startDateString: finalStartDate,
+          endDateString: finalEndDate,
+          startAt: isNaN(startAt.getTime()) ? undefined : startAt,
+          endAt: isNaN(endAt.getTime()) ? undefined : endAt,
+          requestedBy: (req.user && req.user._id) ? req.user._id : null,
+          source: 'manual',
+          response: undefined,
+        });
+        await doc.save();
+      } catch (wErr) {
+        console.warn('[BHAIFI] Whitelist after creation failed', { message: wErr?.message });
+      }
+    }
+
+    return res.json({ success: true, message: "Bhaifi user configured", data: doc });
   } catch (err) {
     console.error("createBhaifiUser error", err?.message);
-    return res.status(500).json({ success: false, message: "Failed to create Bhaifi user", error: err?.message });
+    return res.status(500).json({ success: false, message: "Failed to configure Bhaifi user", error: err?.message });
   }
 };
 
@@ -475,7 +502,7 @@ export const ensureBhaifiForMember = async ({ memberId, contractId }) => {
       const data = e?.response?.data || {};
       const msg = (data?.message || e?.message || '').toLowerCase();
       const firstErrorCode = Array.isArray(data.errors) && data.errors[0]?.code;
-      const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate');
+      const isAlreadyExists = status === 409 || status === 400 || (status === 422 && (String(firstErrorCode) === '102' || msg.includes('already exists'))) || msg.includes('duplicate') || String(data?.code) === '102' || msg.includes('user already exists');
 
       if (isAlreadyExists) {
         console.warn("[BHAIFI] ensureBhaifiForMember: User already exists on Bhaifi, keeping local record.", { memberId: String(member._id), userName });
@@ -622,4 +649,210 @@ export const grantEnterpriseAccess = async (req, res) => {
     console.error('[BHAIFI] grantEnterpriseAccess error', err?.message);
     return res.status(500).json({ success: false, message: 'Failed to grant enterprise access', error: err?.message });
   }
+};
+
+export const updateBhaifiUserPassword = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password, nasId: bodyNasId } = req.body || {};
+    if (!password) return res.status(400).json({ success: false, message: 'password is required' });
+
+    const doc = await BhaifiUser.findById(id).populate({
+      path: 'client',
+      populate: { path: 'building' }
+    });
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
+
+    const userName = doc.userName;
+    if (!userName) return res.status(400).json({ success: false, message: 'Missing userName to update password' });
+
+    let nasIdsToUpdate = [];
+    if (bodyNasId) {
+      nasIdsToUpdate.push(bodyNasId);
+    } else {
+      const building = doc.client?.building;
+      if (building?.wifiAccess?.enterpriseLevel?.enabled &&
+        Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+        building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
+        const nasDocs = await BhaifiNas.find({
+          _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
+          isActive: true
+        }).select('nasId').lean();
+        nasIdsToUpdate = nasDocs.map(d => d.nasId).filter(Boolean);
+      }
+
+      // Fallback to exactly one default if none found
+      if (nasIdsToUpdate.length === 0) {
+        nasIdsToUpdate.push(doc.nasId || getEnvNasId());
+      }
+    }
+
+    const results = [];
+    for (const nasId of nasIdsToUpdate) {
+      try {
+        const t0 = Date.now();
+        const apiRes = await bhaifiUpdatePassword({ userName, nasId, password });
+        results.push({ nasId, ok: true, status: 'success', latencyMs: Date.now() - t0, data: apiRes?.data });
+      } catch (e) {
+        results.push({
+          nasId,
+          ok: false,
+          status: 'failed',
+          message: e?.response?.data?.message || e?.message || 'Failed',
+          httpStatus: e?.response?.status,
+          data: e?.response?.data,
+        });
+      }
+    }
+
+    if (results.some(r => r.ok)) {
+      doc.password = password;
+      await doc.save();
+    }
+
+    const summary = {
+      total: results.length,
+      success: results.filter(r => r.ok).length,
+      failed: results.filter(r => !r.ok).length,
+    };
+
+    const allFailed = results.length > 0 && results.every(r => !r.ok);
+    if (allFailed) {
+      return res.status(results[0].httpStatus || 400).json({ success: false, message: 'Password update failed', data: { userName, results, summary } });
+    }
+
+    return res.json({ success: true, message: 'Password update processed', data: { userName, results, summary } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to update password', error: err?.message });
+  }
+};
+
+export const updateDayPassBhaifiPassword = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ success: false, message: 'password is required' });
+
+    const dayPass = await DayPass.findById(id).populate([
+      { path: 'building' },
+      { path: 'member', select: 'phone' }
+    ]);
+    if (!dayPass) return res.status(404).json({ success: false, message: 'DayPass not found' });
+
+    let rawPhone = dayPass.visitorPhone || dayPass.visitorDetailsDraft?.phone || dayPass.member?.phone;
+    if (!rawPhone) {
+      return res.status(400).json({ success: false, message: 'No phone number available on this DayPass to update Wifi password' });
+    }
+    const userName = normalizePhoneToUserName(rawPhone);
+    if (!userName) return res.status(400).json({ success: false, message: 'Invalid phone number format for username' });
+
+    let nasIdsToUpdate = [];
+    const building = dayPass.building;
+    if (building?.wifiAccess?.daypass?.enabled &&
+      Array.isArray(building.wifiAccess.daypass.nasRefs) &&
+      building.wifiAccess.daypass.nasRefs.length > 0) {
+      const nasDocs = await BhaifiNas.find({
+        _id: { $in: building.wifiAccess.daypass.nasRefs },
+        isActive: true
+      }).select('nasId').lean();
+      nasIdsToUpdate = nasDocs.map(d => d.nasId).filter(Boolean);
+    }
+
+    if (nasIdsToUpdate.length === 0) {
+      nasIdsToUpdate.push(getEnvNasId());
+    }
+
+    const results = [];
+    for (const nasId of nasIdsToUpdate) {
+      try {
+        const t0 = Date.now();
+        const apiRes = await bhaifiUpdatePassword({ userName, nasId, password });
+        results.push({ nasId, ok: true, status: 'success', latencyMs: Date.now() - t0, data: apiRes?.data });
+      } catch (e) {
+        results.push({
+          nasId,
+          ok: false,
+          status: 'failed',
+          message: e?.response?.data?.message || e?.message || 'Failed',
+          httpStatus: e?.response?.status,
+          data: e?.response?.data,
+        });
+      }
+    }
+
+    dayPass.buildingAccess = dayPass.buildingAccess || {};
+    dayPass.buildingAccess.wifiAccess = true;
+    await dayPass.save();
+
+    if (results.some(r => r.ok)) {
+      const bhaifiUser = await BhaifiUser.findOne({ userName });
+      if (bhaifiUser) {
+        bhaifiUser.password = password;
+        await bhaifiUser.save();
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      success: results.filter(r => r.ok).length,
+      failed: results.filter(r => !r.ok).length,
+    };
+
+    const allFailed = results.length > 0 && results.every(r => !r.ok);
+    if (allFailed) {
+      return res.status(results[0].httpStatus || 400).json({ success: false, message: 'DayPass password update failed', data: { userName, results, summary } });
+    }
+
+    return res.json({ success: true, message: 'DayPass password update processed', data: { userName, results, summary } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to update DayPass password', error: err?.message });
+  }
+};
+
+// Helper utility to generate and update password automatically for a member across all building NAS IPs
+export const autoSetBhaifiPassword = async ({ bhaifiDoc, buildingId, explicitPassword }) => {
+  if (!bhaifiDoc || !bhaifiDoc.userName) return null;
+  
+  const password = explicitPassword || `Ofis@${Math.floor(100000 + Math.random() * 900000)}`;
+  const userName = bhaifiDoc.userName;
+  let nasIdsToUpdate = [];
+
+  try {
+    if (buildingId) {
+      const building = await Building.findById(buildingId).lean();
+      if (building?.wifiAccess?.enterpriseLevel?.enabled &&
+          Array.isArray(building.wifiAccess.enterpriseLevel.nasRefs) &&
+          building.wifiAccess.enterpriseLevel.nasRefs.length > 0) {
+        const nasDocs = await BhaifiNas.find({
+          _id: { $in: building.wifiAccess.enterpriseLevel.nasRefs },
+          isActive: true
+        }).select('nasId').lean();
+        nasIdsToUpdate = nasDocs.map(d => d.nasId).filter(Boolean);
+      }
+    }
+
+    if (nasIdsToUpdate.length === 0) {
+      nasIdsToUpdate.push(bhaifiDoc.nasId || getEnvNasId());
+    }
+
+    let success = false;
+    for (const nasId of nasIdsToUpdate) {
+      try {
+        const res = await bhaifiUpdatePassword({ userName, nasId, password });
+        if (res?.ok) success = true;
+      } catch (e) {
+        console.warn(`[BHAIFI] autoSetBhaifiPassword failed for NAS ${nasId}:`, e?.message);
+      }
+    }
+
+    if (success) {
+      bhaifiDoc.password = password;
+      await bhaifiDoc.save();
+      console.log(`[BHAIFI] autoSetBhaifiPassword success for ${userName}`);
+      return password;
+    }
+  } catch (err) {
+    console.error("[BHAIFI] autoSetBhaifiPassword error:", err?.message);
+  }
+  return null;
 };

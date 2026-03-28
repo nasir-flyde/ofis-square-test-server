@@ -129,12 +129,12 @@ const leadSchema = new mongoose.Schema({
   purpose: {
     type: String,
     required: false,
-    enum: ['coworking_space', 'day_pass', 'meeting_room', 'private_office', 'virtual_office', 'event_space', 'private_cabin', 'single_desk', 'ondemand'],
+    enum: ['all', 'coworking_space', 'day_pass', 'meeting_room', 'private_office', 'virtual_office', 'event_space', 'private_cabin', 'single_desk', 'ondemand'],
     trim: true
   },
   status: {
     type: String,
-    enum: ['new', 'contacted', 'qualified', 'converted', 'lost'],
+    enum: ['all', 'new', 'contacted', 'qualified', 'converted', 'lost'],
     default: 'new'
   },
   // KYC fields for day pass users
@@ -146,7 +146,7 @@ const leadSchema = new mongoose.Schema({
   },
   kycStatus: {
     type: String,
-    enum: ['not_submitted', 'pending', 'approved', 'rejected'],
+    enum: ['all', 'not_submitted', 'pending', 'approved', 'rejected'],
     default: 'not_submitted'
   },
   kycRejectionReason: {

@@ -10,7 +10,7 @@ import mongoose from "mongoose";
 import MatrixUser from "../models/matrixUserModel.js";
 import ProvisioningJob from "../models/provisioningJobModel.js";
 import { matrixApi } from "../utils/matrixApi.js";
-import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
+import { ensureBhaifiForMember, autoSetBhaifiPassword } from "../controllers/bhaifiController.js";
 import AccessPolicy from "../models/accessPolicyModel.js";
 import AccessPoint from "../models/accessPointModel.js";
 import MatrixDevice from "../models/matrixDeviceModel.js";
@@ -399,6 +399,7 @@ export const createMember = async (req, res) => {
             await Member.findByIdAndUpdate(member._id, {
               $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
             });
+            await autoSetBhaifiPassword({ bhaifiDoc, buildingId: buildingIdForJobs });
           } catch (e) {
             console.warn("Failed to attach Bhaifi refs to member (createMember)", String(member._id), e?.message);
           }

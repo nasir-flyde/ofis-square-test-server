@@ -29,7 +29,7 @@ import { sendNotification } from "../utils/notificationHelper.js";
 import { logCRUDActivity, logActivity } from "../utils/activityLogger.js";
 import { sendClientFeedbackAlertEmail } from "../utils/contractEmailService.js";
 import DocumentEntity from "../models/documentEntityModel.js";
-import { ensureBhaifiForMember } from "./bhaifiController.js";
+import { ensureBhaifiForMember, autoSetBhaifiPassword } from "./bhaifiController.js";
 import { syncMemberToUser } from "../utils/memberSync.js";
 
 export const searchClient = async (req, res) => {
@@ -2566,6 +2566,13 @@ export const createClientMember = async (req, res) => {
             bhaifiUserName: bhaifiDoc.userName
           }
         });
+
+        let buildingIdForBhaifi = null;
+        try {
+          const cli = await Client.findById(clientId).select('building').lean();
+          buildingIdForBhaifi = cli?.building;
+        } catch { }
+        await autoSetBhaifiPassword({ bhaifiDoc, buildingId: buildingIdForBhaifi });
       }
     } catch (bhaifiErr) {
       console.error("createClientMember: BHAiFi provisioning failed:", bhaifiErr.message);

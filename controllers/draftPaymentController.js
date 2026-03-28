@@ -72,20 +72,23 @@ export const createDraftPayment = async (req, res) => {
       );
     }
 
-    if (!invoiceId)
-      return res.status(400).json({ success: false, message: "invoice is required" });
-
     if (!amount || Number(amount) <= 0)
       return res.status(400).json({ success: false, message: "amount must be > 0" });
 
     if (!paymentDate)
       return res.status(400).json({ success: false, message: "paymentDate is required" });
 
-    const invoice = await Invoice.findById(invoiceId);
-    if (!invoice)
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await Invoice.findById(invoiceId);
+      if (!invoice)
+        return res.status(404).json({ success: false, message: "Invoice not found" });
+    }
 
-    const submittingClient = req.clientId || client || invoice.client;
+    const submittingClient = req.clientId || client || invoice?.client;
+    if (!submittingClient) {
+      return res.status(400).json({ success: false, message: "Client is required when no invoice is tagged" });
+    }
 
     let screenshotUrls = [];
 
@@ -105,7 +108,6 @@ export const createDraftPayment = async (req, res) => {
           throw new Error(`Failed to upload ${file.originalname}`);
         }
       });
-
       screenshotUrls = await Promise.all(uploadPromises);
 
     } else if (screenshots && Array.isArray(screenshots)) {
@@ -113,7 +115,7 @@ export const createDraftPayment = async (req, res) => {
     }
 
     const draft = await DraftPayment.create({
-      invoice: invoiceId,
+      invoice: invoiceId || undefined,
       client: submittingClient,
       type: type || undefined,
       referenceNumber: referenceNumber || undefined,
@@ -151,7 +153,7 @@ export const createDraftPayment = async (req, res) => {
           invoiceNumber:
             invoice?.invoice_number ||
             invoice?.reference_number ||
-            String(invoice?._id || invoiceId),
+            (invoiceId ? String(invoiceId) : "Untagged"),
           amount: Number(amount),
           paymentDate: paymentDate
             ? new Date(paymentDate).toISOString().slice(0, 10)
@@ -177,8 +179,6 @@ export const createDraftPayment = async (req, res) => {
         notifyErr?.message || notifyErr
       );
     }
-
-    // Notify finance users
     try {
       const financeRoles = await Role.find({ name: { $in: ['finance_junior', 'finance_senior'] } }).select('_id');
       if (financeRoles.length > 0) {
@@ -187,8 +187,6 @@ export const createDraftPayment = async (req, res) => {
 
         let buildingName = 'Ofis Square';
         if (invoice?.building) { // Optimistic check if populated, else default
-          // If invoice.building is ObjectId, we might need to populate or just use default.
-          // Given constraint, we use default or try to get it if available
         }
 
         for (const user of financeUsers) {
@@ -202,7 +200,7 @@ export const createDraftPayment = async (req, res) => {
                 companyName: clientDoc?.companyName || 'Unknown Company',
                 clientName: clientDoc?.contactPerson || 'Client',
                 buildingName: buildingName,
-                invoiceNumber: invoice?.invoice_number || invoice?.reference_number || String(invoice?._id || invoiceId),
+                invoiceNumber: invoice?.invoice_number || invoice?.reference_number || (invoiceId ? String(invoiceId) : 'Untagged'),
                 amount: Number(amount),
                 paymentMode: type || 'N/A',
                 transactionReference: referenceNumber || 'N/A',
@@ -243,7 +241,7 @@ export const approveDraftPayment = async (req, res) => {
   session.startTransaction();
   try {
     const { id } = req.params;
-    const { reviewNote } = req.body || {};
+    const { reviewNote, invoice: taggedInvoiceId } = req.body || {};
 
     // Role-based restriction: Only Finance Senior can approve draft payments
     const userRole = req.userRole?.roleName || "";
@@ -261,6 +259,16 @@ export const approveDraftPayment = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ success: false, message: "Draft payment not found" });
+    }
+
+    if (!draft.invoice && taggedInvoiceId) {
+      draft.invoice = taggedInvoiceId;
+    }
+
+    if (!draft.invoice) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Invoice is required to approve this draft payment. Please tag an invoice." });
     }
 
     if (draft.status === "approved") {

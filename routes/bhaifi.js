@@ -12,6 +12,8 @@ import {
   grantEnterpriseAccess,
   listNasByBuilding,
   createNasForBuilding,
+  updateBhaifiUserPassword,
+  updateDayPassBhaifiPassword,
 } from "../controllers/bhaifiController.js";
 
 const router = express.Router();
@@ -56,6 +58,24 @@ router.post(
   populateUserRole,
   checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
   whitelistBhaifiUser
+);
+
+// Update password for a Bhaifi user
+router.post(
+  "/users/:id/password",
+  authMiddleware,
+  populateUserRole,
+  checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+  updateBhaifiUserPassword
+);
+
+// Update password for a DayPass via Bhaifi
+router.post(
+  "/daypasses/:id/password",
+  authMiddleware,
+  populateUserRole,
+  checkPermission(PERMISSIONS.MEMBER_MANAGE_ACCESS),
+  updateDayPassBhaifiPassword
 );
 
 // Record a dewhitelist action for a Bhaifi user

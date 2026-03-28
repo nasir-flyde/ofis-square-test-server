@@ -12,6 +12,7 @@ const bhaifiUserSchema = new Schema(
     email: { type: String, required: true, trim: true, lowercase: true },
     name: { type: String, required: true, trim: true },
     userName: { type: String, required: true, trim: true, unique: true }, // must start with 91
+    password: { type: String, trim: true },
 
     idType: { type: Number, default: 1 },
     nasId: { type: String, default: process.env.BHAIFI_DEFAULT_NAS_ID || "test_39_1" },

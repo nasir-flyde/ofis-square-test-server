@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const draftPaymentSchema = new mongoose.Schema(
   {
-    invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", required: true, index: true },
+    invoice: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", required: false, index: true },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "Client", index: true },
     type: {
       type: String,

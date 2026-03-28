@@ -13,7 +13,7 @@ import AccessPoint from "../models/accessPointModel.js";
 import ProvisioningJob from "../models/provisioningJobModel.js";
 import MatrixUser from "../models/matrixUserModel.js";
 import { matrixApi } from "../utils/matrixApi.js";
-import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
+import { ensureBhaifiForMember, autoSetBhaifiPassword } from "../controllers/bhaifiController.js";
 import Invoice from "../models/invoiceModel.js";
 import {
   sendAdminApprovalRequestEmail,
@@ -653,6 +653,7 @@ export const finalApprove = async (req, res) => {
                   await Member.findByIdAndUpdate(m._id, {
                     $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
                   });
+                  await autoSetBhaifiPassword({ bhaifiDoc, buildingId: contract.client?.building || client?.building });
                 }
               } catch (e) {
                 console.warn(

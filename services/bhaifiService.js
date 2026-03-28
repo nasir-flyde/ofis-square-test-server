@@ -85,3 +85,26 @@ export const bhaifiDewhitelist = async ({ nasId, userName }) => {
     throw e;
   }
 };
+
+export const bhaifiUpdatePassword = async ({ userName, nasId, password }) => {
+  ensureEnabled();
+  const path = `/user/${encodeURIComponent(userName)}/password`;
+  const payload = { nasId, password };
+  try {
+    console.log("[BHAIFI][HTTP] PUT", path, { payload, baseURL: BASE_URL });
+    const res = await http.put(path, payload);
+    console.log("[BHAIFI][HTTP] PUT success", path, { status: res.status, data: res.data });
+    return { ok: true, data: res.data, payload };
+  } catch (e) {
+    console.error("[BHAIFI][HTTP] PUT /user/:userName/password failed", {
+      path,
+      payload,
+      message: e?.message,
+      status: e?.response?.status,
+      data: e?.response?.data,
+      dataJson: safeJson(e?.response?.data),
+      firstError: Array.isArray(e?.response?.data?.errors) ? e?.response?.data?.errors[0] : null,
+    });
+    throw e;
+  }
+};
