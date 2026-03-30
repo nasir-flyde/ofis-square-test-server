@@ -14,7 +14,8 @@ import {
   verifyCreateUserOTP,
   verifyDeleteUserOTP,
   verifyUpdateUserOTP,
-  checkUniqueness
+  checkUniqueness,
+  storeFcmToken
 } from "../controllers/userController.js";
 
 const router = express.Router();
@@ -30,6 +31,7 @@ router.post("/verify-delete", authMiddleware, verifyDeleteUserOTP);
 router.post("/verify-update", authMiddleware, verifyUpdateUserOTP);
 router.put("/:id", updateUser);
 router.delete("/:id", authMiddleware, deleteUser);
+router.post("/store-fcm-token", authMiddleware, storeFcmToken);
 
 // Create Client Legal Team user (admin-only)
 router.post(
