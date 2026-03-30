@@ -1235,22 +1235,37 @@ async function sendEmail(notification) {
 // Helper function to send Push Notification
 async function sendPush(notification) {
   try {
-    let token = notification.to.pushToken;
+    const tokens = new Set();
 
-    // Resolve token if not present but memberId is
-    if (!token && notification.to.memberId) {
-      const member = await Member.findById(notification.to.memberId).select('fcmTokens');
-      if (member?.fcmTokens?.length) {
-        token = member.fcmTokens[0]; // Just take first token for simple dispatch
+    // 1. Add explicit pushToken if present
+    if (notification.to.pushToken) {
+      tokens.add(notification.to.pushToken);
+    }
+
+    // 2. Fetch tokens from User model if userId is present
+    if (notification.to.userId) {
+      const user = await User.findById(notification.to.userId).select('fcmTokens');
+      if (user?.fcmTokens?.length) {
+        user.fcmTokens.forEach(t => tokens.add(t));
       }
     }
 
-    if (!token) {
-      notification.updateDeliveryStatus('push', 'skipped', { details: 'No FCM token found' });
+    // 3. Fetch tokens from Member model if memberId is present
+    if (notification.to.memberId) {
+      const member = await Member.findById(notification.to.memberId).select('fcmTokens');
+      if (member?.fcmTokens?.length) {
+        member.fcmTokens.forEach(t => tokens.add(t));
+      }
+    }
+
+    const tokenList = Array.from(tokens).filter(t => t && typeof t === 'string');
+
+    if (tokenList.length === 0) {
+      notification.updateDeliveryStatus('push', 'skipped', { details: 'No FCM tokens found for user/member' });
       return;
     }
 
-    notification.updateDeliveryStatus('push', 'queued', { details: 'Sending Push' });
+    notification.updateDeliveryStatus('push', 'queued', { details: `Sending Push to ${tokenList.length} token(s)` });
 
     const message = {
       notification: {
@@ -1261,21 +1276,30 @@ async function sendPush(notification) {
         notificationId: notification._id.toString(),
         ...(notification.metadata || {})
       },
-      token
+      tokens: tokenList
     };
 
     if (admin.apps.length > 0) {
-      const response = await admin.messaging().send(message);
-      notification.updateDeliveryStatus('push', 'sent', {
-        details: 'Push sent successfully',
-        providerMessageId: response,
-        providerResponse: { response }
+      const response = await admin.messaging().sendEachForMulticast(message);
+      
+      const successCount = response.successCount;
+      const failureCount = response.failureCount;
+
+      notification.updateDeliveryStatus('push', successCount > 0 ? 'sent' : 'failed', {
+        details: `Push processed: ${successCount} success, ${failureCount} failure`,
+        providerMessageId: response.responses?.[0]?.messageId,
+        providerResponse: { 
+          successCount, 
+          failureCount,
+          results: response.responses.map(r => ({ success: r.success, error: r.error?.message }))
+        }
       });
     } else {
       throw new Error('Firebase Admin not initialized');
     }
 
   } catch (error) {
+    console.error('[sendPush] Error:', error);
     notification.updateDeliveryStatus('push', 'failed', {
       error: error.message,
       errorCode: 'PUSH_ERROR'
