@@ -738,7 +738,11 @@ export const getMemberProfile = async (req, res) => {
             { path: 'cabin', select: 'type' }
           ]
         })
-        .populate('user', 'name email phone');
+        .populate({
+          path: 'user',
+          select: 'name email phone role',
+          populate: { path: 'role', select: 'roleName' }
+        });
 
       if (!member) {
         return res.status(404).json({
@@ -877,7 +881,7 @@ export const getMemberProfile = async (req, res) => {
         name: `${member.firstName} ${member.lastName || ''}`.trim(),
         email: member.email,
         phone: member.phone,
-        role: member.role,
+        role: member.user?.role?.roleName || member.role,
         status: member.status,
         membershipStatus,
         cabinType,

@@ -1191,6 +1191,7 @@ export const getAppHomePageData = async (req, res) => {
     let guestProfile = null;
     let kycPending = false;
     let guestPending = false;
+    let noOfAvailableDayPass = 0;
 
     // --- 0. Time setup (IST Aware) ---
     const now = new Date();
@@ -1248,6 +1249,9 @@ export const getAppHomePageData = async (req, res) => {
         cabinType = "On demand";
         membershipStatus = guest.kycStatus || "active";
         kycPending = guest.kycStatus === 'pending';
+
+        // Set available day pass count for guest
+        noOfAvailableDayPass = dayPassCount;
       }
     } else if (isClient) {
       if (req.client) {
@@ -1295,6 +1299,21 @@ export const getAppHomePageData = async (req, res) => {
           buildingOpeningTime = member.client.building.openingTime || null;
           buildingClosingTime = member.client.building.closingTime || null;
           buildingBankDetails = member.client.building.bankDetails || null;
+        }
+
+        // Fetch available day pass count for member
+        try {
+          const DayPass = (await import("../models/dayPassModel.js")).default;
+          noOfAvailableDayPass = await DayPass.countDocuments({
+            customer: req.memberId,
+            status: 'issued',
+            $or: [
+              { visitDate: null },
+              { visitDate: { $gte: today } }
+            ]
+          });
+        } catch (dayPassErr) {
+          console.warn('getAppHomePageData: failed to fetch member day pass count', dayPassErr.message);
         }
 
         // Fetch cabin allocated to this member's client
@@ -1604,14 +1623,15 @@ export const getAppHomePageData = async (req, res) => {
           cabinNumber,
           buildingName,
           membershipStatus,
-          role: roleName,
+          role: roleName === 'client' ? 'owner' : roleName,
           contract: contractData,
           cabinType,
           buildingOpeningTime,
           buildingClosingTime,
           bankDetails: typeof buildingBankDetails !== 'undefined' ? buildingBankDetails : null,
           kycPending,
-          guestPending
+          guestPending,
+          noOfAvailableDayPass: noOfAvailableDayPass || 0
         },
         events: {
           today: todaysEvents,
