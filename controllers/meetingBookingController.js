@@ -537,13 +537,20 @@ export const createBooking = async (req, res) => {
 
       // Credit payment handled via WalletService, no local invoice/payment record created here as per user request
 
-    } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay" || paymentMethod === "online") {
-      // Cash/Card payment - create invoice and set payment_pending status for Razorpay create-order flow
-      bookingStatus = "payment_pending";
+    } else if (paymentMethod === "cash" || paymentMethod === "card" || paymentMethod === "razorpay" || paymentMethod === "online" || paymentMethod === "postpaid") {
+      // Cash/Card/Postpaid payment - create invoice
+      if (paymentMethod === "postpaid") {
+        if (!memberDoc?.isPostpaidAllowed) {
+          return res.status(403).json({ success: false, message: "Postpaid booking is not allowed for this member" });
+        }
+        bookingStatus = "booked";
+      } else {
+        bookingStatus = "payment_pending";
+      }
 
       if (discountStatus === "pending") {
         // Skip invoice creation; wait for approval
-        paymentDetails = { method: paymentMethod || "cash", idempotencyKey: effectiveIdempotencyKey || undefined };
+        paymentDetails = { method: paymentMethod, idempotencyKey: effectiveIdempotencyKey || undefined };
       } else {
         // Apply approved or no discount
         const totals = computeInvoiceTotals(baseAmount, appliedDiscountPercent || 0);
@@ -555,7 +562,7 @@ export const createBooking = async (req, res) => {
             category: "meeting_room",
             invoice_number: `MR-${Date.now()}`,
             line_items: [{
-              description: `Meeting Room - ${room.name} (Hourly)`,
+              description: `Meeting Room Booking - ${room.name}`,
               quantity: Math.round(durationHours * 100) / 100,
               unitPrice: hourlyRate,
               amount: Number((hourlyRate * durationHours).toFixed(2)),

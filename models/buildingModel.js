@@ -96,6 +96,12 @@ const BuildingSchema = new Schema(
       max: 31,
       default: 1
     },
+    creditsRenewalDate: {
+      type: Number,
+      min: 1,
+      max: 31,
+      default: 1
+    },
     dayPassMatrixPolicyId: { type: Schema.Types.ObjectId, ref: "AccessPolicy", default: null },
     lateFeePolicy: {
       enabled: { type: Boolean, default: false },

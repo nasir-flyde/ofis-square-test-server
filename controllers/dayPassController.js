@@ -183,6 +183,29 @@ export const createSingleDayPass = async (req, res) => {
       }
     }
 
+    if (requestedPaymentMethod === 'postpaid') {
+      let memberLookupId = memberId || (customerType === 'member' ? customerId : null);
+      if (memberLookupId) {
+        try {
+          const Member = (await import('../models/memberModel.js')).default;
+          const m = await Member.findById(memberLookupId).select('isPostpaidAllowed status');
+          if (!m) {
+            return res.status(404).json({ error: 'Member not found for postpaid payment' });
+          }
+          if (m.status !== 'active') {
+            return res.status(403).json({ error: 'Member is inactive', code: 'MEMBER_INACTIVE' });
+          }
+          if (m.isPostpaidAllowed === false) {
+            return res.status(403).json({ error: 'This member is not allowed to use postpaid booking', code: 'POSTPAID_NOT_ALLOWED' });
+          }
+        } catch (_) {
+          return res.status(500).json({ error: 'Failed to validate member postpaid permission' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Postpaid payment is only allowed for members', code: 'POSTPAID_MEMBER_ONLY' });
+      }
+    }
+
     // Verify building exists and get pricing
     const building = await Building.findById(buildingId).populate('dayPassItem');
     if (!building) {
@@ -335,6 +358,10 @@ export const createSingleDayPass = async (req, res) => {
         }
       }
 
+      if (paymentMethod === 'postpaid') {
+        dayPass.status = "issued";
+      }
+
       await dayPass.save({ session });
 
       let invoice = null;
@@ -351,8 +378,7 @@ export const createSingleDayPass = async (req, res) => {
           category: "day_pass",
           invoice_number: `DP-${Date.now()}`,
           line_items: [{
-            description: resolvedItem?.description || `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`,
-            //name: resolvedItem?.name || `Day Pass - ${building.name}`,
+            description: paymentMethod === 'postpaid' ? `Day Pass - ${building.name}` : (resolvedItem?.description || `Day Pass - ${building.name}${selectedInventory ? ` (${selectedInventory.inventoryType || 'Open Space'})` : ''}${creditSuffix}`),
             quantity: 1,
             unitPrice: price,
             amount: price,

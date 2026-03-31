@@ -11,7 +11,7 @@ import Role from "../models/roleModel.js";
 
 // Helper: apply amount delta to invoice and set status fields (aligned with current model)
 async function applyInvoicePayment(invoiceId, deltaAmount) {
-  const invoice = await Invoice.findById(invoiceId).populate('client');
+  const invoice = await Invoice.findById(invoiceId).populate('client').populate('building');
   if (!invoice) throw new Error("Invoice not found");
 
   const newAmountPaid = Math.max(0, Number(invoice.amount_paid || 0) + Number(deltaAmount || 0));
@@ -323,7 +323,8 @@ export const approveDraftPayment = async (req, res) => {
           invoices: [{
             invoice_id: updatedInvoice.zoho_invoice_id,
             amount_applied: Number(draft.amount)
-          }]
+          }],
+          account_id: updatedInvoice.building?.zohoChartsOfAccounts?.bank_account_id || undefined
         };
 
         console.log("🔍 Zoho sync prerequisites check:", {

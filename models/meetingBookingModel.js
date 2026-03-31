@@ -19,7 +19,7 @@ const meetingBookingSchema = new Schema(
     guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", index: true },
     invoice: { type: Schema.Types.ObjectId, ref: "Invoice" },
     payment: {
-      method: { type: String, enum: ["cash", "card", "credits", "razorpay", "online"], default: "cash" },
+      method: { type: String, enum: ["cash", "card", "credits", "razorpay", "online", "postpaid"], default: "cash" },
       coveredCredits: { type: Number },
       extraCredits: { type: Number },
       overageAmount: { type: Number },

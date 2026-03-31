@@ -11,6 +11,15 @@ import AddOn from "../models/addOnModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
+const getEscalationIntervals = (checkDate, startDate, frequency) => {
+  const firstBillDate = new Date(startDate);
+  let monthsDiff = (checkDate.getUTCFullYear() - firstBillDate.getUTCFullYear()) * 12 + (checkDate.getUTCMonth() - firstBillDate.getUTCMonth());
+  if (checkDate.getUTCDate() < firstBillDate.getUTCDate()) {
+    monthsDiff--;
+  }
+  return Math.max(0, Math.floor(monthsDiff / frequency));
+};
+
 export const createMonthlyInvoices = async (refDate = new Date()) => {
   const results = { created: 0, errors: 0, details: [] };
 
@@ -179,21 +188,75 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
 
   if (contract.monthlyRent > 0) {
     const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
-    const rentAmount = contract.monthlyRent;
+    const firstBillDate = contract.billingStartDate ? new Date(contract.billingStartDate) : new Date(contract.startDate);
+    const isBillingStarted = billingPeriodStart >= new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1));
+
+    const frequency = contract.escalation?.frequencyMonths;
+    const ratePercent = contract.escalation?.ratePercent || 0;
+
+    const year = billingPeriodStart.getUTCFullYear();
+    const month = billingPeriodStart.getUTCMonth();
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    const periodEnd = new Date(Date.UTC(year, month, daysInMonth));
+
+    const intervalsStart = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(billingPeriodStart, firstBillDate, frequency) : 0;
+    const intervalsEnd = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodEnd, firstBillDate, frequency) : 0;
+
+    const anniversaryDay = firstBillDate.getUTCDate();
     const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
     const cabinLabel = await getCabinLabel(contract._id, contractLabel);
-    items.push({
-      description: cabinLabel,
-      quantity: 1,
-      unitPrice: rentAmount,
-      amount: rentAmount,
-      name: cabinLabel,
-      rate: rentAmount,
-      unit: "nos",
-      item_total: rentAmount,
-      item_id: contract.building?.zoho_monthly_payment_item_id || undefined
-    });
-    subtotal += rentAmount;
+
+    if (intervalsStart !== intervalsEnd && anniversaryDay > 1 && anniversaryDay <= daysInMonth) {
+      // Split Month
+      const preDays = anniversaryDay - 1;
+      const postDays = daysInMonth - preDays;
+
+      const rentAmount1 = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsStart);
+      const rentAmount2 = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsEnd);
+
+      const prorated1 = Number(((rentAmount1 * preDays) / daysInMonth).toFixed(2));
+      const prorated2 = Number(((rentAmount2 * postDays) / daysInMonth).toFixed(2));
+
+      items.push({
+        description: `${cabinLabel} (1 - ${preDays} ${monthName}) @ ₹${rentAmount1}/mo`,
+        quantity: 1,
+        unitPrice: prorated1,
+        amount: prorated1,
+        name: cabinLabel,
+        rate: prorated1,
+        unit: "nos",
+        item_total: prorated1,
+        item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+      });
+      items.push({
+        description: `${cabinLabel} (${anniversaryDay} - ${daysInMonth} ${monthName}) @ ₹${rentAmount2}/mo`,
+        quantity: 1,
+        unitPrice: prorated2,
+        amount: prorated2,
+        name: cabinLabel,
+        rate: prorated2,
+        unit: "nos",
+        item_total: prorated2,
+        item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+      });
+      subtotal += (prorated1 + prorated2);
+    } else {
+      // Single Rate Month
+      const currentIntervals = isBillingStarted && ratePercent > 0 ? intervalsStart : 0;
+      const rentAmount = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, currentIntervals);
+      items.push({
+        description: cabinLabel,
+        quantity: 1,
+        unitPrice: rentAmount,
+        amount: rentAmount,
+        name: cabinLabel,
+        rate: rentAmount,
+        unit: "nos",
+        item_total: rentAmount,
+        item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+      });
+      subtotal += rentAmount;
+    }
   }
 
   // Handle Add-ons
@@ -516,27 +579,85 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
           if (isFirstMonth && start.getDate() !== 1) {
             continue;
           }
-          const rentAmount = Number(c.monthlyRent || 0);
+
+          const firstBillDate = c.billingStartDate ? new Date(c.billingStartDate) : new Date(c.startDate);
+          const isBillingStarted = billingPeriodStart >= new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1));
+
+          const frequency = c.escalation?.frequencyMonths || 12;
+          const ratePercent = c.escalation?.ratePercent || 0;
+          const anniversaryDay = firstBillDate.getUTCDate();
+
+          const year = billingPeriodStart.getUTCFullYear();
+          const month = billingPeriodStart.getUTCMonth();
+          const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+          const periodEnd = new Date(Date.UTC(year, month, daysInMonth));
+
+          const intervalsStart = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(billingPeriodStart, firstBillDate, frequency) : 0;
+          const intervalsEnd = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodEnd, firstBillDate, frequency) : 0;
+
           const contractLabel = String(c.contractNumber || c._id).slice(-6);
           const cabinLabel = await getCabinLabel(c._id, contractLabel);
           if (cabinLabel) cabinLabels.push(cabinLabel);
-          if (rentAmount > 0) {
-            items.push({
-              description: cabinLabel,
-              quantity: 1,
-              unitPrice: rentAmount,
-              amount: rentAmount,
-              name: cabinLabel,
-              rate: rentAmount,
-              unit: 'nos',
-              item_total: rentAmount,
-              item_id: (contract?.building?.zoho_monthly_payment_item_id || c?.building?.zoho_monthly_payment_item_id || b?.zoho_monthly_payment_item_id)
-            });
-            subtotal += rentAmount;
+
+          if (intervalsStart !== intervalsEnd && anniversaryDay > 1 && anniversaryDay <= daysInMonth) {
+            // Split Month
+            const preDays = anniversaryDay - 1;
+            const postDays = daysInMonth - preDays;
+            const rentAmount1 = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsStart);
+            const rentAmount2 = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsEnd);
+            const prorated1 = Number(((rentAmount1 * preDays) / daysInMonth).toFixed(2));
+            const prorated2 = Number(((rentAmount2 * postDays) / daysInMonth).toFixed(2));
+
+            if (prorated1 > 0) {
+              items.push({
+                description: `${cabinLabel} (1 - ${preDays} ${monthName}) @ ₹${rentAmount1}/mo`,
+                quantity: 1,
+                unitPrice: prorated1,
+                amount: prorated1,
+                name: cabinLabel,
+                rate: prorated1,
+                unit: "nos",
+                item_total: prorated1,
+                item_id: contract?.building?.zoho_monthly_payment_item_id || c?.building?.zoho_monthly_payment_item_id || undefined
+              });
+              subtotal += prorated1;
+            }
+            if (prorated2 > 0) {
+              items.push({
+                description: `${cabinLabel} (${anniversaryDay} - ${daysInMonth} ${monthName}) @ ₹${rentAmount2}/mo`,
+                quantity: 1,
+                unitPrice: prorated2,
+                amount: prorated2,
+                name: cabinLabel,
+                rate: prorated2,
+                unit: "nos",
+                item_total: prorated2,
+                item_id: contract?.building?.zoho_monthly_payment_item_id || c?.building?.zoho_monthly_payment_item_id || undefined
+              });
+              subtotal += prorated2;
+            }
+          } else {
+            // Single Rate Month
+            const currentIntervals = isBillingStarted && ratePercent > 0 ? intervalsStart : 0;
+            const rentAmount = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, currentIntervals);
+            if (rentAmount > 0) {
+              items.push({
+                description: cabinLabel,
+                quantity: 1,
+                unitPrice: rentAmount,
+                amount: rentAmount,
+                name: cabinLabel,
+                rate: rentAmount,
+                unit: 'nos',
+                item_total: rentAmount,
+                item_id: (contract?.building?.zoho_monthly_payment_item_id || c?.building?.zoho_monthly_payment_item_id || undefined)
+              });
+              subtotal += rentAmount;
+            }
           }
+
           // Handle Add-ons
           if (Array.isArray(c.addOns) && c.addOns.length > 0) {
-            const monthName = billingPeriodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
             for (const addon of c.addOns) {
               if (isAddonBillable(addon, billingPeriodStart, billingPeriodEnd)) {
                 const qty = addon.quantity || 1; // Fallback for legacy data
@@ -784,28 +905,81 @@ export const createMonthlyEstimates = async (refDate = new Date()) => {
         // Create estimate line for monthly rent only
         const items = [];
         let subtotal = 0;
-        if (Number(contract.monthlyRent || 0) > 0) {
+        if (contract.monthlyRent > 0) {
           const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
-          const rentAmount = Number(contract.monthlyRent);
+          const firstBillDate = contract.billingStartDate ? new Date(contract.billingStartDate) : new Date(contract.startDate);
+          const isBillingStarted = periodStart >= new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1));
+
+          const frequency = contract.escalation?.frequencyMonths || 12;
+          const ratePercent = contract.escalation?.ratePercent || 0;
+
+          const year = periodStart.getUTCFullYear();
+          const month = periodStart.getUTCMonth();
+          const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+          const periodEnd = new Date(Date.UTC(year, month, daysInMonth));
+
+          const intervalsStart = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodStart, firstBillDate, frequency) : 0;
+          const intervalsEnd = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodEnd, firstBillDate, frequency) : 0;
+
+          const anniversaryDay = firstBillDate.getUTCDate();
           const contractLabel = String(contract.contractNumber || contract._id).slice(-6);
           const cabinLabel = await getCabinLabel(contract._id, contractLabel);
-          items.push({
-            description: cabinLabel,
-            quantity: 1,
-            unitPrice: rentAmount,
-            amount: rentAmount,
-            name: cabinLabel,
-            rate: rentAmount,
-            unit: 'nos',
-            item_total: rentAmount,
-            item_id: contract.building?.zoho_monthly_payment_item_id || undefined
-          });
-          subtotal += rentAmount;
+
+          if (intervalsStart !== intervalsEnd && anniversaryDay > 1 && anniversaryDay <= daysInMonth) {
+            // Split Month
+            const preDays = anniversaryDay - 1;
+            const postDays = daysInMonth - preDays;
+
+            const rentAmount1 = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsStart);
+            const rentAmount2 = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsEnd);
+
+            const prorated1 = Number(((rentAmount1 * preDays) / daysInMonth).toFixed(2));
+            const prorated2 = Number(((rentAmount2 * postDays) / daysInMonth).toFixed(2));
+
+            items.push({
+              description: `${cabinLabel} (1 - ${preDays} ${monthName}) @ ₹${rentAmount1}/mo`,
+              quantity: 1,
+              unitPrice: prorated1,
+              amount: prorated1,
+              name: cabinLabel,
+              rate: prorated1,
+              unit: "nos",
+              item_total: prorated1,
+              item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+            });
+            items.push({
+              description: `${cabinLabel} (${anniversaryDay} - ${daysInMonth} ${monthName}) @ ₹${rentAmount2}/mo`,
+              quantity: 1,
+              unitPrice: prorated2,
+              amount: prorated2,
+              name: cabinLabel,
+              rate: prorated2,
+              unit: "nos",
+              item_total: prorated2,
+              item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+            });
+            subtotal += (prorated1 + prorated2);
+          } else {
+            // Single Rate Month
+            const currentIntervals = isBillingStarted && ratePercent > 0 ? intervalsStart : 0;
+            const rentAmount = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, currentIntervals);
+            items.push({
+              description: cabinLabel,
+              quantity: 1,
+              unitPrice: rentAmount,
+              amount: rentAmount,
+              name: cabinLabel,
+              rate: rentAmount,
+              unit: "nos",
+              item_total: rentAmount,
+              item_id: contract.building?.zoho_monthly_payment_item_id || undefined
+            });
+            subtotal += rentAmount;
+          }
         }
 
         // Handle Add-ons
         if (Array.isArray(contract.addOns) && contract.addOns.length > 0) {
-          const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
           for (const addon of contract.addOns) {
             if (isAddonBillable(addon, periodStart, periodEnd)) {
               const qty = addon.quantity || 1; // Fallback for legacy data
@@ -1085,9 +1259,9 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
         let subtotal = 0;
         const cabinLabels = [];
         const monthName = periodStart.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
-
         for (const c of contracts) {
           const firstBillDate = c.billingStartDate ? new Date(c.billingStartDate) : new Date(c.startDate);
+          const isBillingStarted = periodStart >= new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1));
 
           // Compare against target billing period (periodStart)
           // If target period < first billable month, skip
@@ -1098,23 +1272,79 @@ export const createMonthlyEstimatesConsolidated = async (refDate = new Date()) =
 
           if (isFirstBillMonth && firstBillDate.getDate() !== 1) continue;
 
-          const rentAmount = Number(c.monthlyRent || 0);
+          const frequency = c.escalation?.frequencyMonths || 12;
+          const ratePercent = c.escalation?.ratePercent || 0;
+          const anniversaryDay = firstBillDate.getUTCDate();
+
+          const year = periodStart.getUTCFullYear();
+          const month = periodStart.getUTCMonth();
+          const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+          const periodEnd = new Date(Date.UTC(year, month, daysInMonth));
+
+          const intervalsStart = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodStart, firstBillDate, frequency) : 0;
+          const intervalsEnd = isBillingStarted && ratePercent > 0 ? getEscalationIntervals(periodEnd, firstBillDate, frequency) : 0;
+
           const contractLabel = String(c.contractNumber || c._id).slice(-6);
           const cabinLabel = await getCabinLabel(c._id, contractLabel);
           if (cabinLabel) cabinLabels.push(cabinLabel);
-          if (rentAmount > 0) {
-            items.push({
-              description: cabinLabel,
-              quantity: 1,
-              unitPrice: rentAmount,
-              amount: rentAmount,
-              name: cabinLabel,
-              rate: rentAmount,
-              unit: 'nos',
-              item_total: rentAmount,
-              item_id: c.building?.zoho_monthly_payment_item_id || undefined
-            });
-            subtotal += rentAmount;
+
+          if (intervalsStart !== intervalsEnd && anniversaryDay > 1 && anniversaryDay <= daysInMonth) {
+            // Split Month
+            const preDays = anniversaryDay - 1;
+            const postDays = daysInMonth - preDays;
+
+            const rentAmount1 = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsStart);
+            const rentAmount2 = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsEnd);
+
+            const prorated1 = Number(((rentAmount1 * preDays) / daysInMonth).toFixed(2));
+            const prorated2 = Number(((rentAmount2 * postDays) / daysInMonth).toFixed(2));
+
+            if (prorated1 > 0) {
+              items.push({
+                description: `${cabinLabel} (1 - ${preDays} ${monthName}) @ ₹${rentAmount1}/mo`,
+                quantity: 1,
+                unitPrice: prorated1,
+                amount: prorated1,
+                name: cabinLabel,
+                rate: prorated1,
+                unit: "nos",
+                item_total: prorated1,
+                item_id: c.building?.zoho_monthly_payment_item_id || undefined
+              });
+              subtotal += prorated1;
+            }
+            if (prorated2 > 0) {
+              items.push({
+                description: `${cabinLabel} (${anniversaryDay} - ${daysInMonth} ${monthName}) @ ₹${rentAmount2}/mo`,
+                quantity: 1,
+                unitPrice: prorated2,
+                amount: prorated2,
+                name: cabinLabel,
+                rate: prorated2,
+                unit: "nos",
+                item_total: prorated2,
+                item_id: c.building?.zoho_monthly_payment_item_id || undefined
+              });
+              subtotal += prorated2;
+            }
+          } else {
+            // Single Rate Month
+            const currentIntervals = isBillingStarted && ratePercent > 0 ? intervalsStart : 0;
+            const rentAmount = Number(c.monthlyRent) * Math.pow(1 + ratePercent / 100, currentIntervals);
+            if (rentAmount > 0) {
+              items.push({
+                description: cabinLabel,
+                quantity: 1,
+                unitPrice: rentAmount,
+                amount: rentAmount,
+                name: cabinLabel,
+                rate: rentAmount,
+                unit: "nos",
+                item_total: rentAmount,
+                item_id: c.building?.zoho_monthly_payment_item_id || undefined
+              });
+              subtotal += rentAmount;
+            }
           }
 
           // Handle Add-ons

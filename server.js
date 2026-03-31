@@ -12,7 +12,7 @@ import axios from "axios";
 import { getIO, initSocket } from "./utils/socket.js";
 import {
   scheduleNoShowUpdates, scheduleMonthlyInvoices, scheduleZohoTokenRefresh, scheduleAccessEnforcement, schedulePaymentReminders, scheduleLateFeeJobs, scheduleGstTokenRefresh,
-  scheduleMeetingBookingCleanup
+  scheduleMeetingBookingCleanup, scheduleContractAutoRenewal
 } from './utils/cronJobs.js';
 import { initializeScheduler } from "./utils/scheduler.js";
 import notificationScheduler from "./services/notifications/scheduler.js";
@@ -24,7 +24,6 @@ import gstRoutes from "./routes/gstRoutes.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, ".env") });
-
 process.on('uncaughtException', (err) => {
   console.error('CRITICAL: Uncaught Exception:', err);
 });
@@ -121,6 +120,7 @@ schedulePaymentReminders();
 scheduleLateFeeJobs();
 scheduleGstTokenRefresh();
 scheduleMeetingBookingCleanup();
+scheduleContractAutoRenewal();
 initializeScheduler();
 notificationScheduler.start();
 

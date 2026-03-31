@@ -12,6 +12,8 @@ import AccessGrant from '../models/accessGrantModel.js';
 import { enforceAccessByInvoices } from '../services/accessService.js';
 import { processPaymentReminders } from '../controllers/invoiceController.js';
 import { refreshAccessToken } from './gstTokenManager.js';
+import { processDailyCreditRenewals } from '../services/creditRenewalService.js';
+import { processAutoRenewals } from '../services/contractRenewalService.js';
 
 const scheduleNoShowUpdates = () => {
   cron.schedule('0 1 * * *', async () => {
@@ -56,12 +58,10 @@ const scheduleLateFeeJobs = () => {
 
 const scheduleMonthlyInvoices = () => {
   // Run daily; per-building logic inside the service decides whether today is the generation day
-  cron.schedule('52 18 * * *', async () => {
+  cron.schedule('12 17 * * *', async () => {
     try {
       const mode = process.env.BILLING_MODE === 'estimate' ? 'estimate' : 'invoice';
       console.log(`[Billing Pipeline] Running daily maintenance job... (Mode: ${mode})`);
-
-      // Stage 1: Draft Generation (default 22nd)
       const genResult = mode === 'estimate'
         ? await createMonthlyEstimatesConsolidated()
         : await createMonthlyInvoices();
@@ -247,6 +247,42 @@ const scheduleMeetingBookingCleanup = () => {
   console.log('Meeting booking cleanup cron job scheduled for every 2 minutes');
 };
 
+const scheduleCreditRenewal = () => {
+  // Run daily at 00:10 AM IST
+  cron.schedule('10 0 * * *', async () => {
+    try {
+      console.log('Running daily credit renewal job...');
+      await processDailyCreditRenewals();
+      console.log('Daily credit renewal job completed.');
+    } catch (error) {
+      console.error('Error in daily credit renewal job:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+
+  console.log('Credit renewal cron job scheduled for 00:10 AM daily (IST)');
+};
+
+const scheduleContractAutoRenewal = () => {
+  // Run daily at 00:15 AM IST
+  cron.schedule('15 0 * * *', async () => {
+    try {
+      console.log('Running daily contract auto-renewal job...');
+      await processAutoRenewals();
+      console.log('Daily contract auto-renewal job completed.');
+    } catch (error) {
+      console.error('Error in daily contract auto-renewal job:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+
+  console.log('Contract auto-renewal cron job scheduled for 00:15 AM daily (IST)');
+};
+
 export {
   scheduleNoShowUpdates,
   scheduleMonthlyInvoices,
@@ -255,5 +291,7 @@ export {
   schedulePaymentReminders,
   scheduleLateFeeJobs,
   scheduleGstTokenRefresh,
-  scheduleMeetingBookingCleanup
+  scheduleMeetingBookingCleanup,
+  scheduleCreditRenewal,
+  scheduleContractAutoRenewal
 };

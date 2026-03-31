@@ -241,6 +241,29 @@ export const createDayPassBundle = async (req, res) => {
       }
     }
 
+    if (requestedPaymentMethod === 'postpaid') {
+      const memberLookupId = memberId || (customerType === 'member' ? customerId : null);
+      if (memberLookupId) {
+        try {
+          const Member = (await import('../models/memberModel.js')).default;
+          const m = await Member.findById(memberLookupId).select('isPostpaidAllowed status');
+          if (!m) {
+            return res.status(404).json({ error: 'Member not found for postpaid payment' });
+          }
+          if (m.status !== 'active') {
+            return res.status(403).json({ error: 'Member is inactive', code: 'MEMBER_INACTIVE' });
+          }
+          if (m.isPostpaidAllowed === false) {
+            return res.status(403).json({ error: 'This member is not allowed to use postpaid booking', code: 'POSTPAID_NOT_ALLOWED' });
+          }
+        } catch (e) {
+          return res.status(500).json({ error: 'Failed to validate member postpaid permission' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Postpaid payment is only allowed for members', code: 'POSTPAID_MEMBER_ONLY' });
+      }
+    }
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -312,12 +335,16 @@ export const createDayPassBundle = async (req, res) => {
             refId: bundle._id,
             meta: { title: "Day Pass Bundle Booking" }
           });
-          
+
           // If successful, update bundle status
           bundle.status = "issued";
         } catch (walletErr) {
           throw walletErr;
         }
+      }
+
+      if (paymentMethod === 'postpaid') {
+        bundle.status = "issued";
       }
 
       await bundle.save({ session });
@@ -338,7 +365,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           totalAmount: pricePerPass * 1.18, // GST fallback
-          status: paymentMethod === 'credits' ? "issued" : "payment_pending",
+          status: (paymentMethod === 'credits' || paymentMethod === 'postpaid') ? "issued" : "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
@@ -358,7 +385,7 @@ export const createDayPassBundle = async (req, res) => {
           expiresAt: validUntil,
           price: pricePerPass,
           totalAmount: pricePerPass * 1.18, // GST fallback
-          status: paymentMethod === 'credits' ? "issued" : "payment_pending",
+          status: (paymentMethod === 'credits' || paymentMethod === 'postpaid') ? "issued" : "payment_pending",
           discountBundle: discountBundleId || null,
           createdBy: req.user?._id
         });
@@ -417,7 +444,7 @@ export const createDayPassBundle = async (req, res) => {
           category: "day_pass",
           invoice_number: `DPB-${Date.now()}`,
           line_items: [{
-            description: resolvedItem?.description || `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`,
+            description: paymentMethod === 'postpaid' ? `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)` : (resolvedItem?.description || `Day Pass Bundle - ${building.name} (${no_of_dayPasses} passes)`),
             name: resolvedItem?.name || `Day Pass Bundle - ${building.name}`,
             quantity: no_of_dayPasses,
             unitPrice: pricePerPass,
@@ -541,7 +568,6 @@ export const createDayPassBundle = async (req, res) => {
         message: 'Day pass bundle created successfully',
         data: resp
       });
-
     } catch (error) {
       await session.abortTransaction();
       throw error;
