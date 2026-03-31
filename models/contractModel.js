@@ -106,7 +106,7 @@ const contractSchema = new mongoose.Schema(
     noticePeriodDays: { type: Number, default: 30 },
     escalation: {
       ratePercent: { type: Number, default: 0 },
-      frequencyMonths: { type: Number, default: 0 }
+      frequencyMonths: { type: Number, default: 12 }
     },
     // Renewal details
     renewal: {
