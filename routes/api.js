@@ -71,6 +71,7 @@ import gstRoutes from "./gstRoutes.js";
 import addOnsRoutes from "./addOns.js";
 import itemsRoutes from "./items.js";
 import termsAndConditionsRoutes from "./termsAndConditionsRoutes.js";
+import appConfigRoutes from "./appConfigRoutes.js";
 
 const router = express.Router();
 
@@ -147,5 +148,6 @@ router.use("/gst", gstRoutes);
 router.use("/addons", addOnsRoutes);
 router.use("/items", itemsRoutes);
 router.use("/terms-and-conditions", termsAndConditionsRoutes);
+router.use("/app-config", appConfigRoutes);
 
 export default router;

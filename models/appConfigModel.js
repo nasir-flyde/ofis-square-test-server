@@ -6,6 +6,10 @@ const appConfigSchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
+        buildingRediectUrl: {
+            type: String,
+            default: "",
+        },
     },
     { timestamps: true }
 );
