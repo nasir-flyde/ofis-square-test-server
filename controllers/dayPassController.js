@@ -313,7 +313,7 @@ export const createSingleDayPass = async (req, res) => {
         if (!idempotencyKey) {
           return res.status(400).json({ success: false, message: "idempotencyKey is required for credit payments" });
         }
-        
+
         // Calculate credits required
         let creditsPerPass = building.creditValue || 500;
         if (clientIdForInvoice) {
@@ -348,12 +348,12 @@ export const createSingleDayPass = async (req, res) => {
             refId: dayPass._id,
             meta: { title: "Day Pass Booking" }
           });
-          
+
           // If successful, update dayPass status
           dayPass.status = "issued";
         } catch (walletErr) {
           if (walletErr.message === "Transaction already processed") {
-             // Handle idempotency gracefully if needed, for now just throw
+            // Handle idempotency gracefully if needed, for now just throw
           }
           throw walletErr;
         }
@@ -1580,7 +1580,14 @@ export const getBookingSchedule = async (req, res) => {
     };
 
     const upcomingMeetings = await MeetingBooking.find(meetingQuery)
-      .populate("room", "name capacity images")
+      .populate({
+        path: "room",
+        select: "name capacity images building",
+        populate: {
+          path: "building",
+          select: "name address businessMapLink"
+        }
+      })
       .sort({ start: 1 });
 
     // 2. Fetch upcoming Invited Day Passes
@@ -1594,7 +1601,7 @@ export const getBookingSchedule = async (req, res) => {
     };
 
     const upcomingDayPasses = await DayPass.find(dayPassQuery)
-      .populate("building", "name address")
+      .populate("building", "name address businessMapLink")
       .populate("visitors", "name email phone")
       .sort({ date: 1 });
 

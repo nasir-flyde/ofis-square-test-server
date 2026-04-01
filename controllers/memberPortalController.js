@@ -1461,8 +1461,10 @@ export const getAppHomePageData = async (req, res) => {
           return {
             _id: dp._id,
             bookingId: dp._id,
+            building: dp.building?._id,
             buildingName: dp.building?.name || "Ofis Square",
             buildingAddress: dp.building?.address || "",
+            businessMapLink: dp.building?.businessMapLink || null,
             meetingRoomName: dp.visitorName || "Day Pass",
             floor: "N/A",
             dateAndTimeSlot: `${istYmd}, Full Day`,
@@ -1485,8 +1487,10 @@ export const getAppHomePageData = async (req, res) => {
           return {
             _id: b._id,
             bookingId: b._id,
+            building: b.room?.building?._id,
             buildingName: b.room?.building?.name || "Ofis Square",
             buildingAddress: b.room?.building?.address || "",
+            businessMapLink: b.room?.building?.businessMapLink || null,
             meetingRoomName: b.room?.name,
             floor: b.room?.floor ? `${b.room.floor}${!isNaN(b.room.floor) ? 'th' : ''} floor` : "N/A",
             dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
@@ -1573,8 +1577,10 @@ export const getAppHomePageData = async (req, res) => {
             return {
               _id: b._id,
               bookingId: b._id,
+              building: b.room?.building?._id,
               buildingName: b.room?.building?.name || "Ofis Square",
               buildingAddress: b.room?.building?.address || "",
+              businessMapLink: b.room?.building?.businessMapLink || null,
               meetingRoomName: b.room?.name,
               floor: b.room?.floor ? `${b.room.floor}${!isNaN(b.room.floor) ? 'th' : ''} floor` : "N/A",
               dateAndTimeSlot: `${istYmd}, ${startTimeStr} - ${endTimeStr}`,
@@ -1592,8 +1598,10 @@ export const getAppHomePageData = async (req, res) => {
             return {
               _id: dp._id,
               bookingId: dp._id,
+              building: dp.building?._id,
               buildingName: dp.building?.name || "Ofis Square",
               buildingAddress: dp.building?.address || "",
+              businessMapLink: dp.building?.businessMapLink || null,
               meetingRoomName: dp.visitorName || "Day Pass",
               floor: "N/A",
               dateAndTimeSlot: istYmd ? `${istYmd}, Full Day` : "Unscheduled (Flexible)",
