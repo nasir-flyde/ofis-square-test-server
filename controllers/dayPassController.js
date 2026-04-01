@@ -1,4 +1,5 @@
 import DayPass from "../models/dayPassModel.js";
+import MeetingBooking from "../models/meetingBookingModel.js";
 import DayPassBundle from "../models/dayPassBundleModel.js";
 import Building from "../models/buildingModel.js";
 import Guest from "../models/guestModel.js";
@@ -1552,5 +1553,73 @@ export const useDayPasses = async (req, res) => {
     console.error("useDayPasses error:", error);
     const statusCode = error.status || 400;
     res.status(statusCode).json({ error: error.message || "Internal Server Error" });
+  }
+};
+
+// Get booking schedule for upcoming meetings and day passes
+export const getBookingSchedule = async (req, res) => {
+  try {
+    const memberId = req.memberId || req.user?.memberId;
+    const guestId = req.guestId || req.user?.guestId;
+
+    if (!memberId && !guestId) {
+      return res.status(400).json({ error: "User identity (memberId or guestId) not found in token" });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // 1. Fetch upcoming Meeting Bookings
+    const meetingQuery = {
+      $or: [
+        ...(memberId ? [{ member: memberId }] : []),
+        ...(guestId ? [{ guest: guestId }] : [])
+      ],
+      start: { $gte: today },
+      status: "booked"
+    };
+
+    const upcomingMeetings = await MeetingBooking.find(meetingQuery)
+      .populate("room", "name capacity images")
+      .sort({ start: 1 });
+
+    // 2. Fetch upcoming Invited Day Passes
+    const dayPassQuery = {
+      $or: [
+        ...(memberId ? [{ member: memberId }] : []),
+        ...(guestId ? [{ customer: guestId }] : [])
+      ],
+      date: { $gte: today },
+      status: "invited"
+    };
+
+    const upcomingDayPasses = await DayPass.find(dayPassQuery)
+      .populate("building", "name address")
+      .populate("visitors", "name email phone")
+      .sort({ date: 1 });
+
+    // 3. Count Available (Issued) Day Passes
+    const availableDayPassQuery = {
+      $or: [
+        ...(memberId ? [{ member: memberId }] : []),
+        ...(guestId ? [{ customer: guestId }] : [])
+      ],
+      status: "issued"
+    };
+
+    const no_of_available_day_passes = await DayPass.countDocuments(availableDayPassQuery);
+
+    res.json({
+      success: true,
+      data: {
+        upcomingMeetings,
+        upcomingDayPasses,
+        no_of_available_day_passes
+      }
+    });
+
+  } catch (error) {
+    console.error("getBookingSchedule error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 };
