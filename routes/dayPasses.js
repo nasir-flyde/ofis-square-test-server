@@ -14,6 +14,7 @@ import {
   cancelDayPass,
   provisionAccess,
   useDayPasses,
+  getBookingSchedule,
 } from "../controllers/dayPassController.js";
 import {
   createDayPassBundle,
@@ -23,11 +24,13 @@ import {
   getAllBundles
 } from "../controllers/dayPassBundleController.js";
 import authMiddleware from "../middlewares/authVerify.js";
+import universalMiddleware from '../middlewares/universalAuthVerify.js';
 import hostMiddleware from "../middlewares/hostMiddleware.js";
 
 const router = express.Router();
 
 router.post("/single", authMiddleware, createSingleDayPass);
+router.get("/booking-schedule", universalMiddleware, getBookingSchedule);
 router.post("/use", authMiddleware, useDayPasses);
 router.post("/:dayPassId/invite", hostMiddleware, inviteVisitor);
 router.patch("/:dayPassId/visitor-draft", updateVisitorDraft);

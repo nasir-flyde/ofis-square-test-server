@@ -10,7 +10,7 @@ import { storeRefreshToken, getDeviceInfo } from "../utils/refreshTokenService.j
  * @returns {Object} - { accessToken, refreshToken }
  */
 export const generateAuthTokens = async (user, role, req, additionalData = {}) => {
-  const { clientId, memberId, buildingId, allowedUsingCredits, guestId } = additionalData;
+  const { clientId, memberId, buildingId, allowedUsingCredits, guestId, isPostpaidAllowed } = additionalData;
 
   // Create access token (short-lived)
   const accessToken = createAccessToken(
@@ -23,7 +23,8 @@ export const generateAuthTokens = async (user, role, req, additionalData = {}) =
     memberId,
     buildingId,
     allowedUsingCredits,
-    guestId
+    guestId,
+    isPostpaidAllowed
   );
   const family = generateTokenFamily();
   const refreshToken = createRefreshToken(user._id.toString(), family);

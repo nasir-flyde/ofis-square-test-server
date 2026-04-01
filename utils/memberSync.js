@@ -59,9 +59,9 @@ export const syncMemberToUser = async (memberId, memberData, req) => {
         if (memberData.role) {
             if (mongoose.Types.ObjectId.isValid(memberData.role)) {
                 userUpdate.role = memberData.role;
-            } else if (typeof memberData.role === 'string') {
+            } else if (typeof memberData.role === 'string' && memberData.role.trim()) {
                 const normalizedRole = memberData.role.toLowerCase().trim();
-                const roleDoc = await Role.findOne({ roleName: normalizedRole });
+                const roleDoc = await Role.findOne({ roleName: new RegExp(`^${normalizedRole}$`, 'i') });
                 if (roleDoc) {
                     userUpdate.role = roleDoc._id;
                 } else {

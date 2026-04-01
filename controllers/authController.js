@@ -257,7 +257,12 @@ export const clientLogin = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
-    res.json({ token, user: safeUser, clientId: client._id });
+    res.json({ 
+      token, 
+      user: safeUser, 
+      clientId: client._id,
+      isPostpaidAllowed: typeof member?.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false
+    });
   } catch (err) {
     console.error("clientLogin error:", err);
     res.status(500).json({ error: "Internal Server Error" });
@@ -341,7 +346,8 @@ export const memberLogin = async (req, res) => {
       user: safeUser,
       memberId: member._id,
       clientId: member.client._id,
-      allowedUsingCredits: typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true
+      allowedUsingCredits: typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true,
+      isPostpaidAllowed: typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false
     });
   } catch (err) {
     console.error("memberLogin error:", err);
@@ -1072,6 +1078,7 @@ export const verifyMemberClientOtp = async (req, res) => {
     let clientId = null;
     let memberId = null;
     let allowedUsingCredits = undefined;
+    let isPostpaidAllowed = false;
 
     let guestId = null;
     if (roleName === "client") {
@@ -1101,6 +1108,7 @@ export const verifyMemberClientOtp = async (req, res) => {
       if (member) {
         memberId = member._id.toString();
         allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+        isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
       }
 
     } else if (roleName === "member") {
@@ -1128,6 +1136,7 @@ export const verifyMemberClientOtp = async (req, res) => {
       memberId = member._id.toString();
       clientId = member.client._id.toString();
       allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+      isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
     } else if (roleName === "ondemanduser") {
       // Handle ondemanduser login
       const guest = await Guest.findOne({
@@ -1141,12 +1150,15 @@ export const verifyMemberClientOtp = async (req, res) => {
       }
     }
 
+    // Log payload for debugging
+    console.log(`[AUTH] Generating tokens for ${user.email}. isPostpaidAllowed: ${isPostpaidAllowed}, allowedUsingCredits: ${allowedUsingCredits}`);
+
     // Generate both access and refresh tokens
     const { accessToken, refreshToken } = await generateAuthTokens(
       user,
       role,
       req,
-      { clientId, memberId, buildingId: undefined, allowedUsingCredits, guestId }
+      { clientId, memberId, buildingId: undefined, allowedUsingCredits, guestId, isPostpaidAllowed }
     );
 
     const safeUser = {
@@ -1156,6 +1168,8 @@ export const verifyMemberClientOtp = async (req, res) => {
       phone: user.phone,
       role: user.role,
       roleName: role.roleName,
+      isPostpaidAllowed, // NEW: Include directly in user object
+      allowedUsingCredits, // NEW: Include directly in user object
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
@@ -1177,6 +1191,7 @@ export const verifyMemberClientOtp = async (req, res) => {
     if (clientId) response.clientId = clientId;
     if (memberId) response.memberId = memberId;
     if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+    if (typeof isPostpaidAllowed === 'boolean') response.isPostpaidAllowed = isPostpaidAllowed;
 
     res.json(response);
 
@@ -1237,6 +1252,7 @@ export const memberClientLogin = async (req, res) => {
     let clientId = null;
     let memberId = null;
     let allowedUsingCredits = undefined;
+    let isPostpaidAllowed = false;
 
     if (roleName === "client") {
       // Handle client login
@@ -1265,6 +1281,7 @@ export const memberClientLogin = async (req, res) => {
       if (member) {
         memberId = member._id.toString();
         allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+        isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
       }
 
     } else if (roleName === "member") {
@@ -1292,6 +1309,7 @@ export const memberClientLogin = async (req, res) => {
       memberId = member._id.toString();
       clientId = member.client._id.toString();
       allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+      isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
     }
 
     const token = createJWT(
@@ -1303,7 +1321,9 @@ export const memberClientLogin = async (req, res) => {
       clientId,
       memberId,
       undefined,
-      allowedUsingCredits
+      allowedUsingCredits,
+      undefined,
+      isPostpaidAllowed
     );
 
     const safeUser = {
@@ -1332,6 +1352,7 @@ export const memberClientLogin = async (req, res) => {
     if (clientId) response.clientId = clientId;
     if (memberId) response.memberId = memberId;
     if (typeof allowedUsingCredits === 'boolean') response.allowedUsingCredits = allowedUsingCredits;
+    if (typeof isPostpaidAllowed === 'boolean') response.isPostpaidAllowed = isPostpaidAllowed;
 
     res.json(response);
 
@@ -1406,6 +1427,7 @@ export const refreshAccessToken = async (req, res) => {
     let memberId = null;
     let buildingId = null;
     let allowedUsingCredits = undefined;
+    let isPostpaidAllowed = false;
 
     let guestId = null;
     if (roleName === "client") {
@@ -1427,6 +1449,7 @@ export const refreshAccessToken = async (req, res) => {
         if (member) {
           memberId = member._id.toString();
           allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+          isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
         }
       }
     } else if (roleName === "member") {
@@ -1435,6 +1458,7 @@ export const refreshAccessToken = async (req, res) => {
         memberId = member._id.toString();
         clientId = member.client._id.toString();
         allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : true;
+        isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
       }
     } else if (roleName === "community") {
       buildingId = user.buildingId?.toString();
@@ -1460,7 +1484,8 @@ export const refreshAccessToken = async (req, res) => {
       memberId,
       buildingId,
       allowedUsingCredits,
-      guestId
+      guestId,
+      isPostpaidAllowed
     );
 
     const oldAccessToken = req.headers.authorization?.split(" ")[1];
@@ -1488,6 +1513,7 @@ export const refreshAccessToken = async (req, res) => {
         email: user.email,
         phone: user.phone,
         roleName: role.roleName,
+        isPostpaidAllowed: isPostpaidAllowed,
       }
     });
 

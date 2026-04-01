@@ -1192,6 +1192,9 @@ export const getAppHomePageData = async (req, res) => {
     let kycPending = false;
     let guestPending = false;
     let noOfAvailableDayPass = 0;
+    let wifiName = null;
+    let wifiPassword = null;
+    let buildingId = null;
 
     // --- 0. Time setup (IST Aware) ---
     const now = new Date();
@@ -1209,7 +1212,7 @@ export const getAppHomePageData = async (req, res) => {
     if (roleName === 'ondemanduser') {
       let guest = null;
       if (req.guestId) {
-        guest = await Guest.findById(req.guestId).populate('buildingId', 'name openingTime closingTime bankDetails');
+        guest = await Guest.findById(req.guestId).populate('buildingId', 'name openingTime closingTime bankDetails wifiAccess');
       }
 
       // Fallback lookup by user email/phone if guest not found or guestId missing
@@ -1219,7 +1222,7 @@ export const getAppHomePageData = async (req, res) => {
             ...(req.user.email ? [{ email: req.user.email }] : []),
             ...(req.user.phone ? [{ phone: req.user.phone }] : [])
           ]
-        }).populate('buildingId', 'name openingTime closingTime bankDetails');
+        }).populate('buildingId', 'name openingTime closingTime bankDetails wifiAccess');
 
         if (guest) req.guestId = guest._id;
       }
@@ -1231,9 +1234,11 @@ export const getAppHomePageData = async (req, res) => {
         phone = guest.phone || null;
         companyName = guest.companyName;
         buildingName = guest.buildingId?.name;
+        buildingId = guest.buildingId?._id || null;
         buildingOpeningTime = guest.buildingId?.openingTime || null;
         buildingClosingTime = guest.buildingId?.closingTime || null;
         const buildingBankDetails = guest.buildingId?.bankDetails || null;
+        wifiName = guest.buildingId?.wifiAccess?.enterpriseLevel?.wifiName || null;
 
         // Refined: count "available" day passes (issued) for the user (including upcoming and unscheduled)
         const dayPassCount = await DayPass.countDocuments({
@@ -1263,15 +1268,17 @@ export const getAppHomePageData = async (req, res) => {
         const cabin = await Cabin.findOne({
           allocatedTo: req.client._id,
           status: { $ne: 'released' }
-        }).populate('building', 'name openingTime closingTime bankDetails');
+        }).populate('building', 'name openingTime closingTime bankDetails wifiAccess');
 
         if (cabin) {
           cabinNumber = cabin.number;
           buildingName = cabin.building?.name;
+          buildingId = cabin.building?._id || null;
           cabinType = cabin.type || null;
           buildingOpeningTime = cabin.building?.openingTime || null;
           buildingClosingTime = cabin.building?.closingTime || null;
           buildingBankDetails = cabin.building?.bankDetails || null;
+          wifiName = cabin.building?.wifiAccess?.enterpriseLevel?.wifiName || null;
         }
       }
     } else {
@@ -1284,7 +1291,7 @@ export const getAppHomePageData = async (req, res) => {
         .populate({
           path: 'client',
           select: 'membershipStatus building companyName',
-          populate: { path: 'building', select: 'name openingTime closingTime' }
+          populate: { path: 'building', select: 'name openingTime closingTime wifiAccess' }
         });
 
       if (member) {
@@ -1296,9 +1303,11 @@ export const getAppHomePageData = async (req, res) => {
 
         if (member.client && member.client.building) {
           buildingName = member.client.building.name;
+          buildingId = member.client.building._id || member.client.building;
           buildingOpeningTime = member.client.building.openingTime || null;
           buildingClosingTime = member.client.building.closingTime || null;
           buildingBankDetails = member.client.building.bankDetails || null;
+          wifiName = member.client.building.wifiAccess?.enterpriseLevel?.wifiName || null;
         }
 
         // Fetch available day pass count for member
@@ -1609,6 +1618,25 @@ export const getAppHomePageData = async (req, res) => {
       cabinType = 'Private';
     }
 
+    // --- Wi-Fi Info ---
+    // Fetch BhaifiUser password (wifiName already resolved per-branch above)
+    if (!wifiName && buildingId) {
+      const bldg = await Building.findById(buildingId).select('wifiAccess').lean();
+      wifiName = bldg?.wifiAccess?.enterpriseLevel?.wifiName || null;
+    }
+
+    const bhaifiUser = await BhaifiUser.findOne({
+      $or: [
+        ...(req.memberId ? [{ member: req.memberId }] : []),
+        ...(req.guestId ? [{ guest: req.guestId }] : []),
+        ...(req.clientId ? [{ client: req.clientId }] : [])
+      ]
+    }).select('password');
+
+    if (bhaifiUser) {
+      wifiPassword = bhaifiUser.password;
+    }
+
     res.json({
       success: true,
       data: {
@@ -1631,7 +1659,9 @@ export const getAppHomePageData = async (req, res) => {
           bankDetails: typeof buildingBankDetails !== 'undefined' ? buildingBankDetails : null,
           kycPending,
           guestPending,
-          noOfAvailableDayPass: noOfAvailableDayPass || 0
+          noOfAvailableDayPass: noOfAvailableDayPass || 0,
+          wifiName,
+          wifiPassword
         },
         events: {
           today: todaysEvents,

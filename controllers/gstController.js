@@ -58,10 +58,18 @@ export const validateGST = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Error validating GSTIN:", error.response?.data || error.message);
+
+        const errorData = error.response?.data;
+        let errorMessage = "Error validating GSTIN";
+
+        if (errorData && errorData.message_code === "balance_exhausted") {
+            errorMessage = "Third-party service credit issue: API Balance Exhausted. Please recharge Surepass.";
+        }
+
         return res.status(error.response?.status || 500).json({
             success: false,
-            message: "Error validating GSTIN",
-            error: error.response?.data || error.message,
+            message: errorMessage,
+            error: errorData || error.message,
         });
     }
 };

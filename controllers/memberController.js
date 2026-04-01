@@ -76,7 +76,7 @@ export const createMember = async (req, res) => {
       return res.status(403).json({ success: false, message: "Forbidden: Only System Admin can create members." });
     }
 
-    const { firstName, lastName, email, phone, companyName, role, client, status, cardId } = req.body || {};
+    const { firstName, lastName, email, phone, companyName, role, client, status, cardId, isPostpaidAllowed } = req.body || {};
 
     if (!firstName) {
       return res.status(400).json({ success: false, message: "firstName is required" });
@@ -93,30 +93,58 @@ export const createMember = async (req, res) => {
     // Create User record if email is provided
     if (email) {
       try {
-        // Find or create default "member" role
-        let memberRole = await Role.findOne({ roleName: "member" });
-        if (!memberRole) {
-          memberRole = await Role.create({
-            roleName: "member",
-            description: "Default member role with basic access",
-            canLogin: true,
-            permissions: ["member:read", "member:profile"]
-          });
+        // Resolve requested role or fallback to default "member"
+        let roleDoc = null;
+        if (role) {
+          if (mongoose.Types.ObjectId.isValid(role)) {
+            roleDoc = await Role.findById(role);
+          } else {
+            roleDoc = await Role.findOne({ roleName: new RegExp(`^${role.trim()}$`, 'i') });
+          }
         }
-        const defaultPassword = "123456";
 
-        const userData = {
-          name: `${firstName} ${lastName || ''}`.trim(),
-          email: email,
-          phone: phone || `temp_${Date.now()}`,
-          password: defaultPassword,
-          role: memberRole._id
-        };
+        let memberRole = roleDoc;
+        if (!memberRole) {
+          memberRole = await Role.findOne({ roleName: "member" });
+          if (!memberRole) {
+            memberRole = await Role.create({
+              roleName: "member",
+              description: "Default member role with basic access",
+              canLogin: true,
+              permissions: ["member:read", "member:profile"]
+            });
+          }
+        }
+        // Find existing user by email OR phone to avoid duplicates
+        let user = await User.findOne({
+          $or: [
+            { email: email.toLowerCase().trim() },
+            { phone: phone }
+          ]
+        });
 
-        const createdUser = await User.create(userData);
-        createdUserId = createdUser._id;
+        if (user) {
+          // Update existing user's role and name
+          user.role = memberRole._id;
+          user.name = `${firstName} ${lastName || ''}`.trim();
+          await user.save();
+          createdUserId = user._id;
+          console.log(`Updated existing user for member: ${email} with role: ${memberRole.roleName}`);
+        } else {
+          // Create new user if not found
+          const defaultPassword = "123456";
+          const userData = {
+            name: `${firstName} ${lastName || ''}`.trim(),
+            email: email,
+            phone: phone || `temp_${Date.now()}`,
+            password: defaultPassword,
+            role: memberRole._id
+          };
 
-        console.log(`Created user for member: ${email} with default password: ${defaultPassword}`);
+          const createdUser = await User.create(userData);
+          createdUserId = createdUser._id;
+          console.log(`Created new user for member: ${email} with default password: ${defaultPassword}`);
+        }
 
         // Notify member about platform access
         try {
@@ -164,7 +192,8 @@ export const createMember = async (req, res) => {
       client: clientId,
       desk: null,
       status: 'active',
-      user: createdUserId
+      user: createdUserId,
+      isPostpaidAllowed: isPostpaidAllowed === true || isPostpaidAllowed === 'true'
     });
 
     // Auto-provision Matrix COSEC user and Bhaifi WiFi user (best-effort, non-blocking)
@@ -446,7 +475,11 @@ export const getMembers = async (req, res) => {
     const members = await Member.find(filter)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
-      .populate('user', 'name email')
+      .populate({ 
+        path: 'user', 
+        select: 'name email role',
+        populate: { path: 'role', select: 'roleName' }
+      })
       .sort({ createdAt: -1 });
 
     res.json({
@@ -473,7 +506,11 @@ export const getMemberById = async (req, res) => {
     const member = await Member.findById(req.params.id)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
-      .populate('user', 'name email');
+      .populate({ 
+        path: 'user', 
+        select: 'name email role',
+        populate: { path: 'role', select: 'roleName' }
+      });
 
     if (!member) {
       return res.status(404).json({ success: false, message: "Member not found" });
@@ -597,6 +634,11 @@ export const updateMember = async (req, res) => {
         success: false,
         message: 'Member not found'
       });
+    }
+
+    // Sync member changes to associated user
+    if (member?.user) {
+      await syncMemberToUser(member._id, updateData, req);
     }
 
     // Log activity
@@ -886,6 +928,7 @@ export const getMemberProfile = async (req, res) => {
         membershipStatus,
         cabinType,
         allowedUsingCredits: member.allowedUsingCredits,
+        isPostpaidAllowed: member.isPostpaidAllowed,
         createdAt: member.createdAt,
         updatedAt: member.updatedAt
       },

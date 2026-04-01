@@ -4,7 +4,7 @@ import crypto from "crypto";
 /**
  * Create access token (short-lived)
  */
-export const createAccessToken = (id, email, roleId, roleName, phone, clientId, memberId, buildingId, allowedUsingCredits, guestId) => {
+export const createAccessToken = (id, email, roleId, roleName, phone, clientId, memberId, buildingId, allowedUsingCredits, guestId, isPostpaidAllowed) => {
   return jwt.sign(
     {
       id,
@@ -17,6 +17,7 @@ export const createAccessToken = (id, email, roleId, roleName, phone, clientId, 
       ...(buildingId ? { buildingId } : {}),
       ...(guestId ? { guestId } : {}),
       ...(typeof allowedUsingCredits === 'boolean' ? { allowedUsingCredits } : {}),
+      ...(typeof isPostpaidAllowed === 'boolean' ? { isPostpaidAllowed } : {}),
     },
     process.env.JWT_SECRET || "ofis-square-secret-key",
     {

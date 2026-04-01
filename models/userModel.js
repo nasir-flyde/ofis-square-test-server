@@ -16,7 +16,6 @@ const userSchema = new mongoose.Schema(
     email: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
       lowercase: true,
     },
@@ -61,10 +60,11 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Ensure phone uniqueness only when phone is a non-empty string
+// Ensure uniqueness for (email, role) and (phone, role)
+userSchema.index({ email: 1, role: 1 }, { unique: true });
 userSchema.index(
-  { phone: 1 },
-  { unique: true, partialFilterExpression: { phone: { $exists: true, $type: "string", $ne: "" } } }
+  { phone: 1, role: 1 },
+  { unique: true, partialFilterExpression: { phone: { $type: "string", $gt: "" } } }
 );
 
 // Export as "User" to match the ref in memberModel

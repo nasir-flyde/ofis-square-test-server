@@ -34,6 +34,22 @@ function addMinutes(dt, mins) {
   return new Date(dt.getTime() + mins * 60000);
 }
 
+/**
+ * Format building bank details for invoice notes (consistent with invoiceService.js)
+ */
+function formatBankDetails(building) {
+  const bank = building?.bankDetails;
+  if (!bank || !bank.accountNumber) return "";
+  const cityName = building.city?.name || "Gurugram";
+  return `\n\nCompany's Bank Details\n` +
+    `A/c Holder's Name: ${bank.accountHolderName}\n` +
+    `Bank Name: ${bank.bankName}\n` +
+    `A/c No.: ${bank.accountNumber}\n` +
+    `Branch : ${bank.branchName}\n` +
+    `IFS Code: ${bank.ifscCode}\n` +
+    `\nSubject to ${cityName} jurisdiction only.`;
+}
+
 function sameDay(a, b) {
   // Compare in IST calendar days
   const dayA = new Date(a).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -344,7 +360,10 @@ export const createBooking = async (req, res) => {
 
     const room = await MeetingRoom.findById(roomId).populate({
       path: 'building',
-      populate: { path: 'meetingItem' }
+      populate: [
+        { path: 'meetingItem' },
+        { path: 'city', select: 'name' }
+      ]
     });
     if (!room) return res.status(404).json({ success: false, message: "Room not found" });
 
@@ -578,7 +597,8 @@ export const createBooking = async (req, res) => {
             due_date: dueDate,
             zoho_books_location_id: building?.zoho_books_location_id || undefined,
             zoho_tax_id: building?.zoho_tax_id || undefined,
-            place_of_supply: building?.place_of_supply || (guestId ? customerDoc?.billingAddress?.state_code : undefined) || "HR"
+            place_of_supply: building?.place_of_supply || (guestId ? customerDoc?.billingAddress?.state_code : undefined) || "HR",
+            notes: `Meeting Room Booking - ${room.name}${formatBankDetails(building)}`
           });
 
           // Save handled inside transaction block

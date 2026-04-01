@@ -2323,7 +2323,7 @@ export const createClientMember = async (req, res) => {
       return res.status(400).json({ error: "Client ID not found in token or request body" });
     }
 
-    const { firstName, lastName, email, phone, role, password, cardId } = req.body || {};
+    const { firstName, lastName, email, phone, role, password, cardId, isPostpaidAllowed } = req.body || {};
 
     if (!firstName) {
       return res.status(400).json({ error: "firstName is required" });
@@ -2367,7 +2367,8 @@ export const createClientMember = async (req, res) => {
       role: roleName, // Store roleName string in Member
       client: clientId,
       user: userId,
-      status: "active"
+      status: "active",
+      isPostpaidAllowed: isPostpaidAllowed === true || isPostpaidAllowed === 'true'
     });
 
     // Handle RFID card assignment if provided
