@@ -66,7 +66,10 @@ export const validateGST = async (req, res) => {
             errorMessage = "Third-party service credit issue: API Balance Exhausted. Please recharge Surepass.";
         }
 
-        return res.status(error.response?.status || 500).json({
+        let statusCode = error.response?.status || 500;
+        if (statusCode === 401) statusCode = 400; // Map 401 to 400 to prevent frontend redirect
+
+        return res.status(statusCode).json({
             success: false,
             message: errorMessage,
             error: errorData || error.message,
