@@ -60,6 +60,9 @@ export const SendSMS = async ({ phone, message }) => {
   }
 };
 
-export const generateOtp = () => {
+export const generateOtp = (length = 6) => {
+  if (length === 4) {
+    return Math.floor(1000 + Math.random() * 9000).toString();
+  }
   return Math.floor(100000 + Math.random() * 900000).toString();
 };

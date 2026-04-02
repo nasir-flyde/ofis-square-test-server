@@ -883,7 +883,7 @@ export const sendMemberClientOtp = async (req, res) => {
     const { sendWhatsAppOTP } = await import("../services/interaktService.js");
 
     // Generate OTP
-    const otp = normalizedPhone === '7982294822' ? '123456' : generateOtp();
+    const otp = normalizedPhone === '7982294822' ? '1234' : generateOtp(4);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     // Clear existing OTPs for this phone (in all formats to be safe)
@@ -1001,8 +1001,8 @@ export const verifyMemberClientOtp = async (req, res) => {
       return res.status(400).json({ error: "Too many failed attempts. Please request a new OTP" });
     }
 
-    // Verify OTP (accept hardcoded 123456 for testing or the generated OTP)
-    const isValidOtp = otp === '123456' || otpRecord.otp === otp;
+    // Verify OTP (accept hardcoded 1234 for testing or the generated OTP)
+    const isValidOtp = otp === '1234' || otpRecord.otp === otp;
     if (!isValidOtp) {
       await OTP.updateOne({ _id: otpRecord._id }, { $inc: { attempts: 1 } });
       return res.status(400).json({ error: "Invalid OTP" });
