@@ -900,19 +900,14 @@ export const sendMemberClientOtp = async (req, res) => {
       try {
         const fullName = user?.name || lead?.fullName || "";
 
-        lead = await Lead.findOneAndUpdate(
-          { phone: normalizedPhone },
-          {
-            $set: {
-              phone: normalizedPhone,
-              isPhoneVerified: false,
-              email: user?.email || lead?.email,
-              fullName,
-              source: 'otp_login_auto_create'
-            }
-          },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
+        lead = await Lead.create({
+          phone: normalizedPhone,
+          isPhoneVerified: false,
+          email: user?.email || lead?.email,
+          fullName,
+          source: 'otp_login_auto_create',
+          status: 'new'
+        });
       } catch (leadErr) {
         console.warn('Failed to create/update lead record in OTP flow:', leadErr.message);
         // Non-blocking
@@ -1010,7 +1005,7 @@ export const verifyMemberClientOtp = async (req, res) => {
 
     // Find user and lead
     const user = await Users.findOne({ phone: { $in: phoneFormats } }).populate('role');
-    let lead = await Lead.findOne({ phone: { $in: phoneFormats } });
+    let lead = await Lead.findOne({ phone: { $in: phoneFormats } }).sort({ createdAt: -1 });
 
     if (!user && !lead) {
       return res.status(404).json({ error: "Neither user nor lead found" });

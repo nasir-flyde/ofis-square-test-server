@@ -948,7 +948,7 @@ export const updateLeadPurpose = async (req, res) => {
           ...(req.user.email ? [{ email: req.user.email }] : []),
           { phone: req.user.phone }
         ]
-      });
+      }).sort({ createdAt: -1 });
       if (lead) leadId = lead._id;
     }
 
@@ -1047,7 +1047,7 @@ export const updateLeadDetails = async (req, res) => {
           ...(req.user.email ? [{ email: req.user.email }] : []),
           { phone: req.user.phone }
         ]
-      });
+      }).sort({ createdAt: -1 });
       if (lead) leadId = lead._id;
     }
 
