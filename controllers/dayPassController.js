@@ -1454,12 +1454,22 @@ export const useDayPasses = async (req, res) => {
       return p;
     });
 
-    // Query for available passes for self
+    // Query for available passes (either explicitly for self or unallocated/open passes)
     const query = {
       customer: customerId,
       visitDate: null,
       status: 'issued',
-      bookingFor: 'self'
+      $or: [
+        { bookingFor: 'self' },
+        {
+          bookingFor: 'other',
+          $or: [
+            { visitorName: { $exists: false } },
+            { visitorName: null },
+            { visitorName: "" }
+          ]
+        }
+      ]
     };
     if (buildingId) {
       query.building = buildingId;
@@ -1510,6 +1520,10 @@ export const useDayPasses = async (req, res) => {
         dayPass.date = passDate;
         dayPass.visitDate = passDate;
         dayPass.status = 'invited';
+        // If it was an unallocated 'other' pass, convert it to 'self'
+        if (dayPass.bookingFor === 'other') {
+          dayPass.bookingFor = 'self';
+        }
 
         const customerName = dayPass.customer?.name || 'Self';
         const qrData = {

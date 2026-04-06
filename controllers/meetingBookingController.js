@@ -1024,7 +1024,7 @@ export const createBooking = async (req, res) => {
         currency: "INR",
         name: "Ofis Square",
         description: `Meeting Room - ${room.name}`,
-        meetingBookingId: booking._id
+        bookingId: booking._id
       };
     }
 

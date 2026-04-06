@@ -49,6 +49,36 @@ export const createDayPassBundle = async (req, res) => {
       memberId = req.user.memberId;
     }
 
+    // Resolve discount bundle and quantity early if discountBundleId is provided
+    let discountBundle = null;
+    let bundleConfig = null;
+    if (discountBundleId) {
+      // Try to find by sub-document ID first
+      discountBundle = await DiscountBundle.findOne({ "bundles._id": discountBundleId });
+      if (discountBundle) {
+        bundleConfig = discountBundle.bundles.id(discountBundleId);
+        if (bundleConfig) {
+          no_of_dayPasses = bundleConfig.no_of_day_passes;
+        }
+      } else {
+        // Fallback to main document ID
+        discountBundle = await DiscountBundle.findById(discountBundleId);
+        if (discountBundle) {
+          if (!no_of_dayPasses) {
+            // If body quantity is missing, automatically pick if there is only one option
+            if (discountBundle.bundles && discountBundle.bundles.length === 1) {
+              bundleConfig = discountBundle.bundles[0];
+              no_of_dayPasses = bundleConfig.no_of_day_passes;
+            } else if (discountBundle.bundles && discountBundle.bundles.length > 1) {
+              return res.status(400).json({ error: "Multiple configurations found in this bundle. Please provide no_of_dayPasses or use a specific config ID." });
+            }
+          } else {
+            bundleConfig = discountBundle.bundles.find(b => b.no_of_day_passes === Number(no_of_dayPasses));
+          }
+        }
+      }
+    }
+
     if (!customerId || !buildingId || !no_of_dayPasses) {
       return res.status(400).json({
         error: "Customer ID, Building ID, and number of day passes are required"
@@ -61,16 +91,20 @@ export const createDayPassBundle = async (req, res) => {
       });
     }
 
-    // Validate split counts
-    if (splitSelf + splitOther > no_of_dayPasses) {
-      return res.status(400).json({
-        error: "splitSelf + splitOther cannot exceed no_of_dayPasses"
-      });
+    // Explicitly cast to Numbers for correct addition/comparison
+    splitSelf = Number(splitSelf) || 0;
+    splitOther = Number(splitOther) || 0;
+
+    // If no splits are provided, default all passes to 'other' (unallocated)
+    if (splitSelf === 0 && splitOther === 0) {
+      splitOther = no_of_dayPasses;
     }
 
-    if (splitSelf + splitOther === 0) {
+    // Ensure total splits do not exceed no_of_dayPasses (auto-allocate remainder to splitOther if needed)
+    const currentTotal = splitSelf + splitOther;
+    if (currentTotal > no_of_dayPasses) {
       return res.status(400).json({
-        error: "At least one pass must be allocated (splitSelf or splitOther)"
+        error: `Total splits (${currentTotal}) exceed the selected bundle size (${no_of_dayPasses})`
       });
     }
 
@@ -157,10 +191,8 @@ export const createDayPassBundle = async (req, res) => {
 
     let baseAmount = pricePerPass * no_of_dayPasses;
     let appliedDiscount = 0;
-    let discountBundle = null;
 
     if (discountBundleId) {
-      discountBundle = await DiscountBundle.findById(discountBundleId);
       if (!discountBundle) {
         return res.status(404).json({ error: "Discount bundle not found" });
       }
@@ -172,8 +204,11 @@ export const createDayPassBundle = async (req, res) => {
         return res.status(400).json({ error: "Discount bundle is not valid for this building" });
       }
 
-      // Find applicable discount for the number of day passes
-      const bundleConfig = discountBundle.bundles.find(b => b.no_of_day_passes === no_of_dayPasses);
+      // If we haven't resolved bundleConfig yet (e.g. if we used findById instead of sub-ID), do it now
+      if (!bundleConfig && no_of_dayPasses) {
+        bundleConfig = discountBundle.bundles.find(b => b.no_of_day_passes === no_of_dayPasses);
+      }
+
       if (bundleConfig) {
         appliedDiscount = bundleConfig.discount_percentage;
         const discountAmount = (baseAmount * appliedDiscount) / 100;
