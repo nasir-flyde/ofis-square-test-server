@@ -210,9 +210,25 @@ export const clientLogin = async (req, res) => {
 
     // Resolve client for both client and client legal team
     let client = null;
+    let member = null;
+
     if (roleNameLower === "client legal team" && user.clientId) {
       client = await Client.findById(user.clientId);
+    } else if (roleNameLower === "client") {
+      // Prioritize Member table to find client association
+      member = await Member.findOne({
+        $or: [
+          { user: user._id },
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : [])
+        ]
+      }).populate('client');
+
+      if (member && member.client) {
+        client = member.client;
+      }
     }
+
     if (!client) {
       client = await Client.findOne({
         $or: [
@@ -221,18 +237,21 @@ export const clientLogin = async (req, res) => {
         ],
       });
     }
+
     if (!client) {
       return res.status(404).json({ error: "Client record not found. Please sign up first." });
     }
 
-    // Find the corresponding member record for this client
-    const member = await Member.findOne({
-      $or: [
-        { user: user._id, client: client._id },
-        { email: user.email, client: client._id },
-        { phone: user.phone, client: client._id }
-      ]
-    });
+    // Find the corresponding member record for this client (if not already found)
+    if (!member) {
+      member = await Member.findOne({
+        $or: [
+          { user: user._id, client: client._id },
+          { email: user.email, client: client._id },
+          { phone: user.phone, client: client._id }
+        ]
+      });
+    }
 
     const token = createJWT(
       user._id.toString(),
@@ -1077,30 +1096,30 @@ export const verifyMemberClientOtp = async (req, res) => {
 
     let guestId = null;
     if (roleName === "client") {
-      // Handle client login
-      const client = await Client.findOne({
-        $or: [
-          ...(user.email ? [{ email: user.email }] : []),
-          ...(user.phone ? [{ phone: user.phone }] : []),
-        ],
-      });
-
-      if (!client) {
-        return res.status(404).json({ error: "Client record not found. Please sign up first." });
-      }
-
-      clientId = client._id.toString();
-
-      // Find the corresponding member record for this client
+      // Handle client login by checking Member table first
       const member = await Member.findOne({
         $or: [
-          { user: user._id, client: client._id },
-          { email: user.email, client: client._id },
-          { phone: { $in: getPhoneFormats(user.phone) }, client: client._id }
+          { user: user._id },
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : [])
         ]
-      });
+      }).populate('client');
 
-      if (member) {
+      if (!member || !member.client) {
+        // Fallback or double check if direct Client record exists
+        const client = await Client.findOne({
+          $or: [
+            ...(user.email ? [{ email: user.email }] : []),
+            ...(user.phone ? [{ phone: user.phone }] : []),
+          ],
+        });
+
+        if (!client) {
+          return res.status(404).json({ error: "Client record not found. Please sign up first." });
+        }
+        clientId = client._id.toString();
+      } else {
+        clientId = member.client._id.toString();
         memberId = member._id.toString();
         allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
         isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
@@ -1250,30 +1269,30 @@ export const memberClientLogin = async (req, res) => {
     let isPostpaidAllowed = false;
 
     if (roleName === "client") {
-      // Handle client login
-      const client = await Client.findOne({
-        $or: [
-          ...(user.email ? [{ email: user.email }] : []),
-          ...(user.phone ? [{ phone: user.phone }] : []),
-        ],
-      });
-
-      if (!client) {
-        return res.status(404).json({ error: "Client record not found. Please sign up first." });
-      }
-
-      clientId = client._id.toString();
-
-      // Find the corresponding member record for this client
+      // Handle client login by checking Member table first
       const member = await Member.findOne({
         $or: [
-          { user: user._id, client: client._id },
-          { email: user.email, client: client._id },
-          { phone: user.phone, client: client._id }
+          { user: user._id },
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : [])
         ]
-      });
+      }).populate('client');
 
-      if (member) {
+      if (!member || !member.client) {
+        // Fallback or double check if direct Client record exists
+        const client = await Client.findOne({
+          $or: [
+            ...(user.email ? [{ email: user.email }] : []),
+            ...(user.phone ? [{ phone: user.phone }] : []),
+          ],
+        });
+
+        if (!client) {
+          return res.status(404).json({ error: "Client record not found. Please sign up first." });
+        }
+        clientId = client._id.toString();
+      } else {
+        clientId = member.client._id.toString();
         memberId = member._id.toString();
         allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
         isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
@@ -1426,25 +1445,28 @@ export const refreshAccessToken = async (req, res) => {
 
     let guestId = null;
     if (roleName === "client") {
-      const client = await Client.findOne({
+      const member = await Member.findOne({
         $or: [
+          { user: user._id },
           ...(user.email ? [{ email: user.email }] : []),
-          ...(user.phone ? [{ phone: user.phone }] : []),
-        ],
-      });
-      if (client) {
-        clientId = client._id.toString();
-        const member = await Member.findOne({
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : [])
+        ]
+      }).populate('client');
+
+      if (member && member.client) {
+        clientId = member.client._id.toString();
+        memberId = member._id.toString();
+        allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
+        isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
+      } else {
+        const client = await Client.findOne({
           $or: [
-            { user: user._id, client: client._id },
-            { email: user.email, client: client._id },
-            { phone: user.phone, client: client._id }
-          ]
+            ...(user.email ? [{ email: user.email }] : []),
+            ...(user.phone ? [{ phone: user.phone }] : []),
+          ],
         });
-        if (member) {
-          memberId = member._id.toString();
-          allowedUsingCredits = typeof member.allowedUsingCredits === 'boolean' ? member.allowedUsingCredits : undefined;
-          isPostpaidAllowed = typeof member.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false;
+        if (client) {
+          clientId = client._id.toString();
         }
       }
     } else if (roleName === "member") {
