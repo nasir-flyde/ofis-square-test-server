@@ -2022,7 +2022,11 @@ export const getAllEvents = async (req, res) => {
         start.setHours(0, 0, 0, 0);
         const end = new Date(searchDate);
         end.setHours(23, 59, 59, 999);
-        query.startDate = { $gte: start, $lte: end };
+
+        query.$and = [
+          { startDate: { $lte: end } },
+          { endDate: { $gte: start } }
+        ];
       }
     }
 
@@ -2048,9 +2052,6 @@ export const getAllEvents = async (req, res) => {
   }
 };
 
-/**
- * deleteMyProfile - Soft-deletes the member and hard-deletes the associated User
- */
 export const deleteMyProfile = async (req, res) => {
   try {
     const memberId = req.memberId;
