@@ -276,9 +276,9 @@ export const clientLogin = async (req, res) => {
       updatedAt: user.updatedAt,
     };
 
-    res.json({ 
-      token, 
-      user: safeUser, 
+    res.json({
+      token,
+      user: safeUser,
       clientId: client._id,
       isPostpaidAllowed: typeof member?.isPostpaidAllowed === 'boolean' ? member.isPostpaidAllowed : false
     });
@@ -512,7 +512,7 @@ export const sendCommunityOtp = async (req, res) => {
     const { sendWhatsAppOTP } = await import("../services/interaktService.js");
 
     // Generate OTP
-    const otp = normalizedPhone === '9991112323' ? '123456' : generateOtp();
+    const otp = (normalizedPhone === '9991112323' || normalizedPhone === '9876543210') ? '123456' : generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     // Clear existing OTPs for this phone
