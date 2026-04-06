@@ -7,6 +7,7 @@ import OTP from "../models/otpModel.js";
 import { SendSMS, generateOtp } from "../services/smsService.js";
 import { sendWhatsAppOTP } from "../services/interaktService.js";
 import { generateAuthTokens } from "../utils/authHelpers.js";
+import { getPhoneFormats } from "../utils/phoneUtils.js";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
@@ -171,7 +172,7 @@ export const verifyOtpAndLogin = async (req, res) => {
       const guest = await Guest.findOne({
         $or: [
           ...(user.email ? [{ email: user.email }] : []),
-          ...(user.phone ? [{ phone: user.phone }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
         ],
       });
       if (guest) {
