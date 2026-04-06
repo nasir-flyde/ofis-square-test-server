@@ -718,6 +718,7 @@ export const onDemandUserSignup = async (req, res) => {
       name: user.name,
       email: user.email || undefined,
       phone: user.phone || undefined,
+      user: user._id, // Link to User record
     });
 
     const token = createJWT(
@@ -771,7 +772,7 @@ export const onDemandUserLogin = async (req, res) => {
 
     const query = email
       ? { email: email.toLowerCase().trim() }
-      : { phone: phone.trim() };
+      : { phone: { $in: getPhoneFormats(phone) } };
 
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -789,8 +790,9 @@ export const onDemandUserLogin = async (req, res) => {
     // Find associated guest record
     const guest = await Guest.findOne({
       $or: [
+        { user: user._id },
         ...(user.email ? [{ email: user.email }] : []),
-        ...(user.phone ? [{ phone: user.phone }] : []),
+        ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
       ],
     });
 
@@ -1155,8 +1157,9 @@ export const verifyMemberClientOtp = async (req, res) => {
       // Handle ondemanduser login
       const guest = await Guest.findOne({
         $or: [
-          { email: user.email },
-          { phone: user.phone }
+          { user: user._id },
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
         ]
       });
       if (guest) {
@@ -1241,7 +1244,7 @@ export const memberClientLogin = async (req, res) => {
 
     const query = email
       ? { email: email.toLowerCase().trim() }
-      : { phone: phone.trim() };
+      : { phone: { $in: getPhoneFormats(phone) } };
 
     const user = await Users.findOne(query);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -1482,8 +1485,9 @@ export const refreshAccessToken = async (req, res) => {
     } else if (roleName === "ondemanduser") {
       const guest = await Guest.findOne({
         $or: [
+          { user: user._id },
           ...(user.email ? [{ email: user.email }] : []),
-          ...(user.phone ? [{ phone: user.phone }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
         ],
       });
       if (guest) {

@@ -2,6 +2,8 @@ import jwt from "jsonwebtoken";
 import Users from "../models/userModel.js";
 import Role from "../models/roleModel.js";
 import Lead from "../models/leadModel.js";
+import Guest from "../models/guestModel.js";
+import { getPhoneFormats } from "../utils/phoneUtils.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -70,6 +72,19 @@ const authMiddleware = async (req, res, next) => {
     }
     if (decoded.guestId) {
       req.user.guestId = decoded.guestId;
+    } else if (roleName === 'ondemanduser') {
+      // Fallback guest lookup for ondemanduser
+      const guest = await Guest.findOne({
+        $or: [
+          ...(user.email ? [{ email: user.email }] : []),
+          ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
+          { user: user._id }
+        ]
+      });
+      if (guest) {
+        req.user.guestId = guest._id;
+        req.guestId = guest._id;
+      }
     }
 
     next();

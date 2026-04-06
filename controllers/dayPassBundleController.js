@@ -16,6 +16,7 @@ import Item from "../models/itemModel.js";
 import WalletService from "../services/walletService.js";
 import ClientCreditWallet from "../models/clientCreditWalletModel.js";
 import { recordZohoPayment } from "../utils/zohoBooks.js";
+import { getPhoneFormats } from "../utils/phoneUtils.js";
 
 
 // Create a new day pass bundle
@@ -37,16 +38,24 @@ export const createDayPassBundle = async (req, res) => {
 
     // Automate customerId from token if not provided
     if (!customerId && req.user) {
-      if (req.user.guestId) {
-        customerId = req.user.guestId;
-      } else if (req.user.memberId) {
-        customerId = req.user.memberId;
+      customerId = req.guestId || req.user.guestId || req.memberId || req.user.memberId;
+      
+      // Final fallback lookup for ondemanduser if still missing
+      if (!customerId && (req.user.roleName || '').toLowerCase() === 'ondemanduser') {
+        const guest = await Guest.findOne({ 
+          $or: [
+            ...(req.user.email ? [{ email: req.user.email.toLowerCase() }] : []),
+            ...(req.user.phone ? [{ phone: { $in: getPhoneFormats(req.user.phone) } }] : []),
+            { user: req.user._id }
+          ]
+        });
+        if (guest) customerId = guest._id;
       }
     }
 
     // Automate memberId from token if not provided
-    if (!memberId && req.user && req.user.memberId) {
-      memberId = req.user.memberId;
+    if (!memberId && req.user) {
+      memberId = req.memberId || req.user.memberId;
     }
 
     // Resolve discount bundle and quantity early if discountBundleId is provided

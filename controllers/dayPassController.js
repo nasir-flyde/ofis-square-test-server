@@ -22,6 +22,7 @@ import { pushInvoiceToZoho } from "../utils/loggedZohoBooks.js";
 import Item from "../models/itemModel.js";
 import WalletService from "../services/walletService.js";
 import { recordZohoPayment } from "../utils/zohoBooks.js";
+import { getPhoneFormats } from "../utils/phoneUtils.js";
 
 // Helper: convert any date-like to IST Date object (ending in Z for wall-time)
 function toIST(date) {
@@ -93,16 +94,24 @@ export const createSingleDayPass = async (req, res) => {
 
     // Automate customerId from token if not provided
     if (!customerId && req.user) {
-      if (req.user.guestId) {
-        customerId = req.user.guestId;
-      } else if (req.user.memberId) {
-        customerId = req.user.memberId;
+      customerId = req.guestId || req.user.guestId || req.memberId || req.user.memberId;
+
+      // Final fallback lookup for ondemanduser if still missing
+      if (!customerId && (req.user.roleName || '').toLowerCase() === 'ondemanduser') {
+        const guest = await Guest.findOne({
+          $or: [
+            ...(req.user.email ? [{ email: req.user.email.toLowerCase() }] : []),
+            ...(req.user.phone ? [{ phone: { $in: getPhoneFormats(req.user.phone) } }] : []),
+            { user: req.user._id }
+          ]
+        });
+        if (guest) customerId = guest._id;
       }
     }
 
     // Automate memberId from token if not provided
-    if (!memberId && req.user && req.user.memberId) {
-      memberId = req.user.memberId;
+    if (!memberId && req.user) {
+      memberId = req.memberId || req.user.memberId;
     }
 
     if (!customerId || !buildingId) {
@@ -1629,7 +1638,6 @@ export const getBookingSchedule = async (req, res) => {
     };
 
     const no_of_available_day_passes = await DayPass.countDocuments(availableDayPassQuery);
-
     res.json({
       success: true,
       data: {

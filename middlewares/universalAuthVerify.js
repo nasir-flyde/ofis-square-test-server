@@ -5,6 +5,7 @@ import Client from "../models/clientModel.js";
 import Member from "../models/memberModel.js";
 import Guest from "../models/guestModel.js";
 import Building from "../models/buildingModel.js";
+import { getPhoneFormats } from "../utils/phoneUtils.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -92,6 +93,20 @@ const universalAuthMiddleware = async (req, res, next) => {
         const guestId = decoded.guestId || decoded.clientId;
         if (guestId) {
           const guest = await Guest.findById(guestId);
+          if (guest) {
+            req.guest = guest;
+            req.guestId = guest._id;
+          }
+        }
+        if (!guestId) {
+          // Fallback guest lookup by user or phone/email
+          const guest = await Guest.findOne({
+            $or: [
+              ...(user.email ? [{ email: user.email }] : []),
+              ...(user.phone ? [{ phone: { $in: getPhoneFormats(user.phone) } }] : []),
+              { user: user._id }
+            ]
+          });
           if (guest) {
             req.guest = guest;
             req.guestId = guest._id;
