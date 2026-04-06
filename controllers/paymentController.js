@@ -1624,28 +1624,34 @@ export const handleRazorpaySuccess = async (req, res) => {
   try {
     const {
       razorpay_payment_id,
-      dayPassId,
-      bundleId,
-      meetingBookingId,
+      dayPassId: oldDayPassId,
+      bundleId: oldBundleId,
+      meetingBookingId: oldMeetingBookingId,
+      bookingId,
+      type,
       useExtraCredits = false,
       clientId,
       amount,
       invoiceId
     } = req.body;
 
+    // Resolve effective ID and type for unification
+    const effectiveId = bookingId || oldDayPassId || oldBundleId || oldMeetingBookingId;
+    const effectiveType = type || (oldDayPassId ? 'daypass' : (oldBundleId ? 'bundle' : (oldMeetingBookingId ? 'meeting' : null)));
+
     if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
       return res.status(400).json({ success: false, error: 'amount (in paise) is required in request body' });
     }
 
-    if (!razorpay_payment_id || (!dayPassId && !bundleId && !meetingBookingId)) {
-      return res.status(400).json({ error: "Payment ID and Day Pass ID, Bundle ID, or Meeting Booking ID are required" });
+    if (!razorpay_payment_id || !effectiveId || !effectiveType) {
+      return res.status(400).json({ error: "Payment ID and Booking ID/type are required" });
     }
 
     let item, customer, invoice, paymentNotes;
 
-    if (dayPassId) {
+    if (effectiveType === 'daypass') {
       // Single day pass payment
-      const dayPass = await DayPass.findById(dayPassId)
+      const dayPass = await DayPass.findById(effectiveId)
         .populate('invoice')
         .populate('member')
         .populate('customer')
@@ -1659,9 +1665,9 @@ export const handleRazorpaySuccess = async (req, res) => {
       customer = dayPass.customer;
       invoice = dayPass.invoice;
       paymentNotes = `Razorpay payment for day pass ${dayPass._id}`;
-    } else if (bundleId) {
+    } else if (effectiveType === 'bundle') {
       // Bundle payment
-      const bundle = await DayPassBundle.findById(bundleId)
+      const bundle = await DayPassBundle.findById(effectiveId)
         .populate('invoice')
         .populate('member')
         .populate('customer')
@@ -1675,9 +1681,9 @@ export const handleRazorpaySuccess = async (req, res) => {
       customer = bundle.customer;
       invoice = bundle.invoice;
       paymentNotes = `Razorpay payment for bundle ${bundle._id}`;
-    } else {
+    } else if (effectiveType === 'meeting') {
       // Meeting room booking payment
-      const booking = await MeetingBooking.findById(meetingBookingId)
+      const booking = await MeetingBooking.findById(effectiveId)
         .populate('invoice')
         .populate({ path: 'member', select: 'client' })
         .populate({ path: 'client', select: 'companyName zohoBooksContactId' })
@@ -1704,11 +1710,11 @@ export const handleRazorpaySuccess = async (req, res) => {
 
     // Resolve customer document
     let customerDoc = null;
-    if (dayPassId || bundleId) {
+    if (effectiveType === 'daypass' || effectiveType === 'bundle') {
       if (item.customer) {
         customerDoc = item.customer;
       }
-    } else if (meetingBookingId) {
+    } else if (effectiveType === 'meeting') {
       customerDoc = item.client || item.member;
       if (!customerDoc && item.member) {
         customerDoc = await Member.findById(item.member._id).populate('client');
@@ -1721,19 +1727,19 @@ export const handleRazorpaySuccess = async (req, res) => {
         item.room?.building?._id || item.room?.building ||
         item.building?._id || item.building;
 
-      console.log(`[handleRazorpaySuccess][AccountLookup] Type: ${meetingBookingId ? 'meeting' : (bundleId ? 'bundle' : 'daypass')}, buildingId resolved: ${buildingId}, item.room?.building:`, item.room?.building, `, item.building:`, item.building);
+      console.log(`[handleRazorpaySuccess][AccountLookup] Type: ${effectiveType}, buildingId resolved: ${buildingId}, item.room?.building:`, item.room?.building, `, item.building:`, item.building);
 
-      if (!buildingId && (dayPassId || bundleId)) {
+      if (!buildingId && (effectiveType === 'daypass' || effectiveType === 'bundle')) {
         // Fallback: fetch from DB directly if building wasn't populated
-        const Model = dayPassId ? DayPass : DayPassBundle;
-        const raw = await Model.findById(dayPassId || bundleId).select('building').lean();
+        const Model = effectiveType === 'daypass' ? DayPass : DayPassBundle;
+        const raw = await Model.findById(effectiveId).select('building').lean();
         buildingId = raw?.building;
         console.log(`[handleRazorpaySuccess][AccountLookup] Fallback DB buildingId: ${buildingId}`);
       }
 
-      if (!buildingId && meetingBookingId) {
+      if (!buildingId && effectiveType === 'meeting') {
         // Fallback for meeting: fetch room's building ID directly
-        const bookingRaw = await MeetingBooking.findById(meetingBookingId).select('room').populate({ path: 'room', select: 'building' }).lean();
+        const bookingRaw = await MeetingBooking.findById(effectiveId).select('room').populate({ path: 'room', select: 'building' }).lean();
         buildingId = bookingRaw?.room?.building;
         console.log(`[handleRazorpaySuccess][AccountLookup] Meeting fallback buildingId: ${buildingId}`);
       }
@@ -1772,8 +1778,8 @@ export const handleRazorpaySuccess = async (req, res) => {
     };
 
     // --- Deferred Invoice Creation Logic ---
-    if (!invoice && (dayPassId || bundleId || meetingBookingId)) {
-      console.log(`[Payment] Invoice missing for ${dayPassId ? 'Day Pass' : (bundleId ? 'Bundle' : 'Booking')}. Creating deferred invoice.`);
+    if (!invoice && effectiveId && effectiveType) {
+      console.log(`[Payment] Invoice missing for ${effectiveType}. Creating deferred invoice.`);
 
       try {
         const buildingId = item.building?._id || (item.room?.building?._id || item.building);
@@ -1793,7 +1799,7 @@ export const handleRazorpaySuccess = async (req, res) => {
         const dayPassItem = building?.dayPassItem ? await Item.findById(building.dayPassItem) : null;
         const meetingItem = building?.meetingItem ? await Item.findById(building.meetingItem) : null;
 
-        if (dayPassId) {
+        if (effectiveType === 'daypass') {
           resolvedItem = dayPassItem;
           baseAmount = item.price;
           taxAmount = Math.round(((baseAmount * gstRate) / 100) * 100) / 100;
@@ -1806,7 +1812,7 @@ export const handleRazorpaySuccess = async (req, res) => {
             tax_percentage: gstRate,
             item_id: resolvedItem?.zoho_item_id || undefined
           }];
-        } else if (bundleId) {
+        } else if (effectiveType === 'bundle') {
           resolvedItem = dayPassItem;
           baseAmount = Math.round((finalAmount / (1 + gstRate / 100)) * 100) / 100;
           taxAmount = finalAmount - baseAmount;
@@ -1819,7 +1825,7 @@ export const handleRazorpaySuccess = async (req, res) => {
             tax_percentage: gstRate,
             item_id: resolvedItem?.zoho_item_id || undefined
           }];
-        } else if (meetingBookingId) {
+        } else if (effectiveType === 'meeting') {
           resolvedItem = meetingItem;
           baseAmount = Math.round((finalAmount / (1 + gstRate / 100)) * 100) / 100;
           taxAmount = finalAmount - baseAmount;
@@ -1839,8 +1845,8 @@ export const handleRazorpaySuccess = async (req, res) => {
           guest: guestIdForInvoice,
           building: buildingId,
           type: "regular",
-          category: dayPassId ? "day_pass" : (bundleId ? "day_pass" : "meeting_room"),
-          invoice_number: `${dayPassId ? 'DP' : (bundleId ? 'DPB' : 'MR')}-${Date.now()}`,
+          category: effectiveType === 'meeting' ? "meeting_room" : "day_pass",
+          invoice_number: `${effectiveType === 'daypass' ? 'DP' : (effectiveType === 'bundle' ? 'DPB' : 'MR')}-${Date.now()}`,
           line_items: lineItems,
           sub_total: baseAmount,
           tax_total: taxAmount,
@@ -1926,14 +1932,14 @@ export const handleRazorpaySuccess = async (req, res) => {
     await logPaymentActivity(req, 'PAYMENT_PROCESSED', 'Payment', payment._id, {
       razorpayPaymentId: razorpay_payment_id,
       amount: amount / 100,
-      itemType: dayPassId ? 'daypass' : (bundleId ? 'bundle' : 'meeting'),
-      itemId: dayPassId || bundleId || meetingBookingId
+      itemType: effectiveType,
+      itemId: effectiveId
     });
 
     // Update item status to issued/booked and create visitor records
-    if (bundleId) {
+    if (effectiveType === 'bundle') {
       // For bundles, get all associated day passes and issue them
-      const dayPasses = await DayPass.find({ bundle: bundleId });
+      const dayPasses = await DayPass.find({ bundle: effectiveId });
       const dayPassIds = dayPasses.map(pass => pass._id.toString());
 
       // Issue all passes in the bundle (this will create visitor records)
@@ -1947,11 +1953,11 @@ export const handleRazorpaySuccess = async (req, res) => {
       // Update bundle status
       item.status = "issued";
       await item.save();
-    } else if (dayPassId) {
+    } else if (effectiveType === 'daypass') {
       // For single day pass, use the issuance service
       await issueDayPass(item._id);
       try { await maybeProvisionAfterIssuanceForDayPassId(item._id); } catch (_) { }
-    } else if (meetingBookingId) {
+    } else if (effectiveType === 'meeting') {
       // For meeting room booking, update status to booked
       item.status = "booked";
       await item.save();
@@ -1970,18 +1976,18 @@ export const handleRazorpaySuccess = async (req, res) => {
       let serviceDate = new Date().toISOString().slice(0, 10);
       let timeSlot = "N/A";
 
-      if (dayPassId) {
+      if (effectiveType === 'daypass') {
         serviceType = "Day Pass";
         serviceName = "Day Pass";
         buildingName = item.building?.name || "Ofis Square";
         serviceDate = item.date ? new Date(item.date).toISOString().slice(0, 10) : serviceDate;
         timeSlot = "Full Day";
-      } else if (bundleId) {
+      } else if (effectiveType === 'bundle') {
         serviceType = "Day Pass Bundle";
         serviceName = item.name || "Day Pass Bundle";
         buildingName = "Ofis Square"; // Bundles might be multi-building
         timeSlot = "N/A";
-      } else if (meetingBookingId) {
+      } else if (effectiveType === 'meeting') {
         serviceType = "Meeting Room";
         serviceName = item.room?.name || "Meeting Room";
         buildingName = item.room?.building?.name || "Ofis Square";
@@ -2064,10 +2070,10 @@ export const handleRazorpaySuccess = async (req, res) => {
     // Update invoice and push to Zoho for meeting bookings
     if (invoice) {
       // If this is a meeting booking flow, mirror day pass Zoho integration
-      if (meetingBookingId) {
+      if (effectiveType === 'meeting') {
         try {
           // Re-fetch booking to get client linkage
-          const bookingForZoho = await MeetingBooking.findById(meetingBookingId)
+          const bookingForZoho = await MeetingBooking.findById(effectiveId)
             .populate({ path: 'member', select: 'client' })
             .populate('client');
           let clientForZoho = bookingForZoho?.client || null;
@@ -2124,7 +2130,7 @@ export const handleRazorpaySuccess = async (req, res) => {
 
           // Send meeting booking confirmation notification after invoice is created
           try {
-            const bookingForNotif = await MeetingBooking.findById(meetingBookingId)
+            const bookingForNotif = await MeetingBooking.findById(effectiveId)
               .populate('member')
               .populate({ path: 'room', populate: { path: 'building' } });
 
@@ -2193,8 +2199,8 @@ export const handleRazorpaySuccess = async (req, res) => {
       }
 
       // If this is a day pass or bundle payment, sync to Zoho Books similarly
-      if (dayPassId || bundleId) {
-        console.log(`[ZohoSync] Evaluating DayPass/Bundle Zoho sync for ${dayPassId || bundleId}`);
+      if (effectiveType === 'daypass' || effectiveType === 'bundle') {
+        console.log(`[ZohoSync] Evaluating DayPass/Bundle Zoho sync for ${effectiveId}`);
         // Track whether we applied locally during Zoho success to avoid double-applying later
         let appliedViaZohoSuccess = false;
 
@@ -2202,12 +2208,12 @@ export const handleRazorpaySuccess = async (req, res) => {
           // Re-fetch day pass or bundle with customer and invoice populated
           let itemForZoho = null;
           let clientForZoho = null;
-          if (dayPassId) {
-            itemForZoho = await DayPass.findById(dayPassId)
+          if (effectiveType === 'daypass') {
+            itemForZoho = await DayPass.findById(effectiveId)
               .populate('customer')
               .populate('invoice');
-          } else if (bundleId) {
-            itemForZoho = await DayPassBundle.findById(bundleId)
+          } else if (effectiveType === 'bundle') {
+            itemForZoho = await DayPassBundle.findById(effectiveId)
               .populate('customer')
               .populate('invoice');
           }
@@ -2305,11 +2311,11 @@ export const handleRazorpaySuccess = async (req, res) => {
       }
     }
 
-    const responseMessage = dayPassId
+    const responseMessage = (effectiveType === 'daypass')
       ? "Payment successful, day pass issued"
-      : (bundleId ? "Payment successful, bundle and day passes issued" : "Payment successful, meeting room booked");
+      : (effectiveType === 'bundle' ? "Payment successful, bundle and day passes issued" : "Payment successful, meeting room booked");
 
-    if (meetingBookingId && item?.room) {
+    if (effectiveType === 'meeting' && item?.room) {
       const room = item.room;
       const startTimeStr = new Date(item.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
       const endTimeStr = new Date(item.end).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
@@ -2358,7 +2364,6 @@ export const handleRazorpaySuccess = async (req, res) => {
     res.status(500).json(errorResponse);
   }
 };
-
 // Razorpay webhook handler for payment status updates
 export const handleRazorpayWebhook = async (req, res) => {
   // Determine raw Buffer for signature verification
