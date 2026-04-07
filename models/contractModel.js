@@ -108,6 +108,8 @@ const contractSchema = new mongoose.Schema(
       ratePercent: { type: Number, default: 0 },
       frequencyMonths: { type: Number, default: 12 }
     },
+    // Tracks the highest escalation interval (in integer intervals) that has been charged as an additional SD
+    lastEscalationDepositPeriod: { type: Number, default: 0 },
     // Renewal details
     renewal: {
       isAutoRenewal: { type: Boolean, default: false },
@@ -521,12 +523,39 @@ const contractSchema = new mongoose.Schema(
       paymentType: { type: String, enum: ["one_time", "monthly"], default: null },
       periodMonths: { type: Number, default: null, min: 0 },
     },
+    // Amendment fields
+    amendmentUrl: { type: String, trim: true },
+    amendmentApproved: { type: Boolean, default: false },
+    isAmendmentUploaded: { type: Boolean, default: false },
+    amendmentUploadedAt: { type: Date },
+    amendmentUploadedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    amendmentApprovedAt: { type: Date },
+    amendmentApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    contractID: { type: String, unique: true, sparse: true },
   },
   {
     timestamps: true,
     collection: "contracts",
   }
 );
+
+import { generateSequenceID } from "../utils/sequenceGenerator.js";
+contractSchema.pre("save", async function (next) {
+  if (!this.contractID) {
+    try {
+      this.contractID = await generateSequenceID("CONTRACT");
+    } catch (err) {
+      console.error("Error generating contractID:", err);
+    }
+  }
+  next();
+});
 
 // Middleware to automatically update iskycapproved using normalized KYC items
 contractSchema.pre('save', async function (next) {

@@ -8,6 +8,7 @@ import Role from "../models/roleModel.js";
 import Cabin from "../models/cabinModel.js";
 import City from "../models/cityModel.js";
 import AddOn from "../models/addOnModel.js";
+import SecurityDeposit from "../models/securityDepositModel.js";
 import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { sendNotification } from "../utils/notificationHelper.js";
 
@@ -379,6 +380,8 @@ async function createMonthlyInvoiceForContract(contract, { issueDate, dueDate, b
     }
     if (modified) await contract.save();
   }
+
+  await applyEscalationSecurityDeposit(invoice, contract, billingPeriodStart);
 
   console.log(`Created monthly invoice ${invoice._id} for contract ${contract._id}`);
 
@@ -771,6 +774,7 @@ export const createMonthlyInvoicesConsolidated = async (refDate = new Date()) =>
             }
             if (modified) await c.save();
           }
+          await applyEscalationSecurityDeposit(invoice, c, billingPeriodStart);
         }
 
         try {
@@ -1810,4 +1814,102 @@ async function notifyAdminsOfInvoiceBatch(batchResults, type = 'generated') {
   } catch (err) {
     console.error('[Pipeline-Notify] Failed to notify admins of invoice batch:', err);
   }
+}
+
+/**
+ * Check and apply escalation security deposit to an existing invoice.
+ * Sub-total, total, and balance of the invoice are updated if a deposit delta is applied.
+ */
+async function applyEscalationSecurityDeposit(invoice, contract, billingPeriodStart) {
+  const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
+
+  const frequency = contract.escalation?.frequencyMonths || 12;
+  const ratePercent = contract.escalation?.ratePercent || 0;
+  
+  if (ratePercent <= 0) return; // No escalation
+  
+  const firstBillDate = contract.billingStartDate ? new Date(contract.billingStartDate) : new Date(contract.startDate);
+  const isBillingStarted = billingPeriodStart >= new Date(Date.UTC(firstBillDate.getUTCFullYear(), firstBillDate.getUTCMonth(), 1));
+  
+  if (!isBillingStarted) return;
+  
+  const intervalsStart = getEscalationIntervals(billingPeriodStart, firstBillDate, frequency);
+  
+  const lastBilledPeriod = contract.lastEscalationDepositPeriod || 0;
+  if (intervalsStart <= lastBilledPeriod) return; // Already billed or no escalation
+  
+  const oldIntervals = lastBilledPeriod;
+  const oldRent = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, oldIntervals);
+  const newRent = Number(contract.monthlyRent) * Math.pow(1 + ratePercent / 100, intervalsStart);
+  
+  const rentDelta = newRent - oldRent;
+  if (rentDelta <= 0) return;
+  
+  // Find existing Security Deposit for this contract
+  let deposit = null;
+  if (contract.securityDeposit) {
+    deposit = await SecurityDeposit.findById(contract.securityDeposit);
+  } else {
+    deposit = await SecurityDeposit.findOne({ contract: contract._id }).sort({ createdAt: -1 });
+  }
+  
+  if (!deposit || Number(deposit.agreed_amount || 0) <= 0) {
+    // No prior baseline security deposit to scale from
+    return;
+  }
+  
+  // Calculate multiplier and delta
+  // SD_Delta = rentDelta * (agreed_amount / oldRent)
+  const multiplier = deposit.agreed_amount / oldRent;
+  const sdDelta = round2(rentDelta * multiplier);
+  
+  if (sdDelta <= 0) return;
+  
+  // Modify invoice
+  invoice.line_items.push({
+    description: `Additional Security Deposit (Escalation)`,
+    quantity: 1,
+    unitPrice: sdDelta,
+    amount: sdDelta,
+    name: 'Escalation SD',
+    rate: sdDelta,
+    unit: 'nos',
+    item_total: sdDelta,
+    tax_percentage: 0,
+    item_id: contract.building?.zoho_escalation_sd_item_id || undefined
+  });
+  
+  invoice.sub_total = round2(Number(invoice.sub_total) + sdDelta);
+  invoice.total = round2(Number(invoice.total) + sdDelta);
+  invoice.balance = round2(Number(invoice.balance) + sdDelta);
+  invoice.deposit = deposit._id;
+  
+  await invoice.save();
+  
+  // Update Security Deposit record
+  deposit.agreed_amount = round2(Number(deposit.agreed_amount || 0) + sdDelta);
+  deposit.amount_due = round2(Number(deposit.amount_due || 0) + sdDelta);
+  
+  const paid = Number(deposit.amount_paid || 0);
+  const out = Number(deposit.amount_adjusted || 0) + Number(deposit.amount_refunded || 0) + Number(deposit.amount_forfeited || 0);
+  const held = Math.max(0, paid - out);
+  const due = deposit.amount_due;
+  
+  if (held === 0 && (out > 0 || paid > 0)) {
+    deposit.status = "CLOSED";
+  } else if ((deposit.amount_adjusted || 0) > 0) {
+    deposit.status = "PARTIALLY_ADJUSTED";
+  } else if (paid >= due && due > 0) {
+    deposit.status = "PAID";
+  } else if (due > 0) {
+    deposit.status = "DUE";
+  }
+
+  deposit.notes = [deposit.notes, `Additional SD for Escalation (Interval ${intervalsStart})`].filter(Boolean).join(' | ');
+  await deposit.save();
+  
+  contract.lastEscalationDepositPeriod = intervalsStart;
+  await contract.save();
+  
+  console.log(`[Escalation SD] Added ₹${sdDelta} top-up to Invoice ${invoice._id} for Contract ${contract._id}`);
 }

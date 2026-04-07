@@ -1592,6 +1592,91 @@ export const uploadSignedContract = async (req, res) => {
   }
 };
 
+// Amendment functions
+export const uploadContractAmendment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ error: "Contract not found" });
+    }
+
+    let uploadedFile = req.file;
+    if (!uploadedFile && Array.isArray(req.files) && req.files.length > 0) {
+      uploadedFile = req.files[0];
+    }
+
+    if (!uploadedFile) {
+      return res.status(400).json({ error: "Amendment file is required" });
+    }
+
+    const fileName = `amendment_${id}_${Date.now()}_${uploadedFile.originalname}`;
+    const uploadResponse = await imagekit.upload({
+      file: uploadedFile.buffer,
+      fileName: fileName,
+      folder: "/contracts/amendments"
+    });
+
+    const updated = await Contract.findByIdAndUpdate(
+      id,
+      {
+        amendmentUrl: uploadResponse.url,
+        isAmendmentUploaded: true,
+        amendmentUploadedAt: new Date(),
+        amendmentUploadedBy: req.user?._id || null,
+      },
+      { new: true }
+    );
+
+    await logContractActivity(req, 'UPDATE', id, updated.client, {
+      event: 'AMENDMENT_UPLOADED',
+      amendmentUrl: uploadResponse.url,
+      uploadedBy: req.user?._id || null,
+    });
+
+    return res.json({ success: true, message: "Amendment uploaded successfully", contract: updated });
+  } catch (err) {
+    console.error("uploadContractAmendment error:", err);
+    await logErrorActivity(req, err, 'Upload Contract Amendment');
+    return res.status(500).json({ success: false, message: "Failed to upload amendment" });
+  }
+};
+
+export const approveContractAmendment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id);
+    if (!contract) {
+      return res.status(404).json({ error: "Contract not found" });
+    }
+
+    if (!contract.isAmendmentUploaded) {
+      return res.status(400).json({ error: "No amendment uploaded to approve" });
+    }
+
+    const updated = await Contract.findByIdAndUpdate(
+      id,
+      {
+        amendmentApproved: true,
+        amendmentApprovedAt: new Date(),
+        amendmentApprovedBy: req.user?._id || null,
+      },
+      { new: true }
+    );
+
+    await logContractActivity(req, 'UPDATE', id, updated.client, {
+      event: 'AMENDMENT_APPROVED',
+      approvedBy: req.user?._id || null,
+    });
+
+    return res.json({ success: true, message: "Amendment approved successfully", contract: updated });
+  } catch (err) {
+    console.error("approveContractAmendment error:", err);
+    await logErrorActivity(req, err, 'Approve Contract Amendment');
+    return res.status(500).json({ success: false, message: "Failed to approve amendment" });
+  }
+};
+
 // Webhook handler for Zoho Sign events
 export const handleZohoSignWebhook = async (req, res) => {
   try {

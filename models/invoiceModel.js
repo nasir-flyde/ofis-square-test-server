@@ -185,8 +185,8 @@ invoiceSchema.index(
   }
 );
 
-// Ensure single invoice per deposit
-invoiceSchema.index({ deposit: 1 }, { unique: true, sparse: true, name: "unique_invoice_per_deposit" });
+// Allow multiple invoices (e.g. initial SD + escalation SDs) to point to the same deposit
+invoiceSchema.index({ deposit: 1 }, { sparse: true, name: "invoice_per_deposit_idx" });
 
 // Ensure unique provisional late fee invoice per original invoice and month
 invoiceSchema.index(

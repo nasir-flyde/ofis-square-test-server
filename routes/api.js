@@ -72,6 +72,7 @@ import addOnsRoutes from "./addOns.js";
 import itemsRoutes from "./items.js";
 import termsAndConditionsRoutes from "./termsAndConditionsRoutes.js";
 import appConfigRoutes from "./appConfigRoutes.js";
+import securityDepositPaymentsRoutes from "./securityDepositPayments.js";
 
 const router = express.Router();
 
@@ -149,5 +150,6 @@ router.use("/addons", addOnsRoutes);
 router.use("/items", itemsRoutes);
 router.use("/terms-and-conditions", termsAndConditionsRoutes);
 router.use("/app-config", appConfigRoutes);
+router.use("/security-deposit-payments", securityDepositPaymentsRoutes);
 
 export default router;

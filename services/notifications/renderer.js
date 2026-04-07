@@ -136,16 +136,16 @@ class NotificationRenderer {
     }
 
     const rendered = {
-      subject: this.interpolate(template.subject, variables),
+      subject: this.cleanText(this.interpolate(template.subject, variables)),
       html: this.interpolate(template.html, variables),
-      text: this.interpolate(template.text, variables),
-      inAppTitle: template.inAppTitle ? this.interpolate(template.inAppTitle, variables) : this.interpolate(template.subject || '', variables),
-      inAppBody: template.inAppBody ? this.interpolate(template.inAppBody, variables) : this.interpolate(template.sms || template.text || '', variables)
+      text: this.cleanText(this.interpolate(template.text, variables)),
+      inAppTitle: this.cleanText(template.inAppTitle ? this.interpolate(template.inAppTitle, variables) : this.interpolate(template.subject || '', variables)),
+      inAppBody: this.cleanText(template.inAppBody ? this.interpolate(template.inAppBody, variables) : this.interpolate(template.sms || template.text || '', variables))
     };
 
     // Use SMS-specific template if available, otherwise use text
     if (template.sms) {
-      rendered.sms = this.interpolate(template.sms, variables);
+      rendered.sms = this.cleanText(this.interpolate(template.sms, variables));
     } else {
       rendered.sms = rendered.text;
     }
@@ -157,11 +157,11 @@ class NotificationRenderer {
     const rendered = {};
 
     if (content.smsText) {
-      rendered.smsText = this.interpolate(content.smsText, variables);
+      rendered.smsText = this.cleanText(this.interpolate(content.smsText, variables));
     }
 
     if (content.emailSubject) {
-      rendered.emailSubject = this.interpolate(content.emailSubject, variables);
+      rendered.emailSubject = this.cleanText(this.interpolate(content.emailSubject, variables));
     }
 
     if (content.emailHtml) {
@@ -169,32 +169,41 @@ class NotificationRenderer {
     }
 
     if (content.emailText) {
-      rendered.emailText = this.interpolate(content.emailText, variables);
+      rendered.emailText = this.cleanText(this.interpolate(content.emailText, variables));
     }
 
     if (content.inAppTitle) {
-      rendered.inAppTitle = this.interpolate(content.inAppTitle, variables);
+      rendered.inAppTitle = this.cleanText(this.interpolate(content.inAppTitle, variables));
     }
 
     if (content.inAppBody) {
-      rendered.inAppBody = this.interpolate(content.inAppBody, variables);
+      rendered.inAppBody = this.cleanText(this.interpolate(content.inAppBody, variables));
     }
 
     return rendered;
   }
 
+  cleanText(text) {
+    if (!text || typeof text !== 'string') return text;
+    // Remove "Subject:" (case-insensitive) if it starts with it
+    let cleaned = text.replace(/^Subject:\s*/i, '');
+    // Remove emojis
+    cleaned = cleaned.replace(/\p{Emoji_Presentation}/gu, '').replace(/\p{Extended_Pictographic}/gu, '');
+    return cleaned.trim();
+  }
+
   interpolate(template, variables) {
     if (!template) return '';
 
-    // Handle {{#if key}}...{{/if}} or {#if key}...{/if}
-    let processed = template.replace(/\{{1,2}#if\s+([^{}]+?)\s*\}{1,2}([\s\S]*?)\{{1,2}\/if\s*\}{1,2}/g, (match, key, content) => {
+    // Handle {{#if key}}...{{/if}}
+    let processed = template.replace(/\{\{#if\s+([^{}]+?)\s*\}\}([\s\S]*?)\{\{\/if\s*\}\}/g, (match, key, content) => {
       const trimmedKey = key.trim();
       return variables[trimmedKey] ? content : '';
     });
 
-    // Handle {{key}} or {key} with support for spaces and special characters in keys
-    // This regex matches things like {{greeting}}, {Member Name}, {{ Category }}
-    return processed.replace(/\{{1,2}\s*([^{}]+?)\s*\}{1,2}/g, (match, key) => {
+    // Handle {{key}} with support for spaces and special characters in keys
+    // This regex matches things like {{greeting}}, {{Member Name}}, {{ Category }}
+    return processed.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (match, key) => {
       const trimmedKey = key.trim();
       // Try exact match first
       if (variables[trimmedKey] !== undefined) {
@@ -206,7 +215,7 @@ class NotificationRenderer {
       if (foundKey && variables[foundKey] !== undefined) {
         return variables[foundKey];
       }
-      return match;
+      return '';
     });
   }
 

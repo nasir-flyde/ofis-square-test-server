@@ -20,7 +20,8 @@ const securityDepositSchema = new mongoose.Schema(
         "REFUNDED",
         "FORFEITED",
         "CLOSED",
-        "PARTIAL"
+        "PARTIAL",
+        "cash"
       ],
       default: "AGREED",
       index: true,
@@ -30,9 +31,6 @@ const securityDepositSchema = new mongoose.Schema(
     paid_date: { type: Date },
     closed_date: { type: Date },
 
-    // Link to local/Zoho invoices
-    invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: "Invoice", index: true },
-    zoho_invoice_id: { type: String, index: true },
 
     // Running amounts
     amount_due: { type: Number, default: 0, min: 0 },
@@ -49,6 +47,11 @@ const securityDepositSchema = new mongoose.Schema(
     images: [{ type: String }],
 
     notes: { type: String, trim: true },
+
+    // Tracking for Zoho recognition
+    is_zoho_recognition_done: { type: Boolean, default: false },
+    zoho_agreement_journal_id: { type: String },
+    zoho_agreement_journal_number: { type: String },
   },
   {
     timestamps: true,
@@ -65,6 +68,5 @@ securityDepositSchema.virtual("held_balance").get(function () {
 
 // Indexes
 securityDepositSchema.index({ client: 1, contract: 1, status: 1 });
-securityDepositSchema.index({ invoice_id: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("SecurityDeposit", securityDepositSchema);

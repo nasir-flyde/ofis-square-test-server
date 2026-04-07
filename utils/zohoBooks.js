@@ -1562,47 +1562,125 @@ export async function getZohoLocations() {
  * AccountType.Asset, AccountType.Liability, AccountType.Equity, AccountType.Income,
  * AccountType.Expense, AccountType.Bank, etc.
  */
-export async function getZohoChartOfAccounts(params = {}) {
+export async function getZohoChartOfAccounts(params) {
   try {
     const authToken = await getValidAccessToken();
-    if (!ORG_ID) throw new Error("ZOHO_BOOKS_ORG_ID is not configured");
+    const queryParams = new URLSearchParams();
+    if (!ORG_ID) throw new Error('ZOHO_ORG_ID is not configured');
+    queryParams.append("organization_id", ORG_ID);
 
-    let queryParams = new URLSearchParams({ organization_id: ORG_ID });
-
-    // If params is a string, treat as filter_by for backward compatibility or simple usage
     if (typeof params === "string") {
-      if (params === "AccountType.Bank") {
-        queryParams.append("account_type", "bank");
-      } else {
-        queryParams.append("filter_by", params);
-      }
+      if (params === "AccountType.Bank") queryParams.append("account_type", "bank");
+      else queryParams.append("filter_by", params);
     } else if (typeof params === "object") {
-      // Fix for "AccountType.Bank" even when passed in query object
-      if (params.filter_by === "AccountType.Bank") {
-        queryParams.append("account_type", "bank");
-        for (const [key, value] of Object.entries(params)) {
-          if (value && key !== "filter_by") queryParams.append(key, value);
-        }
-      } else {
-        for (const [key, value] of Object.entries(params)) {
-          if (value) queryParams.append(key, value);
-        }
+      for (const [key, value] of Object.entries(params)) {
+        if (value) queryParams.append(key, value);
       }
     }
 
-    const url = `${BASE_URL}/chartofaccounts?${queryParams.toString()}`;
-    console.log(`🔎 Fetching Zoho Chart of Accounts: ${url}`);
+    let allAccounts = [];
+    let page = 1;
+    let hasMore = true;
 
+    while (hasMore) {
+      const pageParams = new URLSearchParams(queryParams);
+      pageParams.append("page", page);
+      pageParams.append("per_page", 200);
+
+      const url = `${BASE_URL}/chartofaccounts?${pageParams.toString()}`;
+      console.log(`🔎 Fetching Zoho Chart of Accounts (Page ${page}): ${url}`);
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Zoho API error fetching Chart of Accounts");
+
+      allAccounts = allAccounts.concat(data.chartofaccounts || []);
+      hasMore = data.page_context?.has_more_page || false;
+      page++;
+      if (page > 30) break; // Safety
+    }
+
+    return allAccounts;
+  } catch (err) {
+    console.error("❌ Error fetching Zoho Chart of Accounts:", err.message);
+    throw err;
+  }
+}
+
+/**
+ * Create a new Chart of Account in Zoho Books.
+ */
+export async function createZohoChartOfAccount(payload) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/chartofaccounts?organization_id=${ORG_ID}`;
+    
     const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Zoho-oauthtoken ${authToken}` },
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
     });
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.message || "Zoho API error fetching Chart of Accounts");
-    return data.chartofaccounts || [];
+    if (!res.ok) {
+      if (data.message && (data.message.includes("already exists") || data.code === 5005)) {
+        console.log(`⚠️ Zoho Account '${payload.account_name}' already exists. Attempting recovery...`);
+        const existingAccounts = await getZohoChartOfAccounts();
+        const found = existingAccounts.find(a => a.account_name === payload.account_name);
+        if (found) {
+          console.log(`✅ Recovered existing Zoho Account ID for '${payload.account_name}'`);
+          return { chartofaccount: found };
+        }
+      }
+      throw new Error(data.message || `Zoho API error creating Chart of Account (Status ${res.status})`);
+    }
+    
+    // Zoho sometimes returns chart_of_account instead of chartofaccount
+    const coa = data.chart_of_account || data.chartofaccount;
+    if (!coa) {
+       throw new Error(`Zoho API succeeded but returned no chartofaccount/chart_of_account object: ${JSON.stringify(data)}`);
+    }
+    
+    // Normalize return for consistency
+    return { ...data, chartofaccount: coa };
   } catch (err) {
-    console.error("❌ Error fetching Zoho Chart of Accounts:", err.message);
+    console.error("❌ Error creating Zoho Chart of Account:", err.message);
+    throw err;
+  }
+}
+
+/**
+ * Create a manual Journal Entry in Zoho Books.
+ */
+export async function createZohoJournalEntry(payload) {
+  try {
+    const authToken = await getValidAccessToken();
+    const url = `${BASE_URL}/journals?organization_id=${ORG_ID}`;
+    
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Zoho-oauthtoken ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Zoho API error creating Journal Entry");
+    
+    // Normalize return for consistency (Zoho sometimes uses journal_entry or journal)
+    const journal = data.journal || data.journal_entry;
+    return { ...data, journal };
+  } catch (err) {
+    console.error("❌ Error creating Zoho Journal Entry:", err.message);
     throw err;
   }
 }

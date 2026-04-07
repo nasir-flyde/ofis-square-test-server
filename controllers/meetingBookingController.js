@@ -311,7 +311,7 @@ export const createBooking = async (req, res) => {
 
     // Determine member/client/guest context (admin flow may not have a member)
     const roleName = String(req.user?.roleName || req.authType || '').toLowerCase();
-    
+
     // Merge auth context with body context
     if (req.memberId) currentMemberId = req.memberId;
     if (req.guestId || bodyGuestId) guestId = req.guestId || bodyGuestId;
@@ -682,14 +682,14 @@ export const createBooking = async (req, res) => {
         // If invoice was prepared, save and push atomically
         if (invoice) {
           await invoice.save({ session });
-          
+
           // Atomic Zoho Push
           const clientDoc = clientId ? await Client.findById(clientId).session(session) : null;
           if (clientDoc) {
             console.log(`[createBooking] Pushing meeting invoice to Zoho atomically...`);
             // Use pushInvoiceToZoho which handles blocking and error propagation
             const zohoResult = await pushInvoiceToZoho(invoice, clientDoc, { blocking: true });
-            
+
             if (zohoResult?.invoice_id) {
               invoice.zoho_invoice_id = zohoResult.invoice_id;
               invoice.zoho_invoice_number = zohoResult.invoice_number;

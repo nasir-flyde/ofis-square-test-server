@@ -870,8 +870,7 @@ export const recordInvoicePayment = async (req, res) => {
     }
     await invoice.save();
 
-    // Update linked security deposit if this is a deposit invoice
-    try { await applyPaymentToDeposit(id, Number(amount)); } catch (_) { }
+    const reference = req.body?.reference_number || req.body?.referenceNumber;
 
     // If this invoice is linked to a contract, check if all invoices for that contract are paid
     try {
@@ -980,8 +979,7 @@ export const zohoWebhook = async (req, res) => {
             invoice.paid_at = new Date();
           }
           await invoice.save();
-          // Update deposit mirror
-          try { await applyPaymentToDeposit(invoice._id, amount); } catch (_) { }
+          const reference = req.body?.reference_number || req.body?.referenceNumber;
         }
       }
     }

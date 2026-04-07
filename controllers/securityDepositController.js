@@ -1,16 +1,14 @@
 import mongoose from "mongoose";
 import SecurityDeposit from "../models/securityDepositModel.js";
-import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import Contract from "../models/contractModel.js";
-import Payment from "../models/paymentModel.js";
-import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
 import { logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
-import { createZohoInvoiceFromLocal, findOrCreateContactFromClient } from "../utils/zohoBooks.js";
 import { generateSecurityDepositNote } from "../services/securityDepositNoteService.js";
 import imagekit from "../utils/imageKit.js";
 import { getUsersByRoles } from "../utils/contractEmailService.js";
 import { sendNotification } from "../utils/notificationHelper.js";
+import { ensureSecurityDepositHierarchy, recordSDAgreementJournal, recordSDPaymentJournal } from "../services/securityDepositCOAService.js";
+import SecurityDepositPayment from "../models/securityDepositPaymentModel.js";
 
 function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
@@ -193,8 +191,7 @@ export const getDepositById = async (req, res) => {
     const { id } = req.params;
     const dep = await SecurityDeposit.findById(id)
       .populate('client', 'companyName email phone')
-      .populate('contract', 'startDate endDate status')
-      .populate('invoice_id', 'invoice_number total amount_paid balance status date due_date');
+      .populate('contract', 'startDate endDate status');
     if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
     return res.json({ success: true, data: dep });
   } catch (error) {
@@ -227,7 +224,7 @@ export const listDeposits = async (req, res) => {
     }
 
     const docs = await SecurityDeposit.find(filter)
-      .populate('invoice_id', 'invoice_number total amount_paid balance status due_date')
+      .populate('cabin', 'number floor status')
       .populate('cabin', 'number floor status')
       .sort(sortObj)
       .limit(Math.max(1, Math.min(Number(limit) || 50, 200)));
@@ -246,90 +243,25 @@ export const markDepositDue = async (req, res) => {
     const dep = await SecurityDeposit.findById(id).populate('client').populate('contract');
     if (!dep) return res.status(404).json({ success: false, message: 'SecurityDeposit not found' });
 
-    if (dep.invoice_id) {
-      const inv = await Invoice.findById(dep.invoice_id);
-      return res.json({ success: true, message: 'Invoice already exists for this deposit', data: { deposit: dep, invoice: inv } });
+    dep.amount_due = round2(dep.agreed_amount);
+    dep.status = 'DUE';
+    dep.due_date = dueDate ? new Date(dueDate) : new Date();
+    
+    // Ensure Zoho COA Hierarchy exists and Record Agreement Journal
+    try {
+      if (dep.building && dep.client) {
+        await ensureSecurityDepositHierarchy(dep.building, dep.client);
+        // Step 1: Record Agreement Recognition in Zoho
+        await recordSDAgreementJournal(dep._id, req.user?.name);
+      }
+    } catch (coaErr) {
+      console.warn('Failed to ensure SD COA hierarchy or record agreement journal (non-blocking):', coaErr.message);
     }
 
-    const invoiceNumber = await generateLocalInvoiceNumber();
-    const subtotal = round2(dep.agreed_amount);
-    const total = subtotal; // Non-GST
-
-    const invoiceData = {
-      invoice_number: invoiceNumber,
-      client: dep.client,
-      contract: dep.contract,
-      building: dep.building || undefined,
-      type: 'security_deposit',
-      category: 'onboarding',
-      date: new Date(),
-      due_date: dueDate ? new Date(dueDate) : undefined,
-      line_items: [
-        {
-          description: 'Security Deposit',
-          quantity: 1,
-          unitPrice: subtotal,
-          amount: subtotal,
-          name: 'Security Deposit',
-          rate: subtotal,
-          unit: 'nos',
-          tax_percentage: 0,
-          item_total: subtotal,
-        },
-      ],
-      sub_total: subtotal,
-      tax_total: 0,
-      total,
-      amount_paid: 0,
-      balance: total,
-      status: 'draft',
-      notes: notes || 'Non-GST Security Deposit invoice',
-      currency_code: 'INR',
-      exchange_rate: 1,
-      deposit: dep._id,
-    };
-
-    const invoice = await Invoice.create(invoiceData);
-
-    dep.invoice_id = invoice._id;
-    dep.amount_due = subtotal;
-    dep.status = 'DUE';
-    dep.due_date = invoice.due_date || new Date();
     await dep.save();
 
-    // Auto-push to Zoho Books (as draft). Non-blocking.
-    try {
-      // Ensure Zoho contact
-      let clientDoc = dep.client;
-      if (!clientDoc || !clientDoc._id) {
-        clientDoc = await Client.findById(dep.client);
-      }
-      if (clientDoc && !clientDoc.zohoBooksContactId) {
-        const contactId = await findOrCreateContactFromClient(clientDoc);
-        if (contactId) {
-          clientDoc.zohoBooksContactId = contactId;
-          await clientDoc.save();
-        }
-      }
-
-      if (clientDoc && clientDoc.zohoBooksContactId) {
-        const zohoResp = await createZohoInvoiceFromLocal(invoice.toObject(), clientDoc.toObject());
-        const zohoId = zohoResp?.invoice?.invoice_id;
-        const zohoNumber = zohoResp?.invoice?.invoice_number;
-        if (zohoId) {
-          invoice.zoho_invoice_id = zohoId;
-          invoice.zoho_invoice_number = zohoNumber || invoice.zoho_invoice_number;
-          invoice.source = invoice.source || 'zoho';
-          invoice.zoho_status = 'draft';
-          await invoice.save();
-        }
-      }
-    } catch (pushErr) {
-      console.warn('Auto push of security deposit invoice to Zoho failed (non-blocking):', pushErr?.message);
-    }
-
-    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', dep._id, null, { action: 'MARK_DUE', invoiceId: invoice._id });
-    return res.status(201).json({ success: true, data: { deposit: dep, invoice } });
+    await logCRUDActivity(req, 'UPDATE', 'SecurityDeposit', dep._id, null, { action: 'MARK_DUE' });
+    return res.status(200).json({ success: true, data: { deposit: dep } });
   } catch (error) {
     await logErrorActivity(req, error, 'Mark SecurityDeposit Due');
     return res.status(500).json({ success: false, message: error.message });
@@ -488,23 +420,51 @@ export const generateDepositNote = async (req, res) => {
   }
 };
 
-export const applyPaymentToDeposit = async (invoiceId, amountApplied) => {
+export const applyPaymentToDeposit = async (depositId, amountApplied, paymentRef = null) => {
   try {
-    const inv = await Invoice.findById(invoiceId).select('_id deposit');
-    if (!inv) return null;
-
-    let dep = null;
-    if (inv.deposit) {
-      dep = await SecurityDeposit.findById(inv.deposit);
-    } else {
-      dep = await SecurityDeposit.findOne({ invoice_id: invoiceId });
-    }
+    // 1. Find the deposit
+    let dep = await SecurityDeposit.findById(depositId);
+    
     if (!dep) return null;
 
-    dep.amount_paid = round2(Number(dep.amount_paid || 0) + Number(amountApplied || 0));
+    const oldPaid = Number(dep.amount_paid || 0);
+    dep.amount_paid = round2(oldPaid + Number(amountApplied || 0));
     if (!dep.paid_date) dep.paid_date = new Date();
     dep.status = recomputeStatus(dep);
     await dep.save();
+
+    // 2. Create the SecurityDepositPayment record
+    let sdPayment = null;
+    try {
+      sdPayment = await SecurityDepositPayment.create({
+        deposit: dep._id,
+        client: dep.client,
+        building: dep.building,
+        amount: Number(amountApplied),
+        paymentDate: new Date(),
+        type: paymentRef?.includes('MIGRATION') ? 'Bank Transfer' : 'Other',
+        referenceNumber: paymentRef || undefined,
+        source: paymentRef?.includes('MIGRATION') ? 'migration' : 'manual'
+      });
+    } catch (saveErr) {
+      console.warn('Failed to create SecurityDepositPayment record (non-blocking):', saveErr.message);
+    }
+
+    // 3. Record Journal Entry in Zoho Books (Step 2: Payment Receipt)
+    if (Number(amountApplied) > 0) {
+      try {
+        const journal = await recordSDPaymentJournal(dep._id, amountApplied, paymentRef);
+        if (journal && journal.journal_id && sdPayment) {
+          sdPayment.zoho_journal_id = journal.journal_id;
+          sdPayment.zoho_journal_number = journal.journal_number;
+          await sdPayment.save();
+        }
+      } catch (journalErr) {
+        console.warn('Failed to record SD payment journal entry (non-blocking):', journalErr.message);
+      }
+    }
+
+    // SD Note generation policy...
 
     // SD Note generation policy:
     // - If a note already exists, any payment change on the SD invoice regenerates and REPLACES the URL (force = true)
@@ -563,34 +523,17 @@ export const uploadDepositImages = async (req, res) => {
     dep.images = [...(dep.images || []), ...urls];
     await dep.save();
 
-    // Also attach these URLs to the latest related Payment (single- or multi-invoice payments)
+    // Also attach these URLs to the latest related SD Payment
     try {
-      // Collect invoice ids related to this deposit
-      let invoiceIds = [];
-      if (dep.invoice_id) {
-        invoiceIds = [dep.invoice_id];
-      } else {
-        const invs = await Invoice.find({ deposit: dep._id }).select('_id');
-        invoiceIds = invs.map((i) => i._id);
-      }
+      const latestSDPayment = await SecurityDepositPayment.findOne({ deposit: dep._id })
+        .sort({ createdAt: -1 });
 
-      if (invoiceIds.length > 0) {
-        const latestPayment = await Payment.findOne({
-          $or: [
-            { invoice: { $in: invoiceIds } },
-            { 'invoices.invoice': { $in: invoiceIds } },
-          ],
-        })
-          .sort({ createdAt: -1 })
-          .select('images');
-
-        if (latestPayment) {
-          const existing = Array.isArray(latestPayment.images) ? latestPayment.images : [];
-          const merged = Array.from(new Set([...(existing || []), ...urls]));
-          if (merged.length !== existing.length) {
-            latestPayment.images = merged;
-            await latestPayment.save();
-          }
+      if (latestSDPayment) {
+        const existing = Array.isArray(latestSDPayment.images) ? latestSDPayment.images : [];
+        const merged = Array.from(new Set([...existing, ...urls]));
+        if (merged.length !== existing.length) {
+          latestSDPayment.images = merged;
+          await latestSDPayment.save();
         }
       }
     } catch (e) {

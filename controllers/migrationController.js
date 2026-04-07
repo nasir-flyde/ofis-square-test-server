@@ -27,13 +27,15 @@ import {
     updateContact,
     getContacts
 } from '../utils/zohoBooks.js';
-import { generateLocalInvoiceNumber } from '../utils/invoiceNumberGenerator.js';
+import { generateLocalInvoiceNumber } from "../utils/invoiceNumberGenerator.js";
+import { ensureSecurityDepositHierarchy, recordSDAgreementJournal, recordSDPaymentJournal } from "../services/securityDepositCOAService.js";
 import { logCRUDActivity, logErrorActivity } from '../utils/activityLogger.js';
 import { sendNotification } from "../utils/notificationHelper.js";
 import { matrixApi } from "../utils/matrixApi.js";
 import { ensureBhaifiForMember } from "../controllers/bhaifiController.js";
 import { ensureDefaultAccessPolicyForContract } from "../services/accessPolicyService.js";
 import { grantOnContractActivation } from "../services/accessService.js";
+import { applyPaymentToDeposit } from './securityDepositController.js';
 
 const mapPaymentType = (type) => {
     const t = (type || '').trim().toUpperCase();
@@ -445,68 +447,28 @@ export const saveContractStep = async (req, res) => {
                 sd.images = [...new Set([...(sd.images || []), ...depositImageUrls])];
                 sd.status = paidAmount >= agreedAmount ? 'PAID' : (agreedAmount > 0 ? 'DUE' : 'AGREED');
                 await sd.save();
+
+                // Ensure COA Hierarchy and Record Journal for migrated SD via applyPaymentToDeposit
+                try {
+                    await ensureSecurityDepositHierarchy(contract.building, clientId);
+                    if (paidAmount > 0) {
+                        // This will create SecurityDepositPayment record and Zoho Journal
+                        // Note: we pass 0 for amountApplied IF we already updated sd.amount_paid, 
+                        // but it's better to let applyPaymentToDeposit do the update.
+                        // Let's reset sd.amount_paid to agreedAmount - paidAmount before calling? 
+                        // Actually, I'll just let applyPaymentToDeposit handle it and remove the manual update above.
+                        sd.amount_paid = Number(sd.amount_paid || 0) - paidAmount; 
+                        await applyPaymentToDeposit(sd._id, paidAmount, contractData.depPaymentRef || 'MIGRATION');
+                    }
+                } catch (coaErr) {
+                    console.warn('Migration SD COA/Journal failed:', coaErr.message);
+                }
             }
 
             contract.securityDeposit = sd._id;
             contract.securitydeposited = true;
             await contract.save();
 
-            // 1. Ensure Invoice Exists for Security Deposit
-            let invoice = await Invoice.findOne({ deposit: sd._id });
-            if (!invoice) {
-                const invoiceNumber = await generateLocalInvoiceNumber();
-                invoice = await Invoice.create({
-                    client: clientId,
-                    contract: contract._id,
-                    building: contract.building,
-                    deposit: sd._id,
-                    invoice_number: invoiceNumber,
-                    type: 'security_deposit',
-                    status: 'sent',
-                    date: new Date(contractData.depPaidDate || contractData.startDate || Date.now()),
-                    due_date: new Date(contractData.startDate || Date.now()),
-                    line_items: [{
-                        description: 'Security Deposit',
-                        quantity: 1,
-                        unitPrice: agreedAmount,
-                        amount: agreedAmount
-                    }],
-                    sub_total: agreedAmount,
-                    total: agreedAmount,
-                    balance: agreedAmount,
-                    source: 'migration',
-                    notes: 'Automatically created via Migration Wizard'
-                });
-            }
-
-            // 2. Create Payment if paid
-            if (paidAmount > 0) {
-                const payment = await Payment.create({
-                    client: clientId,
-                    contract: contract._id,
-                    amount: paidAmount,
-                    paymentDate: new Date(contractData.depPaidDate || Date.now()),
-                    type: contractData.depPaymentType || 'Cash',
-                    referenceNumber: contractData.depPaymentRef,
-                    status: 'success',
-                    notes: 'Migration Security Deposit Payment',
-                    images: depositImageUrls,
-                    invoice: invoice._id,
-                    invoices: [{
-                        invoice: invoice._id,
-                        amount_applied: paidAmount
-                    }],
-                    applied_total: paidAmount
-                });
-
-                // Update Invoice with Payment
-                invoice.amount_paid = (invoice.amount_paid || 0) + paidAmount;
-                invoice.balance = Math.max(0, invoice.total - invoice.amount_paid);
-                invoice.status = invoice.balance <= 0 ? 'paid' : 'partially_paid';
-                invoice.payment_id = payment._id; // Link to latest payment
-                if (invoice.balance <= 0) invoice.paid_at = payment.paymentDate;
-                await invoice.save();
-            }
         }
 
         await logCRUDActivity(req, contractId ? 'UPDATE' : 'CREATE', 'Contract', contract._id, null, { source: 'migration_step3' });
@@ -797,6 +759,18 @@ export const saveFinancialsStep = async (req, res) => {
             securityDeposit = await SecurityDeposit.create(sdData);
             await Client.findByIdAndUpdate(clientId, { securityDeposit: securityDeposit._id });
             await Contract.findByIdAndUpdate(contractId, { securityDeposit: securityDeposit._id });
+
+            // Apply payment via centralized helper to create SD record and journal
+            try {
+                await ensureSecurityDepositHierarchy(contractData.building, clientId);
+                // Reset amount_paid in model so applyPaymentToDeposit adds it correctly
+                const amt = Number(contractData.securityDeposit);
+                securityDeposit.amount_paid = 0;
+                await securityDeposit.save();
+                await applyPaymentToDeposit(securityDeposit._id, amt, 'MIGRATION-ST6');
+            } catch (err) {
+                console.warn('Migration Step 6 SD Payment failed:', err.message);
+            }
 
             await logCRUDActivity(req, 'CREATE', 'SecurityDeposit', securityDeposit._id, null, { source: 'migration_step6' });
         }

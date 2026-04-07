@@ -20,7 +20,6 @@ import crypto from 'crypto';
 import { logPaymentActivity, logCRUDActivity, logErrorActivity } from "../utils/activityLogger.js";
 import loggedRazorpay from "../utils/loggedRazorpay.js";
 import apiLogger from "../utils/apiLogger.js";
-import { applyPaymentToDeposit } from "./securityDepositController.js";
 import imagekit from "../utils/imageKit.js";
 import { getZohoCustomerPayment, updateZohoCustomerPayment, refundZohoExcessPayment, getZohoInvoice, createZohoInvoiceFromLocal, recordZohoPayment, deleteZohoPayment } from "../utils/zohoBooks.js";
 import Item from "../models/itemModel.js";
@@ -170,7 +169,6 @@ async function applyExtraCreditsToInvoiceInternal(clientId, invoiceId) {
 
       try { await Client.findByIdAndUpdate(clientId, { $inc: { extra_credits: -alloc } }); } catch (_) { }
       await updateInvoiceAfterZohoPayment(invoiceId, alloc);
-      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
 
       totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
       need = Math.max(0, Math.round((need - alloc) * 100) / 100);
@@ -207,6 +205,7 @@ export const createPayment = async (req, res) => {
     if (!paymentDate) return res.status(400).json({ success: false, message: "paymentDate is required" });
 
     const invoice = await Invoice.findById(invoiceId);
+
     if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
 
     // If client is provided, optionally validate matches invoice client
@@ -294,8 +293,6 @@ export const createPayment = async (req, res) => {
     });
 
     const updatedInvoice = await applyInvoicePayment(invoiceId, Number(amount));
-    // Update linked security deposit if this is a deposit invoice
-    try { await applyPaymentToDeposit(invoiceId, Number(amount)); } catch (_) { }
 
     // Log payment activity
     await logPaymentActivity(req, 'PAYMENT_MADE', 'Payment', payment._id, {
@@ -333,8 +330,6 @@ export const deletePayment = async (req, res) => {
       const invoiceExists = await Invoice.findById(payment.invoice).select('_id');
       if (invoiceExists) {
         await applyInvoicePayment(payment.invoice, -Number(payment.amount || 0));
-        // Reverse deposit applied amount as well
-        try { await applyPaymentToDeposit(payment.invoice, -Number(payment.amount || 0)); } catch (_) { }
       }
     } catch (_) {
     }
@@ -983,7 +978,6 @@ export const recordCustomerPayment = async (req, res) => {
       const withheld = Number(withheldByLocalId.get(inv.invoiceId) || 0);
       if (allowed > 0.009 || withheld > 0.009) {
         await updateInvoiceAfterZohoPayment(inv.invoiceId, allowed, withheld);
-        try { if (allowed > 0.009) await applyPaymentToDeposit(inv.invoiceId, allowed); } catch (_) { }
       }
     }
 
@@ -1276,18 +1270,30 @@ export const createRazorpayOrder = async (req, res) => {
   });
 
   try {
-    const { dayPassId, bundleId, meetingBookingId, useExtraCredits = false, clientId: bodyClientId } = req.body || {};
+    const {
+      dayPassId: oldDayPassId,
+      bundleId: oldBundleId,
+      meetingBookingId: oldMeetingBookingId,
+      bookingId,
+      type,
+      useExtraCredits = false,
+      clientId: bodyClientId
+    } = req.body || {};
 
-    if (!dayPassId && !bundleId && !meetingBookingId) {
-      return res.status(400).json({ error: "Day pass ID, Bundle ID, or Meeting Booking ID is required" });
+    // Resolve effective ID and type for unification
+    const effectiveId = bookingId || oldDayPassId || oldBundleId || oldMeetingBookingId;
+    const effectiveType = type || (oldDayPassId ? 'daypass' : (oldBundleId ? 'bundle' : (oldMeetingBookingId ? 'meeting' : null)));
+
+    if (!effectiveId || !effectiveType) {
+      return res.status(400).json({ error: "Booking ID and type (daypass, bundle, or meeting) are required" });
     }
 
     let item, amount, description, buildingName;
     let invoice = null;
 
-    if (dayPassId) {
+    if (effectiveType === 'daypass') {
       // Single day pass payment
-      const dayPass = await DayPass.findById(dayPassId)
+      const dayPass = await DayPass.findById(effectiveId)
         .populate('building', 'openSpacePricing')
         .populate('invoice', 'total');
 
@@ -1302,11 +1308,11 @@ export const createRazorpayOrder = async (req, res) => {
       amount = dayPass.invoice?.total || dayPass.totalAmount || dayPass.price;
       buildingName = dayPass.building?.name || "Workspace";
       description = `Day Pass - ${buildingName}`;
-      item = { type: 'daypass', id: dayPassId };
+      item = { type: 'daypass', id: effectiveId };
       invoice = dayPass.invoice || null;
-    } else if (bundleId) {
+    } else if (effectiveType === 'bundle') {
       // Bundle payment
-      const bundle = await DayPassBundle.findById(bundleId)
+      const bundle = await DayPassBundle.findById(effectiveId)
         .populate('building', 'name')
         .populate('invoice', 'total');
 
@@ -1321,11 +1327,11 @@ export const createRazorpayOrder = async (req, res) => {
       amount = bundle.invoice?.total || bundle.totalAmount;
       buildingName = bundle.building?.name || "Workspace";
       description = `Day Pass Bundle - ${buildingName} (${bundle.no_of_dayPasses} passes)`;
-      item = { type: 'bundle', id: bundleId };
+      item = { type: 'bundle', id: effectiveId };
       invoice = bundle.invoice || null;
-    } else {
+    } else if (effectiveType === 'meeting') {
       // Meeting room booking payment
-      const booking = await MeetingBooking.findById(meetingBookingId)
+      const booking = await MeetingBooking.findById(effectiveId)
         .populate('room', 'name building')
         .populate('invoice', 'total')
         .populate({
@@ -1350,8 +1356,10 @@ export const createRazorpayOrder = async (req, res) => {
       const startTime = new Date(booking.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const endTime = new Date(booking.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       description = `Meeting Room - ${roomName} (${startTime}-${endTime})`;
-      item = { type: 'meeting', id: meetingBookingId };
+      item = { type: 'meeting', id: effectiveId };
       invoice = booking.invoice || null;
+    } else {
+      return res.status(400).json({ error: "Invalid booking type. Expected: daypass, bundle, or meeting" });
     }
 
     // Early exit ONLY when 'Use available credits first' is enabled and invoice is fully paid
@@ -1521,11 +1529,6 @@ export const createRazorpayOrder = async (req, res) => {
       buildingName,
       description
     };
-
-    // --- Order Idempotency Check for Meeting Bookings ---
-    // If the frontend passed an idempotencyKey, check if we already have an active order for it.
-    // This prevents double-creation if the user clicks "Pay" twice rapidly or network drops.
-    // We reuse the primary idempotencyKey to keep the API surface simple.
     const checkoutIdempotencyKey = req.body.idempotencyKey;
     if (checkoutIdempotencyKey && item.type === 'meeting') {
       try {
@@ -1563,9 +1566,6 @@ export const createRazorpayOrder = async (req, res) => {
       });
       response.order_id = rzpOrder.id;
 
-      // Save the generated order ID and the idempotency key back to the booking
-      // Note: we update the primary idempotencyKey here as well, so order tracking
-      // relies on the same key as creation tracking.
       if (item.type === 'meeting' && checkoutIdempotencyKey) {
         await MeetingBooking.updateOne(
           { _id: item.id },
@@ -3188,7 +3188,6 @@ export const applyExcessPaymentToInvoice = async (req, res) => {
 
       // Update local invoice
       await updateInvoiceAfterZohoPayment(invoiceId, alloc);
-      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
 
       totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
       need = Math.max(0, Math.round((need - alloc) * 100) / 100);
@@ -3315,7 +3314,6 @@ export const applyAllCreditsToInvoice = async (req, res) => {
 
       // Update local invoice
       await updateInvoiceAfterZohoPayment(invoiceId, alloc);
-      try { await applyPaymentToDeposit(invoiceId, alloc); } catch (_) { }
 
       totalAllocated = Math.round((totalAllocated + alloc) * 100) / 100;
       need = Math.max(0, Math.round((need - alloc) * 100) / 100);

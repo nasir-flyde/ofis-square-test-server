@@ -121,7 +121,9 @@ const clientSchema = new mongoose.Schema(
       ],
       default: []
     },
-    zohoBooksContactId: { type: String, trim: true, index: true },
+    zohoBooksContactId: { type: String, index: true },
+    client_zoho_sd_receivable_id: { type: String, index: true },
+    client_zoho_sd_payable_id: { type: String, index: true },
     pricebookId: { type: String, trim: true, default: undefined },
     currencyId: { type: String, trim: true, default: undefined },
 
@@ -166,11 +168,24 @@ const clientSchema = new mongoose.Schema(
       variables: { type: mongoose.Schema.Types.Mixed, default: undefined },
     },
     isMigrated: { type: Boolean, default: false, index: true },
+    clientID: { type: String, unique: true, sparse: true },
   },
   {
     timestamps: true,
     collection: "clients",
   }
 );
+
+import { generateSequenceID } from "../utils/sequenceGenerator.js";
+clientSchema.pre("save", async function (next) {
+  if (!this.clientID) {
+    try {
+      this.clientID = await generateSequenceID("CLIENT");
+    } catch (err) {
+      console.error("Error generating clientID:", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model("Client", clientSchema);

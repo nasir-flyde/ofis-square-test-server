@@ -2573,7 +2573,7 @@ export const createClientMember = async (req, res) => {
           const cli = await Client.findById(clientId).select('building').lean();
           buildingIdForBhaifi = cli?.building;
         } catch { }
-        await autoSetBhaifiPassword({ bhaifiDoc, buildingId: buildingIdForBhaifi });
+        await autoSetBhaifiPassword({ bhaifiDoc, buildingId: buildingIdForBhaifi, explicitPassword: password });
       }
     } catch (bhaifiErr) {
       console.error("createClientMember: BHAiFi provisioning failed:", bhaifiErr.message);
@@ -3680,6 +3680,11 @@ export const bulkImportClientMembers = async (req, res) => {
         });
 
         if (bhaifiDoc?._id) {
+          await autoSetBhaifiPassword({
+            bhaifiDoc,
+            buildingId: client.building,
+            explicitPassword: defaultPassword
+          });
           await Member.findByIdAndUpdate(member._id, {
             $set: { bhaifiUser: bhaifiDoc._id, bhaifiUserName: bhaifiDoc.userName },
           });

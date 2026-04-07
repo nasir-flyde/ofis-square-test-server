@@ -23,7 +23,9 @@ import {
   setWorkflowMode,
 
   allocateCabins,
-  exportContracts
+  exportContracts,
+  uploadContractAmendment,
+  approveContractAmendment
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -168,5 +170,9 @@ router.put(
 );
 // Manual cabin allocation
 router.post("/:id/allocate-cabins", allocateCabins);
+
+// Contract Amendment routes
+router.post("/:id/upload-amendment", authMiddleware, populateUserRole, upload.any(), uploadContractAmendment);
+router.post("/:id/approve-amendment", authMiddleware, populateUserRole, approveContractAmendment);
 
 export default router;

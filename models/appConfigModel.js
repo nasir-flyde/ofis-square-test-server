@@ -10,6 +10,14 @@ const appConfigSchema = new mongoose.Schema(
             type: String,
             default: "",
         },
+        zoho_sdparentcoa_id_receivable: {
+            type: String,
+            index: true,
+        },
+        zoho_sdparentcoa_id_payable: {
+            type: String,
+            index: true,
+        },
     },
     { timestamps: true }
 );

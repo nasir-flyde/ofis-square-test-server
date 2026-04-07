@@ -181,7 +181,11 @@ const BuildingSchema = new Schema(
     place_of_supply: { type: String, trim: true, default: null },
     zohoChartsOfAccounts: {
       bank_account_id: { type: String, default: null },
-      bank_account_name: { type: String, default: null }
+      bank_account_name: { type: String, default: null },
+      security_deposit_account_id: { type: String },
+      zoho_sd_receivable_id: { type: String, index: true },
+      zoho_sd_payable_id: { type: String, index: true },
+      zoho_sd_clearing_id: { type: String },
     },
     zoho_monthly_payment_item_id: { type: String, default: "" }, // Zoho Books Item ID for monthly rent
     dayPassItem: {

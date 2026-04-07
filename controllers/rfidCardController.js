@@ -203,7 +203,7 @@ export const replaceRFIDCard = async (req, res) => {
 };
 
 // Helper to ensure we have a "Company Access" user for a client (reuses existing or creates new)
-async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
+export async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
   let role = await Role.findOne({ roleName: "Company Access" });
   if (!role) {
     role = await Role.create({
