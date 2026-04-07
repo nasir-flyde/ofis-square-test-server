@@ -36,7 +36,7 @@ export const listRFIDCards = async (req, res) => {
         .lean(),
       RFIDCard.countDocuments(filter),
     ]);
-    return res.json({ success: true, data: items, pagination: { currentPage: Number(page)||1, totalPages: Math.ceil(total/Number(limit||1)), totalRecords: total, hasMore: skip + Number(limit) < total } });
+    return res.json({ success: true, data: items, pagination: { currentPage: Number(page) || 1, totalPages: Math.ceil(total / Number(limit || 1)), totalRecords: total, hasMore: skip + Number(limit) < total } });
   } catch (err) {
     await logErrorActivity(req, err, "RFIDCards:List");
     return res.status(500).json({ success: false, message: "Failed to list cards" });
@@ -140,7 +140,7 @@ export const revokeRFIDCard = async (req, res) => {
 
     try {
       await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: updated._id, payload: { cardUid: updated.cardUid } });
-    } catch {}
+    } catch { }
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", updated._id, null, { status: updated.status });
     return res.json({ success: true, data: updated });
@@ -189,7 +189,7 @@ export const replaceRFIDCard = async (req, res) => {
 
     try {
       await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "REVOKE_CARD", cardId: oldCard._id, payload: { cardUid: oldCard.cardUid } });
-    } catch {}
+    } catch { }
 
     await logCRUDActivity(req, "UPDATE", "RFIDCard", oldCard._id, null, { replacedById: newCard._id });
     await logCRUDActivity(req, "CREATE", "RFIDCard", newCard._id, null, { replacedFrom: oldCard._id });
@@ -203,7 +203,7 @@ export const replaceRFIDCard = async (req, res) => {
 };
 
 // Helper to ensure we have a "Company Access" user for a client (reuses existing or creates new)
-async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
+export async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
   let role = await Role.findOne({ roleName: "Company Access" });
   if (!role) {
     role = await Role.create({
@@ -246,7 +246,7 @@ async function ensureCompanyAccessUserForClient(client, companyLabelInput) {
       enable_portal: false,
     });
     await client.save();
-  } catch {}
+  } catch { }
   // Create user with retry on duplicates
   let ownerUser = null;
   let attempts = 0;
@@ -356,7 +356,7 @@ export const assignMemberToCardByCompany = async (req, res) => {
 
     try {
       await ProvisioningJob.create({ vendor: "MATRIX_COSEC", jobType: "ASSIGN_CARD", memberId, cardId: card._id, payload: { cardUid: card.cardUid, memberId } });
-    } catch {}
+    } catch { }
 
     const before = card.toObject();
     card.currentMemberId = member._id;
@@ -646,7 +646,7 @@ export const importRFIDCardsFromCSV = async (req, res) => {
         skippedCount,
         mode,
       });
-    } catch {}
+    } catch { }
 
     return res.json({
       success: true,
@@ -773,10 +773,12 @@ export const importRFIDCardClientAssignmentsFromCSV = async (req, res) => {
       if (mongoose.Types.ObjectId.isValid(cr)) {
         client = await Client.findById(cr);
       } else {
-        client = await Client.findOne({ $or: [
-          { companyName: new RegExp(`^${cr}$`, 'i') },
-          { legalName: new RegExp(`^${cr}$`, 'i') }
-        ]});
+        client = await Client.findOne({
+          $or: [
+            { companyName: new RegExp(`^${cr}$`, 'i') },
+            { legalName: new RegExp(`^${cr}$`, 'i') }
+          ]
+        });
       }
       if (!client) {
         if (dryRun) {
@@ -841,7 +843,7 @@ export const importRFIDCardClientAssignmentsFromCSV = async (req, res) => {
         skippedCount: dryRun ? (total - assignedCount) : errors.length,
         dryRun,
       });
-    } catch {}
+    } catch { }
 
     if (dryRun) {
       const previewCounts = { total, valid: assignedCount, invalid: total - assignedCount, willAssign: assignedCount };
