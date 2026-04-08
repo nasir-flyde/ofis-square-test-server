@@ -25,7 +25,8 @@ import {
   allocateCabins,
   exportContracts,
   uploadContractAmendment,
-  approveContractAmendment
+  approveContractAmendment,
+  viewDocument
 } from "../controllers/contractController.js";
 import { uploadStampPaper } from "../middlewares/uploadMiddleware.js";
 import {
@@ -107,6 +108,9 @@ router.get("/:id/signature-status", authMiddleware, checkSignatureStatus);
 
 // Generate and download contract PDF
 router.get("/:id/download-pdf", generateContractPDF);
+
+// Proxy and decrypt document for viewing
+router.get("/:id/view-document", authMiddleware, viewDocument);
 
 // Upload contract PDF and send for signature via Zoho Sign
 router.post("/:id/upload-and-send", authMiddleware, populateUserRole, requirePermission(PERMISSIONS.CONTRACT_SEND_SIGNATURE), upload.any(), uploadAndSendForSignature);

@@ -1630,12 +1630,18 @@ export const getBookingSchedule = async (req, res) => {
 
     // 3. Count Available (Issued) Day Passes
     const availableDayPassQuery = {
+      status: "issued",
       $or: [
-        ...(memberId ? [{ member: memberId }] : []),
-        ...(guestId ? [{ customer: guestId }] : [])
-      ],
-      status: "issued"
+        { visitDate: null },
+        { visitDate: { $gte: today } }
+      ]
     };
+
+    if (memberId) {
+      availableDayPassQuery.member = memberId;
+    } else if (guestId) {
+      availableDayPassQuery.customer = guestId;
+    }
 
     const no_of_available_day_passes = await DayPass.countDocuments(availableDayPassQuery);
     const formattedDayPasses = upcomingDayPasses.map(dp => {

@@ -485,6 +485,7 @@ const contractSchema = new mongoose.Schema(
     rejectedAt: { type: Date },
     rejectionReason: { type: String, trim: true },
     fileUrl: { type: String, trim: true, default: "placeholder" },
+    isEncrypted: { type: Boolean, default: false },
     zohoSignRequestId: { type: String, trim: true },
     addOns: [
       {

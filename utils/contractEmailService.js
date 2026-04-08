@@ -106,7 +106,7 @@ export const sendContractCommentEmail = async (contract, comment, addedBy) => {
           comment: comment
         },
         title: 'New Contract Comment',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -136,7 +136,7 @@ export const sendAdminApprovalRequestEmail = async (contract) => {
           contractId: contract._id
         },
         title: 'Contract Approval Required',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -166,7 +166,7 @@ export const sendAdminApprovalConfirmationEmail = async (contract) => {
           approvedAt: new Date().toLocaleString()
         },
         title: 'Contract Approved',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -224,7 +224,7 @@ export const sendClientFeedbackAlertEmail = async (contract, feedback) => {
           feedback: feedback
         },
         title: 'Client Contract Feedback',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -252,7 +252,7 @@ export const sendLegalReviewRequestEmail = async (contract) => {
           contractId: contract._id
         },
         title: 'Legal Review Required',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -282,7 +282,7 @@ export const sendContractSentForSignatureEmail = async (contract) => {
           sentAt: new Date().toLocaleString()
         },
         title: 'Contract Sent for Signature',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }
@@ -312,7 +312,7 @@ export const sendContractSignedEmail = async (contract) => {
           signedAt: new Date().toLocaleString()
         },
         title: 'Contract Signed Successfully',
-        source: 'contract_system',
+        source: 'system',
         type: 'transactional'
       });
     }

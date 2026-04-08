@@ -43,7 +43,7 @@ router.post("/company-access/login", companyAccessLogin);
 router.post("/staff/send-otp", sendStaffOtp);
 router.post("/staff/verify-otp", verifyStaffOtp);
 
-router.post("/refresh", refreshAccessToken);
+router.post("/refreshToken", refreshAccessToken);
 router.post("/logout", logout);
 router.post("/logout-all", authMiddleware, logoutAllDevices);
 

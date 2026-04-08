@@ -21,6 +21,7 @@ import { allocateBlockedCabinsForContract } from "../services/cabinAllocationSer
 import { logCRUDActivity, logContractActivity, logErrorActivity, logSystemActivity } from "../utils/activityLogger.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
 import apiLogger from "../utils/apiLogger.js";
+import { decryptBuffer } from "../utils/encryption.js";
 
 export const exportContracts = async (req, res) => {
   try {
@@ -3251,4 +3252,43 @@ export const getSectionComments = async (req, res) => {
     // If it's the "Assignment to constant variable." error, the stacktrace will show where.
     return res.status(500).json({ success: false, message: error.message });
   }
-}
+};
+
+export const viewDocument = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contract = await Contract.findById(id);
+
+    if (!contract) {
+      return res.status(404).json({ success: false, message: "Contract not found" });
+    }
+
+    const documentUrl = contract.fileUrl;
+    if (!documentUrl || documentUrl === "placeholder") {
+      return res.status(404).json({ success: false, message: "No document file found for this contract" });
+    }
+
+    const response = await fetch(documentUrl);
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, message: "Failed to fetch document from storage" });
+    }
+
+    let buffer = Buffer.from(await response.arrayBuffer());
+
+    if (contract.isEncrypted) {
+      try {
+        buffer = decryptBuffer(buffer);
+      } catch (decryptError) {
+        console.error("Transparent decryption failed for viewDocument:", decryptError.message);
+        // Fallback: send as is if it fails
+      }
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "inline; filename=\"contract.pdf\"");
+    return res.send(buffer);
+  } catch (err) {
+    console.error("viewDocument error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error while retrieving document" });
+  }
+};

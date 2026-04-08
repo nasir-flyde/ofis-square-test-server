@@ -2,6 +2,7 @@ import apiLogger from './apiLogger.js';
 import { getAccessToken } from '../utils/zohoSignAuth.js';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
+import { decryptBuffer } from './encryption.js';
 
 class LoggedZohoSign {
   constructor() {
@@ -48,7 +49,17 @@ class LoggedZohoSign {
           throw new Error(`Document type is not sendable please upload pdf`);
         }
         fileBuffer = Buffer.from(await fileResp.arrayBuffer());
-        console.log('File buffer size:', fileBuffer.length, 'bytes');
+        console.log('File buffer size (raw):', fileBuffer.length, 'bytes');
+        if (contract.isEncrypted) {
+          try {
+            console.log('Contract is marked as encrypted. Decrypting...');
+            fileBuffer = decryptBuffer(fileBuffer);
+            console.log('Decryption successful. Decrypted buffer size:', fileBuffer.length, 'bytes');
+          } catch (decryptError) {
+            console.error('Decryption failed for Zoho Sign:', decryptError.message);
+          }
+        }
+
         const urlName = (documentUrl.split('?')[0] || '').split('/').pop();
         if (urlName) fileName = urlName;
         if (!/\.pdf$/i.test(fileName)) {

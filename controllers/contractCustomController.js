@@ -4,6 +4,7 @@ import Building from "../models/buildingModel.js";
 import Cabin from "../models/cabinModel.js";
 import loggedZohoSign from "../utils/loggedZohoSign.js";
 import { logContractActivity, logErrorActivity } from "../utils/activityLogger.js";
+import { encryptBuffer } from "../utils/encryption.js";
 import imagekit from "../utils/imageKit.js";
 import { createBillingDocumentFromContract } from "../services/invoiceService.js";
 import { allocateBlockedCabinsForContract } from "../services/cabinAllocationService.js";
@@ -863,14 +864,33 @@ export const legalUploadDocument = async (req, res) => {
       return res.status(400).json({ success: false, message: "Sales Senior approval required before legal upload" });
     }
 
+    // Encrypt the file buffer before upload
+    let uploadBuffer = file.buffer;
+    try {
+      console.log('Encrypting document buffer for contract:', id);
+      console.log('Original buffer size:', file.buffer.length);
+      console.log('Original buffer preview (hex):', file.buffer.subarray(0, 10).toString('hex'));
+      
+      uploadBuffer = encryptBuffer(file.buffer);
+      
+      console.log('Encrypted buffer size:', uploadBuffer.length);
+      console.log('Encrypted buffer preview (hex):', uploadBuffer.subarray(0, 10).toString('hex'));
+    } catch (encryptError) {
+      console.error("Encryption failed during legal upload:", encryptError);
+      return res.status(500).json({ success: false, message: "Failed to encrypt document" });
+    }
+
     const uploadResponse = await imagekit.upload({
-      file: file.buffer,
+      file: uploadBuffer.toString('base64'), // Use base64 string to be safe
       fileName: `${Date.now()}_${file.originalname}`,
       folder: `/contracts/legal/${id}/`,
       useUniqueFileName: true,
     });
 
+    console.log('Document uploaded to ImageKit. URL:', uploadResponse.url);
     contract.fileUrl = uploadResponse.url;
+    contract.isEncrypted = true;
+    console.log('Contract marked as isEncrypted: true');
     contract.legalUploadedBy = req.user?._id || null;
     contract.legalUploadedAt = new Date();
     contract.legalUploadNotes = notes || null;

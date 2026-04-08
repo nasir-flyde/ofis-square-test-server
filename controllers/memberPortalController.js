@@ -1280,6 +1280,22 @@ export const getAppHomePageData = async (req, res) => {
           buildingBankDetails = cabin.building?.bankDetails || null;
           wifiName = cabin.building?.wifiAccess?.enterpriseLevel?.wifiName || null;
         }
+
+        // Fetch available day pass count for member (if linked to client)
+        try {
+          if (req.memberId) {
+            noOfAvailableDayPass = await DayPass.countDocuments({
+              member: req.memberId,
+              status: 'issued',
+              $or: [
+                { visitDate: null },
+                { visitDate: { $gte: today } }
+              ]
+            });
+          }
+        } catch (dayPassErr) {
+          console.warn('getAppHomePageData: failed to fetch day pass count for member/client', dayPassErr.message);
+        }
       }
     } else {
       // Member
@@ -1314,7 +1330,7 @@ export const getAppHomePageData = async (req, res) => {
         try {
           const DayPass = (await import("../models/dayPassModel.js")).default;
           noOfAvailableDayPass = await DayPass.countDocuments({
-            customer: req.memberId,
+            member: req.memberId,
             status: 'issued',
             $or: [
               { visitDate: null },
@@ -1412,7 +1428,7 @@ export const getAppHomePageData = async (req, res) => {
             customer: req.guestId,
             visitDate: { $gte: today },
             status: { $ne: 'cancelled' }
-          }).populate('building', 'name address businessMapLink'),
+          }).populate('building', 'name address businessMapLink coverPhotoUrl'),
 
           MeetingBooking.find({
             guest: req.guestId,
@@ -1468,9 +1484,9 @@ export const getAppHomePageData = async (req, res) => {
             meetingRoomName: "Day Pass Booking",
             floor: "N/A",
             dateAndTimeSlot: `${istYmd}, Full Day`,
-            capacity: null,
-            images: dp.building ? [buildingImageMap[dp.building._id.toString()] || null].filter(Boolean) : [],
-            totalPricing: 0,
+            capacity: dp.numberOfGuests || 1,
+            images: dp.building?.coverPhotoUrl ? [dp.building.coverPhotoUrl] : [],
+            totalPricing: dp.price || 0,
             creditsUsed: 0,
             status: dp.status,
             type: "daypass"
@@ -1545,7 +1561,7 @@ export const getAppHomePageData = async (req, res) => {
               .populate('invoice', 'invoice_number total')
               .select('room start end status member client invoice payment') : [],
 
-            dayPassQuery ? DayPass.find(dayPassQuery).populate('building', 'name address businessMapLink') : []
+            dayPassQuery ? DayPass.find(dayPassQuery).populate('building', 'name address businessMapLink coverPhotoUrl') : []
           ]);
 
           // Fetch building common area images for "Day Pass Area" if there are any day passes
@@ -1602,12 +1618,12 @@ export const getAppHomePageData = async (req, res) => {
               buildingName: dp.building?.name || "Ofis Square",
               buildingAddress: dp.building?.address || "",
               businessMapLink: dp.building?.businessMapLink || null,
-              meetingRoomName: "Day Pass Booking",
+              meetingRoomName: "Day Pass",
               floor: "N/A",
               dateAndTimeSlot: istYmd ? `${istYmd}, Full Day` : "Unscheduled (Flexible)",
-              capacity: null,
-              images: dp.building ? [buildingImageMap[dp.building._id.toString()] || null].filter(Boolean) : [],
-              totalPricing: 0,
+              capacity: dp.numberOfGuests || 1,
+              images: dp.building?.coverPhotoUrl ? [dp.building.coverPhotoUrl] : [],
+              totalPricing: dp.price || 0,
               creditsUsed: 0,
               status: dp.status,
               type: "daypass"
@@ -1668,6 +1684,7 @@ export const getAppHomePageData = async (req, res) => {
           kycPending,
           guestPending,
           noOfAvailableDayPass: noOfAvailableDayPass || 0,
+
           wifiName,
           wifiPassword
         },

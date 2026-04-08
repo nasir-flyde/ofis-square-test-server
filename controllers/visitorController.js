@@ -184,9 +184,14 @@ export const requestCheckinNew = async (req, res) => {
 
     let hostMemberDoc = null;
     if (hostMemberId) {
-      hostMemberDoc = await Member.findById(hostMemberId);
+      hostMemberDoc = await Member.findById(hostMemberId).populate('client');
       if (!hostMemberDoc) {
         return res.status(400).json({ success: false, message: 'Invalid hostMemberId' });
+      }
+
+      // Auto-attach building from host member's client if not provided in body
+      if (!building && hostMemberDoc.client?.building) {
+        building = hostMemberDoc.client.building;
       }
     }
     if (building) {
@@ -461,9 +466,14 @@ export const createVisitor = async (req, res) => {
 
     let hostMember = null;
     if (hostMemberId) {
-      hostMember = await Member.findById(hostMemberId);
+      hostMember = await Member.findById(hostMemberId).populate('client');
       if (!hostMember) {
         return res.status(404).json({ success: false, message: "Host member not found" });
+      }
+
+      // Auto-attach building from host member's client if not provided in body
+      if (!building && hostMember.client?.building) {
+        building = hostMember.client.building;
       }
     }
 
