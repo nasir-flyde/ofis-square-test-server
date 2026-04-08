@@ -1708,7 +1708,7 @@ export const sendStaffOtp = async (req, res) => {
     const { sendWhatsAppOTP } = await import("../services/interaktService.js");
 
     // Generate OTP
-    const otp = normalizedPhone === '9991112323' ? '123456' : generateOtp();
+    const otp = normalizedPhone === '8931112223' ? '123456' : generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     // Clear existing OTPs for this phone
