@@ -93,7 +93,6 @@ export const createMember = async (req, res) => {
     // Create User record if email is provided
     if (email) {
       try {
-        // Resolve requested role or fallback to default "member"
         let roleDoc = null;
         if (role) {
           if (mongoose.Types.ObjectId.isValid(role)) {
@@ -115,7 +114,6 @@ export const createMember = async (req, res) => {
             });
           }
         }
-        // Find existing user by email OR phone to avoid duplicates
         let user = await User.findOne({
           $or: [
             { email: email.toLowerCase().trim() },
@@ -366,10 +364,10 @@ export const createMember = async (req, res) => {
             const card = await RFIDCard.findById(cardId);
             if (card) {
               if (card.currentMemberId) {
-                 // Revert member creation since card is already assigned
-                 await Member.findByIdAndDelete(member._id);
-                 if (createdUserId) await User.findByIdAndDelete(createdUserId);
-                 return res.status(409).json({ success: false, message: "Conflict: This RFID card is already assigned to another member." });
+                // Revert member creation since card is already assigned
+                await Member.findByIdAndDelete(member._id);
+                if (createdUserId) await User.findByIdAndDelete(createdUserId);
+                return res.status(409).json({ success: false, message: "Conflict: This RFID card is already assigned to another member." });
               }
               // Link card to MatrixUser
               await MatrixUser.findOneAndUpdate(
@@ -402,7 +400,7 @@ export const createMember = async (req, res) => {
                 console.warn("createMember: failed to enqueue provisioning job:", jobErr.message);
               }
             }
-          } catch(rfidErr) {
+          } catch (rfidErr) {
             console.warn("createMember: failed to assign RFID card:", rfidErr.message);
           }
         }
@@ -475,8 +473,8 @@ export const getMembers = async (req, res) => {
     const members = await Member.find(filter)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
-      .populate({ 
-        path: 'user', 
+      .populate({
+        path: 'user',
         select: 'name email role',
         populate: { path: 'role', select: 'roleName' }
       })
@@ -506,8 +504,8 @@ export const getMemberById = async (req, res) => {
     const member = await Member.findById(req.params.id)
       .populate('client', 'companyName contactPerson')
       .populate('desk', 'number floor building')
-      .populate({ 
-        path: 'user', 
+      .populate({
+        path: 'user',
         select: 'name email role',
         populate: { path: 'role', select: 'roleName' }
       });
@@ -809,7 +807,7 @@ export const getMemberProfile = async (req, res) => {
 
       // Map 'cabin' to 'Private' (case-insensitive)
       if (typeof cabinType === 'string' && cabinType.toLowerCase() === 'cabin') {
-        cabinType = 'Private';
+        cabinType = 'Private Cabin User';
       }
     }
 
@@ -909,6 +907,7 @@ export const getMemberProfile = async (req, res) => {
         lastName: guest.name?.split(' ').slice(1).join(' ') || "",
         email: guest.email,
         phone: guest.phone,
+        company: guest.companyName || guest.name,
         role: 'ondemanduser',
         status: guest.kycStatus || 'active',
         membershipStatus,
@@ -923,6 +922,7 @@ export const getMemberProfile = async (req, res) => {
         name: `${member.firstName} ${member.lastName || ''}`.trim(),
         email: member.email,
         phone: member.phone,
+        companyName: member.client?.companyName || member.companyName,
         role: member.user?.role?.roleName || member.role,
         status: member.status,
         membershipStatus,
@@ -932,7 +932,10 @@ export const getMemberProfile = async (req, res) => {
         createdAt: member.createdAt,
         updatedAt: member.updatedAt
       },
-      company: (!isOnDemand && member.client) ? {
+      companyName: isOnDemand ? (guest.companyName || guest.name) : (member.client?.companyName || member.companyName),
+      company: isOnDemand ? {
+        name: guest.companyName || guest.name
+      } : (member.client ? {
         id: member.client._id,
         name: member.client.companyName,
         buildingName: member.client.building?.name || null,
@@ -941,7 +944,7 @@ export const getMemberProfile = async (req, res) => {
         phone: member.client.phone,
         billingAddress: member.client.billingAddress,
         shippingAddress: member.client.shippingAddress
-      } : null,
+      } : null),
       desk: (!isOnDemand && member.desk) ? {
         number: member.desk.number,
         floor: member.desk.floor,
