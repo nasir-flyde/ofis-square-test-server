@@ -17,7 +17,8 @@ import {
   approveCheckin,
   getPendingCheckinRequests,
   acceptVisitor,
-  declineVisitor
+  declineVisitor,
+  getVisitorQRCode
 } from "../controllers/visitorController.js";
 
 
@@ -46,5 +47,6 @@ router.post("/:id/request-checkin", requestCheckin);
 router.post("/:id/approve-checkin", authMiddleware, approveCheckin);
 router.patch("/:id/accept", authMiddleware, acceptVisitor);
 router.patch("/:id/decline", authMiddleware, declineVisitor);
+router.get("/:id/qr", getVisitorQRCode);
 
 export default router;

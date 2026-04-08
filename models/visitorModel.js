@@ -141,7 +141,7 @@ visitorSchema.statics.findTodaysVisitors = function (date = new Date()) {
 visitorSchema.statics.isValidTransition = function (currentStatus, newStatus) {
   const validTransitions = {
     invited: ["pending_checkin", "pending_host_approval", "checked_in", "cancelled", "no_show"],
-    pending_checkin: ["approved", "cancelled", "no_show"],
+    pending_checkin: ["approved", "pending_host_approval", "checked_in", "cancelled", "no_show"],
     approved: ["pending_host_approval", "checked_in", "cancelled", "no_show"],
     pending_host_approval: ["checked_in", "cancelled", "no_show"],
     checked_in: ["checked_out"],
@@ -155,7 +155,7 @@ visitorSchema.statics.isValidTransition = function (currentStatus, newStatus) {
 
 // Instance method to check if visitor can check in
 visitorSchema.methods.canCheckIn = function () {
-  return (this.status === 'invited' || this.status === 'approved') &&
+  return (this.status === 'invited' || this.status === 'approved' || this.status === 'pending_checkin') &&
     this.qrExpiresAt &&
     this.qrExpiresAt > new Date() &&
     !this.deletedAt;

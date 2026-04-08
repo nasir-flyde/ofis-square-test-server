@@ -215,7 +215,7 @@ export const requestCheckinNew = async (req, res) => {
 
     if (duplicateQuery.$or.length > 0) {
       const existingVisitor = await Visitor.findOne(duplicateQuery);
-      if (existingVisitor) {
+      if (existingVisitor && ['invited', 'approved'].includes(existingVisitor.status)) {
         return res.status(409).json({
           success: false,
           message: 'Visitor already has an active check-in or invitation for today',
@@ -493,7 +493,7 @@ export const createVisitor = async (req, res) => {
 
     if (duplicateQuery.$or.length > 0) {
       const existingVisitor = await Visitor.findOne(duplicateQuery);
-      if (existingVisitor) {
+      if (existingVisitor && ['invited', 'approved'].includes(existingVisitor.status)) {
         return res.status(409).json({
           success: false,
           message: 'Visitor already has an active check-in or invitation for today',
@@ -1007,10 +1007,24 @@ export const scanQRCode = async (req, res) => {
       });
     }
 
-    if (!visitor.canCheckIn()) {
+    if (visitor.qrExpiresAt && visitor.qrExpiresAt < new Date()) {
       return res.status(400).json({
         success: false,
-        message: "Visitor cannot be checked in at this time"
+        message: "Your QR code has expired. Please contact support or your host."
+      });
+    }
+
+    if (!["invited", "approved", "pending_checkin"].includes(visitor.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Visitor cannot be checked in with current status: ${visitor.status.replace(/_/g, ' ')}`
+      });
+    }
+
+    if (visitor.deletedAt) {
+      return res.status(400).json({
+        success: false,
+        message: "This visitor record has been deleted"
       });
     }
 
@@ -1382,6 +1396,50 @@ export const declineVisitor = async (req, res) => {
     res.json({ success: true, message: "Visitor declined", data: visitor });
   } catch (error) {
     console.error("Decline visitor error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const getVisitorQRCode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const visitor = await Visitor.findOne({ _id: id, deletedAt: null });
+
+    if (!visitor) {
+      return res.status(404).json({ success: false, message: "Visitor not found" });
+    }
+
+    if (!visitor.qrToken) {
+      return res.status(404).json({ success: false, message: "QR token not found for this visitor" });
+    }
+
+    // Generate QR code as data URL
+    const qrDataUrl = await QRCode.toDataURL(visitor.qrToken, {
+      width: 300,
+      margin: 2,
+      color: {
+        dark: "#000000",
+        light: "#ffffff"
+      }
+    });
+
+    // Option 1: Return as JSON with data URL
+    if (req.query.format === 'json') {
+      return res.json({ success: true, data: { qrDataUrl } });
+    }
+
+    // Option 2: Return as Image (buffer)
+    const qrBuffer = await QRCode.toBuffer(visitor.qrToken, {
+      type: 'png',
+      width: 300,
+      margin: 2
+    });
+
+    res.setHeader('Content-Type', 'image/png');
+    res.send(qrBuffer);
+
+  } catch (error) {
+    console.error("Generate QR Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
