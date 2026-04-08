@@ -302,7 +302,7 @@ export const getMyProfile = async (req, res) => {
       lastName: guest.name?.split(' ').slice(1).join(' ') || "",
       email: guest.email,
       phone: guest.phone,
-      companyName: guest.companyName,
+      companyName: guest.companyName || guest.name,
       role: 'ondemanduser',
       status: guest.kycStatus || 'active',
       membershipStatus,
@@ -1232,7 +1232,7 @@ export const getAppHomePageData = async (req, res) => {
         name = guest.name;
         email = guest.email || null;
         phone = guest.phone || null;
-        companyName = guest.companyName;
+        companyName = guest.companyName || guest.name;
         buildingName = guest.buildingId?.name;
         buildingId = guest.buildingId?._id || null;
         buildingOpeningTime = guest.buildingId?.openingTime || null;
