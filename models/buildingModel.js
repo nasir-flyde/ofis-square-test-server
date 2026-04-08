@@ -12,10 +12,9 @@ const BuildingSchema = new Schema(
     pincode: { type: String },
     openingTime: { type: String, default: "09:00" },
     closingTime: { type: String, default: "19:00" },
-    // Building-level grace period (in minutes) for meeting room booking cancellations
     meetingCancellationGraceMinutes: { type: Number, min: 0, default: 5 },
-    // Timeout (in minutes) for payment_pending bookings before auto-cancellation
     meetingPaymentPendingTimeoutMinutes: { type: Number, min: 0, default: 10 },
+    meetingBookingCutoffMinutes: { type: Number, min: 0, default: 0 },
     location: {
       type: {
         type: String,
@@ -32,6 +31,8 @@ const BuildingSchema = new Schema(
       latitude: { type: Number }
     },
     businessMapLink: { type: String },
+    coverPhotoUrl: { type: String },
+
 
     totalFloors: { type: Number },
     amenities: [{ type: Schema.Types.ObjectId, ref: "BuildingAmenity" }],

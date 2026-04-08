@@ -1608,7 +1608,7 @@ export const getBookingSchedule = async (req, res) => {
         select: "name capacity images building",
         populate: {
           path: "building",
-          select: "name address businessMapLink"
+          select: "name address businessMapLink coverPhotoUrl"
         }
       })
       .sort({ start: 1 });
@@ -1624,7 +1624,7 @@ export const getBookingSchedule = async (req, res) => {
     };
 
     const upcomingDayPasses = await DayPass.find(dayPassQuery)
-      .populate("building", "name address businessMapLink")
+      .populate("building", "name address businessMapLink coverPhotoUrl")
       .populate("visitors", "name email phone")
       .sort({ date: 1 });
 
@@ -1638,11 +1638,26 @@ export const getBookingSchedule = async (req, res) => {
     };
 
     const no_of_available_day_passes = await DayPass.countDocuments(availableDayPassQuery);
+    const formattedDayPasses = upcomingDayPasses.map(dp => {
+      const dpObj = dp.toObject();
+      return {
+        ...dpObj,
+        room: {
+          name: "Day Pass",
+          capacity: dp.numberOfGuests || 1,
+          images: dp.building?.coverPhotoUrl ? [dp.building.coverPhotoUrl] : [],
+          building: dp.building
+        },
+        start: dp.expectedArrivalTime || dp.visitDate || dp.date,
+        end: dp.expectedDepartureTime || dp.expiresAt,
+      };
+    });
+
     res.json({
       success: true,
       data: {
         upcomingMeetings,
-        upcomingDayPasses,
+        upcomingDayPasses: formattedDayPasses,
         no_of_available_day_passes
       }
     });
