@@ -171,7 +171,7 @@ export const requestCheckinNew = async (req, res) => {
     const expectedArrivalTime = body.expectedArrivalTime ? new Date(body.expectedArrivalTime) : new Date();
     const expectedDepartureTime = body.expectedDepartureTime ? new Date(body.expectedDepartureTime) : null;
 
-    const building = body.building;
+    let building = body.building;
 
     // Notes: append gender if provided by kiosk
     const baseNotes = body.notes?.trim?.();
