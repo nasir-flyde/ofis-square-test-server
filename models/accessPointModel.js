@@ -12,6 +12,7 @@ const deviceBindingSchema = new Schema(
     meta: { type: Schema.Types.Mixed },
   },
   { _id: false }
+  //ok
 );
 
 const resourceRefSchema = new Schema(
