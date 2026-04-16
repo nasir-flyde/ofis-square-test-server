@@ -1,8 +1,10 @@
 import Visitor from "../models/visitorModel.js";
+import Notification from "../models/notificationModel.js";
 import Member from "../models/memberModel.js";
 import User from "../models/userModel.js";
 import Building from "../models/buildingModel.js";
 import Client from "../models/clientModel.js";
+import Guest from "../models/guestModel.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import QRCode from "qrcode";
@@ -10,6 +12,8 @@ import imagekit from "../utils/imageKit.js";
 import path from "path";
 import NotificationCategory from "../models/NotificationCategoryModel.js";
 import { sendNotification } from "../utils/notificationHelper.js";
+import Role from "../models/roleModel.js";
+import { logActivity, logErrorActivity } from "../utils/activityLogger.js";
 
 const createAuditLog = async (visitorId, action, oldStatus, newStatus, userId, notes = '') => {
   console.log(`AUDIT: Visitor ${visitorId} - ${action} - ${oldStatus} → ${newStatus} by ${userId} - ${notes}`);
@@ -19,10 +23,36 @@ const generateQRToken = () => {
   return crypto.randomBytes(16).toString('hex');
 };
 
-async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) {
+const getCommunityContact = async (buildingId) => {
+  try {
+    if (!buildingId) return null;
+    const communityRole = await Role.findOne({ roleName: { $regex: /^community$/i } });
+    if (!communityRole) return null;
+
+    const manager = await User.findOne({
+      buildingId: buildingId,
+      role: communityRole._id
+    }).select('name phone');
+
+    if (manager) {
+      return {
+        name: manager.name,
+        phone: manager.phone,
+        whatsapp: manager.phone?.replace(/\D/g, '')
+      };
+    }
+  } catch (err) {
+    console.error('[getCommunityContact] lookup failed:', err);
+  }
+  return null;
+};
+
+async function sendInvitationEmail({ to, visitor, hostMember, hostGuest, qrUrl, qrToken }) {
   if (!to) return;
   const visitDate = visitor?.expectedVisitDate ? new Date(visitor.expectedVisitDate).toLocaleDateString() : 'your scheduled date';
-  const hostName = hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : 'your host';
+  const hostName = hostMember
+    ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim()
+    : (hostGuest?.name || 'your host');
   const subject = `Your visit invitation to Ofis Square – ${visitDate}`;
 
   const text = `Hello ${visitor?.name || ''},\n\n` +
@@ -67,6 +97,8 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
   </body></html>`;
 
   try {
+    const categoryId = '69d8955c9b549289379e4710';
+
     await sendNotification({
       to: { email: to },
       channels: { email: true, sms: false },
@@ -76,6 +108,7 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
         emailText: text
       },
       title: 'Visit Invitation',
+      categoryId: categoryId,
       attachments: qrPngBuffer ? [
         {
           filename: 'visitor-qr.png',
@@ -93,20 +126,33 @@ async function sendInvitationEmail({ to, visitor, hostMember, qrUrl, qrToken }) 
   }
 }
 
-async function sendHostNotificationEmail({ to, visitor, hostMember }) {
+async function sendHostNotificationEmail({ to, visitor, hostMember, hostGuest }) {
   if (!to) return;
 
   try {
+    const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+
     await sendNotification({
-      to: { email: to, memberId: hostMember?._id },
+      to: { email: to, memberId: hostMember?._id, guestId: hostGuest?._id },
       channels: { email: true, sms: false },
-      templateKey: 'guest_arrival',
+      templateKey: 'visitor_checkin_request',
       templateVariables: {
-        guestName: visitor?.name || 'Visitor',
-        memberName: hostMember ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim() : 'Member',
+        visitorName: visitor?.name || 'Visitor',
+        memberName: hostMember
+          ? `${hostMember.firstName || ''} ${hostMember.lastName || ''}`.trim()
+          : (hostGuest?.name || 'Host'),
+        buildingName: visitor?.building?.name || 'Ofis Square',
         companyName: visitor?.companyName || 'N/A'
       },
-      title: 'Visitor Waiting Notification',
+      title: 'Visitor Alert',
+      categoryId: visitorCategory?._id,
+      metadata: {
+        category: 'visitor',
+        tags: ['visitor_checkin_request'],
+        route: `/visitors/${visitor._id}`,
+        deepLink: `ofis://visitors/${visitor._id}`,
+        routeParams: { id: String(visitor._id) }
+      },
       source: 'visitor_system',
       type: 'transactional'
     });
@@ -150,6 +196,7 @@ export const requestCheckin = async (req, res) => {
 };
 
 export const requestCheckinNew = async (req, res) => {
+  console.log('[requestCheckinNew] Stage 1: Function entry. Request body:', JSON.stringify(req.body, null, 2));
   try {
     // Accept both kiosk payload and admin payload
     const body = req.body || {};
@@ -175,33 +222,44 @@ export const requestCheckinNew = async (req, res) => {
 
     // Notes: append gender if provided by kiosk
     const baseNotes = body.notes?.trim?.();
-    const genderNote = body.gender ? `Gender: ${body.gender}` : null;
+    const genderNote = body.gender ? `Gender: ${body.gender.toLowerCase()}` : null;
     const notes = [baseNotes, genderNote].filter(Boolean).join(" | ") || undefined;
 
+    console.log('[requestCheckinNew] Stage 2: Extracted fields.', { name, email, phone, hostMemberId, building });
+
     if (!name) {
+      console.warn('[requestCheckinNew] Validation failed: Name is missing');
       return res.status(400).json({ success: false, message: 'name is required' });
     }
 
     let hostMemberDoc = null;
     if (hostMemberId) {
+      console.log('[requestCheckinNew] Stage 3: Looking up host member:', hostMemberId);
       hostMemberDoc = await Member.findById(hostMemberId).populate('client');
       if (!hostMemberDoc) {
+        console.warn('[requestCheckinNew] Invalid hostMemberId:', hostMemberId);
         return res.status(400).json({ success: false, message: 'Invalid hostMemberId' });
       }
+      console.log('[requestCheckinNew] Host member found:', hostMemberDoc.firstName, hostMemberDoc.lastName);
 
       // Auto-attach building from host member's client if not provided in body
       if (!building && hostMemberDoc.client?.building) {
         building = hostMemberDoc.client.building;
+        console.log('[requestCheckinNew] Auto-attached building from host member:', building);
       }
     }
     if (building) {
+      console.log('[requestCheckinNew] Stage 4: Validating building ID:', building);
       const buildingDoc = await Building.findById(building);
       if (!buildingDoc) {
+        console.warn('[requestCheckinNew] Invalid building ID:', building);
         return res.status(400).json({ success: false, message: 'Invalid building id' });
       }
+      console.log('[requestCheckinNew] Building validated:', buildingDoc.name);
     }
 
     // Duplicate check: Same phone/email, same building, same day, active status
+    console.log('[requestCheckinNew] Stage 5: Running duplicate check');
     const startOfDay = new Date(expectedVisitDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(expectedVisitDate);
@@ -221,6 +279,7 @@ export const requestCheckinNew = async (req, res) => {
     if (duplicateQuery.$or.length > 0) {
       const existingVisitor = await Visitor.findOne(duplicateQuery);
       if (existingVisitor && ['invited', 'approved'].includes(existingVisitor.status)) {
+        console.warn('[requestCheckinNew] Duplicate found:', existingVisitor._id);
         return res.status(409).json({
           success: false,
           message: 'Visitor already has an active check-in or invitation for today',
@@ -242,7 +301,7 @@ export const requestCheckinNew = async (req, res) => {
       expectedDepartureTime,
       building: building || undefined,
       notes,
-      status: 'pending_checkin',
+      status: 'pending_host_approval',
       checkinRequestedAt: new Date(),
       // Allow kiosk to send staff user id explicitly
       createdBy: body.createdBy || req.user?.id || null
@@ -250,6 +309,7 @@ export const requestCheckinNew = async (req, res) => {
 
     // Handle profile picture upload (kiosk sends as `profile_picture`)
     if (req.file) {
+      console.log('[requestCheckinNew] Stage 6: Uploading profile picture');
       try {
         const result = await imagekit.upload({
           file: req.file.buffer,
@@ -257,45 +317,111 @@ export const requestCheckinNew = async (req, res) => {
           folder: '/visitor-profiles'
         });
         visitorData.profile_picture = result.url;
+        console.log('[requestCheckinNew] Profile picture uploaded:', result.url);
       } catch (uploadError) {
-        console.error('ImageKit upload error for visitor:', uploadError);
+        console.error('[requestCheckinNew] ImageKit upload error for visitor:', uploadError);
       }
     }
 
+    console.log('[requestCheckinNew] Stage 7: Creating visitor document');
     const visitor = await Visitor.create(visitorData);
+    console.log('[requestCheckinNew] Visitor created with ID:', visitor._id);
 
-    await createAuditLog(visitor._id, 'CHECKIN_REQUESTED', 'invited', 'pending_checkin', req.user?.id, 'New visitor requested check-in');
+    console.log('[requestCheckinNew] Stage 8: Logging activity and audit');
+    await logActivity({
+      req,
+      action: 'CHECK_IN',
+      entity: 'Visitor',
+      entityId: visitor._id,
+      description: 'New visitor requested check-in'
+    });
+
+    await createAuditLog(visitor._id, 'CHECKIN_REQUESTED', 'invited', 'pending_host_approval', req.user?.id, 'New visitor requested check-in');
+
+    console.log('[requestCheckinNew] Stage 9: Populating visitor data');
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone' },
-      { path: 'building', select: 'name address' }
+      { path: 'hostGuest', select: 'name email phone companyName' },
+      { path: 'building', select: 'name address businessMapLink' }
     ]);
 
     // Notify host member via email
+    console.log('[requestCheckinNew] Stage 10: Notifying host');
     try {
-      const hostEmail = visitor?.hostMember?.email;
+      const hostEmail = visitor?.hostMember?.email || visitor?.hostGuest?.email;
       if (hostEmail) {
-        await sendHostNotificationEmail({ to: hostEmail, visitor, hostMember: visitor.hostMember });
+        console.log('[requestCheckinNew] Sending host notification email to:', hostEmail);
+        await sendHostNotificationEmail({
+          to: hostEmail,
+          visitor,
+          hostMember: visitor.hostMember,
+          hostGuest: visitor.hostGuest
+        });
+        console.log('[requestCheckinNew] Host notification email sent');
+      } else {
+        console.log('[requestCheckinNew] No host email found for notification');
       }
     } catch (e) {
       console.warn('[requestCheckinNew] Host email notify failed', e?.message || e);
     }
 
     // Notify visitor about check-in confirmation
+    console.log('[requestCheckinNew] Stage 11: Notifying visitor');
     try {
       if (visitor.email) {
+        console.log('[requestCheckinNew] Preparing visitor notification for:', visitor.email);
+        let qrPngBuffer = null;
+        if (visitor.qrToken) {
+          try {
+            console.log('[requestCheckinNew] Generating QR buffer for visitor');
+            qrPngBuffer = await QRCode.toBuffer(visitor.qrToken, { type: 'png', width: 360, margin: 1, errorCorrectionLevel: 'M' });
+          } catch (e) {
+            console.error('[requestCheckinNew] QR generation failed:', e);
+          }
+        }
+
+        const communityContact = (await getCommunityContact(visitor.building?._id)) || {
+          name: 'Community',
+          phone: '+91 9999999999',
+          whatsapp: '919999999999'
+        };
+
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+        console.log('[requestCheckinNew] Sending visitor confirmation notification');
         await sendNotification({
           to: { email: visitor.email },
           channels: { email: true, sms: false },
           templateKey: 'visitor_checkin_confirmation',
+          bcc: 'nasir@flyde.in',
           templateVariables: {
-            greeting: 'Ofis Square',
-            visitorName: visitor.name,
-            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
-            buildingName: visitor.building?.name || 'Ofis Square',
+            guest_name: visitor.name || 'Guest',
+            host_name: visitor.hostMember
+              ? `${visitor.hostMember.firstName || ''} ${visitor.hostMember.lastName || ''}`.trim()
+              : (visitor.hostGuest?.name || 'Member'),
+            client_name: visitor.hostMember?.client?.companyName || visitor.companyName || 'Ofis Square',
+            location: visitor.building?.name || 'Ofis Square',
+            date: visitor.expectedVisitDate ? new Date(visitor.expectedVisitDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+            time: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'N/A',
             purpose: visitor.purpose || 'Visit',
-            arrivalTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+            qr_code_url: 'cid:visitor-qr',
+            map_link: visitor.building?.businessMapLink || '#',
+            community_name: communityContact.name,
+            community_phone: communityContact.phone,
+            community_whatsapp: communityContact.whatsapp,
+            appstore_link: 'https://apps.apple.com/app/ofis-square/id123456789',
+            playstore_link: 'https://play.google.com/store/apps/details?id=com.ofissquare'
           },
           title: 'Visit Confirmation',
+          categoryId: visitorCategory?._id,
+          attachments: qrPngBuffer ? [
+            {
+              filename: 'visitor-qr.png',
+              content: qrPngBuffer,
+              cid: 'visitor-qr',
+              contentType: 'image/png',
+              contentDisposition: 'inline',
+            }
+          ] : [],
           metadata: {
             category: 'visitor',
             tags: ['visitor_checkin_confirmation'],
@@ -306,14 +432,19 @@ export const requestCheckinNew = async (req, res) => {
           source: 'system',
           type: 'transactional'
         });
+        console.log('[requestCheckinNew] Visitor confirmation notification sent');
+      } else {
+        console.log('[requestCheckinNew] No visitor email found for notification');
       }
     } catch (e) {
       console.warn('[requestCheckinNew] Visitor email notify failed', e?.message || e);
     }
 
+    console.log('[requestCheckinNew] Stage 12: Success. Returning response.');
     return res.json({ success: true, message: 'Check-in request created', data: visitor });
   } catch (error) {
-    console.error('requestCheckinNew error:', error);
+    console.error('[requestCheckinNew] Error:', error);
+    await logErrorActivity(req, error, 'Visitor', { function: 'requestCheckinNew' });
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -324,6 +455,7 @@ export const approveCheckin = async (req, res) => {
 
     const visitor = await Visitor.findById(id).populate([
       { path: 'hostMember', select: 'firstName lastName email phone' },
+      { path: 'hostGuest', select: 'name email phone companyName' },
       { path: 'building', select: 'name address' }
     ]);
 
@@ -357,6 +489,7 @@ export const approveCheckin = async (req, res) => {
           to: visitor.email,
           visitor,
           hostMember: visitor.hostMember,
+          hostGuest: visitor.hostGuest,
           qrUrl,
           qrToken,
         });
@@ -391,6 +524,7 @@ export const getPendingCheckinRequests = async (req, res) => {
       deletedAt: null
     })
       .populate('hostMember', 'firstName lastName email phone')
+      .populate('hostGuest', 'name email phone companyName')
       .populate('building', 'name address')
       // .populate('createdBy', 'name email')
       .sort({ checkinRequestedAt: -1 })
@@ -433,18 +567,37 @@ export const createVisitor = async (req, res) => {
       expectedArrivalTime,
       expectedDepartureTime,
       building,
-      notes
+      notes,
+      gender
     } = req.body;
 
-    // If a member or client is logged in, use their context for host and building
-    if (req.user?.memberId) {
-      hostMemberId = req.user.memberId;
+    // If a member, client or ondemand user is logged in, use their context for host and building
+    let hostGuestId = null;
+    const targetMemberId = req.memberId || req.user?.memberId;
+    if (targetMemberId) {
+      hostMemberId = targetMemberId;
+      const memberDoc = await Member.findById(targetMemberId).populate('client');
+      if (memberDoc?.client?.building) {
+        building = memberDoc.client.building;
+      }
+    }
+
+    if (req.user?.guestId) {
+      hostGuestId = req.user.guestId;
     }
 
     if (req.user?.clientId) {
       const clientDoc = await Client.findById(req.user.clientId);
       if (clientDoc?.building) {
         building = clientDoc.building;
+      }
+    }
+
+    // Fallback building for hostGuest if not already determined
+    if (hostGuestId && !building) {
+      const guestDoc = await Guest.findById(hostGuestId);
+      if (guestDoc?.buildingId) {
+        building = guestDoc.buildingId;
       }
     }
 
@@ -518,13 +671,14 @@ export const createVisitor = async (req, res) => {
       phone: phone?.trim(),
       companyName: companyName?.trim(),
       hostMember: hostMemberId || undefined,
+      hostGuest: hostGuestId || undefined,
       purpose: purpose?.trim(),
       numberOfGuests: Math.max(1, parseInt(numberOfGuests) || 1),
       expectedVisitDate: new Date(expectedVisitDate),
       expectedArrivalTime: expectedArrivalTime ? new Date(expectedArrivalTime) : null,
       expectedDepartureTime: expectedDepartureTime ? new Date(expectedDepartureTime) : null,
       building,
-      notes: notes?.trim(),
+      notes: [notes?.trim(), gender ? `Gender: ${gender.toLowerCase()}` : null].filter(Boolean).join(" | ") || undefined,
       createdBy: req.user?.id,
       status: "invited"
     };
@@ -546,26 +700,43 @@ export const createVisitor = async (req, res) => {
     // Create visitor
     const visitor = await Visitor.create(visitorData);
 
-    const qrToken = generateQRToken(visitor._id, visitor.expectedVisitDate);
+    await logActivity({
+      req,
+      action: 'CREATE',
+      entity: 'Visitor',
+      entityId: visitor._id,
+      description: 'Visitor invitation created'
+    });
+
+    // Get the QR token that was generated in the pre-save hook
+    const qrToken = visitor.qrToken;
     const qrUrl = `${req.protocol}://${req.get('host')}/api/visitors/scan?token=${qrToken}`;
 
     await createAuditLog(visitor._id, "CREATED", null, "invited", req.user?.id, "Visitor invitation created");
     await visitor.populate([
       { path: 'hostMember', select: 'firstName lastName email phone client', populate: { path: 'client', select: 'companyName' } },
-      { path: 'building', select: 'name address' }
+      { path: 'hostGuest', select: 'name email phone companyName' },
+      { path: 'building', select: 'name address businessMapLink' }
     ]);
-
-    // Notify host about scheduled visit
     try {
-      const hostEmail = visitor.hostMember?.email;
+      const hostEmail = visitor.hostMember?.email || visitor.hostGuest?.email;
       if (hostEmail) {
+        const categoryId = '69d8955c9b549289379e4710';
+        const hostName = visitor.hostMember
+          ? `${visitor.hostMember.firstName || ''} ${visitor.hostMember.lastName || ''}`.trim()
+          : (visitor.hostGuest?.name || 'Member');
+
         await sendNotification({
-          to: { email: hostEmail, memberId: visitor.hostMember?._id },
+          to: {
+            email: hostEmail,
+            memberId: visitor.hostMember?._id,
+            guestId: visitor.hostGuest?._id
+          },
           channels: { email: true, sms: true },
           templateKey: 'visitor_scheduled_notify_host',
           templateVariables: {
             greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
-            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
+            memberName: hostName,
             visitorName: visitor.name,
             visitorCompany: visitor.companyName || 'N/A',
             purpose: visitor.purpose || 'Visit',
@@ -574,6 +745,7 @@ export const createVisitor = async (req, res) => {
             visitTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'N/A'
           },
           title: 'Visitor Scheduled',
+          categoryId: categoryId,
           metadata: {
             category: 'visitor',
             tags: ['visitor_scheduled_notify_host'],
@@ -600,19 +772,54 @@ export const createVisitor = async (req, res) => {
         });
 
         // Also send the new confirmation notification as requested
+        let qrPngBuffer = null;
+        try {
+          qrPngBuffer = await QRCode.toBuffer(qrToken, { type: 'png', width: 360, margin: 1, errorCorrectionLevel: 'M' });
+        } catch (e) {
+          console.error('[createVisitor] QR generation failed:', e);
+        }
+
+        const communityContact = (await getCommunityContact(visitor.building?._id)) || {
+          name: 'Samarth',
+          phone: '+91 9999999999',
+          whatsapp: '919999999999'
+        };
+
+        const categoryId = '69d8955c9b549289379e4710';
         await sendNotification({
           to: { email: visitor.email },
           channels: { email: true, sms: false },
           templateKey: 'visitor_checkin_confirmation',
+          bcc: 'nasir@flyde.in',
           templateVariables: {
-            greeting: "Ofis Square",
-            visitorName: visitor.name,
-            memberName: `${visitor.hostMember?.firstName || ''} ${visitor.hostMember?.lastName || ''}`.trim() || 'Member',
-            buildingName: visitor.building?.name || 'Ofis Square',
+            guest_name: visitor.name || 'Guest',
+            host_name: visitor.hostMember
+              ? `${visitor.hostMember.firstName || ''} ${visitor.hostMember.lastName || ''}`.trim()
+              : (visitor.hostGuest?.name || 'Member'),
+            client_name: visitor.hostMember?.client?.companyName || visitor.companyName || 'Ofis Square',
+            location: visitor.building?.name || 'Ofis Square',
+            date: visitor.expectedVisitDate ? new Date(visitor.expectedVisitDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+            time: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'N/A',
             purpose: visitor.purpose || 'Visit',
-            arrivalTime: visitor.expectedArrivalTime ? new Date(visitor.expectedArrivalTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+            qr_code_url: 'cid:visitor-qr',
+            map_link: visitor.building?.businessMapLink || '#',
+            community_name: communityContact.name,
+            community_phone: communityContact.phone,
+            community_whatsapp: communityContact.whatsapp,
+            appstore_link: 'https://apps.apple.com/app/ofis-square/id123456789',
+            playstore_link: 'https://play.google.com/store/apps/details?id=com.ofissquare'
           },
           title: 'Visit Confirmation',
+          categoryId: categoryId,
+          attachments: qrPngBuffer ? [
+            {
+              filename: 'visitor-qr.png',
+              content: qrPngBuffer,
+              cid: 'visitor-qr',
+              contentType: 'image/png',
+              contentDisposition: 'inline',
+            }
+          ] : [],
           metadata: {
             category: 'visitor',
             tags: ['visitor_checkin_confirmation'],
@@ -640,6 +847,7 @@ export const createVisitor = async (req, res) => {
 
   } catch (error) {
     console.error("Create visitor error:", error);
+    await logErrorActivity(req, error, 'Visitor', { function: 'createVisitor' });
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -707,6 +915,7 @@ export const getVisitors = async (req, res) => {
     const [visitors, totalCount] = await Promise.all([
       Visitor.find(filters)
         .populate('hostMember', 'firstName lastName email phone')
+        .populate('hostGuest', 'name email phone companyName')
         .populate('building', 'name address')
         .populate('processedByCheckin', 'firstName lastName')
         .populate('processedByCheckout', 'firstName lastName')
@@ -742,7 +951,10 @@ export const getTodaysVisitors = async (req, res) => {
     const targetDate = date ? new Date(date) : new Date();
 
     const visitors = await Visitor.findTodaysVisitors(targetDate);
-
+    // Extra population for hostGuest since findTodaysVisitors only populates hostMember
+    if (visitors.length > 0) {
+      await Visitor.populate(visitors, { path: 'hostGuest', select: 'name email phone companyName' });
+    }
     res.json({
       success: true,
       data: visitors,
@@ -753,13 +965,11 @@ export const getTodaysVisitors = async (req, res) => {
         checkedIn: visitors.filter(v => v.status === 'checked_in').length
       }
     });
-
   } catch (error) {
     console.error("Get today's visitors error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 export const getVisitorById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -770,6 +980,7 @@ export const getVisitorById = async (req, res) => {
 
     const visitor = await Visitor.findOne({ _id: id, deletedAt: null })
       .populate('hostMember', 'firstName lastName email phone')
+      .populate('hostGuest', 'name email phone companyName')
       .populate('building', 'name address')
       .populate('processedByCheckin', 'firstName lastName')
       .populate('processedByCheckout', 'firstName lastName')
@@ -876,38 +1087,6 @@ export const checkinVisitor = async (req, res) => {
       console.warn('checkinVisitor: failed to send visitor_checkin_request notification:', noteErr?.message || noteErr);
     }
 
-    // Notify host about guest arrival
-    try {
-      const hostEmail = visitor.hostMember?.email;
-      if (hostEmail) {
-        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
-
-        await sendNotification({
-          to: { email: hostEmail, memberId: visitor.hostMember?._id },
-          channels: { email: true, sms: false },
-          templateKey: 'guest_arrival',
-          templateVariables: {
-            greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
-            memberName: visitor.hostMember?.firstName || 'Member',
-            companyName: 'Ofis Square',
-            guestName: visitor.name
-          },
-          title: 'Guest Arrived',
-          categoryId: visitorCategory?._id,
-          metadata: {
-            category: 'visitor',
-            tags: ['guest_arrival'],
-            route: `/visitors/${visitor._id}`,
-            deepLink: `ofis://visitors/${visitor._id}`,
-            routeParams: { id: String(visitor._id) }
-          },
-          source: 'system',
-          type: 'transactional'
-        });
-      }
-    } catch (notifyErr) {
-      console.warn('checkinVisitor: failed to send guest_arrival notification:', notifyErr?.message || notifyErr);
-    }
 
     res.json({
       success: true,
@@ -981,7 +1160,7 @@ export const checkoutVisitor = async (req, res) => {
 
 export const scanQRCode = async (req, res) => {
   try {
-    const { token } = req.body;
+    const token = (req.body?.token || req.query?.token || '')?.trim();
 
     if (!token) {
       return res.status(400).json({ success: false, message: "QR token is required" });
@@ -996,9 +1175,14 @@ export const scanQRCode = async (req, res) => {
       return res.status(401).json({ success: false, message: "QR code has expired" });
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    const expectedDate = visitor.expectedVisitDate.toISOString().split('T')[0];
-    if (expectedDate !== today) {
+    // Date check using IST (Asia/Kolkata)
+    const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const todayStr = nowIST.toISOString().split('T')[0];
+
+    const expectedDateIST = new Date(new Date(visitor.expectedVisitDate).toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const expectedDateStr = expectedDateIST.toISOString().split('T')[0];
+
+    if (expectedDateStr !== todayStr) {
       return res.status(400).json({
         success: false,
         message: "QR code is not valid for today's visit"
@@ -1040,12 +1224,21 @@ export const scanQRCode = async (req, res) => {
 
     const oldStatus = visitor.status;
     // Change: Transition to pending_host_approval instead of checked_in
-    visitor.status = 'pending_host_approval';
+    visitor.status = 'checked_in';
     visitor.checkinRequestedAt = new Date();
     visitor.checkInMethod = 'qr';
     visitor.processedByCheckin = req.user?.id;
 
     await visitor.save();
+
+    await logActivity({
+      req,
+      action: 'CHECK_IN',
+      entity: 'Visitor',
+      entityId: visitor._id,
+      description: 'Checked in via QR scan'
+    });
+
     await createAuditLog(visitor._id, "QR_CHECKIN_REQUEST", oldStatus, "pending_host_approval", req.user?.id, "Checked in via QR scan, waiting for host approval");
 
     await visitor.populate([
@@ -1057,6 +1250,7 @@ export const scanQRCode = async (req, res) => {
     try {
       const hostMemberId = visitor.hostMember?._id;
       if (hostMemberId) {
+        const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
         await sendNotification({
           to: { memberId: hostMemberId },
           channels: { push: true, inApp: true, sms: false, email: true },
@@ -1068,6 +1262,7 @@ export const scanQRCode = async (req, res) => {
             companyName: visitor.companyName || 'N/A'
           },
           title: 'Visitor Alert',
+          categoryId: visitorCategory?._id,
           metadata: {
             category: 'visitor',
             tags: ['visitor_checkin_request'],
@@ -1083,35 +1278,6 @@ export const scanQRCode = async (req, res) => {
       console.warn('scanQRCode: failed to send visitor_checkin_request notification:', noteErr?.message || noteErr);
     }
 
-    // Notify host about guest arrival
-    try {
-      const hostEmail = visitor.hostMember?.email;
-      if (hostEmail) {
-        await sendNotification({
-          to: { email: hostEmail, memberId: visitor.hostMember?._id },
-          channels: { email: true, sms: false },
-          templateKey: 'guest_arrival',
-          templateVariables: {
-            greeting: visitor.hostMember?.client?.companyName || 'Ofis Square',
-            memberName: visitor.hostMember?.firstName || 'Member',
-            companyName: 'Ofis Square',
-            guestName: visitor.name
-          },
-          title: 'Guest Arrived',
-          metadata: {
-            category: 'visitor',
-            tags: ['guest_arrival'],
-            route: `/visitors/${visitor._id}`,
-            deepLink: `ofis://visitors/${visitor._id}`,
-            routeParams: { id: String(visitor._id) }
-          },
-          source: 'system',
-          type: 'transactional'
-        });
-      }
-    } catch (notifyErr) {
-      console.warn('scanQRCode: failed to send guest_arrival notification:', notifyErr?.message || notifyErr);
-    }
 
     res.json({
       success: true,
@@ -1121,6 +1287,7 @@ export const scanQRCode = async (req, res) => {
 
   } catch (error) {
     console.error("QR scan error:", error);
+    await logErrorActivity(req, error, 'Visitor', { function: 'scanQRCode' });
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1259,12 +1426,21 @@ export const markNoShows = async () => {
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(23, 59, 59, 999);
 
+    const visitorsToUpdate = await Visitor.find({
+      status: { $in: ["invited", "pending_checkin", "approved", "pending_host_approval"] },
+      expectedVisitDate: { $lt: yesterday },
+      deletedAt: null
+    }).select('_id');
+
+    if (visitorsToUpdate.length === 0) {
+      console.log(`[markNoShows] No visitors to update to no_show status`);
+      return 0;
+    }
+
+    const visitorIds = visitorsToUpdate.map(v => v._id);
+
     const result = await Visitor.updateMany(
-      {
-        status: { $in: ["invited", "pending_checkin", "approved", "pending_host_approval"] },
-        expectedVisitDate: { $lt: yesterday },
-        deletedAt: null
-      },
+      { _id: { $in: visitorIds } },
       {
         $set: {
           status: "no_show",
@@ -1272,6 +1448,24 @@ export const markNoShows = async () => {
         }
       }
     );
+
+    // Update relevant notifications to mark action as taken
+    try {
+      const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+      if (visitorCategory) {
+        const stringVisitorIds = visitorIds.map(id => String(id));
+        await Notification.updateMany(
+          {
+            categoryId: visitorCategory._id,
+            'metadata.routeParams.id': { $in: stringVisitorIds },
+            actionTaken: false
+          },
+          { $set: { actionTaken: true } }
+        );
+      }
+    } catch (notifErr) {
+      console.warn('markNoShows: failed to update notification actionTaken status:', notifErr.message);
+    }
 
     console.log(`[markNoShows] Updated ${result.modifiedCount} visitors to no_show status`);
     return result.modifiedCount;
@@ -1285,12 +1479,17 @@ export const acceptVisitor = async (req, res) => {
   try {
     const { id } = req.params;
     const memberId = req.user?.memberId;
+    const guestId = req.user?.guestId;
 
-    if (!memberId) {
-      return res.status(401).json({ success: false, message: "Member authentication required" });
+    if (!memberId && !guestId) {
+      return res.status(401).json({ success: false, message: "Member or Guest authentication required" });
     }
 
-    const visitor = await Visitor.findOne({ _id: id, hostMember: memberId, deletedAt: null });
+    const query = { _id: id, deletedAt: null };
+    if (memberId) query.hostMember = memberId;
+    else if (guestId) query.hostGuest = guestId;
+
+    const visitor = await Visitor.findOne(query);
     if (!visitor) {
       return res.status(404).json({ success: false, message: "Visitor not found or you are not the host" });
     }
@@ -1305,6 +1504,27 @@ export const acceptVisitor = async (req, res) => {
     await visitor.save();
 
     await createAuditLog(visitor._id, "HOST_ACCEPTED", oldStatus, "checked_in", memberId, "Host accepted visitor");
+
+    // Update relevant notifications to mark action as taken
+    try {
+      const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+      if (visitorCategory) {
+        await Notification.updateMany(
+          {
+            categoryId: visitorCategory._id,
+            'metadata.routeParams.id': String(visitor._id),
+            $or: [
+              { 'to.memberId': memberId },
+              { 'to.guestId': guestId }
+            ],
+            actionTaken: false
+          },
+          { $set: { actionTaken: true } }
+        );
+      }
+    } catch (notifErr) {
+      console.warn('acceptVisitor: failed to update notification actionTaken status:', notifErr.message);
+    }
 
     // Send Notification to Visitor
     try {
@@ -1350,12 +1570,17 @@ export const declineVisitor = async (req, res) => {
   try {
     const { id } = req.params;
     const memberId = req.user?.memberId;
+    const guestId = req.user?.guestId;
 
-    if (!memberId) {
-      return res.status(401).json({ success: false, message: "Member authentication required" });
+    if (!memberId && !guestId) {
+      return res.status(401).json({ success: false, message: "Member or Guest authentication required" });
     }
 
-    const visitor = await Visitor.findOne({ _id: id, hostMember: memberId, deletedAt: null });
+    const query = { _id: id, deletedAt: null };
+    if (memberId) query.hostMember = memberId;
+    else if (guestId) query.hostGuest = guestId;
+
+    const visitor = await Visitor.findOne(query);
     if (!visitor) {
       return res.status(404).json({ success: false, message: "Visitor not found or you are not the host" });
     }
@@ -1370,6 +1595,27 @@ export const declineVisitor = async (req, res) => {
     await visitor.save();
 
     await createAuditLog(visitor._id, "HOST_DECLINED", oldStatus, "cancelled", memberId, "Host declined visitor");
+
+    // Update relevant notifications to mark action as taken
+    try {
+      const visitorCategory = await NotificationCategory.findOne({ name: 'Visitor Member Approval' });
+      if (visitorCategory) {
+        await Notification.updateMany(
+          {
+            categoryId: visitorCategory._id,
+            'metadata.routeParams.id': String(visitor._id),
+            $or: [
+              { 'to.memberId': memberId },
+              { 'to.guestId': guestId }
+            ],
+            actionTaken: false
+          },
+          { $set: { actionTaken: true } }
+        );
+      }
+    } catch (notifErr) {
+      console.warn('declineVisitor: failed to update notification actionTaken status:', notifErr.message);
+    }
 
     // Send Notification to Visitor
     try {
